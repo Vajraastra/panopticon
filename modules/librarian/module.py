@@ -1,0 +1,494 @@
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
+                               QListWidget, QFileDialog, QMessageBox, QProgressBar, QFrame,
+                               QLineEdit, QDialog)
+from PySide6.QtGui import QPixmap, QIcon, QMouseEvent
+from PySide6.QtCore import Qt, QSize, Signal
+from core.base_module import BaseModule
+from .logic.db_manager import DatabaseManager
+from .logic.indexer import IndexerWorker
+from .logic.tagging_ui import FlowLayout, TagChip
+import os
+
+class ClickableThumbnail(QLabel):
+    clicked = Signal(str)
+    
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self.setFixedSize(100, 100)
+        self.setStyleSheet("border: 1px solid #555; border-radius: 5px; background-color: black;")
+        self.setAlignment(Qt.AlignCenter)
+        self.setCursor(Qt.PointingHandCursor)
+        
+        pix = QPixmap(path)
+        if not pix.isNull():
+            self.setPixmap(pix.scaled(100, 100, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            self.setText("❌")
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self.path)
+
+class LibrarianModule(BaseModule):
+    def __init__(self):
+        super().__init__()
+        self.view = None
+        # Initialize DB Manager (using default 'panopticon.db' in the root)
+        self.db = DatabaseManager()
+        self.indexer_thread = None
+
+    @property
+    def name(self):
+        return "The Librarian"
+
+    @property
+    def description(self):
+        return "Image Database & Tag Manager"
+
+    def get_view(self) -> QWidget:
+        if self.view: return self.view
+        
+        self.view = QWidget()
+        layout = QVBoxLayout(self.view)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Header
+        title = QLabel("📚 Library Manager")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #00ffcc; margin-bottom: 10px;")
+        layout.addWidget(title)
+        
+        # Watched Folders Section
+        lbl_folders = QLabel("📂 Watched Folders for Indexing:")
+        lbl_folders.setStyleSheet("font-size: 16px; font-weight: bold; color: #eee;")
+        layout.addWidget(lbl_folders)
+        
+        self.folder_list = QListWidget()
+        self.folder_list.setStyleSheet("""
+            QListWidget {
+                background-color: #111;
+                border: 1px solid #333;
+                border-radius: 8px;
+                color: #ddd;
+                font-size: 14px;
+                padding: 5px;
+            }
+            QListWidget::item {
+                padding: 8px;
+            }
+            QListWidget::item:selected {
+                background-color: #333;
+                color: #00ffcc;
+            }
+        """)
+        self.folder_list.itemClicked.connect(self.on_folder_selected)
+        layout.addWidget(self.folder_list)
+        
+        # Button Bar
+        btn_layout = QHBoxLayout()
+        
+        self.btn_add = QPushButton("➕ Add Folder")
+        self.btn_add.clicked.connect(self.add_folder)
+        self.btn_add.setStyleSheet("""
+            QPushButton {
+                background-color: #222;
+                color: #00ffcc;
+                border: 1px solid #00ffcc;
+                border-radius: 5px;
+                padding: 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #00ffcc;
+                color: black;
+            }
+        """)
+        
+        self.btn_remove = QPushButton("❌ Remove Selected")
+        self.btn_remove.clicked.connect(self.remove_folder)
+        self.btn_remove.setStyleSheet("""
+            QPushButton {
+                background-color: #222;
+                color: #ff5555;
+                border: 1px solid #ff5555;
+                border-radius: 5px;
+                padding: 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #ff5555;
+                color: white;
+            }
+        """)
+        
+        btn_layout.addWidget(self.btn_add)
+        btn_layout.addWidget(self.btn_remove)
+        layout.addLayout(btn_layout)
+        
+        # --- Preview Section ---
+        layout.addSpacing(15)
+        self.preview_frame = QFrame()
+        self.preview_frame.setStyleSheet("background-color: #1a1a1a; border-radius: 10px; border: 1px solid #333;")
+        self.preview_frame.setFixedHeight(120)
+        self.preview_frame.hide() # Hidden by default until selection
+        
+        # Layout for images only
+        self.preview_layout_images = QHBoxLayout(self.preview_frame)
+        self.preview_layout_images.setContentsMargins(10, 10, 10, 10)
+        layout.addWidget(self.preview_frame)
+        
+        # Folder Stats Label (Between Preview and Scan)
+        self.lbl_folder_stats = QLabel("")
+        self.lbl_folder_stats.setStyleSheet("color: #00ffcc; font-size: 14px; font-weight: bold; margin-top: 5px; margin-bottom: 5px;")
+        self.lbl_folder_stats.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.lbl_folder_stats)
+
+        # Indexer Controls
+        layout.addSpacing(5)
+        idx_layout = QHBoxLayout()
+        
+        self.btn_scan = QPushButton("🚀 Scan & Index Library")
+        self.btn_scan.clicked.connect(self.toggle_scan)
+        self.btn_scan.setStyleSheet("""
+            QPushButton {
+                background-color: #00ba88;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 15px;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #00e6a8;
+            }
+            QPushButton:disabled {
+                background-color: #444;
+                color: #888;
+            }
+        """)
+        idx_layout.addWidget(self.btn_scan)
+        layout.addLayout(idx_layout)
+        
+        # Progress Bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #444;
+                border-radius: 5px;
+                background-color: #111;
+                text-align: center;
+                color: white;
+            }
+            QProgressBar::chunk {
+                background-color: #00ffcc;
+                width: 10px; 
+            }
+        """)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+        
+        self.lbl_status = QLabel("")
+        self.lbl_status.setStyleSheet("color: #aaa; font-style: italic;")
+        self.lbl_status.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.lbl_status)
+        
+        # --- Tag Explorer ---
+        layout.addSpacing(15)
+        
+        # Divider
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        line.setStyleSheet("background-color: #333;")
+        layout.addWidget(line)
+        
+        lbl_search = QLabel("🔍 Tag Explorer")
+        lbl_search.setStyleSheet("font-size: 16px; font-weight: bold; color: #eee; margin-top: 10px;")
+        layout.addWidget(lbl_search)
+        
+        # Tag Display Area (Flow Layout)
+        self.tag_container = QWidget()
+        self.tag_flow_layout = FlowLayout(self.tag_container)
+        layout.addWidget(self.tag_container)
+        
+        self.active_tags = [] # Keep track of current tags
+        
+        # Input Area
+        search_layout = QHBoxLayout()
+        self.input_search = QLineEdit()
+        self.input_search.setPlaceholderText("Type a tag and hit Enter (or separate with commas)...")
+        self.input_search.returnPressed.connect(self.add_tag_from_input)
+        self.input_search.setStyleSheet("""
+            QLineEdit {
+                background-color: #222;
+                border: 1px solid #444;
+                border-radius: 5px;
+                padding: 8px;
+                color: white;
+            }
+            QLineEdit:focus {
+                border: 1px solid #00ffcc;
+            }
+        """)
+        search_layout.addWidget(self.input_search)
+        
+        self.btn_search = QPushButton("Search")
+        self.btn_search.setStyleSheet("""
+            QPushButton {
+                background-color: #333;
+                border: 1px solid #555;
+                color: white;
+                padding: 8px 15px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #555;
+            }
+        """)
+        self.btn_search.clicked.connect(self.mock_search)
+        search_layout.addWidget(self.btn_search)
+        layout.addLayout(search_layout)
+        
+        self.btn_to_viewer = QPushButton("📤 Send to Viewer (Preview)")
+        self.btn_to_viewer.setEnabled(False) 
+        self.btn_to_viewer.setStyleSheet("""
+            QPushButton {
+                background-color: #222;
+                color: #aaa;
+                border: 1px solid #444;
+                border-radius: 5px;
+                padding: 10px;
+                margin-top: 5px;
+            }
+            QPushButton:disabled {
+                background-color: #111;
+                border-color: #222;
+                color: #444;
+            }
+        """)
+        layout.addWidget(self.btn_to_viewer)
+
+        layout.addStretch()
+        
+        # DB Stats Footer
+        self.lbl_stats = QLabel("Loading...")
+        self.lbl_stats.setStyleSheet("color: #888; font-size: 13px; border-top: 1px solid #333; padding-top: 10px;")
+        layout.addWidget(self.lbl_stats)
+        
+        # Initial Load
+        self.refresh_ui()
+        self.update_global_stats()
+        
+        return self.view
+
+    def add_tag_from_input(self):
+        text = self.input_search.text().strip()
+        if not text: return
+        
+        # Handle commas
+        new_tags = [t.strip() for t in text.split(',') if t.strip()]
+        
+        tags_added = False
+        for tag in new_tags:
+            if tag not in self.active_tags:
+                self.active_tags.append(tag)
+                self.add_chip_to_ui(tag)
+                tags_added = True
+        
+        self.input_search.clear()
+        
+        if tags_added:
+            self.perform_search()
+
+    def add_chip_to_ui(self, tag_text):
+        # Index determines color cycling
+        idx = len(self.active_tags)
+        chip = TagChip(tag_text, idx)
+        chip.removed.connect(self.remove_tag)
+        self.tag_flow_layout.addWidget(chip)
+        
+    def remove_tag(self, tag_text):
+        if tag_text in self.active_tags:
+            self.active_tags.remove(tag_text)
+            self.perform_search() # Update search on remove
+
+    def perform_search(self):
+        """Executes search based on active_tags and updates UI."""
+        
+        # If no tags, reset to default state
+        if not self.active_tags:
+            self.preview_frame.hide()
+            self.lbl_folder_stats.clear()
+            self.update_global_stats() # Reset footer to global
+            return
+
+        # Perform Search
+        count, preview_paths = self.db.search_by_terms(self.active_tags, limit=5)
+        
+        # Update Preview UI
+        self.preview_frame.show()
+        # Ensure we clear any folder selection highlight since we are now in "Search Mode"
+        self.folder_list.clearSelection() 
+        
+        tags_display = ", ".join(self.active_tags[:3])
+        if len(self.active_tags) > 3: tags_display += "..."
+        
+        self.lbl_folder_stats.setText(f"🔍 Search: [{tags_display}] | 👁️ Matching Images: {count}")
+        
+        # Clear previous thumbnails
+        while self.preview_layout_images.count():
+            child = self.preview_layout_images.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+                
+        if count == 0:
+            lbl = QLabel("No matches found.")
+            lbl.setStyleSheet("color: #666; font-style: italic;")
+            self.preview_layout_images.addWidget(lbl)
+        else:
+            # Add new thumbnails (Clickable)
+            for p in preview_paths:
+                thumb = ClickableThumbnail(p)
+                thumb.clicked.connect(self.on_thumbnail_clicked)
+                self.preview_layout_images.addWidget(thumb)
+            
+        self.preview_layout_images.addStretch()
+        
+        # Update Footer Stats with Search Info
+        folders = self.db.get_watched_folders()
+        self.lbl_stats.setText(f"📊 SEARCH MODE | Criteria: {len(self.active_tags)} tags | Found: {count} | Watched Folders: {len(folders)}")
+
+    def on_thumbnail_clicked(self, path):
+        """Opens the clicked thumbnail in a larger dialog."""
+        dlg = QDialog(self.view)
+        dlg.setWindowTitle("Image Preview")
+        dlg.resize(800, 600)
+        
+        vbox = QVBoxLayout(dlg)
+        lbl_img = QLabel()
+        lbl_img.setAlignment(Qt.AlignCenter)
+        
+        pix = QPixmap(path)
+        if not pix.isNull():
+            lbl_img.setPixmap(pix.scaled(750, 550, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            lbl_img.setText("Error loading image")
+            
+        vbox.addWidget(lbl_img)
+        dlg.exec()
+
+    def on_folder_selected(self, item):
+        """Displays preview for the selected folder."""
+        folder_path = item.text()
+        
+        # Get count
+        count = self.db.get_folder_count(folder_path)
+        
+        # Get thumbnails
+        preview_paths = self.db.get_folder_preview(folder_path, limit=5)
+        
+        # Update UI
+        self.preview_frame.show()
+        # Update the standalone stats label instead of the title
+        self.lbl_folder_stats.setText(f"📁 {(os.path.basename(folder_path))} | 👁️ Images Found: {count}")
+        
+        # Clear previous thumbnails
+        while self.preview_layout_images.count():
+            child = self.preview_layout_images.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+                
+        # Add new thumbnails (Clickable)
+        for p in preview_paths:
+            thumb = ClickableThumbnail(p)
+            thumb.clicked.connect(self.on_thumbnail_clicked)
+            self.preview_layout_images.addWidget(thumb)
+            
+        self.preview_layout_images.addStretch()
+
+    def mock_search(self):
+        """Placeholder for search functionality."""
+        if not self.active_tags:
+             QMessageBox.information(self.view, "Search", "Please add some tags first!")
+             return
+             
+        tags_str = ", ".join(self.active_tags)
+        QMessageBox.information(self.view, "Search", f"Searching for tags: [{tags_str}] is not yet implemented.\nThis will filter the database and update the preview box.")
+
+    def update_global_stats(self):
+        if self.db.conn:
+            cursor = self.db.conn.cursor()
+            cursor.execute("SELECT count(*) FROM files")
+            count = cursor.fetchone()[0]
+            folders = self.db.get_watched_folders()
+            self.lbl_stats.setText(f"📊 Global Status | Indexed Files: {count} | Watched Folders: {len(folders)}")
+
+    def refresh_ui(self):
+        # specific reload logic
+        self.folder_list.clear()
+        folders = self.db.get_watched_folders()
+        self.folder_list.addItems(folders)
+        self.preview_frame.hide() # Reset preview on refresh
+        self.lbl_folder_stats.clear() # Clear stats
+
+    def add_folder(self):
+        folder = QFileDialog.getExistingDirectory(self.view, "Select Folder to Index")
+        if folder:
+            if self.db.add_watched_folder(folder):
+                self.refresh_ui()
+                self.update_global_stats()
+            else:
+                QMessageBox.warning(self.view, "Error", "Could not add folder (maybe it's already there?)")
+
+    def remove_folder(self):
+        selected_items = self.folder_list.selectedItems()
+        if not selected_items:
+            return
+            
+        for item in selected_items:
+            path = item.text()
+            self.db.remove_watched_folder(path)
+        
+        self.refresh_ui()
+        self.update_global_stats()
+        
+    def toggle_scan(self):
+        if self.indexer_thread and self.indexer_thread.isRunning():
+            # Stop logic
+            self.indexer_thread.stop()
+            self.btn_scan.setText("Stopping...")
+            self.btn_scan.setEnabled(False)
+        else:
+            # Start logic
+            folders = self.db.get_watched_folders()
+            if not folders:
+                QMessageBox.warning(self.view, "No Folders", "Please add at least one folder to index.")
+                return
+                
+            self.btn_scan.setText("🛑 Stop Scanning")
+            self.btn_scan.setStyleSheet("background-color: #ff5555; color: white; border-radius: 8px; padding: 15px; font-weight: bold;")
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            
+            self.indexer_thread = IndexerWorker(self.db, folders)
+            self.indexer_thread.progress_signal.connect(self.update_progress_text)
+            self.indexer_thread.count_signal.connect(self.update_progress_bar)
+            self.indexer_thread.finished_signal.connect(self.scan_finished)
+            self.indexer_thread.start()
+
+    def update_progress_text(self, text):
+        self.lbl_status.setText(text)
+
+    def update_progress_bar(self, current, total):
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current)
+
+    def scan_finished(self):
+        self.btn_scan.setText("🚀 Scan & Index Library")
+        self.btn_scan.setStyleSheet("background-color: #00ba88; color: white; border-radius: 8px; padding: 15px; font-weight: bold;")
+        self.btn_scan.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self.refresh_ui()
+        QMessageBox.information(self.view, "Done", "Library Scan Complete!")
