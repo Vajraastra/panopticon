@@ -31,6 +31,10 @@ class ClickableThumbnail(QLabel):
             self.clicked.emit(self.path)
 
 class LibrarianModule(BaseModule):
+    # Signals for Integration
+    request_open_gallery = Signal(list, str) # paths, title_context
+    request_open_metadata = Signal(list)     # paths
+
     def __init__(self):
         super().__init__()
         self.view = None
@@ -251,8 +255,9 @@ class LibrarianModule(BaseModule):
         search_layout.addWidget(self.btn_search)
         layout.addLayout(search_layout)
         
-        self.btn_to_viewer = QPushButton("📤 Send to Viewer (Preview)")
+        self.btn_to_viewer = QPushButton("📤 Send to Viewer")
         self.btn_to_viewer.setEnabled(False) 
+        self.btn_to_viewer.clicked.connect(self.send_to_viewer)
         self.btn_to_viewer.setStyleSheet("""
             QPushButton {
                 background-color: #222;
@@ -262,13 +267,28 @@ class LibrarianModule(BaseModule):
                 padding: 10px;
                 margin-top: 5px;
             }
-            QPushButton:disabled {
-                background-color: #111;
-                border-color: #222;
-                color: #444;
-            }
+            QPushButton:hover { background-color: #333; }
         """)
-        layout.addWidget(self.btn_to_viewer)
+        
+        self.btn_to_metadata = QPushButton("📋 Send to Metadata Reader")
+        self.btn_to_metadata.setEnabled(False) 
+        self.btn_to_metadata.clicked.connect(self.send_to_metadata)
+        self.btn_to_metadata.setStyleSheet("""
+            QPushButton {
+                background-color: #222;
+                color: #aaa;
+                border: 1px solid #444;
+                border-radius: 5px;
+                padding: 10px;
+                margin-top: 5px;
+            }
+            QPushButton:hover { background-color: #333; }
+        """)
+        
+        btns_export_layout = QHBoxLayout()
+        btns_export_layout.addWidget(self.btn_to_viewer)
+        btns_export_layout.addWidget(self.btn_to_metadata)
+        layout.addLayout(btns_export_layout)
 
         layout.addStretch()
         
@@ -360,6 +380,11 @@ class LibrarianModule(BaseModule):
         folders = self.db.get_watched_folders()
         self.lbl_stats.setText(f"📊 SEARCH MODE | Criteria: {len(self.active_tags)} tags | Found: {count} | Watched Folders: {len(folders)}")
 
+        # Enable export buttons if results found
+        has_results = count > 0
+        self.btn_to_viewer.setEnabled(has_results)
+        self.btn_to_metadata.setEnabled(has_results)
+
     def on_thumbnail_clicked(self, path):
         """Opens the clicked thumbnail in a larger dialog."""
         dlg = QDialog(self.view)
@@ -407,6 +432,11 @@ class LibrarianModule(BaseModule):
             self.preview_layout_images.addWidget(thumb)
             
         self.preview_layout_images.addStretch()
+
+        # Enable export buttons
+        has_results = count > 0
+        self.btn_to_viewer.setEnabled(has_results)
+        self.btn_to_metadata.setEnabled(has_results)
 
     def mock_search(self):
         """Placeholder for search functionality."""
@@ -491,4 +521,46 @@ class LibrarianModule(BaseModule):
         self.btn_scan.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.refresh_ui()
+        self.update_global_stats() # Update total count
         QMessageBox.information(self.view, "Done", "Library Scan Complete!")
+
+    def send_to_viewer(self):
+        tags = self.active_tags
+        if not tags: return
+        
+        # Get ALL matching files, not just preview
+        count, paths = self.db.search_by_terms(tags, limit=9999)
+        if paths:
+             self.request_open_gallery.emit(paths, f"Search: {', '.join(tags)}")
+             
+    def send_to_metadata(self):
+        # We send the currently filtered results
+        # OR do we send selected files? 
+        # User said: "Send to Metadata Reader" similar to drag and drop multiple images
+        
+        # Strategy: If folder selected, send folder contents. If Search Mode, send search results.
+        
+        paths_to_send = []
+        
+        # Check if in search mode
+        if self.active_tags:
+             _, paths = self.db.search_by_terms(self.active_tags, limit=100) # Limit to 100 for safety?
+             paths_to_send = paths
+        
+        # Check if folder selected (and no active tags potentially) or just prioritizing folder
+        elif self.folder_list.currentItem():
+             folder_path = self.folder_list.currentItem().text()
+             paths_to_send = self.db.get_folder_preview(folder_path, limit=100) # Re-using preview logic for now, or get all
+             # Actually get_folder_preview only returns 5. We might need a `get_folder_files` logic.
+             # Let's simple use the search logic with folder path if we had it, but for now let's rely on what we have.
+             # We can query DB for all files in folder.
+             
+             cursor = self.db.conn.cursor()
+             # We need to handle windows paths...
+             cursor.execute("SELECT path FROM files WHERE path LIKE ?", (f"{folder_path}%",))
+             paths_to_send = [r[0] for r in cursor.fetchall()]
+
+        if paths_to_send:
+             self.request_open_metadata.emit(paths_to_send)
+        else:
+             QMessageBox.warning(self.view, "No Files", "No files selected or found to send.")

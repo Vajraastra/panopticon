@@ -292,6 +292,10 @@ class MetadataModule(BaseModule):
         self.image_list = files
         self.current_index = 0
         self.display_current()
+        
+    def load_paths(self, files):
+        """Integration hook."""
+        self.load_image_list(files)
 
     def prev_image(self):
         if self.image_list and self.current_index > 0:

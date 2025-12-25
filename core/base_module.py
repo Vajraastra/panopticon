@@ -1,12 +1,12 @@
-
-from abc import ABC, abstractmethod
 from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import QObject
 
-class BaseModule(ABC):
+class BaseModule(QObject):
     """
     Abstract base class for all Panopticon modules.
     """
     def __init__(self):
+        super().__init__()
         self._name = "Base Module"
         self._description = "Abstract base module"
         self._icon = None
@@ -19,7 +19,6 @@ class BaseModule(ABC):
     def description(self):
         return self._description
 
-    @abstractmethod
     def get_view(self) -> QWidget:
         """
         Returns the QWidget that represents the module's primary view.

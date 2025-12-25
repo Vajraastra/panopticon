@@ -67,6 +67,7 @@ class GalleryModule(BaseModule):
     # View Modes
     VIEW_ALBUMS = "albums"
     VIEW_IMAGES = "images"
+    VIEW_CUSTOM = "custom"
 
     def __init__(self):
         super().__init__()
@@ -80,6 +81,7 @@ class GalleryModule(BaseModule):
         self.current_query_tags = [] 
         self.current_folder_filter = None # If set, we are browsing a specific folder
         self.current_paths = []
+        self.custom_paths_source = [] # Store custom paths here
         self.total_items = 0
 
     @property
@@ -170,6 +172,16 @@ class GalleryModule(BaseModule):
         self.lbl_title.setText(f"📂 {os.path.basename(path)}")
         self.refresh_grid()
 
+    def load_custom_view(self, paths, title="Search Results"):
+        """Loads a specific list of paths into the gallery grid."""
+        self.current_view_mode = self.VIEW_CUSTOM
+        self.custom_paths_source = paths
+        self.current_page = 0
+        self.page_size = 20
+        self.btn_back.setVisible(True) # Allow going back directly to albums
+        self.lbl_title.setText(f"🔍 {title}")
+        self.refresh_grid()
+
     def refresh_grid(self):
         """Loads items for the current page based on View Mode."""
         # Clean current grid
@@ -183,6 +195,8 @@ class GalleryModule(BaseModule):
         
         if self.current_view_mode == self.VIEW_ALBUMS:
             self._load_albums_grid(offset)
+        elif self.current_view_mode == self.VIEW_CUSTOM:
+            self._load_custom_grid(offset)
         else:
             self._load_images_grid(offset)
 
@@ -200,6 +214,33 @@ class GalleryModule(BaseModule):
             
         self.update_pagination_controls(total)
         self.lbl_status.setText(f"Loaded {len(albums)} albums.")
+
+    def _load_custom_grid(self, offset):
+        # Slice the custom source list
+        total_count = len(self.custom_paths_source)
+        end = min(offset + self.page_size, total_count)
+        paths = self.custom_paths_source[offset:end]
+        
+        self.total_items = total_count
+        self.current_paths = paths # Store for viewer navigation
+        
+        cols = 5
+        for i, path in enumerate(paths):
+            row = i // cols
+            col = i % cols
+            
+            thumb = ClickableThumbnail(path)
+            thumb.setFixedSize(140, 140)
+            
+            pix = QPixmap(path)
+            if not pix.isNull():
+                thumb.setPixmap(pix.scaled(140, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            
+            thumb.clicked.connect(self.on_thumbnail_clicked)
+            self.grid_layout.addWidget(thumb, row, col)
+            
+        self.update_pagination_controls(total_count)
+        self.lbl_status.setText(f"Displaying {len(paths)} (of {total_count}) results.")
 
     def _load_images_grid(self, offset):
         # Prepare query arg if filtering by folder

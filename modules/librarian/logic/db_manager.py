@@ -148,9 +148,20 @@ class DatabaseManager(QObject):
         
         for term in search_terms:
             like_term = f"%{term}%"
-            sub_query = "(meta_positive LIKE ? OR meta_negative LIKE ? OR meta_model LIKE ? OR meta_tool LIKE ? OR filename LIKE ?)"
+            sub_query = """(
+                meta_positive LIKE ? OR 
+                meta_negative LIKE ? OR 
+                meta_model LIKE ? OR 
+                meta_tool LIKE ? OR 
+                filename LIKE ? OR
+                EXISTS (
+                    SELECT 1 FROM file_tags ft 
+                    JOIN tags t ON ft.tag_id = t.id 
+                    WHERE ft.file_id = files.id AND t.name LIKE ?
+                )
+            )"""
             conditions.append(sub_query)
-            params.extend([like_term] * 5)
+            params.extend([like_term] * 6)
             
         where_clause = ""
         if conditions:
@@ -312,11 +323,22 @@ class DatabaseManager(QObject):
         for term in terms:
             # Wrap term in % for partial match
             like_term = f"%{term}%"
-            # We search across relevant text fields
-            sub_query = "(meta_positive LIKE ? OR meta_negative LIKE ? OR meta_model LIKE ? OR meta_tool LIKE ? OR filename LIKE ?)"
+            # We search across relevant text fields AND tags
+            sub_query = """(
+                meta_positive LIKE ? OR 
+                meta_negative LIKE ? OR 
+                meta_model LIKE ? OR 
+                meta_tool LIKE ? OR 
+                filename LIKE ? OR
+                EXISTS (
+                    SELECT 1 FROM file_tags ft 
+                    JOIN tags t ON ft.tag_id = t.id 
+                    WHERE ft.file_id = files.id AND t.name LIKE ?
+                )
+            )"""
             conditions.append(sub_query)
-            # Add params for each ? in the sub_query (5 times)
-            params.extend([like_term] * 5)
+            # Add params for each ? in the sub_query (5 metadata + 1 tag = 6)
+            params.extend([like_term] * 6)
             
         where_clause = " AND ".join(conditions)
         

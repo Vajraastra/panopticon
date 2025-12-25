@@ -59,14 +59,41 @@ class MainWindow(QMainWindow):
         self.content_stack.addWidget(self.dashboard)
 
     def load_available_modules(self):
+        self.loaded_modules = {} # Registry
         module_names = self.loader.discover_modules()
         for name in module_names:
             try:
                 module = self.loader.load_module(name)
                 if module:
                     self.add_module_to_ui(module)
+                    self.loaded_modules[module.name] = module
             except Exception as e:
                 print(f"Failed to load module {name}: {e}")
+        
+        # After loading all, setup connections
+        self.setup_integrations()
+
+    def setup_integrations(self):
+        # Librarian -> Gallery / Metadata
+        librarian = self.get_module_by_partial_name("Librarian")
+        gallery = self.get_module_by_partial_name("Gallery")
+        metadata = self.get_module_by_partial_name("Metadata")
+        
+        if librarian and gallery:
+            librarian.request_open_gallery.connect(
+                lambda paths, title: self.switch_to_module(gallery, paths, title)
+            )
+            
+        if librarian and metadata:
+            librarian.request_open_metadata.connect(
+                lambda paths: self.switch_to_module(metadata, paths)
+            )
+
+    def get_module_by_partial_name(self, partial):
+        for name, mod in self.loaded_modules.items():
+            if partial.lower() in name.lower():
+                return mod
+        return None
 
     def add_module_to_ui(self, module):
         # Add to sidebar
@@ -112,8 +139,19 @@ class MainWindow(QMainWindow):
         self.content_stack.addWidget(view)
         module.stack_index = self.content_stack.indexOf(view)
 
-    def switch_to_module(self, module):
+    def switch_to_module(self, module, *args):
         self.content_stack.setCurrentIndex(module.stack_index)
+        
+        # Pass data if needed
+        if args:
+            if "Gallery" in module.name and hasattr(module, "load_custom_view"):
+                if len(args) >= 2:
+                    module.load_custom_view(args[0], args[1])
+                elif len(args) == 1:
+                    module.load_custom_view(args[0])
+                    
+            elif "Metadata" in module.name and hasattr(module, "load_paths"):
+                module.load_paths(args[0])
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
