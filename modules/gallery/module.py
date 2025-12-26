@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
-                               QScrollArea, QGridLayout, QFrame, QComboBox)
+                               QScrollArea, QGridLayout, QFrame, QComboBox, QFileDialog)
 from PySide6.QtCore import Qt, Signal, Slot, QSize
 from PySide6.QtGui import QPixmap, QMouseEvent, QIcon
 from core.base_module import BaseModule
@@ -112,6 +112,11 @@ class GalleryModule(BaseModule):
         self.lbl_title.setStyleSheet("font-size: 20px; font-weight: bold; color: #00ffcc;")
         top_bar.addWidget(self.lbl_title)
         
+        self.btn_open_local = QPushButton("📂 Open Folder")
+        self.btn_open_local.clicked.connect(self.open_custom_folder)
+        self.btn_open_local.setStyleSheet("background-color: #333; color: #00ffcc; padding: 5px 10px; border-radius: 5px; font-weight: bold;")
+        top_bar.addWidget(self.btn_open_local)
+        
         top_bar.addStretch()
         
         self.lbl_page_info = QLabel("Page 1 / ?")
@@ -182,6 +187,29 @@ class GalleryModule(BaseModule):
         self.btn_back.setVisible(True) # Allow going back directly to albums
         self.lbl_title.setText(f"🔍 {title}")
         self.refresh_grid()
+
+    def open_custom_folder(self):
+        """Allows user to select a folder and view its images directly."""
+        folder = QFileDialog.getExistingDirectory(None, "Select Folder to View")
+        if not folder:
+            return
+            
+        # Scan for images locally
+        image_extensions = ('.png', '.jpg', '.jpeg', '.webp')
+        local_paths = []
+        try:
+            for root, _, files in os.walk(folder):
+                for f in files:
+                    if f.lower().endswith(image_extensions):
+                        local_paths.append(os.path.join(root, f))
+            
+            if local_paths:
+                self.load_custom_view(sorted(local_paths), title=os.path.basename(folder))
+            else:
+                self.lbl_status.setText(f"No images found in {folder}")
+        except Exception as e:
+            print(f"Error scanning local folder: {e}")
+            self.lbl_status.setText("Error opening folder.")
 
     def refresh_grid(self):
         """Loads items for the current page based on View Mode."""
