@@ -97,7 +97,14 @@ class DatabaseManager(QObject):
     def remove_watched_folder(self, path):
         cursor = self.conn.cursor()
         try:
+            # 1. Clean up record in watched_folders
             cursor.execute("DELETE FROM watched_folders WHERE path = ?", (path,))
+            
+            # 2. Clean up files indexed from this folder
+            # Normalize path and add % for wildcard
+            search_path = os.path.normpath(path) + "%"
+            cursor.execute("DELETE FROM files WHERE path LIKE ?", (search_path,))
+            
             self.conn.commit()
             return True
         except sqlite3.Error as e:

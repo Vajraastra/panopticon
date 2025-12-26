@@ -13,7 +13,7 @@ class FolderCard(QFrame):
     def __init__(self, path, name, cover_path, count):
         super().__init__()
         self.path = path
-        self.setFixedSize(200, 240) # Card size
+        self.setFixedSize(150, 200) # Reduced from 200, 240 to fit 5 columns
         self.setStyleSheet("""
             FolderCard {
                 background-color: #222;
@@ -32,14 +32,14 @@ class FolderCard(QFrame):
         
         # Cover Image
         self.lbl_cover = QLabel()
-        self.lbl_cover.setFixedSize(180, 160)
+        self.lbl_cover.setFixedSize(130, 120) # Reduced from 180, 160
         self.lbl_cover.setStyleSheet("background-color: black; border-radius: 5px;")
         self.lbl_cover.setAlignment(Qt.AlignCenter)
         
         if cover_path:
             pix = QPixmap(cover_path)
             if not pix.isNull():
-                self.lbl_cover.setPixmap(pix.scaled(180, 160, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                self.lbl_cover.setPixmap(pix.scaled(130, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         else:
             self.lbl_cover.setText("📁 Empty")
             
@@ -140,6 +140,7 @@ class GalleryModule(BaseModule):
         self.grid_layout = QGridLayout(self.grid_container)
         self.grid_layout.setSpacing(15)
         self.grid_layout.setContentsMargins(20, 20, 20, 20)
+        self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         
         scroll.setWidget(self.grid_container)
         layout.addWidget(scroll)
@@ -230,11 +231,11 @@ class GalleryModule(BaseModule):
             col = i % cols
             
             thumb = ClickableThumbnail(path)
-            thumb.setFixedSize(140, 140)
+            thumb.setFixedSize(130, 130)
             
             pix = QPixmap(path)
             if not pix.isNull():
-                thumb.setPixmap(pix.scaled(140, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                thumb.setPixmap(pix.scaled(130, 130, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             
             thumb.clicked.connect(self.on_thumbnail_clicked)
             self.grid_layout.addWidget(thumb, row, col)
@@ -261,11 +262,11 @@ class GalleryModule(BaseModule):
             col = i % cols
             
             thumb = ClickableThumbnail(path)
-            thumb.setFixedSize(140, 140)
+            thumb.setFixedSize(130, 130)
             
             pix = QPixmap(path)
             if not pix.isNull():
-                thumb.setPixmap(pix.scaled(140, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                thumb.setPixmap(pix.scaled(130, 130, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             
             thumb.clicked.connect(self.on_thumbnail_clicked)
             self.grid_layout.addWidget(thumb, row, col)

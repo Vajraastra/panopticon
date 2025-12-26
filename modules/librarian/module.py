@@ -482,7 +482,7 @@ class LibrarianModule(BaseModule):
             self.db.remove_watched_folder(path)
         
         self.refresh_ui()
-        self.update_global_stats()
+        self.update_global_stats() # Force refresh global counts
         
     def toggle_scan(self):
         if self.indexer_thread and self.indexer_thread.isRunning():
