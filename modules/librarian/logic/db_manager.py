@@ -19,6 +19,7 @@ class DatabaseManager(QObject):
         try:
             self.conn = sqlite3.connect(self.db_path, check_same_thread=False) # Allow access from worker threads
             self.create_schema()
+            self.run_migrations()
         except sqlite3.Error as e:
             print(f"Database initialization error: {e}")
 
@@ -42,7 +43,8 @@ class DatabaseManager(QObject):
                 meta_model TEXT,
                 meta_positive TEXT,
                 meta_negative TEXT,
-                meta_seed TEXT
+                meta_seed TEXT,
+                rating INTEGER DEFAULT 0 -- 0=None, 1-5=Stars
             )
         """)
         
@@ -77,6 +79,22 @@ class DatabaseManager(QObject):
         """)
         
         self.conn.commit()
+
+    def run_migrations(self):
+        """Handle schema updates for existing databases."""
+        cursor = self.conn.cursor()
+        
+        # 1. Check if 'rating' column exists in 'files' table
+        cursor.execute("PRAGMA table_info(files)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'rating' not in columns:
+            print("[DB] Migrating: Adding 'rating' column to 'files' table.")
+            try:
+                cursor.execute("ALTER TABLE files ADD COLUMN rating INTEGER DEFAULT 0")
+                self.conn.commit()
+            except sqlite3.Error as e:
+                print(f"[DB ERR] Migration failed: {e}")
 
     def close(self):
         if self.conn:
@@ -140,20 +158,19 @@ class DatabaseManager(QObject):
         cursor.execute("SELECT count(*) FROM files WHERE path LIKE ?", (query_path,))
         return cursor.fetchone()[0]
 
-    def search_files_paginated(self, query=None, tags=None, limit=50, offset=0):
+    def search_files_paginated(self, query=None, tags=None, search_terms=None, limit=50, offset=0):
         """
         Main query method for the Gallery. 
-        Supports pagination and optional tag filtering.
-        Returns: (total_count, list_of_paths)
+        Supports pagination, strict tag filtering, and broad search terms.
+        Returns: (total_count, list_of_tuples) where tuple is (path, rating)
         """
         cursor = self.conn.cursor()
         conditions = []
         params = []
         
-        # 1. Build Query Filters using LIKE matching similar to search_by_terms
-        search_terms = tags if tags else []
-        
-        for term in search_terms:
+        # 1. Broad Search Terms (matches metadata + tags using LIKE)
+        terms = search_terms if search_terms else []
+        for term in terms:
             like_term = f"%{term}%"
             sub_query = """(
                 meta_positive LIKE ? OR 
@@ -170,41 +187,59 @@ class DatabaseManager(QObject):
             conditions.append(sub_query)
             params.extend([like_term] * 6)
             
+        # 2. Strict Tag Filtering (Exact Match)
+        if tags:
+            for tag in tags:
+                conditions.append("""EXISTS (
+                    SELECT 1 FROM file_tags ft 
+                    JOIN tags t ON ft.tag_id = t.id 
+                    WHERE ft.file_id = files.id AND t.name = ?
+                )""")
+                params.append(tag)
+        
+        # 3. Attributes (path, rating)
+        if query:
+            # Extract path: filter
+            if "path:" in query:
+                try:
+                    p_content = query.split("path:")[1]
+                    if " rating:" in p_content:
+                        raw_path = p_content.split(" rating:")[0].strip()
+                    else:
+                        raw_path = p_content.strip()
+                    
+                    folder_path = os.path.normpath(raw_path)
+                    conditions.append("path LIKE ?")
+                    params.append(f"{folder_path}%")
+                except IndexError:
+                    pass
+            
+            # Extract rating: filter
+            if "rating:" in query:
+                try:
+                    r_str = query.split("rating:")[1].split()[0]
+                    conditions.append("rating = ?")
+                    params.append(int(r_str))
+                except (ValueError, IndexError):
+                    pass
+
         where_clause = ""
         if conditions:
             where_clause = "WHERE " + " AND ".join(conditions)
-        
-        # Add Filter by path if query is passed (e.g. for folder view filtering)
-        # We overload 'query' arg to pass a folder path constraint if needed
-        # Or we can handle it in the args more explicitly. 
-        # For simplicity, let's assume 'tags' handles text search, 'query' manages specific constraints like path.
-        if query and query.startswith("path:"):
-            raw_path = query.replace("path:", "").strip()
-            # Normalize to match how we store files (os.path.normpath)
-            folder_path = os.path.normpath(raw_path)
-            
-            # If we already have a WHERE, append AND, else WHERE
-            prefix = " AND " if where_clause else "WHERE "
-            where_clause += f"{prefix}path LIKE ?"
-            
-            # Append % for wildcard
-            params.append(f"{folder_path}%")
 
-        # 2. Get Total Count (for pagination)
+        # 4. Get Total Count
         count_sql = f"SELECT count(*) FROM files {where_clause}"
         cursor.execute(count_sql, params)
         total_count = cursor.fetchone()[0]
         
-        # 3. Get Paginated Results
-        # ORDER BY id DESC to show newest first
-        # We append LIMIT/OFFSET to the EXISTING params
-        data_sql = f"SELECT path FROM files {where_clause} ORDER BY id DESC LIMIT ? OFFSET ?"
+        # 5. Get Paginated Results
+        data_sql = f"SELECT path, rating FROM files {where_clause} ORDER BY id DESC LIMIT ? OFFSET ?"
         data_params = params + [limit, offset]
         
         cursor.execute(data_sql, data_params)
-        paths = [row[0] for row in cursor.fetchall()]
+        results = [(row[0], row[1]) for row in cursor.fetchall()]
         
-        return total_count, paths
+        return total_count, results
 
     def get_folders_paginated(self, limit=20, offset=0):
         """
@@ -311,7 +346,25 @@ class DatabaseManager(QObject):
         self.conn.commit()
         self.conn.commit()
         return True
-        
+
+    def update_file_rating(self, path, rating):
+        """Updates the star rating (0-5) for a specific file."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("UPDATE files SET rating = ? WHERE path = ?", (rating, path))
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Error updating rating: {e}")
+            return False
+
+    def get_file_rating(self, path):
+        """Returns the rating for a specific file."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT rating FROM files WHERE path = ?", (path,))
+        row = cursor.fetchone()
+        return row[0] if row else 0
+
     def search_by_terms(self, terms, limit=5):
         """
         Searches for files containing ALL terms in their metadata (positive prompt, model, tool).
@@ -456,4 +509,10 @@ class DatabaseManager(QObject):
             self.conn.commit()
         except sqlite3.Error as e:
             print(f"Batch insert error: {e}")
+
+    def get_all_tags(self):
+        """Returns a list of all unique tag names in the system."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT name FROM tags ORDER BY name ASC")
+        return [row[0] for row in cursor.fetchall()]
 

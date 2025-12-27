@@ -101,6 +101,10 @@ class MetadataModule(BaseModule):
         return "Metadata Reader"
 
     @property
+    def icon(self):
+        return "📋"
+
+    @property
     def description(self):
         return "Batch read and analyze metadata from AI-generated images."
 

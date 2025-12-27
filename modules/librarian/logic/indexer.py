@@ -34,7 +34,7 @@ class IndexerWorker(QThread):
         for folder in self.folders:
             if not self.is_running: break
             
-            self.progress_signal.emit(f"🔍 Scanning: {folder}")
+            self.progress_signal.emit(f"📡 Scanning: {folder}")
             for root, _, files in os.walk(folder):
                 if not self.is_running: break
                 

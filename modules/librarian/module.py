@@ -11,29 +11,79 @@ import os
 
 class ClickableThumbnail(QLabel):
     clicked = Signal(str)
+    selection_changed = Signal(bool)
+    rating_changed = Signal(str, int)
     
-    def __init__(self, path, parent=None):
+    def __init__(self, path, parent=None, auto_load=True, rating=0):
         super().__init__(parent)
-        self.path = path
+        self.path = os.path.normpath(path)
+        self.selected = False
+        self.rating = rating
         self.setFixedSize(100, 100)
         self.setStyleSheet("border: 1px solid #555; border-radius: 5px; background-color: black;")
         self.setAlignment(Qt.AlignCenter)
         self.setCursor(Qt.PointingHandCursor)
         
-        pix = QPixmap(path)
-        if not pix.isNull():
-            self.setPixmap(pix.scaled(100, 100, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        # Rating Label (Overlay)
+        self.lbl_rating = QLabel(self)
+        self.lbl_rating.setFixedSize(30, 20)
+        self.lbl_rating.setAlignment(Qt.AlignCenter)
+        self.lbl_rating.setStyleSheet("""
+            background-color: rgba(0, 0, 0, 150); 
+            color: #ffcc00; 
+            font-weight: bold; 
+            font-size: 10px; 
+            border-bottom-left-radius: 5px;
+        """)
+        # Position in top-right
+        self.lbl_rating.move(70, 0)
+        self.update_rating_display()
+        
+        if auto_load:
+            pix = QPixmap(path)
+            if not pix.isNull():
+                self.setPixmap(pix.scaled(100, 100, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            else:
+                self.setText("❌")
         else:
-            self.setText("❌")
+            self.setText("⏳") # Placeholder
+
+    def update_rating_display(self):
+        if self.rating > 0:
+            self.lbl_rating.setText(f"⭐{self.rating}")
+            self.lbl_rating.show()
+        else:
+            self.lbl_rating.hide()
+
+    def setRating(self, rating):
+        self.rating = rating
+        self.update_rating_display()
+
+    def cycleRating(self):
+        self.rating = (self.rating + 1) % 6 # 0,1,2,3,4,5 then back to 0
+        self.update_rating_display()
+        self.rating_changed.emit(self.path, self.rating)
+
+    def setSelected(self, selected):
+        self.selected = selected
+        if self.selected:
+            self.setStyleSheet("border: 3px solid #00ffcc; border-radius: 5px; background-color: #111;")
+        else:
+            self.setStyleSheet("border: 1px solid #555; border-radius: 5px; background-color: black;")
+        self.selection_changed.emit(self.selected)
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton:
-            self.clicked.emit(self.path)
+            if event.modifiers() & Qt.ControlModifier:
+                self.cycleRating()
+            else:
+                self.clicked.emit(self.path)
 
 class LibrarianModule(BaseModule):
     # Signals for Integration
     request_open_gallery = Signal(list, str) # paths, title_context
     request_open_metadata = Signal(list)     # paths
+    request_open_workshop = Signal(list)     # paths
 
     def __init__(self):
         super().__init__()
@@ -49,6 +99,10 @@ class LibrarianModule(BaseModule):
     @property
     def description(self):
         return "Image Database & Tag Manager"
+
+    @property
+    def icon(self):
+        return "📚"
 
     def get_view(self) -> QWidget:
         if self.view: return self.view
@@ -208,7 +262,7 @@ class LibrarianModule(BaseModule):
         line.setStyleSheet("background-color: #333;")
         layout.addWidget(line)
         
-        lbl_search = QLabel("🔍 Tag Explorer")
+        lbl_search = QLabel("🔭 Tag Explorer")
         lbl_search.setStyleSheet("font-size: 16px; font-weight: bold; color: #eee; margin-top: 10px;")
         layout.addWidget(lbl_search)
         
@@ -270,6 +324,21 @@ class LibrarianModule(BaseModule):
             QPushButton:hover { background-color: #333; }
         """)
         
+        self.btn_to_workshop = QPushButton("🛠️ Send to Workshop")
+        self.btn_to_workshop.setEnabled(False) 
+        self.btn_to_workshop.clicked.connect(self.send_to_workshop)
+        self.btn_to_workshop.setStyleSheet("""
+            QPushButton {
+                background-color: #222;
+                color: #aaa;
+                border: 1px solid #444;
+                border-radius: 5px;
+                padding: 10px;
+                margin-top: 5px;
+            }
+            QPushButton:hover { background-color: #333; }
+        """)
+
         self.btn_to_metadata = QPushButton("📋 Send to Metadata Reader")
         self.btn_to_metadata.setEnabled(False) 
         self.btn_to_metadata.clicked.connect(self.send_to_metadata)
@@ -287,6 +356,7 @@ class LibrarianModule(BaseModule):
         
         btns_export_layout = QHBoxLayout()
         btns_export_layout.addWidget(self.btn_to_viewer)
+        btns_export_layout.addWidget(self.btn_to_workshop)
         btns_export_layout.addWidget(self.btn_to_metadata)
         layout.addLayout(btns_export_layout)
 
@@ -355,7 +425,7 @@ class LibrarianModule(BaseModule):
         tags_display = ", ".join(self.active_tags[:3])
         if len(self.active_tags) > 3: tags_display += "..."
         
-        self.lbl_folder_stats.setText(f"🔍 Search: [{tags_display}] | 👁️ Matching Images: {count}")
+        self.lbl_folder_stats.setText(f"📊 Search: [{tags_display}] | 👁️ Matching Images: {count}")
         
         # Clear previous thumbnails
         while self.preview_layout_images.count():
@@ -383,6 +453,7 @@ class LibrarianModule(BaseModule):
         # Enable export buttons if results found
         has_results = count > 0
         self.btn_to_viewer.setEnabled(has_results)
+        self.btn_to_workshop.setEnabled(has_results)
         self.btn_to_metadata.setEnabled(has_results)
 
     def on_thumbnail_clicked(self, path):
@@ -436,6 +507,7 @@ class LibrarianModule(BaseModule):
         # Enable export buttons
         has_results = count > 0
         self.btn_to_viewer.setEnabled(has_results)
+        self.btn_to_workshop.setEnabled(has_results)
         self.btn_to_metadata.setEnabled(has_results)
 
     def mock_search(self):
@@ -562,5 +634,21 @@ class LibrarianModule(BaseModule):
 
         if paths_to_send:
              self.request_open_metadata.emit(paths_to_send)
+        else:
+             QMessageBox.warning(self.view, "No Files", "No files selected or found to send.")
+
+    def send_to_workshop(self):
+        paths_to_send = []
+        if self.active_tags:
+             _, paths = self.db.search_by_terms(self.active_tags, limit=500)
+             paths_to_send = paths
+        elif self.folder_list.currentItem():
+             folder_path = self.folder_list.currentItem().text()
+             cursor = self.db.conn.cursor()
+             cursor.execute("SELECT path FROM files WHERE path LIKE ?", (f"{folder_path}%",))
+             paths_to_send = [r[0] for r in cursor.fetchall()]
+
+        if paths_to_send:
+             self.request_open_workshop.emit(paths_to_send)
         else:
              QMessageBox.warning(self.view, "No Files", "No files selected or found to send.")

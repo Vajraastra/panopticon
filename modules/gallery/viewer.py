@@ -165,10 +165,16 @@ class AdvancedViewer(QDialog):
         self.lbl_res = QLabel("...")
         self.lbl_res.setStyleSheet("color: #ddd; font-weight: bold;")
         grid_stats.addWidget(self.lbl_res, 0, 1)
+
+        # Rating Row
+        grid_stats.addWidget(QLabel("Rating:"), 1, 0)
+        self.lbl_rating_stars = QLabel("None")
+        self.lbl_rating_stars.setStyleSheet("color: #ffcc00; font-weight: bold; font-size: 14px;")
+        grid_stats.addWidget(self.lbl_rating_stars, 1, 1)
         
         self.lbl_filesize = QLabel("Size: ...")
         self.lbl_filesize.setStyleSheet("color: #aaa;")
-        grid_stats.addWidget(self.lbl_filesize, 1, 1)
+        grid_stats.addWidget(self.lbl_filesize, 2, 1)
         
         data_layout.addLayout(grid_stats)
         
@@ -337,6 +343,10 @@ class AdvancedViewer(QDialog):
         
         # Load Tags
         self.load_tags(path)
+        
+        # Load Rating
+        rating = self.db.get_file_rating(path)
+        self.lbl_rating_stars.setText("⭐" * rating if rating > 0 else "None")
         
         # Load Pixmap
         pix = QPixmap(path)

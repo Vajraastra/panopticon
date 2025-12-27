@@ -78,6 +78,7 @@ class MainWindow(QMainWindow):
         librarian = self.get_module_by_partial_name("Librarian")
         gallery = self.get_module_by_partial_name("Gallery")
         metadata = self.get_module_by_partial_name("Metadata")
+        workshop = self.get_module_by_partial_name("Workshop")
         
         if librarian and gallery:
             librarian.request_open_gallery.connect(
@@ -89,6 +90,16 @@ class MainWindow(QMainWindow):
                 lambda paths: self.switch_to_module(metadata, paths)
             )
 
+        if librarian and workshop:
+            librarian.request_open_workshop.connect(
+                lambda paths: self.switch_to_module(workshop, paths)
+            )
+            
+        if gallery and workshop:
+            gallery.request_open_workshop.connect(
+                lambda paths: self.switch_to_module(workshop, paths)
+            )
+
     def get_module_by_partial_name(self, partial):
         for name, mod in self.loaded_modules.items():
             if partial.lower() in name.lower():
@@ -97,7 +108,8 @@ class MainWindow(QMainWindow):
 
     def add_module_to_ui(self, module):
         # Add to sidebar
-        btn = QPushButton(f"🔍 {module.name}")
+        icon = getattr(module, "icon", "🧩")
+        btn = QPushButton(f"{icon} {module.name}")
         btn.setStyleSheet("""
             QPushButton {
                 color: white; 
@@ -115,7 +127,8 @@ class MainWindow(QMainWindow):
         self.sidebar_layout.addWidget(btn)
         
         # Add to dashboard
-        dash_btn = QPushButton(f"✨\n{module.name}")
+        icon = getattr(module, "icon", "✨")
+        dash_btn = QPushButton(f"{icon}\n{module.name}")
         dash_btn.setFixedSize(160, 160)
         dash_btn.setStyleSheet("""
             QPushButton {
@@ -152,6 +165,9 @@ class MainWindow(QMainWindow):
                     
             elif "Metadata" in module.name and hasattr(module, "load_paths"):
                 module.load_paths(args[0])
+                
+            elif "Workshop" in module.name and hasattr(module, "load_images"):
+                module.load_images(args[0])
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
