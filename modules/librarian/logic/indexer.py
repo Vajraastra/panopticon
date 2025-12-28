@@ -12,44 +12,47 @@ class IndexerWorker(QThread):
     count_signal = Signal(int, int)    # Processed, Total (Total might be unknown initially)
     finished_signal = Signal()
     
-    def __init__(self, db_manager, folders):
+    def __init__(self, db_manager, folders, deep_clean=False):
         super().__init__()
         self.db = db_manager
         self.folders = folders
+        self.deep_clean = deep_clean
         self.is_running = True
         self.batch_size = 50  # Commit to DB every 50 files to balance speed/safety
 
     def run(self):
-        self.progress_signal.emit("🚀 Starting Intelligent Sync...")
+        title = "🚀 Starting Deep Clean..." if self.deep_clean else "🚀 Starting Intelligent Sync..."
+        self.progress_signal.emit(title)
         
         extensions = ('.png', '.jpg', '.jpeg', '.webp')
         all_new_files = []
         total_purged = 0
 
+        # --- Phase 1: Folder Sync ---
         for folder in self.folders:
             if not self.is_running: break
             
             self.progress_signal.emit(f"🔍 Checking: {os.path.basename(folder)}")
             
-            # 1. Quick Count Heuristic
+            # 1. Quick Count Heuristic (Skip if not deep_clean)
             disk_files = []
             for root, _, files in os.walk(folder):
                 for f in files:
                     if f.lower().endswith(extensions):
-                        disk_files.append(os.path.normpath(os.path.join(root, f)))
+                        # Critical: Normalize to / for consistent comparison
+                        full_path = os.path.normpath(os.path.join(root, f)).replace('\\', '/')
+                        disk_files.append(full_path)
             
             disk_count = len(disk_files)
             db_count = self.db.get_file_count_for_folder(folder)
             
-            if disk_count == db_count:
-                # Potential match, but let's do a quick random existence check if count > 0
-                # to handle cases where file A was deleted and file B was added (same count)
-                # For very large datasets, we trust the count + folder modification time (if we had it)
-                # But for now, count is our primary heuristic as requested.
+            # Skip if counts match AND we are not forcing a deep clean
+            if not self.deep_clean and disk_count == db_count:
                 self.progress_signal.emit(f"✅ {os.path.basename(folder)}: Match ({disk_count} files). Skipping.")
                 continue
 
-            self.progress_signal.emit(f"⚠️ {os.path.basename(folder)}: Mismatch (Disk: {disk_count} vs DB: {db_count}). Syncing...")
+            msg = f"⚠️ {os.path.basename(folder)}: Deep Checking..." if self.deep_clean else f"⚠️ {os.path.basename(folder)}: Mismatch. Syncing..."
+            self.progress_signal.emit(msg)
 
             # 2. Sync Logic (Purge + Add)
             db_paths = self.db.get_files_under_path(folder)
@@ -58,13 +61,42 @@ class IndexerWorker(QThread):
             # Find orphaned (in DB but not on Disk)
             orphaned = [p for p in db_paths if p not in disk_paths_set]
             if orphaned:
-                self.progress_signal.emit(f"🧹 Purging {len(orphaned)} missing files...")
+                self.progress_signal.emit(f"🧹 Purging {len(orphaned)} missing files from {os.path.basename(folder)}...")
                 self.db.remove_many_files(orphaned)
                 total_purged += len(orphaned)
 
             # Find new (on Disk but not in DB)
             new_in_folder = [p for p in disk_files if p not in db_paths]
             all_new_files.extend(new_in_folder)
+
+        # --- Phase 2: Global Audit (Deep Clean Only) ---
+        if self.deep_clean:
+            self.progress_signal.emit("🕵️ Running Global Audit (Checking all DB entries)...")
+            all_db_paths = self.db.get_all_file_paths()
+            global_orphaned = []
+            
+            count_audit = 0
+            total_audit = len(all_db_paths)
+            
+            for p in all_db_paths:
+                if not self.is_running: break
+                
+                # Check existence (convert back to OS separator for check)
+                os_path = os.path.normpath(p) 
+                if not os.path.exists(os_path):
+                    global_orphaned.append(p)
+                
+                count_audit += 1
+                if count_audit % 1000 == 0:
+                     self.progress_signal.emit(f"🕵️ Auditing: {count_audit}/{total_audit}")
+
+            if global_orphaned:
+                self.progress_signal.emit(f"🧹 Found {len(global_orphaned)} global orphans. Purging...")
+                self.db.remove_many_files(global_orphaned)
+                total_purged += len(global_orphaned)
+            
+            self.progress_signal.emit("📉 Vacuuming database to reclaim space...")
+            self.db.vacuum_database()
 
         # 3. Processing Phase: Parse metadata and insert for new files
         total_new = len(all_new_files)

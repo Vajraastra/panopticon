@@ -584,10 +584,10 @@ class LibrarianModule(BaseModule):
         
         if confirm == QMessageBox.Yes:
             if self.db.remove_watched_folder(path):
+                # Trigger VACUUM to reclaim disk space immediately
+                self.db.vacuum_database()
                 self.refresh_ui()
                 self.update_global_stats()
-                # Trigger quick sync to clean up any stragglers or update counts
-                self.toggle_scan(auto=True)
 
     def toggle_scan(self, sync_only=False, auto=False):
         if self.indexer_thread and self.indexer_thread.isRunning():
@@ -614,7 +614,8 @@ class LibrarianModule(BaseModule):
             else:
                 self.lbl_status.setText("🔍 Running Background Sync...")
             
-            self.indexer_thread = IndexerWorker(self.db, folders)
+            # Pass sync_only as deep_clean to trigger Full Audit + Vacuum
+            self.indexer_thread = IndexerWorker(self.db, folders, deep_clean=sync_only)
             self.indexer_thread.progress_signal.connect(self.update_progress_text)
             self.indexer_thread.count_signal.connect(self.update_progress_bar)
             self.indexer_thread.finished_signal.connect(self.scan_finished)

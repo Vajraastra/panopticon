@@ -23,6 +23,19 @@ class DatabaseManager(QObject):
         except sqlite3.Error as e:
             print(f"Database initialization error: {e}")
 
+    def _normalize_path(self, path):
+        """Standardizes path to forward slashes for consistent DB storage/querying."""
+        return os.path.normpath(path).replace('\\', '/')
+
+    def vacuum_database(self):
+        """Reclaims unused disk space (e.g., after large deletions)."""
+        if not self.conn: return
+        try:
+            self.conn.execute("VACUUM")
+            print("[DB] VACUUM completed.")
+        except sqlite3.Error as e:
+            print(f"[DB] VACUUM error: {e}")
+
     def create_schema(self):
         """Creates the necessary tables for the Librarian."""
         cursor = self.conn.cursor()
@@ -104,8 +117,9 @@ class DatabaseManager(QObject):
 
     def add_watched_folder(self, path):
         cursor = self.conn.cursor()
+        norm_path = self._normalize_path(path)
         try:
-            cursor.execute("INSERT OR IGNORE INTO watched_folders (path) VALUES (?)", (path,))
+            cursor.execute("INSERT OR IGNORE INTO watched_folders (path) VALUES (?)", (norm_path,))
             self.conn.commit()
             return True
         except sqlite3.Error as e:
@@ -114,13 +128,14 @@ class DatabaseManager(QObject):
 
     def remove_watched_folder(self, path):
         cursor = self.conn.cursor()
+        norm_path = self._normalize_path(path)
         try:
             # 1. Clean up record in watched_folders
-            cursor.execute("DELETE FROM watched_folders WHERE path = ?", (path,))
+            cursor.execute("DELETE FROM watched_folders WHERE path = ?", (norm_path,))
             
             # 2. Clean up files indexed from this folder
-            # Normalize path and add % for wildcard
-            search_path = os.path.normpath(path) + "%"
+            # Add % for wildcard
+            search_path = norm_path + "%"
             cursor.execute("DELETE FROM files WHERE path LIKE ?", (search_path,))
             
             self.conn.commit()
@@ -132,16 +147,17 @@ class DatabaseManager(QObject):
     def get_file_count_for_folder(self, folder_path):
         """Returns the number of files indexed under a specific folder path."""
         cursor = self.conn.cursor()
-        search_path = os.path.normpath(folder_path) + "%"
+        search_path = self._normalize_path(folder_path) + "%"
         cursor.execute("SELECT COUNT(*) FROM files WHERE path LIKE ?", (search_path,))
         return cursor.fetchone()[0]
 
     def get_files_under_path(self, folder_path):
         """Returns a set of all file paths currently in the DB under a specific folder."""
         cursor = self.conn.cursor()
-        search_path = os.path.normpath(folder_path) + "%"
+        search_path = self._normalize_path(folder_path) + "%"
         cursor.execute("SELECT path FROM files WHERE path LIKE ?", (search_path,))
-        return set(os.path.normpath(row[0]) for row in cursor.fetchall())
+        # Paths stored in DB are already normalized to /
+        return set(row[0] for row in cursor.fetchall())
 
     def remove_many_files(self, paths):
         """Transactional bulk deletion of file records."""
@@ -150,7 +166,9 @@ class DatabaseManager(QObject):
         try:
             # For large sets, using standard transaction via commit() at the end
             for p in paths:
-                cursor.execute("DELETE FROM files WHERE path = ?", (p,))
+                # Ensure we match the stored normalized path
+                norm_p = self._normalize_path(p) 
+                cursor.execute("DELETE FROM files WHERE path = ?", (norm_p,))
             self.conn.commit()
             return True
         except sqlite3.Error as e:
@@ -237,7 +255,7 @@ class DatabaseManager(QObject):
                     else:
                         raw_path = p_content.strip()
                     
-                    folder_path = os.path.normpath(raw_path)
+                    folder_path = self._normalize_path(raw_path)
                     conditions.append("path LIKE ?")
                     params.append(f"{folder_path}%")
                 except IndexError:
@@ -379,8 +397,9 @@ class DatabaseManager(QObject):
     def update_file_rating(self, path, rating):
         """Updates the star rating (0-5) for a specific file."""
         cursor = self.conn.cursor()
+        norm_path = self._normalize_path(path)
         try:
-            cursor.execute("UPDATE files SET rating = ? WHERE path = ?", (rating, path))
+            cursor.execute("UPDATE files SET rating = ? WHERE path = ?", (rating, norm_path))
             self.conn.commit()
             return True
         except sqlite3.Error as e:
@@ -390,7 +409,8 @@ class DatabaseManager(QObject):
     def get_file_rating(self, path):
         """Returns the rating for a specific file."""
         cursor = self.conn.cursor()
-        cursor.execute("SELECT rating FROM files WHERE path = ?", (path,))
+        norm_path = self._normalize_path(path)
+        cursor.execute("SELECT rating FROM files WHERE path = ?", (norm_path,))
         row = cursor.fetchone()
         return row[0] if row else 0
 
@@ -496,48 +516,47 @@ class DatabaseManager(QObject):
         """Returns a set of all file paths currently in the DB for O(1) checks."""
         cursor = self.conn.cursor()
         cursor.execute("SELECT path FROM files")
-        # Normalize paths in set for reliable comparison
-        return set(os.path.normpath(row[0]) for row in cursor.fetchall())
+        # Paths in DB are already normalized to /
+        return set(row[0] for row in cursor.fetchall())
 
     def add_many_files(self, paths, stats_list, meta_list):
-        """
-        Transactional bulk insert for high performance.
-        All lists must be same length.
-        """
+        """Optimized bulk insert for initial scan."""
         if not paths: return
-        
-        data_to_insert = []
-        for i in range(len(paths)):
-            p = paths[i]
-            s = stats_list[i]
-            m = meta_list[i]
-            
-            data_to_insert.append((
-                p,
-                os.path.basename(p),
-                s.get('size_bytes', 0),
-                s.get('width', 0) or m.get('width', 0),
-                s.get('height', 0) or m.get('height', 0),
-                s.get('created', None),
-                
-                m.get('tool', 'Unknown'),
-                m.get('model', 'Unknown'),
-                m.get('positive', ''),
-                m.get('negative', ''),
-                str(m.get('seed', ''))
-            ))
-            
         cursor = self.conn.cursor()
         try:
-            cursor.executemany("""
-                INSERT OR IGNORE INTO files (
+            cursor.execute("BEGIN TRANSACTION")
+            
+            sql = """
+                INSERT INTO files (
                     path, filename, file_size, width, height, created_date,
                     meta_tool, meta_model, meta_positive, meta_negative, meta_seed
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, data_to_insert)
+            """
+            
+            for i, p in enumerate(paths):
+                norm_p = self._normalize_path(p) # Critical: Store with /
+                stats = stats_list[i] or {}
+                meta = meta_list[i] or {}
+                
+                cursor.execute(sql, (
+                    norm_p,
+                    os.path.basename(p),
+                    stats.get('size_bytes', 0),
+                    meta.get('width', 0),
+                    meta.get('height', 0),
+                    stats.get('created', None),
+                    
+                    meta.get('tool', 'Unknown'),
+                    meta.get('model', 'Unknown'),
+                    meta.get('positive', ''),
+                    meta.get('negative', ''),
+                    str(meta.get('seed', ''))
+                ))
+                
             self.conn.commit()
         except sqlite3.Error as e:
-            print(f"Batch insert error: {e}")
+            print(f"Error bulk adding files: {e}")
+            self.conn.rollback()
 
     def get_all_tags(self):
         """Returns a list of all unique tag names in the system."""
