@@ -205,6 +205,27 @@ class LibrarianModule(BaseModule):
         layout.addSpacing(5)
         idx_layout = QHBoxLayout()
         
+        self.btn_scan = QPushButton("🚀 Scan & Index Library")
+        self.btn_scan.clicked.connect(self.toggle_scan)
+        self.btn_scan.setStyleSheet("""
+            QPushButton {
+                background-color: #00ba88;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 15px;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #00e6a8;
+            }
+            QPushButton:disabled {
+                background-color: #444;
+                color: #888;
+            }
+        """)
+
         self.btn_sync = QPushButton("🧹 Sync & Clean")
         self.btn_sync.clicked.connect(lambda: self.toggle_scan(sync_only=True))
         self.btn_sync.setStyleSheet("""
