@@ -129,6 +129,35 @@ class DatabaseManager(QObject):
             print(f"Error removing folder: {e}")
             return False
 
+    def get_file_count_for_folder(self, folder_path):
+        """Returns the number of files indexed under a specific folder path."""
+        cursor = self.conn.cursor()
+        search_path = os.path.normpath(folder_path) + "%"
+        cursor.execute("SELECT COUNT(*) FROM files WHERE path LIKE ?", (search_path,))
+        return cursor.fetchone()[0]
+
+    def get_files_under_path(self, folder_path):
+        """Returns a set of all file paths currently in the DB under a specific folder."""
+        cursor = self.conn.cursor()
+        search_path = os.path.normpath(folder_path) + "%"
+        cursor.execute("SELECT path FROM files WHERE path LIKE ?", (search_path,))
+        return set(os.path.normpath(row[0]) for row in cursor.fetchall())
+
+    def remove_many_files(self, paths):
+        """Transactional bulk deletion of file records."""
+        if not paths: return
+        cursor = self.conn.cursor()
+        try:
+            # For large sets, using standard transaction via commit() at the end
+            for p in paths:
+                cursor.execute("DELETE FROM files WHERE path = ?", (p,))
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Error bulk removing files: {e}")
+            self.conn.rollback()
+            return False
+
     def get_watched_folders(self):
         cursor = self.conn.cursor()
         cursor.execute("SELECT path FROM watched_folders")

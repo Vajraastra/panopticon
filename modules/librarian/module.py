@@ -205,20 +205,21 @@ class LibrarianModule(BaseModule):
         layout.addSpacing(5)
         idx_layout = QHBoxLayout()
         
-        self.btn_scan = QPushButton("🚀 Scan & Index Library")
-        self.btn_scan.clicked.connect(self.toggle_scan)
-        self.btn_scan.setStyleSheet("""
+        self.btn_sync = QPushButton("🧹 Sync & Clean")
+        self.btn_sync.clicked.connect(lambda: self.toggle_scan(sync_only=True))
+        self.btn_sync.setStyleSheet("""
             QPushButton {
-                background-color: #00ba88;
-                color: white;
-                border: none;
+                background-color: #222;
+                color: #00ffcc;
+                border: 1px solid #00ffcc;
                 border-radius: 8px;
                 padding: 15px;
                 font-size: 16px;
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #00e6a8;
+                background-color: #00ffcc;
+                color: black;
             }
             QPushButton:disabled {
                 background-color: #444;
@@ -226,6 +227,7 @@ class LibrarianModule(BaseModule):
             }
         """)
         idx_layout.addWidget(self.btn_scan)
+        idx_layout.addWidget(self.btn_sync)
         layout.addLayout(idx_layout)
         
         # Progress Bar
@@ -248,9 +250,15 @@ class LibrarianModule(BaseModule):
         layout.addWidget(self.progress_bar)
         
         self.lbl_status = QLabel("")
-        self.lbl_status.setStyleSheet("color: #aaa; font-style: italic;")
+        self.lbl_status.setStyleSheet("color: #888; font-size: 12px; margin-top: 5px;")
         self.lbl_status.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.lbl_status)
+
+        # Trigger initial sync (Intelligent)
+        if self.db.get_watched_folders():
+            # Small delay to let the UI render
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(500, lambda: self.toggle_scan(auto=True))
         
         # --- Tag Explorer ---
         layout.addSpacing(15)
@@ -545,34 +553,45 @@ class LibrarianModule(BaseModule):
                 QMessageBox.warning(self.view, "Error", "Could not add folder (maybe it's already there?)")
 
     def remove_folder(self):
-        selected_items = self.folder_list.selectedItems()
-        if not selected_items:
-            return
-            
-        for item in selected_items:
-            path = item.text()
-            self.db.remove_watched_folder(path)
+        selected = self.folder_list.currentItem()
+        if not selected: return
         
-        self.refresh_ui()
-        self.update_global_stats() # Force refresh global counts
+        path = selected.text()
+        confirm = QMessageBox.question(self.view, "Remove Folder", 
+                                       f"Stop watching '{path}' and remove its images from the database?\n(Files on disk will NOT be deleted)",
+                                       QMessageBox.Yes | QMessageBox.No)
         
-    def toggle_scan(self):
+        if confirm == QMessageBox.Yes:
+            if self.db.remove_watched_folder(path):
+                self.refresh_ui()
+                self.update_global_stats()
+                # Trigger quick sync to clean up any stragglers or update counts
+                self.toggle_scan(auto=True)
+
+    def toggle_scan(self, sync_only=False, auto=False):
         if self.indexer_thread and self.indexer_thread.isRunning():
             # Stop logic
             self.indexer_thread.stop()
             self.btn_scan.setText("Stopping...")
+            if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(False)
             self.btn_scan.setEnabled(False)
         else:
             # Start logic
             folders = self.db.get_watched_folders()
             if not folders:
-                QMessageBox.warning(self.view, "No Folders", "Please add at least one folder to index.")
+                if not auto:
+                    QMessageBox.warning(self.view, "No Folders", "Please add at least one folder to index.")
                 return
-                
-            self.btn_scan.setText("🛑 Stop Scanning")
-            self.btn_scan.setStyleSheet("background-color: #ff5555; color: white; border-radius: 8px; padding: 15px; font-weight: bold;")
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
+            
+            # Update UI state
+            if not auto:
+                self.btn_scan.setText("🛑 Stop Scanning")
+                self.btn_scan.setStyleSheet("background-color: #ff5555; color: white; border-radius: 8px; padding: 15px; font-weight: bold;")
+                if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(False)
+                self.progress_bar.setVisible(True)
+                self.progress_bar.setValue(0)
+            else:
+                self.lbl_status.setText("🔍 Running Background Sync...")
             
             self.indexer_thread = IndexerWorker(self.db, folders)
             self.indexer_thread.progress_signal.connect(self.update_progress_text)
@@ -584,6 +603,7 @@ class LibrarianModule(BaseModule):
         self.lbl_status.setText(text)
 
     def update_progress_bar(self, current, total):
+        self.progress_bar.setVisible(True)
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
 
@@ -591,9 +611,11 @@ class LibrarianModule(BaseModule):
         self.btn_scan.setText("🚀 Scan & Index Library")
         self.btn_scan.setStyleSheet("background-color: #00ba88; color: white; border-radius: 8px; padding: 15px; font-weight: bold;")
         self.btn_scan.setEnabled(True)
+        if hasattr(self, 'btn_sync'):
+            self.btn_sync.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.refresh_ui()
-        self.update_global_stats() # Update total count
+        self.update_global_stats()
         QMessageBox.information(self.view, "Done", "Library Scan Complete!")
 
     def send_to_viewer(self):
