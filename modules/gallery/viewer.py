@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
-                               QDialog, QFrame, QSizePolicy, QSpinBox, QGridLayout, QLineEdit, QScrollArea)
+                               QDialog, QFrame, QSizePolicy, QSpinBox, QGridLayout, QLineEdit, QScrollArea, QCompleter)
 from PySide6.QtCore import Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import QPixmap, QKeySequence, QAction
 from modules.librarian.logic.tagging_ui import FlowLayout, TagChip
@@ -283,6 +283,13 @@ class AdvancedViewer(QDialog):
         # Initial Display
         self.load_current_image()
         
+        # Setup Autocomplete
+        all_tags = self.db.get_all_tags()
+        self.completer = QCompleter(all_tags)
+        self.completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.completer.setFilterMode(Qt.MatchContains)
+        self.input_tag.setCompleter(self.completer)
+        
     def closeEvent(self, event):
         self.timer.stop() # Ensure timer stops on exit
         if self.fs_window: self.fs_window.close()
@@ -303,18 +310,22 @@ class AdvancedViewer(QDialog):
             self.next_image()
         elif event.key() == Qt.Key_Escape:
             self.close()
-            
-    # ... Image loading methods remain ...
-        
-        # Initial Display
-        self.load_current_image()
 
     def add_tag(self):
         text = self.input_tag.text().strip()
         if not text: return
         
+        # Handle commas
+        new_tags = [t.strip() for t in text.split(',') if t.strip()]
+        
         path = self.paths[self.current_idx]
-        if self.db.add_tag_to_file(path, text):
+        tags_added = False
+        
+        for tag in new_tags:
+            if self.db.add_tag_to_file(path, tag):
+                tags_added = True
+        
+        if tags_added:
             self.load_tags(path)
             self.input_tag.clear()
             
@@ -331,8 +342,8 @@ class AdvancedViewer(QDialog):
                 item.widget().deleteLater()
                 
         tags = self.db.get_tags_for_file(path)
-        for t in tags:
-            chip = TagChip(t)
+        for i, t in enumerate(tags):
+            chip = TagChip(t, i)
             chip.removed.connect(self.remove_tag)
             self.tags_layout.addWidget(chip)
 

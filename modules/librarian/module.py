@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
                                QListWidget, QFileDialog, QMessageBox, QProgressBar, QFrame,
-                               QLineEdit, QDialog)
+                               QLineEdit, QDialog, QCompleter)
 from PySide6.QtGui import QPixmap, QIcon, QMouseEvent
 from PySide6.QtCore import Qt, QSize, Signal
 from core.base_module import BaseModule
@@ -401,7 +401,18 @@ class LibrarianModule(BaseModule):
         self.refresh_ui()
         self.update_global_stats()
         
+        # Setup Autocomplete for Tags
+        self.setup_completer()
+        
         return self.view
+
+    def setup_completer(self):
+        """Initializes the QCompleter for the tag input."""
+        all_tags = self.db.get_all_tags()
+        self.completer = QCompleter(all_tags)
+        self.completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.completer.setFilterMode(Qt.MatchContains) # Allow matching 'lee' in 'Zoe Lee'
+        self.input_search.setCompleter(self.completer)
 
     def add_tag_from_input(self):
         text = self.input_search.text().strip()
