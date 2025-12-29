@@ -46,7 +46,8 @@ class ThumbnailLoader(QObject):
         self.pending_paths = set()
 
     def get_thumbnail_image(self, path, size=QSize(130, 130)):
-        norm_path = os.path.normpath(path)
+        # Normalize to forward slashes to match DB consistency
+        norm_path = os.path.normpath(path).replace('\\', '/')
         
         # 1. Check Cache
         if norm_path in self.cache:

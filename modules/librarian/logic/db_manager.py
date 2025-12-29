@@ -309,13 +309,12 @@ class DatabaseManager(QObject):
             folder_path = row[0]
             
             # Get Count
-            # We already have get_folder_count logic, let's inline or reuse
-            msg_path = os.path.normpath(folder_path) + "%"
-            cursor.execute("SELECT count(*) FROM files WHERE path LIKE ?", (msg_path,))
+            search_path = self._normalize_path(folder_path) + "%"
+            cursor.execute("SELECT count(*) FROM files WHERE path LIKE ?", (search_path,))
             count = cursor.fetchone()[0]
             
             # Get Cover (First image)
-            cursor.execute("SELECT path FROM files WHERE path LIKE ? LIMIT 1", (msg_path,))
+            cursor.execute("SELECT path FROM files WHERE path LIKE ? LIMIT 1", (search_path,))
             cover_row = cursor.fetchone()
             cover_path = cover_row[0] if cover_row else None
             
