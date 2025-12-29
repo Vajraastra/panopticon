@@ -98,6 +98,10 @@ class GalleryModule(BaseModule):
         # Selection / Picker Mode
         self.picker_mode = False
         self.picked_paths = set()
+        
+        # Responsive Grid State
+        self.active_widgets = [] 
+        self.current_cols = 5
 
         # Rating Mode / Filter
         self.rating_mode = False
@@ -165,6 +169,9 @@ class GalleryModule(BaseModule):
         self.grid_layout.setSpacing(15)
         self.grid_layout.setContentsMargins(10, 10, 10, 10)
         self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        
+        # Hook resize event for responsive grid
+        self.grid_container.resizeEvent = self.on_grid_resize
         
         scroll.setWidget(self.grid_container)
         self.middle_layout.addWidget(scroll, 1) # Stretch ratio 1
@@ -507,6 +514,8 @@ class GalleryModule(BaseModule):
             item = self.grid_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        
+        self.active_widgets = [] # Clear tracking list
                 
         self.lbl_status.setText(f"Loading...")
         offset = self.current_page * self.page_size
@@ -536,7 +545,10 @@ class GalleryModule(BaseModule):
                     card.setCoverPixmap(QPixmap.fromImage(img))
             
             card.clicked.connect(self.load_album)
-            self.grid_layout.addWidget(card, row, col)
+            # self.grid_layout.addWidget(card, row, col) -> Defer to reflow
+            self.active_widgets.append(card)
+            
+        self.reflow_grid()
             
         self.update_pagination_controls(total)
         self.lbl_status.setText(f"Loaded {len(albums)} albums.")
@@ -551,10 +563,8 @@ class GalleryModule(BaseModule):
         self.total_items = total_count
         self.current_paths = paths # Store for viewer navigation
         
-        cols = 5
+        # cols = 5
         for i, path in enumerate(paths):
-            row = i // cols
-            col = i % cols
             
             # Fetch rating from DB if available
             rating = self.db.get_file_rating(path)
@@ -573,7 +583,9 @@ class GalleryModule(BaseModule):
             
             thumb.clicked.connect(self.on_thumbnail_clicked)
             thumb.rating_changed.connect(self.update_rating_on_db)
-            self.grid_layout.addWidget(thumb, row, col)
+            self.active_widgets.append(thumb)
+            
+        self.reflow_grid()
             
         self.update_pagination_controls(total_count)
         self.lbl_status.setText(f"Displaying {len(paths)} (of {total_count}) results.")
@@ -598,10 +610,8 @@ class GalleryModule(BaseModule):
         # Results is list of (path, rating)
         self.current_paths = [r[0] for r in results] 
         
-        cols = 5
+        # cols = 5
         for i, (path, rating) in enumerate(results):
-            row = i // cols
-            col = i % cols
             
             thumb = ClickableThumbnail(path, auto_load=False, rating=rating)
             thumb.setFixedSize(130, 130)
@@ -617,7 +627,9 @@ class GalleryModule(BaseModule):
             
             thumb.clicked.connect(self.on_thumbnail_clicked)
             thumb.rating_changed.connect(self.update_rating_on_db)
-            self.grid_layout.addWidget(thumb, row, col)
+            self.active_widgets.append(thumb)
+            
+        self.reflow_grid()
             
         self.update_pagination_controls(total_count)
         self.lbl_status.setText(f"Loaded {len(self.current_paths)} images.")
@@ -754,3 +766,37 @@ class GalleryModule(BaseModule):
         
         self.btn_prev.setEnabled(self.current_page > 0)
         self.btn_next.setEnabled((self.current_page + 1) < total_pages)
+
+    def on_grid_resize(self, event):
+        """Handle grid container resize to trigger reflow."""
+        # Call original implementation if needed (though QWidget doesn't do much)
+        # QWidget.resizeEvent(self.grid_container, event) 
+        self.reflow_grid()
+
+    def reflow_grid(self):
+        """calculate optimal columns and position widgets."""
+        if not self.active_widgets: return
+        
+        # Determine item width based on first item (FolderCard or Thumbnail)
+        sample = self.active_widgets[0]
+        # FolderCard is 150, Thumb is 130. 
+        # Add spacing (15) + margins logic
+        item_w = sample.width() + 15 # + spacing
+        
+        aval_w = self.grid_container.width()
+        
+        # Calculate new cols (min 1)
+        new_cols = max(1, aval_w // item_w)
+        
+        # Always reflow if calls explicitly (active_widgets logic depends on it)
+        # But we could check if new_cols != self.current_cols to save performance
+        # self.current_cols = new_cols
+        
+        # Re-layout
+        # We need to remove them from layout first? 
+        # No, addWidget moves them if they are already in layout.
+        
+        for i, widget in enumerate(self.active_widgets):
+            row = i // new_cols
+            col = i % new_cols
+            self.grid_layout.addWidget(widget, row, col)
