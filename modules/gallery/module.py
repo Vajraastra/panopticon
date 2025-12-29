@@ -15,7 +15,8 @@ class FolderCard(QFrame):
     def __init__(self, path, name, cover_path, count):
         super().__init__()
         self.path = path
-        self.cover_path = os.path.normpath(cover_path) if cover_path else None
+        # Ensure path matches DB/Loader format (forward slashes)
+        self.cover_path = os.path.normpath(cover_path).replace('\\', '/') if cover_path else None
         self.setFixedSize(150, 200) # Reduced from 200, 240 to fit 5 columns
         self.setStyleSheet("""
             FolderCard {

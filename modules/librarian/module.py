@@ -16,7 +16,8 @@ class ClickableThumbnail(QLabel):
     
     def __init__(self, path, parent=None, auto_load=True, rating=0):
         super().__init__(parent)
-        self.path = os.path.normpath(path)
+        # Ensure path matches DB/Loader format (forward slashes)
+        self.path = os.path.normpath(path).replace('\\', '/')
         self.selected = False
         self.rating = rating
         self.setFixedSize(100, 100)
