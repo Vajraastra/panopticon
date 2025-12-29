@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
                                QScrollArea, QGridLayout, QFrame, QComboBox, QFileDialog, QLineEdit, QCompleter)
-from PySide6.QtCore import Qt, Signal, Slot, QSize
+from PySide6.QtCore import Qt, Signal, Slot, QSize, QEvent
 from PySide6.QtGui import QPixmap, QMouseEvent, QIcon, QImage
 from core.base_module import BaseModule
 from modules.librarian.logic.db_manager import DatabaseManager
@@ -170,8 +170,8 @@ class GalleryModule(BaseModule):
         self.grid_layout.setContentsMargins(10, 10, 10, 10)
         self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         
-        # Hook resize event for responsive grid
-        self.grid_container.resizeEvent = self.on_grid_resize
+        # Hook resize event via EventFilter for robustness
+        self.grid_container.installEventFilter(self)
         
         scroll.setWidget(self.grid_container)
         self.middle_layout.addWidget(scroll, 1) # Stretch ratio 1
@@ -337,7 +337,7 @@ class GalleryModule(BaseModule):
         self.current_view_mode = self.VIEW_ALBUMS
         self.current_folder_filter = None
         self.current_page = 0
-        self.page_size = 20 # 5x4 Grid
+        self.page_size = 50 # Increased for responsive grid
         self.btn_back.setVisible(False)
         self.btn_picker_toggle.setVisible(True)
         self.lbl_title.setText("🖼️ Gallery Albums")
@@ -767,11 +767,10 @@ class GalleryModule(BaseModule):
         self.btn_prev.setEnabled(self.current_page > 0)
         self.btn_next.setEnabled((self.current_page + 1) < total_pages)
 
-    def on_grid_resize(self, event):
-        """Handle grid container resize to trigger reflow."""
-        # Call original implementation if needed (though QWidget doesn't do much)
-        # QWidget.resizeEvent(self.grid_container, event) 
-        self.reflow_grid()
+    def eventFilter(self, source, event):
+        if source == self.grid_container and event.type() == QEvent.Resize:
+            self.reflow_grid()
+        return super().eventFilter(source, event)
 
     def reflow_grid(self):
         """calculate optimal columns and position widgets."""
