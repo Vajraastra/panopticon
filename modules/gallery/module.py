@@ -337,7 +337,7 @@ class GalleryModule(BaseModule):
         self.current_view_mode = self.VIEW_ALBUMS
         self.current_folder_filter = None
         self.current_page = 0
-        self.page_size = 50 # Increased for responsive grid
+        self.page_size = 60 # Increased for responsive grid
         self.btn_back.setVisible(False)
         self.btn_picker_toggle.setVisible(True)
         self.lbl_title.setText("🖼️ Gallery Albums")
@@ -467,7 +467,7 @@ class GalleryModule(BaseModule):
         self.current_view_mode = self.VIEW_IMAGES
         self.current_folder_filter = path
         self.current_page = 0
-        self.page_size = 20 # 5x4 Grid matches albums
+        self.page_size = 60 # Increased to fill large screens (10-12 cols)
         self.btn_back.setVisible(True)
         self.btn_picker_toggle.setVisible(True)
         self.lbl_title.setText(f"📂 {os.path.basename(path)}")
@@ -478,7 +478,7 @@ class GalleryModule(BaseModule):
         self.current_view_mode = self.VIEW_CUSTOM
         self.custom_paths_source = paths
         self.current_page = 0
-        self.page_size = 20
+        self.page_size = 60
         self.btn_back.setVisible(True) # Allow going back directly to albums
         self.btn_picker_toggle.setVisible(True)
         self.lbl_title.setText(f"🔎 {title}")
