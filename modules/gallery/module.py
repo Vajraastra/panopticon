@@ -799,3 +799,6 @@ class GalleryModule(BaseModule):
             row = i // new_cols
             col = i % new_cols
             self.grid_layout.addWidget(widget, row, col)
+            
+        # Debug / Status Update
+        self.lbl_status.setText(f"Items: {len(self.active_widgets)} | Width: {aval_w} | Cols: {new_cols}")
