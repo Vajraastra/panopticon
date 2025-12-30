@@ -408,8 +408,10 @@ class LibrarianModule(BaseModule):
 
     def setup_completer(self):
         """Initializes the QCompleter for the tag input."""
+        from PySide6.QtCore import QStringListModel
         all_tags = self.db.get_all_tags()
-        self.completer = QCompleter(all_tags)
+        self.completer_model = QStringListModel(all_tags)
+        self.completer = QCompleter(self.completer_model)
         self.completer.setCaseSensitivity(Qt.CaseInsensitive)
         self.completer.setFilterMode(Qt.MatchContains) # Allow matching 'lee' in 'Zoe Lee'
         self.input_search.setCompleter(self.completer)

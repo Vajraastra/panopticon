@@ -283,12 +283,20 @@ class AdvancedViewer(QDialog):
         # Initial Display
         self.load_current_image()
         
-        # Setup Autocomplete
+        
+        # Setup Autocomplete with dynamic model
+        from PySide6.QtCore import QStringListModel
         all_tags = self.db.get_all_tags()
-        self.completer = QCompleter(all_tags)
+        self.completer_model = QStringListModel(all_tags)
+        self.completer = QCompleter(self.completer_model)
         self.completer.setCaseSensitivity(Qt.CaseInsensitive)
         self.completer.setFilterMode(Qt.MatchContains)
         self.input_tag.setCompleter(self.completer)
+        
+    def refresh_completer(self):
+        """Updates the autocomplete suggestions with the latest tags from DB."""
+        all_tags = self.db.get_all_tags()
+        self.completer_model.setStringList(all_tags)
         
     def closeEvent(self, event):
         self.timer.stop() # Ensure timer stops on exit
@@ -328,6 +336,7 @@ class AdvancedViewer(QDialog):
         if tags_added:
             self.load_tags(path)
             self.input_tag.clear()
+            self.refresh_completer()  # Update autocomplete suggestions
             
     def remove_tag(self, tag_name):
         path = self.paths[self.current_idx]
