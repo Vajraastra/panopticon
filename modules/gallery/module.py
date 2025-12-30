@@ -716,16 +716,43 @@ class GalleryModule(BaseModule):
             self.btn_send_picked.setVisible(count > 0)
             return
 
-        # Regular Click: Find index in current page list
+        # Regular Click: Use FULL context for viewer carousel
+        full_paths = self._get_full_context_paths()
         try:
-            idx = self.current_paths.index(path)
+            idx = full_paths.index(path)
         except ValueError:
+            # Fallback if somehow path not in fresh query (rare race condition)
             idx = 0
+            if path not in full_paths:
+                full_paths.insert(0, path)
             
         # Open Advanced Viewer
         from .viewer import AdvancedViewer
-        viewer = AdvancedViewer(self.current_paths, start_index=idx, parent=self.view)
+        viewer = AdvancedViewer(full_paths, start_index=idx, parent=self.view)
         viewer.exec()
+
+    def _get_full_context_paths(self):
+        """Returns the complete list of paths for the current view, ignoring pagination."""
+        if self.current_view_mode == self.VIEW_CUSTOM:
+            return list(self.custom_paths_source)
+            
+        elif self.current_view_mode == self.VIEW_IMAGES:
+            # Reconstruct filters same as _load_images_grid
+            folder_arg = f"path:{self.current_folder_filter}" if self.current_folder_filter else ""
+            rating_arg = f"rating:{self.current_rating_filter}" if self.current_rating_filter > 0 else ""
+            full_query = f"{folder_arg} {rating_arg}".strip()
+            
+            # Fetch ALL results (limit=100000)
+            _, results = self.db.search_files_paginated(
+                query=full_query,
+                tags=self.current_query_tags,
+                search_terms=self.current_query_terms,
+                limit=100000, 
+                offset=0
+            )
+            return [r[0] for r in results]
+            
+        return []
 
     def prev_page(self):
         if self.current_page > 0:
