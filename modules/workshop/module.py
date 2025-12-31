@@ -100,6 +100,15 @@ class WorkshopModule(BaseModule):
             """)
             tool_layout.addWidget(self.btn_tool_stripper)
             
+            # Tool 2: Dummy Creator
+            self.btn_tool_dummy = QPushButton("🎭 Dummy Creator")
+            self.btn_tool_dummy.clicked.connect(self.open_dummy_creator_dialog)
+            self.btn_tool_dummy.setStyleSheet("""
+                QPushButton { background-color: #222; color: #f1fa8c; text-align: left; padding: 10px; border-radius: 5px; font-weight: bold; }
+                QPushButton:hover { background-color: #332211; border: 1px solid #f1fa8c; }
+            """)
+            tool_layout.addWidget(self.btn_tool_dummy)
+            
             tool_layout.addStretch()
             
             # Tool Settings Hint
@@ -321,3 +330,97 @@ class WorkshopModule(BaseModule):
         
         QMessageBox.information(self.view, "Processing Complete", 
                                 f"Exported {success_count} of {count} images to:\n{self.export_dir}")
+
+    def open_dummy_creator_dialog(self):
+        """Opens the Dummy Creator dialog for folder selection and processing."""
+        from PySide6.QtWidgets import QDialog, QLabel, QTextEdit, QApplication
+        from modules.workshop.logic.dummy_manager import process_folder, get_folder_stats
+        
+        # Select folder
+        folder = QFileDialog.getExistingDirectory(self.view, "Select Folder to Dummify")
+        if not folder:
+            return
+        
+        # Preview stats
+        stats = get_folder_stats(folder)
+        if not stats:
+            QMessageBox.warning(self.view, "Invalid Path", "Could not access folder.")
+            return
+        
+        # Show preview dialog
+        preview_msg = (
+            f"📊 Folder Analysis\n\n"
+            f"Total Files: {stats['total_files']}\n"
+            f"Already Dummies: {stats['dummies']}\n"
+            f"Originals to Process: {stats['originals']}\n\n"
+            f"Action: Move {stats['originals']} files to 'originals/' subfolder and create dummy placeholders.\n\n"
+            f"⚠️ This operation cannot be easily undone. Continue?"
+        )
+        
+        reply = QMessageBox.question(
+            self.view, 
+            "Dummy Creator - Confirm",
+            preview_msg,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # Progress dialog
+        progress_dialog = QDialog(self.view)
+        progress_dialog.setWindowTitle("Dummy Creator - Processing")
+        progress_dialog.setModal(True)
+        progress_dialog.resize(500, 300)
+        
+        layout = QVBoxLayout(progress_dialog)
+        
+        lbl_title = QLabel("🎭 Creating Dummies...")
+        lbl_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #f1fa8c;")
+        layout.addWidget(lbl_title)
+        
+        log_box = QTextEdit()
+        log_box.setReadOnly(True)
+        log_box.setStyleSheet("background: #111; color: #ccc; font-family: Consolas; font-size: 11px;")
+        layout.addWidget(log_box)
+        
+        progress_bar = QProgressBar()
+        layout.addWidget(progress_bar)
+        
+        btn_close = QPushButton("Close")
+        btn_close.setEnabled(False)
+        btn_close.clicked.connect(progress_dialog.accept)
+        layout.addWidget(btn_close)
+        
+        progress_dialog.show()
+        
+        # Progress callback
+        def on_progress(current, total, filename):
+            progress_bar.setMaximum(total)
+            progress_bar.setValue(current)
+            log_box.append(f"[{current}/{total}] {filename}")
+            QApplication.instance().processEvents()
+        
+        # Execute
+        try:
+            log_box.append(f"➤ Processing: {folder}\n")
+            final_stats = process_folder(folder, progress_callback=on_progress)
+            
+            # Summary
+            space_saved_mb = final_stats['space_saved_bytes'] / (1024 * 1024)
+            summary = (
+                f"\n✅ DONE!\n\n"
+                f"Processed: {final_stats['processed']}\n"
+                f"Skipped (already dummies): {final_stats['skipped_dummies']}\n"
+                f"Skipped (already in originals/): {final_stats['skipped_originals']}\n"
+                f"Errors: {final_stats['errors']}\n"
+                f"Space Saved: {space_saved_mb:.2f} MB\n"
+            )
+            log_box.append(summary)
+            
+        except Exception as e:
+            log_box.append(f"\n❌ ERROR: {str(e)}\n")
+        
+        btn_close.setEnabled(True)
+        progress_dialog.exec()
