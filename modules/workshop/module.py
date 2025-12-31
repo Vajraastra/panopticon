@@ -61,87 +61,128 @@ class WorkshopModule(BaseModule):
             header.addWidget(self.btn_clear)
             layout.addLayout(header)
 
-            # --- Main Content (Tool & Queue) ---
-            content = QHBoxLayout()
+            # --- Tool Selection Panel (Center) ---
+            tool_select_layout = QHBoxLayout()
+            tool_select_layout.setContentsMargins(0, 20, 0, 20)
+            tool_select_layout.addStretch()
             
-            # Left Sidebar: Tools & Input
-            self.tool_panel = QFrame()
-            self.tool_panel.setFixedWidth(250)
-            self.tool_panel.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333; border-radius: 10px;")
-            tool_layout = QVBoxLayout(self.tool_panel)
+            lbl_select = QLabel("SELECT A TOOL:")
+            lbl_select.setStyleSheet("color: #888; font-weight: bold; font-size: 12px; margin-right: 15px;")
+            tool_select_layout.addWidget(lbl_select)
+            
+            # Metadata Stripper Tool Button
+            self.btn_tool_stripper = QPushButton("🛡️ Metadata Stripper")
+            self.btn_tool_stripper.setCheckable(True)
+            self.btn_tool_stripper.setChecked(True)
+            self.btn_tool_stripper.clicked.connect(self.switch_to_stripper)
+            self.btn_tool_stripper.setFixedSize(200, 60)
+            self.btn_tool_stripper.setStyleSheet("""
+                QPushButton { 
+                    background-color: #222; 
+                    color: #00ffcc; 
+                    text-align: center; 
+                    padding: 10px; 
+                    border-radius: 8px; 
+                    font-weight: bold; 
+                    font-size: 14px;
+                    border: 2px solid #333;
+                }
+                QPushButton:checked { 
+                    background-color: #224433; 
+                    border: 2px solid #00ffcc; 
+                }
+                QPushButton:hover:!checked { 
+                    background-color: #2a2a2a; 
+                    border: 2px solid #555;
+                }
+            """)
+            tool_select_layout.addWidget(self.btn_tool_stripper)
+            
+            tool_select_layout.addSpacing(15)
+            
+            # Dummy Creator Tool Button
+            self.btn_tool_dummy = QPushButton("🎭 Dummy Creator")
+            self.btn_tool_dummy.setCheckable(True)
+            self.btn_tool_dummy.clicked.connect(self.switch_to_dummy)
+            self.btn_tool_dummy.setFixedSize(200, 60)
+            self.btn_tool_dummy.setStyleSheet("""
+                QPushButton { 
+                    background-color: #222; 
+                    color: #f1fa8c; 
+                    text-align: center; 
+                    padding: 10px; 
+                    border-radius: 8px; 
+                    font-weight: bold; 
+                    font-size: 14px;
+                    border: 2px solid #333;
+                }
+                QPushButton:checked { 
+                    background-color: #332211; 
+                    border: 2px solid #f1fa8c; 
+                }
+                QPushButton:hover:!checked { 
+                    background-color: #2a2a2a; 
+                    border: 2px solid #555;
+                }
+            """)
+            tool_select_layout.addWidget(self.btn_tool_dummy)
+            
+            tool_select_layout.addStretch()
+            layout.addLayout(tool_select_layout)
+
+            # --- Metadata Stripper Content Area ---
+            self.stripper_panel = QWidget()
+            stripper_layout = QVBoxLayout(self.stripper_panel)
+            stripper_layout.setContentsMargins(0, 0, 0, 0)
+            
+            # Stripper Controls
+            stripper_controls = QHBoxLayout()
+            
+            # Left: Input Buttons
+            input_panel = QFrame()
+            input_panel.setFixedWidth(250)
+            input_panel.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333; border-radius: 10px; padding: 15px;")
+            input_layout = QVBoxLayout(input_panel)
             
             lbl_input = QLabel("📥 ADD TO QUEUE")
             lbl_input.setStyleSheet("color: #888; font-weight: bold; font-size: 10px; margin-bottom: 5px;")
-            tool_layout.addWidget(lbl_input)
+            input_layout.addWidget(lbl_input)
 
             self.btn_add_files = QPushButton("🖼️ Add Images...")
             self.btn_add_files.clicked.connect(self.add_images_dialog)
             self.btn_add_files.setStyleSheet("background-color: #333; color: white; padding: 10px; border-radius: 5px; text-align: left;")
-            tool_layout.addWidget(self.btn_add_files)
+            input_layout.addWidget(self.btn_add_files)
 
             self.btn_add_folder = QPushButton("📂 Add Folder...")
             self.btn_add_folder.clicked.connect(self.add_folder_dialog)
             self.btn_add_folder.setStyleSheet("background-color: #333; color: white; padding: 10px; border-radius: 5px; text-align: left;")
-            tool_layout.addWidget(self.btn_add_folder)
+            input_layout.addWidget(self.btn_add_folder)
 
-            tool_layout.addSpacing(20)
-
-            lbl_tools = QLabel("AVAILABLE TOOLS")
-            lbl_tools.setStyleSheet("color: #888; font-weight: bold; font-size: 10px; margin-bottom: 5px;")
-            tool_layout.addWidget(lbl_tools)
-
-            # Tool 1: Metadata Stripper
-            self.btn_tool_stripper = QPushButton("🛡️ Metadata Stripper")
-            self.btn_tool_stripper.setCheckable(True)
-            self.btn_tool_stripper.setChecked(True)
-            self.btn_tool_stripper.setStyleSheet("""
-                QPushButton { background-color: #222; color: #00ffcc; text-align: left; padding: 10px; border-radius: 5px; font-weight: bold; }
-                QPushButton:checked { background-color: #224433; border: 1px solid #00ffcc; }
-            """)
-            tool_layout.addWidget(self.btn_tool_stripper)
+            input_layout.addSpacing(20)
             
-            # Tool 2: Dummy Creator
-            self.btn_tool_dummy = QPushButton("🎭 Dummy Creator")
-            self.btn_tool_dummy.clicked.connect(self.open_dummy_creator_dialog)
-            self.btn_tool_dummy.setStyleSheet("""
-                QPushButton { background-color: #222; color: #f1fa8c; text-align: left; padding: 10px; border-radius: 5px; font-weight: bold; }
-                QPushButton:hover { background-color: #332211; border: 1px solid #f1fa8c; }
-            """)
-            tool_layout.addWidget(self.btn_tool_dummy)
-            
-            tool_layout.addStretch()
-            
-            # Tool Settings Hint
-            lbl_hint = QLabel("Settings:")
-            lbl_hint.setStyleSheet("color: #666; font-size: 11px;")
-            tool_layout.addWidget(lbl_hint)
-            
-            self.lbl_info = QLabel("Strips all technical data\n(Prompts, EXIF) on export.")
-            self.lbl_info.setStyleSheet("color: #aaa; font-size: 11px;")
-            tool_layout.addWidget(self.lbl_info)
-
-            tool_layout.addSpacing(20)
-            
+            # Export Settings
             lbl_set = QLabel("⚙️ SETTINGS")
             lbl_set.setStyleSheet("color: #888; font-weight: bold; font-size: 10px; margin-bottom: 5px;")
-            tool_layout.addWidget(lbl_set)
+            input_layout.addWidget(lbl_set)
 
             lbl_export_info = QLabel("Export Folder:")
             lbl_export_info.setStyleSheet("color: #666; font-size: 11px;")
-            tool_layout.addWidget(lbl_export_info)
+            input_layout.addWidget(lbl_export_info)
 
             self.lbl_export_path = QLabel(self.export_dir)
             self.lbl_export_path.setWordWrap(True)
             self.lbl_export_path.setStyleSheet("color: #00ffcc; font-size: 10px; background: #222; padding: 5px; border-radius: 3px;")
-            tool_layout.addWidget(self.lbl_export_path)
+            input_layout.addWidget(self.lbl_export_path)
 
-            self.btn_change_export = QPushButton("📁 Change Export Folder")
+            self.btn_change_export = QPushButton("📁 Change Folder")
             self.btn_change_export.clicked.connect(self.change_export_dir)
             self.btn_change_export.setStyleSheet("background-color: #333; color: white; padding: 5px; font-size: 11px; margin-top: 5px;")
-            tool_layout.addWidget(self.btn_change_export)
+            input_layout.addWidget(self.btn_change_export)
             
-            content.addWidget(self.tool_panel)
-
+            input_layout.addStretch()
+            
+            stripper_controls.addWidget(input_panel)
+            
             # Right: Queue Grid
             queue_container = QFrame()
             queue_container.setStyleSheet("background-color: #111; border-radius: 10px;")
@@ -161,9 +202,59 @@ class WorkshopModule(BaseModule):
             self.scroll.setWidget(self.grid_widget)
             
             queue_layout.addWidget(self.scroll)
-            content.addWidget(queue_container)
+            stripper_controls.addWidget(queue_container)
             
-            layout.addLayout(content)
+            stripper_layout.addLayout(stripper_controls)
+            
+            # Add stripper panel to main layout
+            layout.addWidget(self.stripper_panel)
+            
+            # --- Dummy Creator Content Area (initially hidden) ---
+            self.dummy_panel = QWidget()
+            dummy_layout = QVBoxLayout(self.dummy_panel)
+            dummy_layout.setContentsMargins(50, 50, 50, 50)
+            
+            lbl_dummy_info = QLabel("🎭 Dummy Creator")
+            lbl_dummy_info.setAlignment(Qt.AlignCenter)
+            lbl_dummy_info.setStyleSheet("font-size: 24px; font-weight: bold; color: #f1fa8c; margin-bottom: 20px;")
+            dummy_layout.addWidget(lbl_dummy_info)
+            
+            lbl_dummy_desc = QLabel(
+                "Archive your scraped collections while preserving scraper state.\n\n"
+                "• Moves originals to 'originals/' subfolder\n"
+                "• Creates tiny dummy files (32x32 gray images, 1-byte for others)\n"
+                "• Incremental processing (only handles new files on re-runs)\n"
+                "• No manifest needed - self-detecting system"
+            )
+            lbl_dummy_desc.setAlignment(Qt.AlignCenter)
+            lbl_dummy_desc.setWordWrap(True)
+            lbl_dummy_desc.setStyleSheet("font-size: 13px; color: #aaa; line-height: 1.6;")
+            dummy_layout.addWidget(lbl_dummy_desc)
+            
+            dummy_layout.addSpacing(30)
+            
+            btn_run_dummy = QPushButton("📂 Select Folder to Dummify")
+            btn_run_dummy.setFixedSize(300, 50)
+            btn_run_dummy.clicked.connect(self.open_dummy_creator_dialog)
+            btn_run_dummy.setStyleSheet("""
+                QPushButton {
+                    background-color: #332211;
+                    color: #f1fa8c;
+                    font-size: 16px;
+                    font-weight: bold;
+                    border: 2px solid #f1fa8c;
+                    border-radius: 8px;
+                    padding: 10px;
+                }
+                QPushButton:hover {
+                    background-color: #443322;
+                }
+            """)
+            dummy_layout.addWidget(btn_run_dummy, alignment=Qt.AlignCenter)
+            dummy_layout.addStretch()
+            
+            self.dummy_panel.setVisible(False)  # Initially hidden
+            layout.addWidget(self.dummy_panel)
 
             # --- Bottom Bar ---
             footer = QHBoxLayout()
@@ -188,6 +279,26 @@ class WorkshopModule(BaseModule):
             layout.addLayout(footer)
 
         return self.view
+
+    def switch_to_stripper(self):
+        """Switch to Metadata Stripper tool."""
+        if self.btn_tool_stripper.isChecked():
+            self.btn_tool_dummy.setChecked(False)
+            self.stripper_panel.setVisible(True)
+            self.dummy_panel.setVisible(False)
+        else:
+            # Prevent unchecking (radio behavior)
+            self.btn_tool_stripper.setChecked(True)
+    
+    def switch_to_dummy(self):
+        """Switch to Dummy Creator tool."""
+        if self.btn_tool_dummy.isChecked():
+            self.btn_tool_stripper.setChecked(False)
+            self.stripper_panel.setVisible(False)
+            self.dummy_panel.setVisible(True)
+        else:
+            # Prevent unchecking (radio behavior)
+            self.btn_tool_dummy.setChecked(True)
 
     # --- Input Handlers ---
     def change_export_dir(self):
