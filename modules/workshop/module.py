@@ -5,8 +5,8 @@ from PySide6.QtCore import Qt, Signal, Slot, QSize
 from PySide6.QtGui import QPixmap, QIcon, QDragEnterEvent, QDropEvent, QImage, QKeyEvent
 from core.base_module import BaseModule
 from modules.librarian.module import ClickableThumbnail
-from modules.workshop.logic.stripper import strip_metadata, get_export_path
-from modules.metadata_reader.logic.parser import UniversalParser
+from modules.workshop.logic.stripper import modify_metadata, get_export_path
+from modules.workshop.logic.parser import UniversalParser
 import os
 
 class ResponsiveImageLabel(QLabel):
@@ -143,8 +143,8 @@ class WorkshopModule(BaseModule):
             lbl_select.setStyleSheet("color: #888; font-weight: bold; font-size: 12px; margin-right: 15px;")
             tool_select_layout.addWidget(lbl_select)
             
-            # Metadata Stripper Tool Button
-            self.btn_tool_stripper = QPushButton("🛡️ Metadata Stripper")
+            # Metadata Modifier Tool Button
+            self.btn_tool_stripper = QPushButton("🛡️ Metadata Modifier")
             self.btn_tool_stripper.setCheckable(True)
             self.btn_tool_stripper.setChecked(True)
             self.btn_tool_stripper.clicked.connect(self.switch_to_stripper)
@@ -240,45 +240,67 @@ class WorkshopModule(BaseModule):
             # Stripper Controls
             stripper_controls = QHBoxLayout()
             
-            # Left: Input Buttons
+            # Left: Controls Panel
             input_panel = QFrame()
-            input_panel.setFixedWidth(250)
+            input_panel.setFixedWidth(280)
             input_panel.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333; border-radius: 10px; padding: 15px;")
             input_layout = QVBoxLayout(input_panel)
+            input_layout.setSpacing(10)
             
-            lbl_input = QLabel("📥 ADD TO QUEUE")
-            lbl_input.setStyleSheet("color: #888; font-weight: bold; font-size: 10px; margin-bottom: 5px;")
+            lbl_input = QLabel("📥 1. ADD TO QUEUE")
+            lbl_input.setStyleSheet("color: #00ffcc; font-weight: bold; font-size: 11px; margin-bottom: 5px;")
             input_layout.addWidget(lbl_input)
 
-            self.btn_add_files = QPushButton("🖼️ Add Images...")
+            btn_add_layout = QHBoxLayout()
+            self.btn_add_files = QPushButton("🖼️ Images")
             self.btn_add_files.clicked.connect(self.add_images_dialog)
-            self.btn_add_files.setStyleSheet("background-color: #333; color: white; padding: 10px; border-radius: 5px; text-align: left;")
-            input_layout.addWidget(self.btn_add_files)
-
-            self.btn_add_folder = QPushButton("📂 Add Folder...")
-            self.btn_add_folder.clicked.connect(self.add_folder_dialog)
-            self.btn_add_folder.setStyleSheet("background-color: #333; color: white; padding: 10px; border-radius: 5px; text-align: left;")
-            input_layout.addWidget(self.btn_add_folder)
-
-            input_layout.addSpacing(20)
+            self.btn_add_files.setStyleSheet("background-color: #333; color: white; padding: 10px; border-radius: 5px;")
             
-            # Export Settings
-            lbl_set = QLabel("⚙️ SETTINGS")
-            lbl_set.setStyleSheet("color: #888; font-weight: bold; font-size: 10px; margin-bottom: 5px;")
-            input_layout.addWidget(lbl_set)
+            self.btn_add_folder = QPushButton("📂 Folder")
+            self.btn_add_folder.clicked.connect(self.add_folder_dialog)
+            self.btn_add_folder.setStyleSheet("background-color: #333; color: white; padding: 10px; border-radius: 5px;")
+            
+            btn_add_layout.addWidget(self.btn_add_files)
+            btn_add_layout.addWidget(self.btn_add_folder)
+            input_layout.addLayout(btn_add_layout)
 
-            lbl_export_info = QLabel("Export Folder:")
-            lbl_export_info.setStyleSheet("color: #666; font-size: 11px;")
-            input_layout.addWidget(lbl_export_info)
+            input_layout.addSpacing(15)
+            
+            # --- New Metadata Input ---
+            lbl_meta = QLabel("✍️ 2. NEW METADATA / PROMPT")
+            lbl_meta.setStyleSheet("color: #00ffcc; font-weight: bold; font-size: 11px;")
+            input_layout.addWidget(lbl_meta)
+            
+            self.txt_modifier_meta = QTextEdit()
+            self.txt_modifier_meta.setPlaceholderText("Leave empty to STRIP all metadata...\n\nOr type new metadata to inject (e.g. AI Prompts)")
+            self.txt_modifier_meta.setStyleSheet("""
+                QTextEdit {
+                    background-color: #111;
+                    color: #bd93f9;
+                    border: 1px solid #333;
+                    border-radius: 5px;
+                    font-family: Consolas;
+                    font-size: 11px;
+                }
+            """)
+            self.txt_modifier_meta.setFixedHeight(150)
+            input_layout.addWidget(self.txt_modifier_meta)
+            
+            input_layout.addSpacing(15)
+
+            # Export Settings
+            lbl_set = QLabel("📁 3. EXPORT SETTINGS")
+            lbl_set.setStyleSheet("color: #00ffcc; font-weight: bold; font-size: 11px;")
+            input_layout.addWidget(lbl_set)
 
             self.lbl_export_path = QLabel(self.export_dir)
             self.lbl_export_path.setWordWrap(True)
-            self.lbl_export_path.setStyleSheet("color: #00ffcc; font-size: 10px; background: #222; padding: 5px; border-radius: 3px;")
+            self.lbl_export_path.setStyleSheet("color: #888; font-size: 10px; background: #222; padding: 8px; border-radius: 5px; border: 1px solid #333;")
             input_layout.addWidget(self.lbl_export_path)
 
-            self.btn_change_export = QPushButton("📁 Change Folder")
+            self.btn_change_export = QPushButton("📁 Change Target Folder")
             self.btn_change_export.clicked.connect(self.change_export_dir)
-            self.btn_change_export.setStyleSheet("background-color: #333; color: white; padding: 5px; font-size: 11px; margin-top: 5px;")
+            self.btn_change_export.setStyleSheet("background-color: #333; color: white; padding: 8px; font-size: 11px;")
             input_layout.addWidget(self.btn_change_export)
             
             input_layout.addStretch()
@@ -428,7 +450,7 @@ class WorkshopModule(BaseModule):
             
             self.reader_pos_prompt = QTextEdit()
             self.reader_pos_prompt.setPlaceholderText("Positive prompt...")
-            self.reader_pos_prompt.setStyleSheet("background: #1a1a1a; color: #af; border: 1px solid #333; border-radius: 8px;")
+            self.reader_pos_prompt.setStyleSheet("background: #1a1a1a; color: #aaffaa; border: 1px solid #333; border-radius: 8px;")
             reader_right_layout.addWidget(self.reader_pos_prompt, 2)
             
             lbl_neg = QLabel("🚫 Negative Prompt:")
@@ -618,15 +640,21 @@ class WorkshopModule(BaseModule):
                 raw_str += f"[{k}]:\n{v}\n\n"
             self.reader_meta_info.setPlainText(raw_str)
 
-    def load_images(self, paths):
+    def load_images(self, paths, tool="modifier"):
         """Integration hook from Librarian/Gallery."""
-        self.btn_tool_reader.setChecked(True)
-        self.switch_to_reader()
-        self.reader_handle_dropped(paths)
+        if tool == "reader":
+            self.btn_tool_reader.setChecked(True)
+            self.switch_to_reader()
+            self.reader_handle_dropped(paths)
+        else:
+            # Default to modifier (stripper/changer)
+            self.btn_tool_stripper.setChecked(True)
+            self.switch_to_stripper()
+            self.handle_dropped_files(paths)
 
     def load_paths(self, paths):
-        """Alias for load_images."""
-        self.load_images(paths)
+        """Compatibility alias."""
+        self.load_images(paths, tool="reader")
 
     # --- Input Handlers ---
     def change_export_dir(self):
@@ -752,9 +780,11 @@ class WorkshopModule(BaseModule):
         self.btn_clean_selected.setEnabled(False)
 
         success_count = 0
+        new_meta = self.txt_modifier_meta.toPlainText().strip()
+        
         for path in self.queue_paths:
             dest = get_export_path(path, export_dir=self.export_dir)
-            success, _ = strip_metadata(path, dest)
+            success, _ = modify_metadata(path, dest, metadata_text=new_meta)
             if success:
                 success_count += 1
             

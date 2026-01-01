@@ -86,10 +86,10 @@ class MainWindow(QMainWindow):
             
         if librarian and workshop:
             librarian.request_open_metadata.connect(
-                lambda paths: self.switch_to_module(workshop, paths)
+                lambda paths: self.switch_to_module(workshop, paths, "reader")
             )
             librarian.request_open_workshop.connect(
-                lambda paths: self.switch_to_module(workshop, paths)
+                lambda paths: self.switch_to_module(workshop, paths, "modifier")
             )
 
             
@@ -162,7 +162,10 @@ class MainWindow(QMainWindow):
                     module.load_custom_view(args[0])
                     
             elif "Workshop" in module.name and hasattr(module, "load_images"):
-                module.load_images(args[0])
+                if len(args) >= 2:
+                    module.load_images(args[0], args[1])
+                else:
+                    module.load_images(args[0])
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

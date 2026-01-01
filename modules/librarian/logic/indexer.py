@@ -1,7 +1,7 @@
 import os
 import time
 from PySide6.QtCore import QThread, Signal
-from modules.metadata_reader.logic.parser import UniversalParser
+from modules.workshop.logic.parser import UniversalParser
 
 class IndexerWorker(QThread):
     """
