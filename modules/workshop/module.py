@@ -1,11 +1,80 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
-                               QScrollArea, QGridLayout, QFrame, QFileDialog, QMessageBox, QProgressBar)
+                               QScrollArea, QGridLayout, QFrame, QFileDialog, QMessageBox, QProgressBar,
+                               QTextEdit, QSizePolicy, QSplitter, QApplication)
 from PySide6.QtCore import Qt, Signal, Slot, QSize
-from PySide6.QtGui import QPixmap, QIcon, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QPixmap, QIcon, QDragEnterEvent, QDropEvent, QImage, QKeyEvent
 from core.base_module import BaseModule
 from modules.librarian.module import ClickableThumbnail
 from modules.workshop.logic.stripper import strip_metadata, get_export_path
+from modules.metadata_reader.logic.parser import UniversalParser
 import os
+
+class ResponsiveImageLabel(QLabel):
+    """A QLabel that automatically scales its pixmap to fit its size and handles drops."""
+    dropped_files = Signal(list)
+
+    def __init__(self, text="Drop images or folders here\n(or click 'Open')"):
+        super().__init__(text)
+        self.setAlignment(Qt.AlignCenter)
+        self.setStyleSheet("""
+            QLabel {
+                border: 2px dashed #444; 
+                color: #888; 
+                background-color: #0a0a0a;
+                font-size: 16px;
+                border-radius: 10px;
+            }
+        """)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumSize(300, 300)
+        self.setAcceptDrops(True)
+        self._pixmap = None
+
+    def set_image(self, pixmap):
+        self._pixmap = pixmap
+        self.update_pixmap()
+
+    def update_pixmap(self):
+        if self._pixmap and not self._pixmap.isNull():
+            scaled = self._pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            super().setPixmap(scaled)
+        else:
+            self.setPixmap(QPixmap()) 
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_pixmap()
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            self.setStyleSheet("""
+                QLabel {
+                    border: 2px dashed #00ffcc; 
+                    color: #00ffcc; 
+                    background-color: #111;
+                    font-size: 16px;
+                    border-radius: 10px;
+                }
+            """)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.setStyleSheet("""
+            QLabel {
+                border: 2px dashed #444; 
+                color: #888; 
+                background-color: #0a0a0a;
+                font-size: 16px;
+                border-radius: 10px;
+            }
+        """)
+
+    def dropEvent(self, event):
+        self.dragLeaveEvent(None)
+        files = [u.toLocalFile() for u in event.mimeData().urls()]
+        self.dropped_files.emit(files)
 
 class WorkshopModule(BaseModule):
     def __init__(self):
@@ -14,6 +83,10 @@ class WorkshopModule(BaseModule):
         self.selected_paths = set()
         self.export_dir = os.path.abspath("exports")
         self.view = None
+        
+        # Metadata Reader State
+        self.reader_image_list = []
+        self.reader_current_index = -1
 
     @property
     def name(self):
@@ -126,6 +199,35 @@ class WorkshopModule(BaseModule):
                 }
             """)
             tool_select_layout.addWidget(self.btn_tool_dummy)
+            
+            tool_select_layout.addSpacing(15)
+            
+            # Metadata Reader Tool Button
+            self.btn_tool_reader = QPushButton("📋 Metadata Reader")
+            self.btn_tool_reader.setCheckable(True)
+            self.btn_tool_reader.clicked.connect(self.switch_to_reader)
+            self.btn_tool_reader.setFixedSize(200, 60)
+            self.btn_tool_reader.setStyleSheet("""
+                QPushButton { 
+                    background-color: #222; 
+                    color: #bd93f9; 
+                    text-align: center; 
+                    padding: 10px; 
+                    border-radius: 8px; 
+                    font-weight: bold; 
+                    font-size: 14px;
+                    border: 2px solid #333;
+                }
+                QPushButton:checked { 
+                    background-color: #221133; 
+                    border: 2px solid #bd93f9; 
+                }
+                QPushButton:hover:!checked { 
+                    background-color: #2a2a2a; 
+                    border: 2px solid #555;
+                }
+            """)
+            tool_select_layout.addWidget(self.btn_tool_reader)
             
             tool_select_layout.addStretch()
             layout.addLayout(tool_select_layout)
@@ -256,6 +358,115 @@ class WorkshopModule(BaseModule):
             self.dummy_panel.setVisible(False)  # Initially hidden
             layout.addWidget(self.dummy_panel)
 
+            # --- Metadata Reader Content Area (initially hidden) ---
+            self.reader_panel = QWidget()
+            reader_layout = QVBoxLayout(self.reader_panel)
+            reader_layout.setContentsMargins(0, 0, 0, 0)
+            
+            self.reader_splitter = QSplitter(Qt.Horizontal)
+            
+            # Left Panel: Image and Carousel
+            reader_left = QWidget()
+            reader_left_layout = QVBoxLayout(reader_left)
+            
+            # Action Buttons
+            btn_reader_layout = QHBoxLayout()
+            self.btn_reader_open = QPushButton("📂 Open Image(s)")
+            self.btn_reader_open.clicked.connect(self.reader_open_images)
+            self.btn_reader_open.setStyleSheet("""
+                QPushButton { background-color: #bd93f9; color: black; font-weight: bold; padding: 10px; border-radius: 5px; }
+                QPushButton:hover { background-color: #a37df0; }
+            """)
+            
+            self.btn_reader_folder = QPushButton("📁 Open Folder")
+            self.btn_reader_folder.clicked.connect(self.reader_open_folder)
+            self.btn_reader_folder.setStyleSheet("""
+                QPushButton { background-color: #333; color: white; padding: 10px; border-radius: 5px; border: 1px solid #444; }
+                QPushButton:hover { background-color: #444; }
+            """)
+            
+            btn_reader_layout.addWidget(self.btn_reader_open)
+            btn_reader_layout.addWidget(self.btn_reader_folder)
+            reader_left_layout.addLayout(btn_reader_layout)
+            
+            # Carousel
+            carousel_layout = QHBoxLayout()
+            self.btn_reader_prev = QPushButton("◀ Previous")
+            self.btn_reader_prev.clicked.connect(self.reader_prev)
+            self.btn_reader_prev.setStyleSheet("padding: 8px; font-weight: bold; border-radius: 5px; background-color: #222; color: white;")
+            
+            self.reader_index_label = QLabel("0 / 0")
+            self.reader_index_label.setAlignment(Qt.AlignCenter)
+            self.reader_index_label.setStyleSheet("color: #bd93f9; font-size: 15px; font-weight: bold; min-width: 100px;")
+            
+            self.btn_reader_next = QPushButton("Next ▶")
+            self.btn_reader_next.clicked.connect(self.reader_next)
+            self.btn_reader_next.setStyleSheet("padding: 8px; font-weight: bold; border-radius: 5px; background-color: #222; color: white;")
+            
+            carousel_layout.addWidget(self.btn_reader_prev)
+            carousel_layout.addWidget(self.reader_index_label)
+            carousel_layout.addWidget(self.btn_reader_next)
+            reader_left_layout.addLayout(carousel_layout)
+            
+            self.reader_stats_label = QLabel("ℹ File Info: -")
+            self.reader_stats_label.setStyleSheet("color: #888; font-size: 11px;")
+            reader_left_layout.addWidget(self.reader_stats_label)
+            
+            self.reader_image_label = ResponsiveImageLabel()
+            self.reader_image_label.dropped_files.connect(self.reader_handle_dropped)
+            reader_left_layout.addWidget(self.reader_image_label, 1)
+            
+            self.reader_splitter.addWidget(reader_left)
+            
+            # Right Panel: Metadata
+            reader_right = QWidget()
+            reader_right_layout = QVBoxLayout(reader_right)
+            
+            lbl_pos = QLabel("✨ Positive Prompt:")
+            lbl_pos.setStyleSheet("font-weight: bold; color: #eee;")
+            reader_right_layout.addWidget(lbl_pos)
+            
+            self.reader_pos_prompt = QTextEdit()
+            self.reader_pos_prompt.setPlaceholderText("Positive prompt...")
+            self.reader_pos_prompt.setStyleSheet("background: #1a1a1a; color: #af; border: 1px solid #333; border-radius: 8px;")
+            reader_right_layout.addWidget(self.reader_pos_prompt, 2)
+            
+            lbl_neg = QLabel("🚫 Negative Prompt:")
+            lbl_neg.setStyleSheet("font-weight: bold; color: #eee;")
+            reader_right_layout.addWidget(lbl_neg)
+            
+            self.reader_neg_prompt = QTextEdit()
+            self.reader_neg_prompt.setPlaceholderText("Negative prompt...")
+            self.reader_neg_prompt.setStyleSheet("background: #1a1a1a; color: #faa; border: 1px solid #333; border-radius: 8px;")
+            reader_right_layout.addWidget(self.reader_neg_prompt, 1)
+            
+            lbl_tech = QLabel("⚙️ Technical Details:")
+            lbl_tech.setStyleSheet("font-weight: bold; color: #eee;")
+            reader_right_layout.addWidget(lbl_tech)
+            
+            self.reader_meta_info = QTextEdit()
+            self.reader_meta_info.setReadOnly(True)
+            self.reader_meta_info.setStyleSheet("background: #111; color: #bbb; border: 1px solid #222; border-radius: 8px; font-family: Consolas;")
+            reader_right_layout.addWidget(self.reader_meta_info, 2)
+            
+            self.reader_splitter.addWidget(reader_right)
+            self.reader_splitter.setStretchFactor(0, 3)
+            self.reader_splitter.setStretchFactor(1, 2)
+            
+            reader_layout.addWidget(self.reader_splitter)
+            
+            self.reader_panel.setVisible(False)
+            layout.addWidget(self.reader_panel)
+            
+            # Injecting Key Events for carousel
+            def reader_key_event(event):
+                if self.reader_panel.isVisible():
+                    if event.key() == Qt.Key_Left:
+                        self.reader_prev()
+                    elif event.key() == Qt.Key_Right:
+                        self.reader_next()
+            self.view.keyPressEvent = reader_key_event
+
             # --- Bottom Bar ---
             footer = QHBoxLayout()
             
@@ -284,21 +495,138 @@ class WorkshopModule(BaseModule):
         """Switch to Metadata Stripper tool."""
         if self.btn_tool_stripper.isChecked():
             self.btn_tool_dummy.setChecked(False)
+            self.btn_tool_reader.setChecked(False)
             self.stripper_panel.setVisible(True)
             self.dummy_panel.setVisible(False)
+            self.reader_panel.setVisible(False)
+            self.btn_clear.setVisible(True)
+            self.btn_clean_selected.setVisible(True)
         else:
-            # Prevent unchecking (radio behavior)
             self.btn_tool_stripper.setChecked(True)
     
     def switch_to_dummy(self):
         """Switch to Dummy Creator tool."""
         if self.btn_tool_dummy.isChecked():
             self.btn_tool_stripper.setChecked(False)
+            self.btn_tool_reader.setChecked(False)
             self.stripper_panel.setVisible(False)
             self.dummy_panel.setVisible(True)
+            self.reader_panel.setVisible(False)
+            self.btn_clear.setVisible(False)
+            self.btn_clean_selected.setVisible(False)
         else:
-            # Prevent unchecking (radio behavior)
             self.btn_tool_dummy.setChecked(True)
+
+    def switch_to_reader(self):
+        """Switch to Metadata Reader tool."""
+        if self.btn_tool_reader.isChecked():
+            self.btn_tool_stripper.setChecked(False)
+            self.btn_tool_dummy.setChecked(False)
+            self.stripper_panel.setVisible(False)
+            self.dummy_panel.setVisible(False)
+            self.reader_panel.setVisible(True)
+            self.btn_clear.setVisible(False)
+            self.btn_clean_selected.setVisible(False)
+        else:
+            self.btn_tool_reader.setChecked(True)
+
+    # --- Metadata Reader Logic ---
+    def reader_open_images(self):
+        files, _ = QFileDialog.getOpenFileNames(self.view, "Select Images", "", "Images (*.png *.jpg *.webp)")
+        if files:
+            self.reader_load_list(files)
+
+    def reader_open_folder(self):
+        folder = QFileDialog.getExistingDirectory(self.view, "Select Folder")
+        if folder:
+            self.reader_handle_dropped([folder])
+
+    def reader_handle_dropped(self, paths):
+        all_images = []
+        extensions = ('.png', '.jpg', '.jpeg', '.webp')
+        for path in paths:
+            if os.path.isdir(path):
+                for root, _, files in os.walk(path):
+                    for f in files:
+                        if f.lower().endswith(extensions):
+                            all_images.append(os.path.join(root, f))
+            else:
+                if path.lower().endswith(extensions):
+                    all_images.append(path)
+        
+        if all_images:
+            self.reader_load_list(sorted(all_images))
+
+    def reader_load_list(self, files):
+        self.reader_image_list = files
+        self.reader_current_index = 0
+        self.reader_display_current()
+
+    def reader_prev(self):
+        if self.reader_image_list and self.reader_current_index > 0:
+            self.reader_current_index -= 1
+            self.reader_display_current()
+
+    def reader_next(self):
+        if self.reader_image_list and self.reader_current_index < len(self.reader_image_list) - 1:
+            self.reader_current_index += 1
+            self.reader_display_current()
+
+    def reader_display_current(self):
+        if 0 <= self.reader_current_index < len(self.reader_image_list):
+            path = self.reader_image_list[self.reader_current_index]
+            self.reader_index_label.setText(f"🖼️ {self.reader_current_index + 1} / {len(self.reader_image_list)}")
+            self.reader_load_data(path)
+            
+            self.btn_reader_prev.setEnabled(self.reader_current_index > 0)
+            self.btn_reader_next.setEnabled(self.reader_current_index < len(self.reader_image_list) - 1)
+
+    def reader_load_data(self, path):
+        pixmap = QPixmap(path)
+        self.reader_image_label.set_image(pixmap)
+        
+        result = UniversalParser.parse_image(path)
+        
+        s = result.get("stats", {})
+        fname = os.path.basename(path)
+        stats_text = f"📄 {fname} | 📐 {s.get('format', '-')} | 💾 {s.get('size', '-')} | 📅 {s.get('created', '-')}"
+        self.reader_stats_label.setText(stats_text)
+        
+        if "error" in result:
+            self.reader_pos_prompt.setPlainText(f"Error: {result['error']}")
+            self.reader_neg_prompt.clear()
+            self.reader_meta_info.clear()
+        else:
+            self.reader_pos_prompt.setPlainText(result.get("positive", ""))
+            self.reader_neg_prompt.setPlainText(result.get("negative", ""))
+            
+            tech_info = f"GENERATION TOOL: {result.get('tool', 'Unknown')}\n"
+            tech_info += "-------------------\n"
+            tech_info += f"Model: {result.get('model', '-')}\n"
+            tech_info += f"VAE: {result.get('vae', '-')}\n"
+            
+            loras = result.get('loras', [])
+            if loras:
+                tech_info += f"LoRAs: {', '.join(loras)}\n"
+            
+            tech_info += f"Seed: {result.get('seed', '-')}\n"
+            tech_info += f"Sampler: {result.get('sampler', '-')} | Steps: {result.get('steps', '-')} | CFG: {result.get('cfg', '-')}\n"
+            tech_info += "-------------------\n\n"
+            
+            raw_str = tech_info
+            for k, v in result.get("raw", {}).items():
+                raw_str += f"[{k}]:\n{v}\n\n"
+            self.reader_meta_info.setPlainText(raw_str)
+
+    def load_images(self, paths):
+        """Integration hook from Librarian/Gallery."""
+        self.btn_tool_reader.setChecked(True)
+        self.switch_to_reader()
+        self.reader_handle_dropped(paths)
+
+    def load_paths(self, paths):
+        """Alias for load_images."""
+        self.load_images(paths)
 
     # --- Input Handlers ---
     def change_export_dir(self):

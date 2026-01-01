@@ -77,7 +77,6 @@ class MainWindow(QMainWindow):
         # Librarian -> Gallery / Metadata
         librarian = self.get_module_by_partial_name("Librarian")
         gallery = self.get_module_by_partial_name("Gallery")
-        metadata = self.get_module_by_partial_name("Metadata")
         workshop = self.get_module_by_partial_name("Workshop")
         
         if librarian and gallery:
@@ -85,15 +84,14 @@ class MainWindow(QMainWindow):
                 lambda paths, title: self.switch_to_module(gallery, paths, title)
             )
             
-        if librarian and metadata:
-            librarian.request_open_metadata.connect(
-                lambda paths: self.switch_to_module(metadata, paths)
-            )
-
         if librarian and workshop:
+            librarian.request_open_metadata.connect(
+                lambda paths: self.switch_to_module(workshop, paths)
+            )
             librarian.request_open_workshop.connect(
                 lambda paths: self.switch_to_module(workshop, paths)
             )
+
             
         if gallery and workshop:
             gallery.request_open_workshop.connect(
@@ -163,9 +161,6 @@ class MainWindow(QMainWindow):
                 elif len(args) == 1:
                     module.load_custom_view(args[0])
                     
-            elif "Metadata" in module.name and hasattr(module, "load_paths"):
-                module.load_paths(args[0])
-                
             elif "Workshop" in module.name and hasattr(module, "load_images"):
                 module.load_images(args[0])
 
