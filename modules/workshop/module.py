@@ -7,6 +7,7 @@ from core.base_module import BaseModule
 from modules.librarian.module import ClickableThumbnail
 from modules.workshop.logic.stripper import modify_metadata, get_export_path
 from modules.workshop.logic.parser import UniversalParser
+from modules.workshop.logic.watermarker import process_image as watermark_image, get_export_path as watermark_export_path
 import os
 
 class ResponsiveImageLabel(QLabel):
@@ -87,6 +88,11 @@ class WorkshopModule(BaseModule):
         # Metadata Reader State
         self.reader_image_list = []
         self.reader_current_index = -1
+        
+        # Watermarker State
+        self.watermark_path = None
+        self.logo_path = None
+        self.watermark_queue = []
 
     @property
     def name(self):
@@ -116,22 +122,7 @@ class WorkshopModule(BaseModule):
             lbl_title = QLabel("🛠️ The Workshop")
             lbl_title.setStyleSheet("font-size: 24px; font-weight: bold; color: #00ffcc;")
             header.addWidget(lbl_title)
-            
-            self.btn_clear = QPushButton("🗑️ Clear Queue")
-            self.btn_clear.clicked.connect(self.clear_queue)
-            self.btn_clear.setStyleSheet("background-color: #444; color: white; padding: 5px 15px; border-radius: 5px;")
-            
-            self.btn_clean_selected = QPushButton("🧹 Clean Selected")
-            self.btn_clean_selected.setEnabled(False)
-            self.btn_clean_selected.clicked.connect(self.remove_selected)
-            self.btn_clean_selected.setStyleSheet("""
-                QPushButton { background-color: #442222; color: #ff5555; padding: 5px 15px; border-radius: 5px; border: 1px solid #ff5555; }
-                QPushButton:disabled { color: #555; border-color: #333; }
-            """)
-            
             header.addStretch()
-            header.addWidget(self.btn_clean_selected)
-            header.addWidget(self.btn_clear)
             layout.addLayout(header)
 
             # --- Tool Selection Panel (Center) ---
@@ -229,6 +220,35 @@ class WorkshopModule(BaseModule):
             """)
             tool_select_layout.addWidget(self.btn_tool_reader)
             
+            tool_select_layout.addSpacing(15)
+            
+            # Watermarker Tool Button
+            self.btn_tool_watermarker = QPushButton("🖼️ Watermarker")
+            self.btn_tool_watermarker.setCheckable(True)
+            self.btn_tool_watermarker.clicked.connect(self.switch_to_watermarker)
+            self.btn_tool_watermarker.setFixedSize(200, 60)
+            self.btn_tool_watermarker.setStyleSheet("""
+                QPushButton { 
+                    background-color: #222; 
+                    color: #50fa7b; 
+                    text-align: center; 
+                    padding: 10px; 
+                    border-radius: 8px; 
+                    font-weight: bold; 
+                    font-size: 14px;
+                    border: 2px solid #333;
+                }
+                QPushButton:checked { 
+                    background-color: #1a3322; 
+                    border: 2px solid #50fa7b; 
+                }
+                QPushButton:hover:!checked { 
+                    background-color: #2a2a2a; 
+                    border: 2px solid #555;
+                }
+            """)
+            tool_select_layout.addWidget(self.btn_tool_watermarker)
+            
             tool_select_layout.addStretch()
             layout.addLayout(tool_select_layout)
 
@@ -312,9 +332,34 @@ class WorkshopModule(BaseModule):
             queue_container.setStyleSheet("background-color: #111; border-radius: 10px;")
             queue_layout = QVBoxLayout(queue_container)
             
+            # Header for queue with buttons
+            queue_header = QHBoxLayout()
             lbl_queue = QLabel("PROCESSING QUEUE (Drop files here)")
             lbl_queue.setStyleSheet("color: #888; font-weight: bold; font-size: 10px;")
-            queue_layout.addWidget(lbl_queue)
+            queue_header.addWidget(lbl_queue)
+            queue_header.addStretch()
+            
+            self.btn_clean_selected = QPushButton("🧹 Remove Selected")
+            self.btn_clean_selected.setEnabled(False)
+            self.btn_clean_selected.clicked.connect(self.remove_selected)
+            self.btn_clean_selected.setFixedWidth(130)
+            self.btn_clean_selected.setStyleSheet("""
+                QPushButton { background-color: #222; color: #ff5555; font-size: 10px; border: 1px solid #444; border-radius: 4px; padding: 2px; }
+                QPushButton:hover { background-color: #333; border: 1px solid #ff5555; }
+                QPushButton:disabled { color: #444; border-color: #222; }
+            """)
+            queue_header.addWidget(self.btn_clean_selected)
+            
+            self.btn_clear = QPushButton("🗑️ Clear All")
+            self.btn_clear.clicked.connect(self.clear_queue)
+            self.btn_clear.setFixedWidth(80)
+            self.btn_clear.setStyleSheet("""
+                QPushButton { background-color: #222; color: #aaa; font-size: 10px; border: 1px solid #444; border-radius: 4px; padding: 2px; }
+                QPushButton:hover { background-color: #333; color: white; }
+            """)
+            queue_header.addWidget(self.btn_clear)
+            
+            queue_layout.addLayout(queue_header)
             
             self.scroll = QScrollArea()
             self.scroll.setWidgetResizable(True)
@@ -489,6 +534,214 @@ class WorkshopModule(BaseModule):
                         self.reader_next()
             self.view.keyPressEvent = reader_key_event
 
+            # --- Watermarker Content Area (initially hidden) ---
+            self.watermarker_panel = QWidget()
+            watermarker_layout = QVBoxLayout(self.watermarker_panel)
+            watermarker_layout.setContentsMargins(0, 0, 0, 0)
+            
+            watermarker_controls = QHBoxLayout()
+            
+            # Left: Controls Panel (Scrollable)
+            wm_control_scroll = QScrollArea()
+            wm_control_scroll.setFixedWidth(310)
+            wm_control_scroll.setWidgetResizable(True)
+            wm_control_scroll.setStyleSheet("border: none; background: transparent;")
+            
+            wm_control_container = QFrame()
+            wm_control_container.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333; border-radius: 10px;")
+            wm_control_layout = QVBoxLayout(wm_control_container)
+            wm_control_layout.setContentsMargins(15, 15, 15, 15)
+            wm_control_layout.setSpacing(10)
+            
+            # 1. Asset Loading
+            lbl_assets = QLabel("📥 1. LOAD ASSETS")
+            lbl_assets.setStyleSheet("color: #50fa7b; font-weight: bold; font-size: 11px;")
+            wm_control_layout.addWidget(lbl_assets)
+            
+            self.btn_load_watermark = QPushButton("🎨 Load Watermark Image")
+            self.btn_load_watermark.clicked.connect(self.load_watermark_asset)
+            self.btn_load_watermark.setStyleSheet("background-color: #333; color: white; padding: 8px; border-radius: 5px;")
+            wm_control_layout.addWidget(self.btn_load_watermark)
+            
+            self.lbl_watermark_status = QLabel("No watermark loaded")
+            self.lbl_watermark_status.setStyleSheet("color: #888; font-size: 10px; padding: 2px;")
+            self.lbl_watermark_status.setWordWrap(True)
+            wm_control_layout.addWidget(self.lbl_watermark_status)
+            
+            self.btn_load_logo = QPushButton("🏷️ Load Logo Image")
+            self.btn_load_logo.clicked.connect(self.load_logo_asset)
+            self.btn_load_logo.setStyleSheet("background-color: #333; color: white; padding: 8px; border-radius: 5px;")
+            wm_control_layout.addWidget(self.btn_load_logo)
+            
+            self.lbl_logo_status = QLabel("No logo loaded (optional)")
+            self.lbl_logo_status.setStyleSheet("color: #888; font-size: 10px; padding: 2px;")
+            self.lbl_logo_status.setWordWrap(True)
+            wm_control_layout.addWidget(self.lbl_logo_status)
+            
+            wm_control_layout.addSpacing(5)
+            
+            # 2. Watermark Settings
+            lbl_wm_settings = QLabel("🎨 2. WATERMARK SETTINGS")
+            lbl_wm_settings.setStyleSheet("color: #50fa7b; font-weight: bold; font-size: 11px;")
+            wm_control_layout.addWidget(lbl_wm_settings)
+            
+            # Angle dropdown
+            from PySide6.QtWidgets import QComboBox
+            lbl_angle = QLabel("Rotation Angle:")
+            lbl_angle.setStyleSheet("color: #aaa; font-size: 10px;")
+            wm_control_layout.addWidget(lbl_angle)
+            
+            self.combo_wm_angle = QComboBox()
+            self.combo_wm_angle.addItems(["0°", "45°", "90°", "135°", "180°", "225°", "270°", "315°"])
+            self.combo_wm_angle.setStyleSheet("background-color: #222; color: white; padding: 5px; border: 1px solid #444;")
+            wm_control_layout.addWidget(self.combo_wm_angle)
+            
+            # Scale slider
+            lbl_scale = QLabel("Scale: 100%")
+            lbl_scale.setStyleSheet("color: #aaa; font-size: 10px;")
+            wm_control_layout.addWidget(lbl_scale)
+            self.lbl_wm_scale = lbl_scale
+            
+            from PySide6.QtWidgets import QSlider
+            self.slider_wm_scale = QSlider(Qt.Horizontal)
+            self.slider_wm_scale.setMinimum(10)
+            self.slider_wm_scale.setMaximum(200)
+            self.slider_wm_scale.setValue(100)
+            self.slider_wm_scale.valueChanged.connect(lambda v: self.lbl_wm_scale.setText(f"Scale: {v}%"))
+            self.slider_wm_scale.setStyleSheet("QSlider::groove:horizontal { background: #333; height: 6px; border-radius: 3px; } QSlider::handle:horizontal { background: #50fa7b; width: 14px; margin: -4px 0; border-radius: 7px; }")
+            wm_control_layout.addWidget(self.slider_wm_scale)
+            
+            # Opacity slider
+            lbl_opacity = QLabel("Opacity: 30%")
+            lbl_opacity.setStyleSheet("color: #aaa; font-size: 10px;")
+            wm_control_layout.addWidget(lbl_opacity)
+            self.lbl_wm_opacity = lbl_opacity
+            
+            self.slider_wm_opacity = QSlider(Qt.Horizontal)
+            self.slider_wm_opacity.setMinimum(0)
+            self.slider_wm_opacity.setMaximum(100)
+            self.slider_wm_opacity.setValue(30)
+            self.slider_wm_opacity.valueChanged.connect(lambda v: self.lbl_wm_opacity.setText(f"Opacity: {v}%"))
+            self.slider_wm_opacity.setStyleSheet("QSlider::groove:horizontal { background: #333; height: 6px; border-radius: 3px; } QSlider::handle:horizontal { background: #50fa7b; width: 14px; margin: -4px 0; border-radius: 7px; }")
+            wm_control_layout.addWidget(self.slider_wm_opacity)
+            
+            wm_control_layout.addSpacing(5)
+            
+            # 3. Logo Settings
+            lbl_logo_settings = QLabel("🏷️ 3. LOGO SETTINGS")
+            lbl_logo_settings.setStyleSheet("color: #50fa7b; font-weight: bold; font-size: 11px;")
+            wm_control_layout.addWidget(lbl_logo_settings)
+            
+            # Position dropdown
+            lbl_position = QLabel("Position:")
+            lbl_position.setStyleSheet("color: #aaa; font-size: 10px;")
+            wm_control_layout.addWidget(lbl_position)
+            
+            self.combo_logo_position = QComboBox()
+            self.combo_logo_position.addItems(["Top-Right", "Top-Left", "Bottom-Right", "Bottom-Left"])
+            self.combo_logo_position.setStyleSheet("background-color: #222; color: white; padding: 5px; border: 1px solid #444;")
+            wm_control_layout.addWidget(self.combo_logo_position)
+            
+            # Size slider
+            lbl_size = QLabel("Size: 150px")
+            lbl_size.setStyleSheet("color: #aaa; font-size: 10px;")
+            wm_control_layout.addWidget(lbl_size)
+            self.lbl_logo_size = lbl_size
+            
+            self.slider_logo_size = QSlider(Qt.Horizontal)
+            self.slider_logo_size.setMinimum(50)
+            self.slider_logo_size.setMaximum(500)
+            self.slider_logo_size.setValue(150)
+            self.slider_logo_size.valueChanged.connect(lambda v: self.lbl_logo_size.setText(f"Size: {v}px"))
+            self.slider_logo_size.setStyleSheet("QSlider::groove:horizontal { background: #333; height: 6px; border-radius: 3px; } QSlider::handle:horizontal { background: #50fa7b; width: 14px; margin: -4px 0; border-radius: 7px; }")
+            wm_control_layout.addWidget(self.slider_logo_size)
+            
+            wm_control_layout.addSpacing(10)
+            
+            # Preview button
+            self.btn_wm_preview = QPushButton("👁️ Generate Preview")
+            self.btn_wm_preview.clicked.connect(self.generate_watermark_preview)
+            self.btn_wm_preview.setEnabled(False)
+            self.btn_wm_preview.setStyleSheet("""
+                QPushButton { background-color: #00ffcc; color: black; font-weight: bold; padding: 12px; border-radius: 5px; }
+                QPushButton:hover { background-color: #00ccaa; }
+                QPushButton:disabled { background-color: #222; color: #444; border: 1px solid #333; }
+            """)
+            wm_control_layout.addWidget(self.btn_wm_preview)
+            
+            wm_control_layout.addStretch()
+            
+            wm_control_scroll.setWidget(wm_control_container)
+            watermarker_controls.addWidget(wm_control_scroll)
+            
+            # Right: Preview and Queue
+            wm_right_panel = QWidget()
+            wm_right_layout = QVBoxLayout(wm_right_panel)
+            
+            # Preview area
+            preview_frame = QFrame()
+            preview_frame.setStyleSheet("background-color: #111; border: 1px solid #333; border-radius: 8px;")
+            preview_layout = QVBoxLayout(preview_frame)
+            
+            lbl_preview_title = QLabel("PREVIEW")
+            lbl_preview_title.setStyleSheet("color: #888; font-weight: bold; font-size: 10px; padding: 5px;")
+            lbl_preview_title.setAlignment(Qt.AlignCenter)
+            preview_layout.addWidget(lbl_preview_title)
+            
+            self.wm_preview_label = QLabel()
+            self.wm_preview_label.setAlignment(Qt.AlignCenter)
+            self.wm_preview_label.setMinimumHeight(300)
+            self.wm_preview_label.setStyleSheet("color: #666; padding: 20px;")
+            self.wm_preview_label.setText("Load assets and click 'Generate Preview'")
+            preview_layout.addWidget(self.wm_preview_label, 1)
+            
+            wm_right_layout.addWidget(preview_frame, 1)
+            
+            # Batch queue area
+            queue_frame = QFrame()
+            queue_frame.setStyleSheet("background-color: #111; border: 1px solid #333; border-radius: 8px; margin-top: 10px;")
+            queue_layout = QVBoxLayout(queue_frame)
+            
+            queue_header = QHBoxLayout()
+            lbl_queue_title = QLabel("BATCH QUEUE (Drop images here)")
+            lbl_queue_title.setStyleSheet("color: #888; font-weight: bold; font-size: 10px;")
+            queue_header.addWidget(lbl_queue_title)
+            queue_header.addStretch()
+            
+            self.btn_wm_add_images = QPushButton("➕ Add Images")
+            self.btn_wm_add_images.clicked.connect(self.wm_add_images)
+            self.btn_wm_add_images.setStyleSheet("background-color: #222; color: #aaa; font-size: 10px; border: 1px solid #444; border-radius: 4px; padding: 2px;")
+            self.btn_wm_add_images.setFixedWidth(100)
+            queue_header.addWidget(self.btn_wm_add_images)
+            
+            self.btn_wm_clear = QPushButton("🗑️ Clear")
+            self.btn_wm_clear.clicked.connect(self.wm_clear_queue)
+            self.btn_wm_clear.setStyleSheet("background-color: #222; color: #aaa; font-size: 10px; border: 1px solid #444; border-radius: 4px; padding: 2px;")
+            self.btn_wm_clear.setFixedWidth(60)
+            queue_header.addWidget(self.btn_wm_clear)
+            
+            queue_layout.addLayout(queue_header)
+            
+            self.wm_queue_scroll = QScrollArea()
+            self.wm_queue_scroll.setWidgetResizable(True)
+            self.wm_queue_scroll.setStyleSheet("border: none; background: transparent;")
+            self.wm_queue_scroll.setMinimumHeight(150)
+            
+            self.wm_queue_grid_widget = QWidget()
+            self.wm_queue_grid_layout = QGridLayout(self.wm_queue_grid_widget)
+            self.wm_queue_grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            self.wm_queue_scroll.setWidget(self.wm_queue_grid_widget)
+            
+            queue_layout.addWidget(self.wm_queue_scroll)
+            
+            wm_right_layout.addWidget(queue_frame)
+            
+            watermarker_controls.addWidget(wm_right_panel)
+            watermarker_layout.addLayout(watermarker_controls)
+            
+            self.watermarker_panel.setVisible(False)
+            layout.addWidget(self.watermarker_panel)
+
             # --- Bottom Bar ---
             footer = QHBoxLayout()
             
@@ -518,11 +771,12 @@ class WorkshopModule(BaseModule):
         if self.btn_tool_stripper.isChecked():
             self.btn_tool_dummy.setChecked(False)
             self.btn_tool_reader.setChecked(False)
+            self.btn_tool_watermarker.setChecked(False)
             self.stripper_panel.setVisible(True)
             self.dummy_panel.setVisible(False)
             self.reader_panel.setVisible(False)
-            self.btn_clear.setVisible(True)
-            self.btn_clean_selected.setVisible(True)
+            self.watermarker_panel.setVisible(False)
+            self.btn_process.setEnabled(len(self.queue_paths) > 0)
         else:
             self.btn_tool_stripper.setChecked(True)
     
@@ -531,11 +785,12 @@ class WorkshopModule(BaseModule):
         if self.btn_tool_dummy.isChecked():
             self.btn_tool_stripper.setChecked(False)
             self.btn_tool_reader.setChecked(False)
+            self.btn_tool_watermarker.setChecked(False)
             self.stripper_panel.setVisible(False)
             self.dummy_panel.setVisible(True)
             self.reader_panel.setVisible(False)
-            self.btn_clear.setVisible(False)
-            self.btn_clean_selected.setVisible(False)
+            self.watermarker_panel.setVisible(False)
+            self.btn_process.setEnabled(False) # Dummy has its own button
         else:
             self.btn_tool_dummy.setChecked(True)
 
@@ -544,11 +799,12 @@ class WorkshopModule(BaseModule):
         if self.btn_tool_reader.isChecked():
             self.btn_tool_stripper.setChecked(False)
             self.btn_tool_dummy.setChecked(False)
+            self.btn_tool_watermarker.setChecked(False)
             self.stripper_panel.setVisible(False)
             self.dummy_panel.setVisible(False)
             self.reader_panel.setVisible(True)
-            self.btn_clear.setVisible(False)
-            self.btn_clean_selected.setVisible(False)
+            self.watermarker_panel.setVisible(False)
+            self.btn_process.setEnabled(False)
         else:
             self.btn_tool_reader.setChecked(True)
 
@@ -768,6 +1024,16 @@ class WorkshopModule(BaseModule):
         self.btn_process.setEnabled(len(self.queue_paths) > 0)
 
     def process_queue(self):
+        """Processes the images in the queue based on the active tool."""
+        # 1. Determine active tool
+        if self.btn_tool_stripper.isChecked():
+            self._process_modifier_batch()
+        elif self.btn_tool_watermarker.isChecked():
+            self._process_watermark_batch()
+        else:
+            QMessageBox.information(self.view, "Processing", "Please select a supported tool in the Workshop.")
+
+    def _process_modifier_batch(self):
         if not self.queue_paths:
             return
             
@@ -789,8 +1055,6 @@ class WorkshopModule(BaseModule):
                 success_count += 1
             
             self.progress.setValue(self.progress.value() + 1)
-            # Give UI a chance to update
-            from PySide6.QtWidgets import QApplication
             QApplication.instance().processEvents()
 
         self.progress.setVisible(False)
@@ -799,6 +1063,61 @@ class WorkshopModule(BaseModule):
         
         QMessageBox.information(self.view, "Processing Complete", 
                                 f"Exported {success_count} of {count} images to:\n{self.export_dir}")
+
+    def _process_watermark_batch(self):
+        if not self.watermark_queue:
+            QMessageBox.warning(self.view, "No Images", "The Watermarker queue is empty. Drop some images first!")
+            return
+        
+        if not self.watermark_path:
+            QMessageBox.warning(self.view, "No Watermark", "Please load a watermark image first.")
+            return
+
+        count = len(self.watermark_queue)
+        self.progress.setMaximum(count)
+        self.progress.setValue(0)
+        self.progress.setVisible(True)
+        self.btn_process.setEnabled(False)
+        
+        # Get parameters
+        angle_text = self.combo_wm_angle.currentText().replace("°", "")
+        angle = int(angle_text)
+        scale = self.slider_wm_scale.value() / 100.0
+        opacity = self.slider_wm_opacity.value() / 100.0
+        
+        logo_pos_map = {
+            "Top-Right": "top-right",
+            "Top-Left": "top-left",
+            "Bottom-Right": "bottom-right",
+            "Bottom-Left": "bottom-left"
+        }
+        logo_pos = logo_pos_map.get(self.combo_logo_position.currentText(), "top-right")
+        logo_size = self.slider_logo_size.value()
+
+        success_count = 0
+        for path in self.watermark_queue:
+            dest = watermark_export_path(path, export_dir=os.path.join(self.export_dir, "watermarked"))
+            success, _ = watermark_image(
+                path, dest, 
+                watermark_path=self.watermark_path, 
+                logo_path=self.logo_path,
+                wm_angle=angle,
+                wm_scale=scale,
+                wm_opacity=opacity,
+                logo_position=logo_pos,
+                logo_size=logo_size
+            )
+            if success:
+                success_count += 1
+            
+            self.progress.setValue(self.progress.value() + 1)
+            QApplication.instance().processEvents()
+
+        self.progress.setVisible(False)
+        self.btn_process.setEnabled(True)
+        
+        QMessageBox.information(self.view, "Watermarking Complete", 
+                                f"Successfully processed {success_count} of {count} images.\nResults saved in: {self.export_dir}/watermarked")
 
     def open_dummy_creator_dialog(self):
         """Opens the Dummy Creator dialog for folder selection and processing."""
@@ -893,3 +1212,133 @@ class WorkshopModule(BaseModule):
         
         btn_close.setEnabled(True)
         progress_dialog.exec()
+
+    def switch_to_watermarker(self):
+        """Switch to Watermarker tool."""
+        if self.btn_tool_watermarker.isChecked():
+            self.btn_tool_stripper.setChecked(False)
+            self.btn_tool_dummy.setChecked(False)
+            self.btn_tool_reader.setChecked(False)
+            self.stripper_panel.setVisible(False)
+            self.dummy_panel.setVisible(False)
+            self.reader_panel.setVisible(False)
+            self.watermarker_panel.setVisible(True)
+            self.btn_process.setEnabled(len(self.watermark_queue) > 0)
+        else:
+            self.btn_tool_watermarker.setChecked(True)
+
+    # --- Watermarker Logic ---
+    def load_watermark_asset(self):
+        """Load watermark image."""
+        file, _ = QFileDialog.getOpenFileName(self.view, "Select Watermark Image", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        if file:
+            self.watermark_path = file
+            self.lbl_watermark_status.setText(f"✅ {os.path.basename(file)}")
+            self.lbl_watermark_status.setStyleSheet("color: #50fa7b; font-size: 10px; padding: 5px;")
+            self._update_preview_button()
+    
+    def load_logo_asset(self):
+        """Load logo image."""
+        file, _ = QFileDialog.getOpenFileName(self.view, "Select Logo Image", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        if file:
+            self.logo_path = file
+            self.lbl_logo_status.setText(f"✅ {os.path.basename(file)}")
+            self.lbl_logo_status.setStyleSheet("color: #50fa7b; font-size: 10px; padding: 5px;")
+            self._update_preview_button()
+    
+    def _update_preview_button(self):
+        """Enable preview button if watermark is loaded."""
+        self.btn_wm_preview.setEnabled(self.watermark_path is not None)
+    
+    def generate_watermark_preview(self):
+        """Generate and display preview with current settings."""
+        if not self.watermark_path:
+            return
+        
+        try:
+            # Create a demo image for preview
+            from PIL import Image
+            demo_image = Image.new('RGBA', (800, 600), (255, 255, 255, 255))
+            
+            # Get parameters
+            angle_text = self.combo_wm_angle.currentText().replace("°", "")
+            angle = int(angle_text)
+            scale = self.slider_wm_scale.value() / 100.0
+            opacity = self.slider_wm_opacity.value() / 100.0
+            
+            # Apply watermark
+            from modules.workshop.logic.watermarker import apply_watermark_pattern, apply_logo
+            result = apply_watermark_pattern(demo_image, self.watermark_path, angle, scale, opacity)
+            
+            # Apply logo if loaded
+            if self.logo_path:
+                position_map = {
+                    "Top-Right": "top-right",
+                    "Top-Left": "top-left",
+                    "Bottom-Right": "bottom-right",
+                    "Bottom-Left": "bottom-left"
+                }
+                position = position_map.get(self.combo_logo_position.currentText(), "top-right")
+                size = self.slider_logo_size.value()
+                result = apply_logo(result, self.logo_path, position, size)
+            
+            # Convert to QPixmap and display
+            result_rgb = result.convert('RGB')
+            result_rgb.save("temp_preview.jpg", quality=90)
+            
+            pixmap = QPixmap("temp_preview.jpg")
+            scaled_pixmap = pixmap.scaled(
+                self.wm_preview_label.width() - 40, 
+                self.wm_preview_label.height() - 40,
+                Qt.KeepAspectRatio, 
+                Qt.SmoothTransformation
+            )
+            self.wm_preview_label.setPixmap(scaled_pixmap)
+            
+            # Cleanup
+            if os.path.exists("temp_preview.jpg"):
+                os.remove("temp_preview.jpg")
+                
+        except Exception as e:
+            QMessageBox.warning(self.view, "Preview Error", f"Failed to generate preview:\n{str(e)}")
+    
+    def wm_add_images(self):
+        """Add images to watermark queue."""
+        files, _ = QFileDialog.getOpenFileNames(self.view, "Select Images to Watermark", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        if files:
+            for f in files:
+                if f not in self.watermark_queue:
+                    self.watermark_queue.append(f)
+            self._update_wm_queue_grid()
+    
+    def wm_clear_queue(self):
+        """Clear watermark queue."""
+        self.watermark_queue.clear()
+        self._update_wm_queue_grid()
+    
+    def _update_wm_queue_grid(self):
+        """Update watermark queue grid display."""
+        # Clear existing
+        while self.wm_queue_grid_layout.count():
+            item = self.wm_queue_grid_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Add thumbnails
+        cols = 6
+        for i, path in enumerate(self.watermark_queue):
+            row = i // cols
+            col = i % cols
+            
+            thumb = QLabel()
+            thumb.setFixedSize(80, 80)
+            thumb.setStyleSheet("border: 1px solid #333; border-radius: 4px;")
+            thumb.setAlignment(Qt.AlignCenter)
+            
+            pix = QPixmap(path)
+            if not pix.isNull():
+                thumb.setPixmap(pix.scaled(78, 78, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            
+            self.wm_queue_grid_layout.addWidget(thumb, row, col)
+            
+        self.btn_process.setEnabled(len(self.watermark_queue) > 0)
