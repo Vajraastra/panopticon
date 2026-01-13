@@ -1,0 +1,1 @@
+# Fashion Studio logic package

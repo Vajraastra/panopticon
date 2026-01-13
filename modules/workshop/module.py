@@ -1,13 +1,15 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
                                QScrollArea, QGridLayout, QFrame, QFileDialog, QMessageBox, QProgressBar,
-                               QTextEdit, QSizePolicy, QSplitter, QApplication)
-from PySide6.QtCore import Qt, Signal, Slot, QSize
+                               QTextEdit, QSizePolicy, QSplitter, QApplication, QSpinBox, QCheckBox, QComboBox, QSlider)
+from PySide6.QtCore import Qt, Signal, Slot, QSize, QSettings
 from PySide6.QtGui import QPixmap, QIcon, QDragEnterEvent, QDropEvent, QImage, QKeyEvent
 from core.base_module import BaseModule
 from modules.librarian.module import ClickableThumbnail
 from modules.workshop.logic.stripper import modify_metadata, get_export_path
 from modules.workshop.logic.parser import UniversalParser
 from modules.workshop.logic.watermarker import process_image as watermark_image, get_export_path as watermark_export_path
+from modules.workshop.logic.optimizer import (optimize_image, analyze_image, 
+                                            get_export_path as optimizer_export_path)
 import os
 
 class ResponsiveImageLabel(QLabel):
@@ -80,9 +82,10 @@ class ResponsiveImageLabel(QLabel):
 class WorkshopModule(BaseModule):
     def __init__(self):
         super().__init__()
+        self.settings = QSettings("Panopticon", "Workshop")
         self.queue_paths = []
         self.selected_paths = set()
-        self.export_dir = os.path.abspath("exports")
+        self.export_dir = os.path.abspath("Workshop_Exports")
         self.view = None
         
         # Metadata Reader State
@@ -93,6 +96,22 @@ class WorkshopModule(BaseModule):
         self.watermark_path = None
         self.logo_path = None
         self.watermark_queue = []
+        
+        # Paths persistence
+        self.last_asset_dir = self.settings.value("last_asset_dir", os.path.expanduser("~"))
+        self.last_watermark_dir = self.settings.value("last_watermark_dir", self.last_asset_dir)
+        self.last_logo_dir = self.settings.value("last_logo_dir", self.last_asset_dir)
+        self.last_batch_dir = self.settings.value("last_batch_dir", self.last_asset_dir)
+        self.last_optimizer_dir = self.settings.value("last_optimizer_dir", self.last_asset_dir)
+        
+        # Optimizer State
+        self.optimizer_queue = []
+        self.optimizer_analysis_results = {}
+        
+        # Root export dir
+        self.export_dir = self.settings.value("export_dir", os.path.abspath("Workshop_Exports"))
+        if not os.path.isabs(self.export_dir):
+            self.export_dir = os.path.abspath(self.export_dir)
 
     @property
     def name(self):
@@ -118,144 +137,104 @@ class WorkshopModule(BaseModule):
             layout.setContentsMargins(20, 20, 20, 20)
 
             # --- Header ---
-            header = QHBoxLayout()
-            lbl_title = QLabel("🛠️ The Workshop")
-            lbl_title.setStyleSheet("font-size: 24px; font-weight: bold; color: #00ffcc;")
-            header.addWidget(lbl_title)
-            header.addStretch()
-            layout.addLayout(header)
-
-            # --- Tool Selection Panel (Center) ---
-            tool_select_layout = QHBoxLayout()
-            tool_select_layout.setContentsMargins(0, 20, 0, 20)
-            tool_select_layout.addStretch()
-            
-            lbl_select = QLabel("SELECT A TOOL:")
-            lbl_select.setStyleSheet("color: #888; font-weight: bold; font-size: 12px; margin-right: 15px;")
-            tool_select_layout.addWidget(lbl_select)
-            
-            # Metadata Modifier Tool Button
-            self.btn_tool_stripper = QPushButton("🛡️ Metadata Modifier")
-            self.btn_tool_stripper.setCheckable(True)
-            self.btn_tool_stripper.setChecked(True)
-            self.btn_tool_stripper.clicked.connect(self.switch_to_stripper)
-            self.btn_tool_stripper.setFixedSize(200, 60)
-            self.btn_tool_stripper.setStyleSheet("""
+            self.header_layout = QHBoxLayout()
+            self.btn_back_to_dash = QPushButton("↩ WORKSHOP")
+            self.btn_back_to_dash.setVisible(False)
+            self.btn_back_to_dash.clicked.connect(self.switch_to_dashboard)
+            self.btn_back_to_dash.setFixedSize(120, 35)
+            self.btn_back_to_dash.setStyleSheet("""
                 QPushButton { 
-                    background-color: #222; 
+                    background-color: #333; 
                     color: #00ffcc; 
-                    text-align: center; 
-                    padding: 10px; 
-                    border-radius: 8px; 
+                    border-radius: 6px; 
                     font-weight: bold; 
-                    font-size: 14px;
-                    border: 2px solid #333;
+                    font-size: 11px;
                 }
-                QPushButton:checked { 
-                    background-color: #224433; 
-                    border: 2px solid #00ffcc; 
-                }
-                QPushButton:hover:!checked { 
-                    background-color: #2a2a2a; 
-                    border: 2px solid #555;
-                }
+                QPushButton:hover { background-color: #444; }
             """)
-            tool_select_layout.addWidget(self.btn_tool_stripper)
+            self.header_layout.addWidget(self.btn_back_to_dash)
+            self.header_layout.addSpacing(10)
+
+            self.lbl_title = QLabel("🛠️ The Workshop")
+            self.lbl_title.setStyleSheet("font-size: 24px; font-weight: bold; color: #00ffcc;")
+            self.header_layout.addWidget(self.lbl_title)
+            self.header_layout.addStretch()
+            layout.addLayout(self.header_layout)
+
+            # --- Dashboard Area ---
+            self.workshop_dashboard = QWidget()
+            dashboard_layout = QVBoxLayout(self.workshop_dashboard)
+            dashboard_layout.setContentsMargins(0, 40, 0, 40)
+            dashboard_layout.setAlignment(Qt.AlignCenter)
             
-            tool_select_layout.addSpacing(15)
+            lbl_dash_welcome = QLabel("What are we building today?")
+            lbl_dash_welcome.setStyleSheet("color: white; font-size: 28px; font-weight: bold; margin-bottom: 30px;")
+            lbl_dash_welcome.setAlignment(Qt.AlignCenter)
+            dashboard_layout.addWidget(lbl_dash_welcome)
             
-            # Dummy Creator Tool Button
-            self.btn_tool_dummy = QPushButton("🎭 Dummy Creator")
-            self.btn_tool_dummy.setCheckable(True)
-            self.btn_tool_dummy.clicked.connect(self.switch_to_dummy)
-            self.btn_tool_dummy.setFixedSize(200, 60)
-            self.btn_tool_dummy.setStyleSheet("""
-                QPushButton { 
-                    background-color: #222; 
-                    color: #f1fa8c; 
-                    text-align: center; 
-                    padding: 10px; 
-                    border-radius: 8px; 
-                    font-weight: bold; 
-                    font-size: 14px;
-                    border: 2px solid #333;
-                }
-                QPushButton:checked { 
-                    background-color: #332211; 
-                    border: 2px solid #f1fa8c; 
-                }
-                QPushButton:hover:!checked { 
-                    background-color: #2a2a2a; 
-                    border: 2px solid #555;
-                }
+            self.cards_grid = QGridLayout()
+            self.cards_grid.setSpacing(25)
+            self.cards_grid.setAlignment(Qt.AlignCenter)
+            
+            # Tool Cards
+            self.cards_grid.addWidget(self.create_tool_card(
+                "🛡️ Metadata Modifier", 
+                "Clean stripping or custom prompt injection for batch images.",
+                "#00ffcc", self.switch_to_stripper
+            ), 0, 0)
+            
+            self.cards_grid.addWidget(self.create_tool_card(
+                "🎭 Dummy Creator", 
+                "Save disk space by creating 32x32 placeholders for your library.",
+                "#f1fa8c", self.switch_to_dummy
+            ), 0, 1)
+            
+            self.cards_grid.addWidget(self.create_tool_card(
+                "📋 Metadata Reader", 
+                "Deep inspection of AI generation data (SD, ComfyUI, etc).",
+                "#bd93f9", self.switch_to_reader
+            ), 1, 0)
+            
+            self.cards_grid.addWidget(self.create_tool_card(
+                "🖼️ Watermarker", 
+                "Apply patterns and logos with professional transparency.",
+                "#50fa7b", self.switch_to_watermarker
+            ), 1, 1)
+
+            self.cards_grid.addWidget(self.create_tool_card(
+                "⚡ Image Optimizer", 
+                "Reduce size significantly without losing perceptible quality.",
+                "#ffb86c", self.switch_to_optimizer
+            ), 2, 0)
+            
+            dashboard_layout.addLayout(self.cards_grid)
+            dashboard_layout.addStretch()
+            
+            # Settings button at the bottom of splash
+            btn_settings_dash = QPushButton("⚙️ Workshop Settings")
+            btn_settings_dash.setFixedSize(200, 40)
+            btn_settings_dash.clicked.connect(self.switch_to_settings)
+            btn_settings_dash.setStyleSheet("""
+                QPushButton { background-color: #222; color: #ff79c6; border-radius: 8px; border: 1px solid #333; font-weight: bold; }
+                QPushButton:hover { background-color: #333; border-color: #ff79c6; }
             """)
-            tool_select_layout.addWidget(self.btn_tool_dummy)
+            dashboard_layout.addWidget(btn_settings_dash, 0, Qt.AlignCenter)
             
-            tool_select_layout.addSpacing(15)
-            
-            # Metadata Reader Tool Button
-            self.btn_tool_reader = QPushButton("📋 Metadata Reader")
-            self.btn_tool_reader.setCheckable(True)
-            self.btn_tool_reader.clicked.connect(self.switch_to_reader)
-            self.btn_tool_reader.setFixedSize(200, 60)
-            self.btn_tool_reader.setStyleSheet("""
-                QPushButton { 
-                    background-color: #222; 
-                    color: #bd93f9; 
-                    text-align: center; 
-                    padding: 10px; 
-                    border-radius: 8px; 
-                    font-weight: bold; 
-                    font-size: 14px;
-                    border: 2px solid #333;
-                }
-                QPushButton:checked { 
-                    background-color: #221133; 
-                    border: 2px solid #bd93f9; 
-                }
-                QPushButton:hover:!checked { 
-                    background-color: #2a2a2a; 
-                    border: 2px solid #555;
-                }
-            """)
-            tool_select_layout.addWidget(self.btn_tool_reader)
-            
-            tool_select_layout.addSpacing(15)
-            
-            # Watermarker Tool Button
-            self.btn_tool_watermarker = QPushButton("🖼️ Watermarker")
-            self.btn_tool_watermarker.setCheckable(True)
-            self.btn_tool_watermarker.clicked.connect(self.switch_to_watermarker)
-            self.btn_tool_watermarker.setFixedSize(200, 60)
-            self.btn_tool_watermarker.setStyleSheet("""
-                QPushButton { 
-                    background-color: #222; 
-                    color: #50fa7b; 
-                    text-align: center; 
-                    padding: 10px; 
-                    border-radius: 8px; 
-                    font-weight: bold; 
-                    font-size: 14px;
-                    border: 2px solid #333;
-                }
-                QPushButton:checked { 
-                    background-color: #1a3322; 
-                    border: 2px solid #50fa7b; 
-                }
-                QPushButton:hover:!checked { 
-                    background-color: #2a2a2a; 
-                    border: 2px solid #555;
-                }
-            """)
-            tool_select_layout.addWidget(self.btn_tool_watermarker)
-            
-            tool_select_layout.addStretch()
-            layout.addLayout(tool_select_layout)
+            layout.addWidget(self.workshop_dashboard)
 
             # --- Metadata Stripper Content Area ---
             self.stripper_panel = QWidget()
-            stripper_layout = QVBoxLayout(self.stripper_panel)
+            self.stripper_panel.setVisible(False)
+            stripper_outer_layout = QVBoxLayout(self.stripper_panel)
+            stripper_outer_layout.setContentsMargins(0, 10, 0, 0)
+            
+            # Centering Container
+            stripper_container = QWidget()
+            stripper_container.setMaximumWidth(1400)
+            stripper_layout = QVBoxLayout(stripper_container)
             stripper_layout.setContentsMargins(0, 0, 0, 0)
+            
+            stripper_outer_layout.addWidget(stripper_container, 1, Qt.AlignHCenter)
             
             # Stripper Controls
             stripper_controls = QHBoxLayout()
@@ -380,8 +359,16 @@ class WorkshopModule(BaseModule):
             
             # --- Dummy Creator Content Area (initially hidden) ---
             self.dummy_panel = QWidget()
-            dummy_layout = QVBoxLayout(self.dummy_panel)
-            dummy_layout.setContentsMargins(50, 50, 50, 50)
+            dummy_outer_layout = QVBoxLayout(self.dummy_panel)
+            dummy_outer_layout.setContentsMargins(0, 50, 0, 50)
+            
+            # Centering Container
+            dummy_container = QWidget()
+            dummy_container.setMaximumWidth(800)  # Narrower for text-heavy panel
+            dummy_layout = QVBoxLayout(dummy_container)
+            dummy_layout.setContentsMargins(0, 0, 0, 0)
+            
+            dummy_outer_layout.addWidget(dummy_container, 1, Qt.AlignHCenter)
             
             lbl_dummy_info = QLabel("🎭 Dummy Creator")
             lbl_dummy_info.setAlignment(Qt.AlignCenter)
@@ -427,8 +414,17 @@ class WorkshopModule(BaseModule):
 
             # --- Metadata Reader Content Area (initially hidden) ---
             self.reader_panel = QWidget()
-            reader_layout = QVBoxLayout(self.reader_panel)
+            reader_outer_layout = QVBoxLayout(self.reader_panel)
+            reader_outer_layout.setContentsMargins(0, 10, 0, 0)
+            
+            # Centering Container
+            reader_container = QWidget()
+            reader_container.setMaximumWidth(1400)
+            reader_layout = QVBoxLayout(reader_container)
             reader_layout.setContentsMargins(0, 0, 0, 0)
+            reader_layout.setSpacing(15)
+            
+            reader_outer_layout.addWidget(reader_container, 1, Qt.AlignHCenter)
             
             self.reader_splitter = QSplitter(Qt.Horizontal)
             
@@ -517,6 +513,8 @@ class WorkshopModule(BaseModule):
             reader_right_layout.addWidget(self.reader_meta_info, 2)
             
             self.reader_splitter.addWidget(reader_right)
+            
+            # Stretch factors: Image=3, Metadata=2
             self.reader_splitter.setStretchFactor(0, 3)
             self.reader_splitter.setStretchFactor(1, 2)
             
@@ -536,8 +534,16 @@ class WorkshopModule(BaseModule):
 
             # --- Watermarker Content Area (initially hidden) ---
             self.watermarker_panel = QWidget()
-            watermarker_layout = QVBoxLayout(self.watermarker_panel)
+            wm_outer_layout = QVBoxLayout(self.watermarker_panel)
+            wm_outer_layout.setContentsMargins(0, 10, 0, 0)
+            
+            # Centering Container
+            wm_container = QWidget()
+            wm_container.setMaximumWidth(1400)
+            watermarker_layout = QVBoxLayout(wm_container)
             watermarker_layout.setContentsMargins(0, 0, 0, 0)
+            
+            wm_outer_layout.addWidget(wm_container, 1, Qt.AlignHCenter)
             
             watermarker_controls = QHBoxLayout()
             
@@ -742,6 +748,244 @@ class WorkshopModule(BaseModule):
             self.watermarker_panel.setVisible(False)
             layout.addWidget(self.watermarker_panel)
 
+            # --- Image Optimizer Content Area (initially hidden) ---
+            self.optimizer_panel = QWidget()
+            opt_outer_layout = QVBoxLayout(self.optimizer_panel)
+            opt_outer_layout.setContentsMargins(0, 10, 0, 0)
+            
+            opt_container = QWidget()
+            opt_container.setMaximumWidth(1400)
+            optimizer_layout = QVBoxLayout(opt_container)
+            optimizer_layout.setContentsMargins(0, 0, 0, 0)
+            opt_outer_layout.addWidget(opt_container, 1, Qt.AlignHCenter)
+            
+            optimizer_controls = QHBoxLayout()
+            
+            # Left: Controls
+            opt_left_panel = QFrame()
+            opt_left_panel.setFixedWidth(320)
+            opt_left_panel.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333; border-radius: 10px; padding: 15px;")
+            opt_left_layout = QVBoxLayout(opt_left_panel)
+            opt_left_layout.setSpacing(12)
+            
+            lbl_opt_input = QLabel("📥 1. INPUT & RESIZE")
+            lbl_opt_input.setStyleSheet("color: #ffb86c; font-weight: bold; font-size: 11px;")
+            opt_left_layout.addWidget(lbl_opt_input)
+            
+            btn_opt_add_layout = QHBoxLayout()
+            self.btn_opt_add_files = QPushButton("🖼️ Images")
+            self.btn_opt_add_files.clicked.connect(self.optimizer_add_images)
+            self.btn_opt_add_files.setStyleSheet("background-color: #333; color: white; padding: 8px; border-radius: 5px;")
+            
+            self.btn_opt_add_folder = QPushButton("📂 Folder")
+            self.btn_opt_add_folder.clicked.connect(self.optimizer_add_folder)
+            self.btn_opt_add_folder.setStyleSheet("background-color: #333; color: white; padding: 8px; border-radius: 5px;")
+            
+            btn_opt_add_layout.addWidget(self.btn_opt_add_files)
+            btn_opt_add_layout.addWidget(self.btn_opt_add_folder)
+            opt_left_layout.addLayout(btn_opt_add_layout)
+            
+            # Resize Group
+            resize_frame = QFrame()
+            resize_frame.setStyleSheet("background-color: #111; border-radius: 5px; padding: 8px;")
+            resize_layout = QVBoxLayout(resize_frame)
+            
+            lbl_resize = QLabel("Resize Preset:")
+            lbl_resize.setStyleSheet("color: #aaa; font-size: 10px;")
+            resize_layout.addWidget(lbl_resize)
+            
+            self.chk_opt_enable_resize = QCheckBox("Enable Resize")
+            self.chk_opt_enable_resize.setChecked(False)
+            self.chk_opt_enable_resize.setStyleSheet("color: white; font-weight: bold; margin-bottom: 5px;")
+            resize_layout.addWidget(self.chk_opt_enable_resize)
+            
+            self.combo_opt_resize = QComboBox()
+            self.combo_opt_resize.addItems(["Keep Original Size", "Resize (Longest Side)"])
+            self.combo_opt_resize.currentIndexChanged.connect(self.optimizer_on_resize_preset_changed)
+            self.combo_opt_resize.setStyleSheet("background-color: #222; color: white; padding: 5px;")
+            self.combo_opt_resize.setEnabled(False) # Controlled by checkbox
+            self.chk_opt_enable_resize.toggled.connect(self.combo_opt_resize.setEnabled)
+            resize_layout.addWidget(self.combo_opt_resize)
+            
+            dim_layout = QHBoxLayout()
+            self.spin_opt_max_side = QSpinBox()
+            self.spin_opt_max_side.setRange(1, 10000)
+            self.spin_opt_max_side.setValue(1024)
+            self.spin_opt_max_side.setEnabled(False)
+            
+            dim_layout.addWidget(QLabel("Target Longest Side:"))
+            dim_layout.addWidget(self.spin_opt_max_side)
+            resize_layout.addLayout(dim_layout)
+            
+            self.chk_opt_lock_aspect = QCheckBox("Lock Aspect Ratio")
+            self.chk_opt_lock_aspect.setChecked(True)
+            self.chk_opt_lock_aspect.setVisible(False) # Now implicit for longest side
+            
+            opt_left_layout.addWidget(resize_frame)
+            
+            # 2. Format & Quality
+            lbl_opt_format = QLabel("⚙️ 2. FORMAT & OPTIMIZATION")
+            lbl_opt_format.setStyleSheet("color: #ffb86c; font-weight: bold; font-size: 11px;")
+            opt_left_layout.addWidget(lbl_opt_format)
+
+            lbl_opt_format_hint = QLabel("Select Output Format:")
+            lbl_opt_format_hint.setStyleSheet("color: #aaa; font-size: 10px;")
+            opt_left_layout.addWidget(lbl_opt_format_hint)
+            
+            self.combo_opt_format = QComboBox()
+            self.combo_opt_format.addItems([
+                "Original (Same as source)", 
+                "PNG (Lossless / Alpha support)", 
+                "JPEG (High compression for photos)", 
+                "WebP (Modern / Efficient)"
+            ])
+            self.combo_opt_format.setStyleSheet("background-color: #222; color: white; padding: 5px;")
+            opt_left_layout.addWidget(self.combo_opt_format)
+            
+            self.btn_opt_analyze = QPushButton("🔍 Analyze & Suggest")
+            self.btn_opt_analyze.clicked.connect(self.optimizer_analyze_and_suggest)
+            self.btn_opt_analyze.setStyleSheet("background-color: #333; color: #ffb86c; padding: 5px; font-size: 10px;")
+            opt_left_layout.addWidget(self.btn_opt_analyze)
+            
+            self.lbl_opt_suggestion = QLabel("Suggestion: -")
+            self.lbl_opt_suggestion.setStyleSheet("color: #888; font-size: 10px; font-style: italic;")
+            opt_left_layout.addWidget(self.lbl_opt_suggestion)
+            
+            # Quality is now handled automatically for optimal results
+            self.slider_opt_quality = QSlider(Qt.Horizontal)
+            self.slider_opt_quality.setRange(1, 100)
+            self.slider_opt_quality.setValue(92)
+            self.slider_opt_quality.setVisible(False)
+            
+            self.chk_opt_preserve_meta = QCheckBox("Preserve AI Metadata (Prompts)")
+            self.chk_opt_preserve_meta.setChecked(True)
+            self.chk_opt_preserve_meta.setStyleSheet("color: #eee; font-size: 11px;")
+            opt_left_layout.addWidget(self.chk_opt_preserve_meta)
+            
+            opt_left_layout.addStretch()
+            
+            # 3. Export
+            lbl_opt_exp = QLabel("📁 3. EXPORT TARGET")
+            lbl_opt_exp.setStyleSheet("color: #ffb86c; font-weight: bold; font-size: 11px;")
+            opt_left_layout.addWidget(lbl_opt_exp)
+            
+            exp_row = QHBoxLayout()
+            self.txt_opt_export_path = QTextEdit()
+            self.txt_opt_export_path.setMaximumHeight(60)
+            self.txt_opt_export_path.setReadOnly(True)
+            self.txt_opt_export_path.setPlaceholderText("Select base folder...")
+            self.txt_opt_export_path.setStyleSheet("background-color: #0a0a0a; color: #888; border: 1px solid #333; font-size: 10px;")
+            
+            btn_opt_browse = QPushButton("...")
+            btn_opt_browse.setFixedWidth(40)
+            btn_opt_browse.clicked.connect(self.optimizer_browse_export)
+            btn_opt_browse.setStyleSheet("background-color: #333; color: white; border-radius: 3px;")
+            
+            exp_row.addWidget(self.txt_opt_export_path)
+            exp_row.addWidget(btn_opt_browse)
+            opt_left_layout.addLayout(exp_row)
+            
+            self.txt_opt_export_path.setText(self.last_optimizer_dir)
+            
+            self.btn_opt_process = QPushButton("⚡ OPTIMIZE BATCH")
+            self.btn_opt_process.clicked.connect(self.optimizer_process_batch)
+            self.btn_opt_process.setMinimumHeight(45)
+            self.btn_opt_process.setStyleSheet("""
+                QPushButton { background-color: #ffb86c; color: black; font-weight: bold; border-radius: 5px; }
+                QPushButton:hover { background-color: #ffaa55; }
+            """)
+            opt_left_layout.addWidget(self.btn_opt_process)
+            
+            optimizer_controls.addWidget(opt_left_panel)
+            
+            # Right: Queue & Stats
+            opt_right_panel = QFrame()
+            opt_right_panel.setStyleSheet("background-color: #111; border-radius: 10px;")
+            opt_right_layout = QVBoxLayout(opt_right_panel)
+            
+            opt_queue_header = QHBoxLayout()
+            opt_queue_header.addWidget(QLabel("OPTIMIZATION QUEUE"))
+            opt_queue_header.addStretch()
+            
+            self.btn_opt_clear = QPushButton("🗑️ Clear")
+            self.btn_opt_clear.clicked.connect(self.optimizer_clear_queue)
+            self.btn_opt_clear.setStyleSheet("background-color: #222; color: #888; font-size: 10px; padding: 2px 10px;")
+            opt_queue_header.addWidget(self.btn_opt_clear)
+            opt_right_layout.addLayout(opt_queue_header)
+            
+            self.opt_queue_scroll = QScrollArea()
+            self.opt_queue_scroll.setWidgetResizable(True)
+            self.opt_queue_scroll.setStyleSheet("border: none; background: transparent;")
+            self.opt_queue_grid_widget = QWidget()
+            self.opt_queue_grid_layout = QGridLayout(self.opt_queue_grid_widget)
+            self.opt_queue_grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            self.opt_queue_scroll.setWidget(self.opt_queue_grid_widget)
+            opt_right_layout.addWidget(self.opt_queue_scroll, 1)
+            
+            # Stats bottom bar
+            self.lbl_opt_stats = QLabel("Ready to optimize. Add images to see total savings estimate.")
+            self.lbl_opt_stats.setStyleSheet("background-color: #1a1a1a; color: #ffb86c; padding: 10px; border-top: 1px solid #333; border-radius: 0 0 10px 10px;")
+            opt_right_layout.addWidget(self.lbl_opt_stats)
+            
+            optimizer_controls.addWidget(opt_right_panel, 1)
+            optimizer_layout.addLayout(optimizer_controls)
+            
+            self.optimizer_panel.setVisible(False)
+            layout.addWidget(self.optimizer_panel)
+
+            # --- Settings Content Area (initially hidden) ---
+            self.settings_panel = QWidget()
+            settings_layout = QVBoxLayout(self.settings_panel)
+            settings_layout.setContentsMargins(0, 0, 0, 0)
+            
+            settings_frame = QFrame()
+            settings_frame.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333; border-radius: 10px; padding: 25px;")
+            settings_inner_layout = QVBoxLayout(settings_frame)
+            
+            lbl_settings_header = QLabel("⚙️ WORKSHOP CONFIGURATION")
+            lbl_settings_header.setStyleSheet("font-size: 18px; font-weight: bold; color: #ff79c6; margin-bottom: 10px;")
+            settings_inner_layout.addWidget(lbl_settings_header)
+            
+            # Export Directory
+            lbl_export_title = QLabel("Root Export Directory")
+            lbl_export_title.setStyleSheet("color: #eee; font-weight: bold; font-size: 14px;")
+            settings_inner_layout.addWidget(lbl_export_title)
+            
+            lbl_export_desc = QLabel("This folder will house subfolders for each tool (e.g., /watermarker, /metadata_modifier).")
+            lbl_export_desc.setStyleSheet("color: #888; font-size: 11px; margin-bottom: 10px;")
+            settings_inner_layout.addWidget(lbl_export_desc)
+            
+            dir_selection_layout = QHBoxLayout()
+            self.lbl_current_export_path = QLabel(self.export_dir)
+            self.lbl_current_export_path.setStyleSheet("""
+                background-color: #111; 
+                color: #50fa7b; 
+                padding: 12px; 
+                border-radius: 6px; 
+                border: 1px solid #333;
+                font-family: Consolas;
+                font-size: 12px;
+            """)
+            self.lbl_current_export_path.setWordWrap(True)
+            
+            btn_change_dir = QPushButton("Browse Folder")
+            btn_change_dir.clicked.connect(self.browse_export_dir)
+            btn_change_dir.setFixedSize(120, 40)
+            btn_change_dir.setStyleSheet("""
+                QPushButton { background-color: #444; color: white; border-radius: 5px; font-weight: bold; }
+                QPushButton:hover { background-color: #555; }
+            """)
+            
+            dir_selection_layout.addWidget(self.lbl_current_export_path, 1)
+            dir_selection_layout.addWidget(btn_change_dir)
+            settings_inner_layout.addLayout(dir_selection_layout)
+            
+            settings_inner_layout.addStretch()
+            settings_layout.addWidget(settings_frame)
+            
+            self.settings_panel.setVisible(False)
+            layout.addWidget(self.settings_panel)
+
             # --- Bottom Bar ---
             footer = QHBoxLayout()
             
@@ -772,13 +1016,31 @@ class WorkshopModule(BaseModule):
             self.btn_tool_dummy.setChecked(False)
             self.btn_tool_reader.setChecked(False)
             self.btn_tool_watermarker.setChecked(False)
+            self.btn_tool_settings.setChecked(False)
             self.stripper_panel.setVisible(True)
             self.dummy_panel.setVisible(False)
             self.reader_panel.setVisible(False)
             self.watermarker_panel.setVisible(False)
+            self.settings_panel.setVisible(False)
             self.btn_process.setEnabled(len(self.queue_paths) > 0)
         else:
             self.btn_tool_stripper.setChecked(True)
+    
+    def switch_to_optimizer(self):
+        """Switch to Image Optimizer tool."""
+        # Find the card if called from outside, or handle dashboard transition
+        self.btn_back_to_dash.setVisible(True)
+        self.workshop_dashboard.setVisible(False)
+        self.stripper_panel.setVisible(False)
+        self.dummy_panel.setVisible(False)
+        self.reader_panel.setVisible(False)
+        self.watermarker_panel.setVisible(False)
+        self.settings_panel.setVisible(False)
+        self.optimizer_panel.setVisible(True)
+        self.lbl_title.setText("⚡ Image Optimizer")
+        self.btn_process.setVisible(False) # Has its own process button
+        self.progress.setVisible(False)
+        self._update_optimizer_queue_grid()
     
     def switch_to_dummy(self):
         """Switch to Dummy Creator tool."""
@@ -786,10 +1048,12 @@ class WorkshopModule(BaseModule):
             self.btn_tool_stripper.setChecked(False)
             self.btn_tool_reader.setChecked(False)
             self.btn_tool_watermarker.setChecked(False)
+            self.btn_tool_settings.setChecked(False)
             self.stripper_panel.setVisible(False)
             self.dummy_panel.setVisible(True)
             self.reader_panel.setVisible(False)
             self.watermarker_panel.setVisible(False)
+            self.settings_panel.setVisible(False)
             self.btn_process.setEnabled(False) # Dummy has its own button
         else:
             self.btn_tool_dummy.setChecked(True)
@@ -800,23 +1064,29 @@ class WorkshopModule(BaseModule):
             self.btn_tool_stripper.setChecked(False)
             self.btn_tool_dummy.setChecked(False)
             self.btn_tool_watermarker.setChecked(False)
+            self.btn_tool_settings.setChecked(False)
             self.stripper_panel.setVisible(False)
             self.dummy_panel.setVisible(False)
             self.reader_panel.setVisible(True)
             self.watermarker_panel.setVisible(False)
+            self.settings_panel.setVisible(False)
             self.btn_process.setEnabled(False)
         else:
             self.btn_tool_reader.setChecked(True)
 
     # --- Metadata Reader Logic ---
     def reader_open_images(self):
-        files, _ = QFileDialog.getOpenFileNames(self.view, "Select Images", "", "Images (*.png *.jpg *.webp)")
+        files, _ = QFileDialog.getOpenFileNames(self.view, "Select Images", self.last_asset_dir, "Images (*.png *.jpg *.webp)")
         if files:
+            self.last_asset_dir = os.path.dirname(files[0])
+            self.settings.setValue("last_asset_dir", self.last_asset_dir)
             self.reader_load_list(files)
 
     def reader_open_folder(self):
-        folder = QFileDialog.getExistingDirectory(self.view, "Select Folder")
+        folder = QFileDialog.getExistingDirectory(self.view, "Select Folder", self.last_asset_dir)
         if folder:
+            self.last_asset_dir = folder
+            self.settings.setValue("last_asset_dir", self.last_asset_dir)
             self.reader_handle_dropped([folder])
 
     def reader_handle_dropped(self, paths):
@@ -902,11 +1172,19 @@ class WorkshopModule(BaseModule):
             self.btn_tool_reader.setChecked(True)
             self.switch_to_reader()
             self.reader_handle_dropped(paths)
+        elif tool == "optimizer":
+            self.switch_to_optimizer()
+            # Add to optimizer queue
+            for p in paths:
+                if p not in self.optimizer_queue:
+                    self.optimizer_queue.append(p)
+            self._update_optimizer_queue_grid()
+            self._update_optimizer_stats()
         else:
             # Default to modifier (stripper/changer)
             self.btn_tool_stripper.setChecked(True)
             self.switch_to_stripper()
-            self.handle_dropped_files(paths)
+            self.add_to_queue(paths)
 
     def load_paths(self, paths):
         """Compatibility alias."""
@@ -958,11 +1236,26 @@ class WorkshopModule(BaseModule):
 
     # --- Queue Logic ---
     def add_to_queue(self, paths):
-        # Avoid duplicates in queue
-        existing = set(self.queue_paths)
-        new_paths = [p for p in paths if p not in existing]
-        self.queue_paths.extend(new_paths)
-        self.refresh_queue_grid()
+        """Dispatches paths to the correct queue based on active panel."""
+        if self.optimizer_panel.isVisible():
+            for p in paths:
+                if p not in self.optimizer_queue:
+                    self.optimizer_queue.append(p)
+            self._update_optimizer_queue_grid()
+            self._update_optimizer_stats()
+        elif self.watermarker_panel.isVisible():
+            for p in paths:
+                if p not in self.watermark_queue:
+                    self.watermark_queue.append(p)
+            self._update_wm_queue_grid()
+        elif self.reader_panel.isVisible():
+            self.reader_handle_dropped(paths)
+        else:
+            # Default to stripper queue
+            existing = set(self.queue_paths)
+            new_paths = [p for p in paths if p not in existing]
+            self.queue_paths.extend(new_paths)
+            self.refresh_queue_grid()
 
     def load_images(self, paths):
         """Standard entry point for other modules to send images here."""
@@ -1047,9 +1340,10 @@ class WorkshopModule(BaseModule):
 
         success_count = 0
         new_meta = self.txt_modifier_meta.toPlainText().strip()
+        export_path = os.path.join(self.export_dir, "metadata_modifier")
         
         for path in self.queue_paths:
-            dest = get_export_path(path, export_dir=self.export_dir)
+            dest = get_export_path(path, export_dir=export_path)
             success, _ = modify_metadata(path, dest, metadata_text=new_meta)
             if success:
                 success_count += 1
@@ -1095,8 +1389,10 @@ class WorkshopModule(BaseModule):
         logo_size = self.slider_logo_size.value()
 
         success_count = 0
+        export_path = os.path.join(self.export_dir, "watermarker")
+        
         for path in self.watermark_queue:
-            dest = watermark_export_path(path, export_dir=os.path.join(self.export_dir, "watermarked"))
+            dest = watermark_export_path(path, export_dir=export_path)
             success, _ = watermark_image(
                 path, dest, 
                 watermark_path=self.watermark_path, 
@@ -1117,7 +1413,7 @@ class WorkshopModule(BaseModule):
         self.btn_process.setEnabled(True)
         
         QMessageBox.information(self.view, "Watermarking Complete", 
-                                f"Successfully processed {success_count} of {count} images.\nResults saved in: {self.export_dir}/watermarked")
+                                f"Successfully processed {success_count} of {count} images.\nResults saved in: {export_path}")
 
     def open_dummy_creator_dialog(self):
         """Opens the Dummy Creator dialog for folder selection and processing."""
@@ -1125,9 +1421,12 @@ class WorkshopModule(BaseModule):
         from modules.workshop.logic.dummy_manager import process_folder, get_folder_stats
         
         # Select folder
-        folder = QFileDialog.getExistingDirectory(self.view, "Select Folder to Dummify")
+        folder = QFileDialog.getExistingDirectory(self.view, "Select Folder to Dummify", self.last_asset_dir)
         if not folder:
             return
+        
+        self.last_asset_dir = folder
+        self.settings.setValue("last_asset_dir", self.last_asset_dir)
         
         # Preview stats
         stats = get_folder_stats(folder)
@@ -1213,35 +1512,160 @@ class WorkshopModule(BaseModule):
         btn_close.setEnabled(True)
         progress_dialog.exec()
 
+    def switch_to_dashboard(self):
+        """Show main workshop dashboard."""
+        self.workshop_dashboard.setVisible(True)
+        self.stripper_panel.setVisible(False)
+        self.dummy_panel.setVisible(False)
+        self.reader_panel.setVisible(False)
+        self.watermarker_panel.setVisible(False)
+        self.settings_panel.setVisible(False)
+        self.btn_process.setVisible(False)
+        self.btn_back_to_dash.setVisible(False)
+        self.lbl_title.setText("🛠️ The Workshop")
+
+    def create_tool_card(self, title, desc, color, callback):
+        """Helper to create decorative tool cards for the dashboard."""
+        card = QFrame()
+        card.setFixedSize(300, 180)
+        card.setStyleSheet(f"""
+            QFrame {{
+                background-color: #1a1a1a;
+                border: 2px solid #333;
+                border-radius: 15px;
+            }}
+            QFrame:hover {{
+                border: 2px solid {color};
+                background-color: #222;
+            }}
+        """)
+        
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(20, 20, 20, 20)
+        
+        lbl_title = QLabel(title)
+        lbl_title.setStyleSheet(f"color: {color}; font-size: 18px; font-weight: bold; border: none; background: transparent;")
+        lbl_title.setAlignment(Qt.AlignLeft)
+        card_layout.addWidget(lbl_title)
+        
+        lbl_desc = QLabel(desc)
+        lbl_desc.setStyleSheet("color: #888; font-size: 12px; border: none; background: transparent;")
+        lbl_desc.setWordWrap(True)
+        lbl_desc.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        card_layout.addWidget(lbl_desc)
+        
+        btn = QPushButton("Open Tool")
+        btn.clicked.connect(callback)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #2a2a2a;
+                color: white;
+                border-radius: 8px;
+                padding: 10px;
+                font-weight: bold;
+                border: 1px solid #444;
+            }}
+            QPushButton:hover {{
+                background-color: {color};
+                color: black;
+            }}
+        """)
+        card_layout.addWidget(btn)
+        
+        return card
+
+    def switch_to_stripper(self):
+        """Switch to Metadata Stripper tool."""
+        self.workshop_dashboard.setVisible(False)
+        self.stripper_panel.setVisible(True)
+        self.dummy_panel.setVisible(False)
+        self.reader_panel.setVisible(False)
+        self.watermarker_panel.setVisible(False)
+        self.settings_panel.setVisible(False)
+        self.btn_process.setVisible(True)
+        self.btn_process.setEnabled(len(self.queue_paths) > 0)
+        self.btn_back_to_dash.setVisible(True)
+        self.lbl_title.setText("🛡️ Metadata Modifier")
+    
+    def switch_to_dummy(self):
+        """Switch to Dummy Creator tool."""
+        self.workshop_dashboard.setVisible(False)
+        self.stripper_panel.setVisible(False)
+        self.dummy_panel.setVisible(True)
+        self.reader_panel.setVisible(False)
+        self.watermarker_panel.setVisible(False)
+        self.settings_panel.setVisible(False)
+        self.btn_process.setVisible(False)
+        self.btn_back_to_dash.setVisible(True)
+        self.lbl_title.setText("🎭 Dummy Creator")
+
+    def switch_to_reader(self):
+        """Switch to Metadata Reader tool."""
+        self.workshop_dashboard.setVisible(False)
+        self.stripper_panel.setVisible(False)
+        self.dummy_panel.setVisible(False)
+        self.reader_panel.setVisible(True)
+        self.watermarker_panel.setVisible(False)
+        self.settings_panel.setVisible(False)
+        self.btn_process.setVisible(False)
+        self.btn_back_to_dash.setVisible(True)
+        self.lbl_title.setText("📋 Metadata Reader")
+
     def switch_to_watermarker(self):
         """Switch to Watermarker tool."""
-        if self.btn_tool_watermarker.isChecked():
-            self.btn_tool_stripper.setChecked(False)
-            self.btn_tool_dummy.setChecked(False)
-            self.btn_tool_reader.setChecked(False)
-            self.stripper_panel.setVisible(False)
-            self.dummy_panel.setVisible(False)
-            self.reader_panel.setVisible(False)
-            self.watermarker_panel.setVisible(True)
-            self.btn_process.setEnabled(len(self.watermark_queue) > 0)
-        else:
-            self.btn_tool_watermarker.setChecked(True)
+        self.workshop_dashboard.setVisible(False)
+        self.stripper_panel.setVisible(False)
+        self.dummy_panel.setVisible(False)
+        self.reader_panel.setVisible(False)
+        self.watermarker_panel.setVisible(True)
+        self.settings_panel.setVisible(False)
+        self.btn_process.setVisible(True)
+        self.btn_process.setEnabled(len(self.watermark_queue) > 0)
+        self.btn_back_to_dash.setVisible(True)
+        self.lbl_title.setText("🖼️ Watermarker")
+
+    def switch_to_settings(self):
+        """Switch to Settings tool."""
+        self.workshop_dashboard.setVisible(False)
+        self.stripper_panel.setVisible(False)
+        self.dummy_panel.setVisible(False)
+        self.reader_panel.setVisible(False)
+        self.watermarker_panel.setVisible(False)
+        self.settings_panel.setVisible(True)
+        self.btn_process.setVisible(False)
+        self.btn_back_to_dash.setVisible(True)
+        self.lbl_title.setText("⚙️ Workshop Settings")
+    
+    def browse_export_dir(self):
+        """Browse and set custom root export directory."""
+        folder = QFileDialog.getExistingDirectory(self.view, "Select Root Export Directory", self.export_dir)
+        if folder:
+            self.export_dir = os.path.abspath(folder)
+            self.lbl_current_export_path.setText(self.export_dir)
+            self.settings.setValue("export_dir", self.export_dir)
 
     # --- Watermarker Logic ---
     def load_watermark_asset(self):
         """Load watermark image."""
-        file, _ = QFileDialog.getOpenFileName(self.view, "Select Watermark Image", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        file, _ = QFileDialog.getOpenFileName(self.view, "Select Watermark Image", self.last_watermark_dir, "Images (*.png *.jpg *.jpeg *.webp *.svg)")
         if file:
             self.watermark_path = file
+            self.last_watermark_dir = os.path.dirname(file)
+            self.settings.setValue("last_watermark_dir", self.last_watermark_dir)
+            
             self.lbl_watermark_status.setText(f"✅ {os.path.basename(file)}")
             self.lbl_watermark_status.setStyleSheet("color: #50fa7b; font-size: 10px; padding: 5px;")
             self._update_preview_button()
     
     def load_logo_asset(self):
         """Load logo image."""
-        file, _ = QFileDialog.getOpenFileName(self.view, "Select Logo Image", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        file, _ = QFileDialog.getOpenFileName(self.view, "Select Logo Image", self.last_logo_dir, "Images (*.png *.jpg *.jpeg *.webp *.svg)")
         if file:
             self.logo_path = file
+            self.last_logo_dir = os.path.dirname(file)
+            self.settings.setValue("last_logo_dir", self.last_logo_dir)
+            
             self.lbl_logo_status.setText(f"✅ {os.path.basename(file)}")
             self.lbl_logo_status.setStyleSheet("color: #50fa7b; font-size: 10px; padding: 5px;")
             self._update_preview_button()
@@ -1256,9 +1680,15 @@ class WorkshopModule(BaseModule):
             return
         
         try:
-            # Create a demo image for preview
+            # Try to use the first image from the queue for a real preview
             from PIL import Image
-            demo_image = Image.new('RGBA', (800, 600), (255, 255, 255, 255))
+            if self.watermark_queue:
+                demo_image = Image.open(self.watermark_queue[0]).convert('RGBA')
+                # Resize for preview performance
+                demo_image.thumbnail((1024, 1024), Image.LANCZOS)
+            else:
+                # Fallback to a neutral background
+                demo_image = Image.new('RGBA', (800, 600), (40, 40, 40, 255))
             
             # Get parameters
             angle_text = self.combo_wm_angle.currentText().replace("°", "")
@@ -1304,8 +1734,10 @@ class WorkshopModule(BaseModule):
     
     def wm_add_images(self):
         """Add images to watermark queue."""
-        files, _ = QFileDialog.getOpenFileNames(self.view, "Select Images to Watermark", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        files, _ = QFileDialog.getOpenFileNames(self.view, "Select Images to Watermark", self.last_batch_dir, "Images (*.png *.jpg *.jpeg *.webp)")
         if files:
+            self.last_batch_dir = os.path.dirname(files[0])
+            self.settings.setValue("last_batch_dir", self.last_batch_dir)
             for f in files:
                 if f not in self.watermark_queue:
                     self.watermark_queue.append(f)
@@ -1342,3 +1774,239 @@ class WorkshopModule(BaseModule):
             self.wm_queue_grid_layout.addWidget(thumb, row, col)
             
         self.btn_process.setEnabled(len(self.watermark_queue) > 0)
+
+    # --- Optimizer Logic ---
+    def optimizer_add_images(self):
+        """Add images to optimizer queue."""
+        files, _ = QFileDialog.getOpenFileNames(self.view, "Select Images to Optimize", self.last_optimizer_dir, "Images (*.png *.jpg *.jpeg *.webp)")
+        if files:
+            self.last_optimizer_dir = os.path.dirname(files[0])
+            self.settings.setValue("last_optimizer_dir", self.last_optimizer_dir)
+            count_before = len(self.optimizer_queue)
+            for f in files:
+                if f not in self.optimizer_queue:
+                    self.optimizer_queue.append(f)
+            
+            added = len(self.optimizer_queue) - count_before
+            self._update_optimizer_queue_grid()
+            self._update_optimizer_stats()
+            
+            if added > 0:
+                QApplication.instance().processEvents() # Ensure grid updates
+                # Small status update instead of a blocking message box for simple files
+                self.lbl_opt_stats.setText(f"Successfully added {added} images. {self.lbl_opt_stats.text()}")
+
+    def optimizer_add_folder(self):
+        """Add all images from a folder to optimizer queue."""
+        folder = QFileDialog.getExistingDirectory(self.view, "Select Folder", self.last_optimizer_dir)
+        if folder:
+            self.last_optimizer_dir = folder
+            self.settings.setValue("last_optimizer_dir", self.last_optimizer_dir)
+            files = []
+            for root, _, filenames in os.walk(folder):
+                for f in filenames:
+                    if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                        files.append(os.path.join(root, f))
+            
+            count_before = len(self.optimizer_queue)
+            for f in files:
+                if f not in self.optimizer_queue:
+                    self.optimizer_queue.append(f)
+            
+            added = len(self.optimizer_queue) - count_before
+            self._update_optimizer_queue_grid()
+            self._update_optimizer_stats()
+            
+            if added > 0:
+                QMessageBox.information(self.view, "Folder Loaded", f"Successfully added {added} images from folder.")
+            else:
+                QMessageBox.warning(self.view, "No Images Found", "No valid or new images were found in the selected folder.")
+
+    def optimizer_browse_export(self):
+        """Browse for the base export directory for the optimizer."""
+        folder = QFileDialog.getExistingDirectory(self.view, "Select Base Export Folder", self.last_optimizer_dir)
+        if folder:
+            self.txt_opt_export_path.setText(folder)
+            self.last_optimizer_dir = folder
+            self.settings.setValue("last_optimizer_dir", folder)
+
+    def optimizer_clear_queue(self):
+        """Clear optimizer queue."""
+        self.optimizer_queue.clear()
+        self.optimizer_analysis_results.clear()
+        self._update_optimizer_queue_grid()
+        self._update_optimizer_stats()
+        self.lbl_opt_suggestion.setText("Suggestion: -")
+
+    def optimizer_on_resize_preset_changed(self, index):
+        """Handle resize preset changes."""
+        preset = self.combo_opt_resize.currentText()
+        is_manual = "Longest Side" in preset
+        self.spin_opt_max_side.setEnabled(is_manual)
+        
+        if not is_manual and preset != "Keep Original Size":
+            # Just visual feedback, we'll calculate real pixels during processing
+            pass
+
+    def optimizer_analyze_and_suggest(self):
+        """Analyze the first image (or a representative set) and suggest format."""
+        if not self.optimizer_queue:
+            QMessageBox.information(self.view, "No Images", "Add some images to analyze first.")
+            return
+        
+        # Analyze first image
+        path = self.optimizer_queue[0]
+        self.lbl_opt_suggestion.setText("Analyzing...")
+        QApplication.instance().processEvents()
+        
+        result = analyze_image(path)
+        if "error" in result:
+            self.lbl_opt_suggestion.setText(f"Error: {result['error']}")
+        else:
+            suggestion = result['suggested_format']
+            reason = result['suggestion_reason']
+            self.lbl_opt_suggestion.setText(f"Suggestion: {suggestion} ({reason})")
+            
+            # Optionally auto-select it if user chose "Auto (Suggested)"
+            if self.combo_opt_format.currentText() == "Auto (Suggested)":
+                # We'll handle this in process_batch
+                pass
+
+    def _update_optimizer_queue_grid(self):
+        """Update optimizer queue grid display."""
+        if not hasattr(self, 'opt_queue_grid_layout'): return
+
+        while self.opt_queue_grid_layout.count():
+            item = self.opt_queue_grid_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        cols = 6
+        max_previews = 120 # Reasonable limit to avoid UI lag
+        
+        for i, path in enumerate(self.optimizer_queue):
+            if i >= max_previews:
+                more_lbl = QLabel(f"+ {len(self.optimizer_queue) - max_previews} more...")
+                more_lbl.setStyleSheet("color: #666; font-style: italic; font-size: 10px;")
+                more_lbl.setAlignment(Qt.AlignCenter)
+                self.opt_queue_grid_layout.addWidget(more_lbl, i // cols, i % cols)
+                break
+                
+            row = i // cols
+            col = i % cols
+            
+            thumb = QLabel()
+            thumb.setFixedSize(100, 100)
+            thumb.setStyleSheet("border: 1px solid #333; border-radius: 4px; background: #050505;")
+            thumb.setAlignment(Qt.AlignCenter)
+            
+            pix = QPixmap(path)
+            if not pix.isNull():
+                thumb.setPixmap(pix.scaled(98, 98, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            
+            self.opt_queue_grid_layout.addWidget(thumb, row, col)
+            
+        self.btn_opt_process.setEnabled(len(self.optimizer_queue) > 0)
+
+    def _update_optimizer_stats(self):
+        """Update the stats label with estimated savings."""
+        count = len(self.optimizer_queue)
+        if count == 0:
+            self.lbl_opt_stats.setText("Ready to optimize. Add images to see total savings estimate.")
+            return
+        
+        total_bytes = 0
+        for p in self.optimizer_queue:
+            try:
+                total_bytes += os.path.getsize(p)
+            except: pass
+        
+        size_mb = total_bytes / (1024 * 1024)
+        # Estimate 40% savings on average for research-backed estimate
+        est_savings = size_mb * 0.4 
+        
+        self.lbl_opt_stats.setText(f"Queue: {count} images | Total Input: {size_mb:.2f} MB | Est. Savings: ~{est_savings:.2f} MB (40%)")
+
+    def optimizer_process_batch(self):
+        """Execute the optimization pipeline for all images in queue."""
+        if not self.optimizer_queue:
+            return
+            
+        count = len(self.optimizer_queue)
+        self.progress.setMaximum(count)
+        self.progress.setValue(0)
+        self.progress.setVisible(True)
+        self.btn_opt_process.setEnabled(False)
+        self.btn_opt_clear.setEnabled(False)
+        
+        # 1. Get Settings
+        format_mode = self.combo_opt_format.currentText()
+        # Assume optimal quality (92 is a great balance for apparent quality)
+        quality = 92
+        resize_enabled = self.chk_opt_enable_resize.isChecked()
+        resize_preset = self.combo_opt_resize.currentText()
+        lock_aspect = True # Always lock now
+        preserve_meta = self.chk_opt_preserve_meta.isChecked()
+        
+        base_export = self.txt_opt_export_path.toPlainText().strip()
+        if not base_export:
+            QMessageBox.warning(self.view, "No Export Path", "Please select an export directory first.")
+            return
+            
+        export_path = os.path.join(base_export, "optimized")
+        if not os.path.exists(export_path):
+            try:
+                os.makedirs(export_path, exist_ok=True)
+            except Exception as e:
+                QMessageBox.critical(self.view, "Error", f"Could not create 'optimized' folder: {str(e)}")
+                return
+        
+        success_count = 0
+        total_saved = 0
+        
+        for path in self.optimizer_queue:
+            # Determine target format
+            target_format = None
+            if "Original" in format_mode:
+                target_format = None
+            elif "PNG" in format_mode:
+                target_format = "PNG"
+            elif "JPEG" in format_mode:
+                target_format = "JPEG"
+            elif "WebP" in format_mode:
+                target_format = "WEBP"
+            
+            # Determine resize
+            r_max_side = None
+            if resize_enabled:
+                if "Longest Side" in resize_preset:
+                    r_max_side = self.spin_opt_max_side.value()
+                # If "Keep Original Size" but resize enabled (redundant but handled), r_max_side stays None
+                # No more percents to handle here
+
+            # Run optimization
+            dest = optimizer_export_path(path, export_dir=export_path)
+            result = optimize_image(
+                path, dest,
+                format_override=target_format,
+                quality=quality,
+                max_side=r_max_side,
+                preserve_metadata=preserve_meta
+            )
+            
+            if result["success"]:
+                success_count += 1
+                total_saved += result["saved_bytes"]
+            
+            self.progress.setValue(self.progress.value() + 1)
+            QApplication.instance().processEvents()
+
+        self.progress.setVisible(False)
+        self.btn_opt_process.setEnabled(True)
+        self.btn_opt_clear.setEnabled(True)
+        
+        saved_mb = total_saved / (1024 * 1024)
+        QMessageBox.information(self.view, "Optimization Complete", 
+                                f"Successfully optimized {success_count} images.\n"
+                                f"Total space saved: {saved_mb:.2f} MB\n\n"
+                                f"Files saved to: {export_path}")
