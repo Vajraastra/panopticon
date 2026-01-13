@@ -11,6 +11,9 @@ from modules.workshop.logic.watermarker import process_image as watermark_image,
 from modules.workshop.logic.optimizer import (optimize_image, analyze_image, 
                                             get_export_path as optimizer_export_path)
 import os
+from core.theme import Theme
+
+# ... (Previous imports kept if needed, assuming they're at top)
 
 class ResponsiveImageLabel(QLabel):
     """A QLabel that automatically scales its pixmap to fit its size and handles drops."""
@@ -19,14 +22,14 @@ class ResponsiveImageLabel(QLabel):
     def __init__(self, text="Drop images or folders here\n(or click 'Open')"):
         super().__init__(text)
         self.setAlignment(Qt.AlignCenter)
-        self.setStyleSheet("""
-            QLabel {
-                border: 2px dashed #444; 
-                color: #888; 
-                background-color: #0a0a0a;
+        self.setStyleSheet(f"""
+            QLabel {{
+                border: 2px dashed {Theme.BORDER}; 
+                color: {Theme.TEXT_DIM}; 
+                background-color: {Theme.BG_INPUT};
                 font-size: 16px;
                 border-radius: 10px;
-            }
+            }}
         """)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumSize(300, 300)
@@ -50,28 +53,28 @@ class ResponsiveImageLabel(QLabel):
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
-            self.setStyleSheet("""
-                QLabel {
-                    border: 2px dashed #00ffcc; 
-                    color: #00ffcc; 
-                    background-color: #111;
+            self.setStyleSheet(f"""
+                QLabel {{
+                    border: 2px dashed {Theme.ACCENT_MAIN}; 
+                    color: {Theme.ACCENT_MAIN}; 
+                    background-color: {Theme.BG_PANEL};
                     font-size: 16px;
                     border-radius: 10px;
-                }
+                }}
             """)
             event.accept()
         else:
             event.ignore()
 
     def dragLeaveEvent(self, event):
-        self.setStyleSheet("""
-            QLabel {
-                border: 2px dashed #444; 
-                color: #888; 
-                background-color: #0a0a0a;
+        self.setStyleSheet(f"""
+            QLabel {{
+                border: 2px dashed {Theme.BORDER}; 
+                color: {Theme.TEXT_DIM}; 
+                background-color: {Theme.BG_INPUT};
                 font-size: 16px;
                 border-radius: 10px;
-            }
+            }}
         """)
 
     def dropEvent(self, event):
@@ -85,7 +88,6 @@ class WorkshopModule(BaseModule):
         self.settings = QSettings("Panopticon", "Workshop")
         self.queue_paths = []
         self.selected_paths = set()
-        self.export_dir = os.path.abspath("Workshop_Exports")
         self.view = None
         
         # Metadata Reader State
@@ -125,11 +127,16 @@ class WorkshopModule(BaseModule):
     def icon(self):
         return "🛠️"
 
+    @property
+    def accent_color(self):
+        return Theme.ACCENT_MAIN
+
+    # ... Properties ...
+
     def get_view(self):
         if not self.view:
             self.view = QWidget()
             self.view.setAcceptDrops(True)
-            # Inject drop events into the module logic
             self.view.dragEnterEvent = self.dragEnterEvent
             self.view.dropEvent = self.dropEvent
             
@@ -142,21 +149,13 @@ class WorkshopModule(BaseModule):
             self.btn_back_to_dash.setVisible(False)
             self.btn_back_to_dash.clicked.connect(self.switch_to_dashboard)
             self.btn_back_to_dash.setFixedSize(120, 35)
-            self.btn_back_to_dash.setStyleSheet("""
-                QPushButton { 
-                    background-color: #333; 
-                    color: #00ffcc; 
-                    border-radius: 6px; 
-                    font-weight: bold; 
-                    font-size: 11px;
-                }
-                QPushButton:hover { background-color: #444; }
-            """)
+            self.btn_back_to_dash.setStyleSheet(Theme.get_button_style(Theme.ACCENT_MAIN))
+            
             self.header_layout.addWidget(self.btn_back_to_dash)
             self.header_layout.addSpacing(10)
 
             self.lbl_title = QLabel("🛠️ The Workshop")
-            self.lbl_title.setStyleSheet("font-size: 24px; font-weight: bold; color: #00ffcc;")
+            self.lbl_title.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {Theme.ACCENT_MAIN};")
             self.header_layout.addWidget(self.lbl_title)
             self.header_layout.addStretch()
             layout.addLayout(self.header_layout)

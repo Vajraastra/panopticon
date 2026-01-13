@@ -1,12 +1,12 @@
-import os
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
     QFileDialog, QMessageBox, QFrame, QSplitter, QSpinBox,
-    QScrollArea, QSizePolicy, QGridLayout
+    QScrollArea, QSizePolicy, QGridLayout, QComboBox
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap, QImage
 from core.base_module import BaseModule
+from core.theme import Theme
 
 from modules.fashion_studio.logic.cropper_widget import ImageCropperWidget
 from modules.fashion_studio.logic.cropper_logic import crop_image
@@ -17,6 +17,10 @@ class FashionStudioModule(BaseModule):
         self.view = None
         self.image_path = None
         self._updating_inputs = False
+        
+    @property
+    def accent_color(self):
+        return Theme.ACCENT_FASHION
         
     @property
     def name(self):
@@ -47,45 +51,26 @@ class FashionStudioModule(BaseModule):
         # --- Header ---
         self.header = QFrame()
         self.header.setFixedHeight(60)
-        self.header.setStyleSheet("background-color: #1a1a1a; border-bottom: 1px solid #333;")
+        self.header.setStyleSheet(f"background-color: {Theme.BG_SIDEBAR}; border-bottom: 1px solid {Theme.BORDER};")
         header_layout = QHBoxLayout(self.header)
         
         self.btn_back_to_dash = QPushButton("↩ DASHBOARD")
         self.btn_back_to_dash.setVisible(False)
         self.btn_back_to_dash.clicked.connect(self.switch_to_dashboard)
         self.btn_back_to_dash.setFixedSize(120, 35)
-        self.btn_back_to_dash.setStyleSheet("""
-            QPushButton { 
-                background-color: #333; 
-                color: #ff79c6; 
-                border-radius: 6px; 
-                font-weight: bold; 
-                font-size: 11px;
-            }
-            QPushButton:hover { background-color: #444; }
-        """)
+        self.btn_back_to_dash.setStyleSheet(Theme.get_button_style(Theme.ACCENT_FASHION))
         header_layout.addWidget(self.btn_back_to_dash)
         header_layout.addSpacing(10)
 
         self.lbl_title = QLabel(f"{self.icon} {self.name}")
-        self.lbl_title.setStyleSheet("font-size: 20px; font-weight: bold; color: #ff79c6;")
+        self.lbl_title.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {Theme.ACCENT_FASHION};")
         header_layout.addWidget(self.lbl_title)
         header_layout.addStretch()
         
         self.btn_open = QPushButton("📂 Open Image")
         self.btn_open.setVisible(False) # Only in tools
         self.btn_open.clicked.connect(self.open_image_dialog)
-        self.btn_open.setStyleSheet("""
-            QPushButton {
-                background-color: #333;
-                color: white;
-                border-radius: 5px;
-                padding: 8px 15px;
-                font-weight: bold;
-                font-size: 12px;
-            }
-            QPushButton:hover { background-color: #444; }
-        """)
+        self.btn_open.setStyleSheet(Theme.get_button_style(Theme.ACCENT_FASHION))
         header_layout.addWidget(self.btn_open)
         
         self.main_layout.addWidget(self.header)
@@ -153,32 +138,53 @@ class FashionStudioModule(BaseModule):
         # Right Panel (Controls)
         self.controls = QFrame()
         self.controls.setFixedWidth(300)
-        self.controls.setStyleSheet("background-color: #111; border-left: 1px solid #333;")
+        self.controls.setStyleSheet(f"background-color: {Theme.BG_SIDEBAR}; border-left: 1px solid {Theme.BORDER};")
         controls_layout = QVBoxLayout(self.controls)
         controls_layout.setContentsMargins(20, 20, 20, 20)
         controls_layout.setSpacing(15)
         
         lbl_tools_title = QLabel("CROP SETTINGS")
-        lbl_tools_title.setStyleSheet("color: #ff79c6; font-weight: bold; font-size: 11px;")
+        lbl_tools_title.setStyleSheet(f"color: {Theme.ACCENT_FASHION}; font-weight: bold; font-size: 11px;")
         controls_layout.addWidget(lbl_tools_title)
         
         self.crop_box = QFrame()
-        self.crop_box.setStyleSheet("background: #1a1a1a; border-radius: 10px; padding: 15px; border: 1px solid #333;")
+        self.crop_box.setStyleSheet(f"background: {Theme.BG_PANEL}; border-radius: 10px; padding: 15px; border: 1px solid {Theme.BORDER};")
         crop_inner = QVBoxLayout(self.crop_box)
         
+        # Presets
+        lbl_presets = QLabel("Presets:")
+        lbl_presets.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: 12px;")
+        crop_inner.addWidget(lbl_presets)
+
+        self.combo_presets = QComboBox()
+        self.combo_presets.setStyleSheet(Theme.get_input_style(Theme.ACCENT_FASHION))
+        self.combo_presets.addItems([
+            "Custom",
+            "Square (1:1)",
+            "Portrait (4:5)",
+            "Landscape (4:3)",
+            "Widescreen (16:9)",
+            "Mobile Portrait (9:16)",
+            "Ultrawide (21:9)"
+        ])
+        self.combo_presets.currentIndexChanged.connect(self.on_preset_changed)
+        crop_inner.addWidget(self.combo_presets)
+        
+        crop_inner.addSpacing(10)
+
         # Aspect Ratio
         lbl_ratio = QLabel("Aspect Ratio (X : Y):")
-        lbl_ratio.setStyleSheet("color: #eee; font-size: 12px;")
+        lbl_ratio.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: 12px;")
         crop_inner.addWidget(lbl_ratio)
         
         self.lbl_original_info = QLabel("Original Ratio: -")
-        self.lbl_original_info.setStyleSheet("color: #888; font-size: 11px; margin-bottom: 5px;")
+        self.lbl_original_info.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px; margin-bottom: 5px;")
         crop_inner.addWidget(self.lbl_original_info)
         
         ratio_layout = QHBoxLayout()
         self.spin_ratio_x = QSpinBox()
         self.spin_ratio_x.setRange(0, 100)
-        self.spin_ratio_x.setStyleSheet("background: #222; color: #ff79c6; border: 1px solid #444; padding: 5px;")
+        self.spin_ratio_x.setStyleSheet(Theme.get_input_style(Theme.ACCENT_FASHION))
         self.spin_ratio_x.valueChanged.connect(self.update_ratio)
         
         lbl_colon = QLabel(":")
@@ -186,7 +192,7 @@ class FashionStudioModule(BaseModule):
         
         self.spin_ratio_y = QSpinBox()
         self.spin_ratio_y.setRange(0, 100)
-        self.spin_ratio_y.setStyleSheet("background: #222; color: #ff79c6; border: 1px solid #444; padding: 5px;")
+        self.spin_ratio_y.setStyleSheet(Theme.get_input_style(Theme.ACCENT_FASHION))
         self.spin_ratio_y.valueChanged.connect(self.update_ratio)
         
         ratio_layout.addWidget(self.spin_ratio_x)
@@ -198,21 +204,21 @@ class FashionStudioModule(BaseModule):
         
         # Dimensions
         lbl_pixels = QLabel("Target Size (Pixels):")
-        lbl_pixels.setStyleSheet("color: #eee; font-size: 12px;")
+        lbl_pixels.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: 12px;")
         crop_inner.addWidget(lbl_pixels)
         
         px_layout = QHBoxLayout()
         self.px_w = QSpinBox()
         self.px_w.setRange(1, 15000)
-        self.px_w.setStyleSheet("background: #222; color: white; border: 1px solid #444; padding: 5px;")
+        self.px_w.setStyleSheet(Theme.get_input_style(Theme.ACCENT_FASHION))
         self.px_w.valueChanged.connect(self.on_px_input_changed)
         
         lbl_x = QLabel("x")
-        lbl_x.setStyleSheet("color: #888;")
+        lbl_x.setStyleSheet(f"color: {Theme.TEXT_DIM};")
         
         self.px_h = QSpinBox()
         self.px_h.setRange(1, 15000)
-        self.px_h.setStyleSheet("background: #222; color: white; border: 1px solid #444; padding: 5px;")
+        self.px_h.setStyleSheet(Theme.get_input_style(Theme.ACCENT_FASHION))
         self.px_h.valueChanged.connect(self.on_px_input_changed)
         
         px_layout.addWidget(self.px_w)
@@ -228,17 +234,7 @@ class FashionStudioModule(BaseModule):
         self.btn_save.clicked.connect(self.perform_crop)
         self.btn_save.setFixedHeight(50)
         self.btn_save.setCursor(Qt.PointingHandCursor)
-        self.btn_save.setStyleSheet("""
-            QPushButton {
-                background-color: #ff79c6;
-                color: black;
-                border-radius: 8px;
-                font-size: 15px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #ff92d0; }
-            QPushButton:disabled { background-color: #222; color: #555; border: 1px solid #333; }
-        """)
+        self.btn_save.setStyleSheet(Theme.get_action_button_style(Theme.ACCENT_FASHION, "#000000"))
         controls_layout.addWidget(self.btn_save)
         
         self.splitter.addWidget(self.controls)
@@ -345,8 +341,41 @@ class FashionStudioModule(BaseModule):
             
         self.on_selection_changed(self.cropper._selection)
 
+    def on_preset_changed(self, index):
+        if index == 0: return # Custom
+        
+        # Map index to (w, h)
+        presets = {
+            1: (1, 1),   # Square
+            2: (4, 5),   # Portrait
+            3: (4, 3),   # Landscape
+            4: (16, 9),  # Widescreen
+            5: (9, 16),  # Mobile Portrait
+            6: (21, 9)   # Ultrawide
+        }
+        
+        if index in presets:
+            w, h = presets[index]
+            self.spin_ratio_x.blockSignals(True)
+            self.spin_ratio_y.blockSignals(True)
+            self.spin_ratio_x.setValue(w)
+            self.spin_ratio_y.setValue(h)
+            self.spin_ratio_x.blockSignals(False)
+            self.spin_ratio_y.blockSignals(False)
+            
+            # Manually trigger ratio update since signals were blocked
+            self.cropper.set_fixed_aspect_ratio(w / h)
+
     def update_ratio(self):
         rx, ry = self.spin_ratio_x.value(), self.spin_ratio_y.value()
+        
+        # If manually changed, check if it matches Custom or implies Custom
+        sender = self.sender()
+        if sender in [self.spin_ratio_x, self.spin_ratio_y]:
+            self.combo_presets.blockSignals(True)
+            self.combo_presets.setCurrentIndex(0) # Set to Custom
+            self.combo_presets.blockSignals(False)
+            
         self.cropper.set_fixed_aspect_ratio(rx / ry if rx > 0 and ry > 0 else None)
 
     def on_selection_changed(self, rect_norm):

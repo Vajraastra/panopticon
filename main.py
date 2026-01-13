@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QStackedWidget,
                              QFrame, QSizePolicy)
 from PySide6.QtCore import Qt
+from core.theme import Theme
 from core.mod_loader import ModuleLoader
 
 class MainWindow(QMainWindow):
@@ -11,6 +12,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Panopticon - Modular Image Organizer")
         self.resize(1024, 768)
+        self.setStyleSheet(f"background-color: {Theme.BG_MAIN};")
         
         self.loader = ModuleLoader()
         self.init_ui()
@@ -27,12 +29,12 @@ class MainWindow(QMainWindow):
         # Sidebar
         self.sidebar = QFrame()
         self.sidebar.setFixedWidth(200)
-        self.sidebar.setStyleSheet("background-color: #1e1e1e; border-right: 1px solid #333;")
+        self.sidebar.setStyleSheet(f"background-color: {Theme.BG_SIDEBAR}; border-right: 1px solid {Theme.BORDER};")
         self.sidebar_layout = QVBoxLayout(self.sidebar)
         self.sidebar_layout.setAlignment(Qt.AlignTop)
         
         title_label = QLabel("PANOPTICON")
-        title_label.setStyleSheet("color: #00ffcc; font-weight: bold; font-size: 18px; margin: 20px 0;")
+        title_label.setStyleSheet(f"color: {Theme.ACCENT_MAIN}; font-weight: bold; font-size: 18px; margin: 20px 0;")
         title_label.setAlignment(Qt.AlignCenter)
         self.sidebar_layout.addWidget(title_label)
         
@@ -40,7 +42,7 @@ class MainWindow(QMainWindow):
 
         # Content area
         self.content_stack = QStackedWidget()
-        self.content_stack.setStyleSheet("background-color: #121212;")
+        self.content_stack.setStyleSheet(f"background-color: {Theme.BG_MAIN};")
         self.main_layout.addWidget(self.content_stack)
 
         # Dashboard View (ID 0)
@@ -49,7 +51,7 @@ class MainWindow(QMainWindow):
         dashboard_layout.setAlignment(Qt.AlignCenter)
         
         welcome_label = QLabel("Welcome to Panopticon")
-        welcome_label.setStyleSheet("color: white; font-size: 24px;")
+        welcome_label.setStyleSheet(f"color: white; font-size: 24px;")
         dashboard_layout.addWidget(welcome_label)
         
         self.modules_btn_container = QWidget()
@@ -70,6 +72,7 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"Failed to load module {name}: {e}")
         
+    # ... (rest of load_available_modules)
         # After loading all, setup connections
         self.setup_integrations()
 
@@ -91,7 +94,6 @@ class MainWindow(QMainWindow):
             librarian.request_open_workshop.connect(
                 lambda paths: self.switch_to_module(workshop, paths, "modifier")
             )
-
             
         if gallery and workshop:
             gallery.request_open_workshop.connect(
@@ -105,21 +107,37 @@ class MainWindow(QMainWindow):
         return None
 
     def add_module_to_ui(self, module):
+        # Prevent ghost buttons by ensuring view loads first
+        try:
+            view = module.get_view()
+            if view is None:
+                print(f"Module {module.name} returned no view.")
+                return
+        except Exception as e:
+            print(f"Failed to initialize view for {module.name}: {e}")
+            raise e
+
+        # Determine module accent color
+        accent = getattr(module, "accent_color", Theme.ACCENT_MAIN)
+        if "Fashion" in module.name: accent = Theme.ACCENT_FASHION
+        
         # Add to sidebar
         icon = getattr(module, "icon", "🧩")
         btn = QPushButton(f"{icon} {module.name}")
-        btn.setStyleSheet("""
-            QPushButton {
-                color: white; 
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                color: #ddd; 
                 padding: 12px; 
                 text-align: left; 
                 border: none;
                 border-radius: 5px;
                 margin: 2px 5px;
-            }
-            QPushButton:hover {
-                background-color: #333;
-            }
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {Theme.BORDER};
+                color: {accent};
+            }}
         """)
         btn.clicked.connect(lambda: self.switch_to_module(module))
         self.sidebar_layout.addWidget(btn)
@@ -128,25 +146,26 @@ class MainWindow(QMainWindow):
         icon = getattr(module, "icon", "✨")
         dash_btn = QPushButton(f"{icon}\n{module.name}")
         dash_btn.setFixedSize(160, 160)
-        dash_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2a2a2a; 
+        # Use a slightly modified card style for main dashboard buttons
+        dash_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Theme.BG_PANEL}; 
                 color: white; 
                 border-radius: 20px; 
                 font-size: 16px; 
                 font-weight: bold;
-                border: 2px solid #333;
-            }
-            QPushButton:hover {
-                background-color: #3a3a3a;
-                border: 2px solid #00ffcc;
-            }
+                border: 2px solid {Theme.BORDER};
+            }}
+            QPushButton:hover {{
+                background-color: #2a2a2a;
+                border: 2px solid {accent};
+                color: {accent};
+            }}
         """)
         dash_btn.clicked.connect(lambda: self.switch_to_module(module))
         self.modules_btn_layout.addWidget(dash_btn)
         
         # Add view to stack
-        view = module.get_view()
         self.content_stack.addWidget(view)
         module.stack_index = self.content_stack.indexOf(view)
 
