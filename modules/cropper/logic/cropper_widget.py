@@ -13,6 +13,7 @@ class ImageCropperWidget(QWidget):
         super().__init__(parent)
         self.setMouseTracking(True)
         self.image = QPixmap()
+        self.image_path = None
         self._selection = QRectF(0.1, 0.1, 0.8, 0.8) # Normalized (0-1)
         self._aspect_ratio = None # None or float (width/height)
         
@@ -24,6 +25,13 @@ class ImageCropperWidget(QWidget):
     def set_image(self, pixmap):
         self.image = pixmap
         self.update()
+
+    def load_image(self, path):
+        self.image_path = path
+        self.set_image(QPixmap(path))
+
+    def get_crop_rect_normalized(self):
+        return self._selection
 
     def set_fixed_aspect_ratio(self, ratio):
         """ratio: float (width/height) or None"""

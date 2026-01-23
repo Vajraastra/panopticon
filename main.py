@@ -6,27 +6,45 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PySide6.QtCore import Qt
 from core.theme import Theme
 from core.mod_loader import ModuleLoader
+from core.theme_manager import ThemeManager
+from core.event_bus import EventBus
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Panopticon - Modular Image Organizer")
         self.resize(1024, 768)
-        self.setStyleSheet(f"background-color: {Theme.BG_MAIN};")
+        self.resize(1024, 768)
         
+        self.theme_manager = ThemeManager()
+        self.setStyleSheet(self.theme_manager.get_stylesheet())
+        
+        self.event_bus = EventBus()
+        self.event_bus.subscribe("navigate", self.on_navigate)
+        
+        # Core Service Context to be injected into modules
+        self.context = {
+            "theme_manager": self.theme_manager,
+            "event_bus": self.event_bus,
+            "main_window": self
+        }
+
         self.loader = ModuleLoader()
         self.init_ui()
         self.load_available_modules()
 
     def init_ui(self):
-        # Central widget with horizontal layout
-        self.central_widget = QWidget()
-        self.setCentralWidget(self.central_widget)
-        self.main_layout = QHBoxLayout(self.central_widget)
-        self.main_layout.setContentsMargins(0, 0, 0, 0)
-        self.main_layout.setSpacing(0)
-
-        # Sidebar
+        # ROOT CONTAINER: Stacked Widget
+        self.root_stack = QStackedWidget()
+        self.setCentralWidget(self.root_stack)
+        
+        # --- PAGE 0: DASHBOARD CONTAINER ---
+        self.dashboard_page = QWidget()
+        self.dashboard_layout = QHBoxLayout(self.dashboard_page)
+        self.dashboard_layout.setContentsMargins(0, 0, 0, 0)
+        self.dashboard_layout.setSpacing(0)
+        
+        # 1. Main Sidebar (Only lives here now)
         self.sidebar = QFrame()
         self.sidebar.setFixedWidth(200)
         self.sidebar.setStyleSheet(f"background-color: {Theme.BG_SIDEBAR}; border-right: 1px solid {Theme.BORDER};")
@@ -38,34 +56,33 @@ class MainWindow(QMainWindow):
         title_label.setAlignment(Qt.AlignCenter)
         self.sidebar_layout.addWidget(title_label)
         
-        self.main_layout.addWidget(self.sidebar)
-
-        # Content area
-        self.content_stack = QStackedWidget()
-        self.content_stack.setStyleSheet(f"background-color: {Theme.BG_MAIN};")
-        self.main_layout.addWidget(self.content_stack)
-
-        # Dashboard View (ID 0)
-        self.dashboard = QWidget()
-        dashboard_layout = QVBoxLayout(self.dashboard)
-        dashboard_layout.setAlignment(Qt.AlignCenter)
+        self.dashboard_layout.addWidget(self.sidebar)
+        
+        # 2. Dashboard Content (Welcome + Buttons)
+        self.dashboard_content = QWidget()
+        self.dashboard_content.setStyleSheet(f"background-color: {Theme.BG_MAIN};")
+        db_content_layout = QVBoxLayout(self.dashboard_content)
+        db_content_layout.setAlignment(Qt.AlignCenter)
         
         welcome_label = QLabel("Welcome to Panopticon")
         welcome_label.setStyleSheet(f"color: white; font-size: 24px;")
-        dashboard_layout.addWidget(welcome_label)
+        db_content_layout.addWidget(welcome_label)
         
         self.modules_btn_container = QWidget()
         self.modules_btn_layout = QHBoxLayout(self.modules_btn_container)
-        dashboard_layout.addWidget(self.modules_btn_container)
+        db_content_layout.addWidget(self.modules_btn_container)
         
-        self.content_stack.addWidget(self.dashboard)
+        self.dashboard_layout.addWidget(self.dashboard_content)
+        
+        # Add Dashboard Page to Root Stack
+        self.root_stack.addWidget(self.dashboard_page) # Index 0
 
     def load_available_modules(self):
         self.loaded_modules = {} # Registry
         module_names = self.loader.discover_modules()
         for name in module_names:
             try:
-                module = self.loader.load_module(name)
+                module = self.loader.load_module(name, self.context)
                 if module:
                     self.add_module_to_ui(module)
                     self.loaded_modules[module.name] = module
@@ -73,7 +90,6 @@ class MainWindow(QMainWindow):
                 print(f"Failed to load module {name}: {e}")
         
     # ... (rest of load_available_modules)
-        # After loading all, setup connections
         self.setup_integrations()
 
     def setup_integrations(self):
@@ -166,11 +182,13 @@ class MainWindow(QMainWindow):
         self.modules_btn_layout.addWidget(dash_btn)
         
         # Add view to stack
-        self.content_stack.addWidget(view)
-        module.stack_index = self.content_stack.indexOf(view)
+        self.root_stack.addWidget(view)
+        module.stack_index = self.root_stack.indexOf(view)
 
     def switch_to_module(self, module, *args):
-        self.content_stack.setCurrentIndex(module.stack_index)
+        # Simply switch the root stack. The Sidebar is part of Page 0, so it disappears automatically.
+        print(f"DEBUG: Switching to {module.name} (Index {module.stack_index})")
+        self.root_stack.setCurrentIndex(module.stack_index)
         
         # Pass data if needed
         if args:
@@ -185,6 +203,13 @@ class MainWindow(QMainWindow):
                     module.load_images(args[0], args[1])
                 else:
                     module.load_images(args[0])
+
+    def on_navigate(self, target):
+        """Handle navigation events from EventBus."""
+        if target == "dashboard":
+            print("DEBUG: Returning to Dashboard")
+            self.root_stack.setCurrentIndex(0) # 0 is dashboard page
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

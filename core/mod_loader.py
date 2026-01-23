@@ -25,9 +25,10 @@ class ModuleLoader:
                    and not f.startswith("__")]
         return folders
 
-    def load_module(self, module_name):
+    def load_module(self, module_name, context=None):
         """
         Loads a specific module by name.
+        :param context: Dict containing services (ThemeManager, EventBus) to inject.
         """
         if module_name in self.loaded_modules:
             return self.loaded_modules[module_name]
@@ -41,7 +42,7 @@ class ModuleLoader:
             for name, obj in inspect.getmembers(imported_module):
                 if inspect.isclass(obj) and issubclass(obj, BaseModule) and obj is not BaseModule:
                     instance = obj()
-                    instance.on_load()
+                    instance.on_load(context)
                     self.loaded_modules[module_name] = instance
                     return instance
         except Exception as e:

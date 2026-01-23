@@ -25,14 +25,25 @@ class BaseModule(QObject):
         """
         pass
 
-    def on_load(self):
+    def on_load(self, context=None):
         """
         Called when the module is loaded by the core.
+        :param context: A dictionary or object containing core services (theme_manager, settings, etc.)
         """
-        pass
+        self.context = context
 
     def on_unload(self):
         """
         Called when the module is unloaded.
+        """
+        pass
+
+    def run_headless(self, params: dict, input_data: any) -> any:
+        """
+        Execute the module's core logic without UI. 
+        Required for automation and node systems.
+        :param params: Dictionary of settings/parameters.
+        :param input_data: The input to process (e.g., list of file paths).
+        :return: Processed data or result.
         """
         pass
