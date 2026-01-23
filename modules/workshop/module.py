@@ -11,7 +11,10 @@ from modules.workshop.logic.watermarker import process_image as watermark_image,
 from modules.workshop.logic.optimizer import (optimize_image, analyze_image, 
                                             get_export_path as optimizer_export_path)
 import os
+import tempfile
 from core.theme import Theme
+from PySide6.QtGui import QPainter, QPen, QColor
+from PySide6.QtCore import QPoint
 
 # ... (Previous imports kept if needed, assuming they're at top)
 
@@ -77,10 +80,130 @@ class ResponsiveImageLabel(QLabel):
             }}
         """)
 
-    def dropEvent(self, event):
-        self.dragLeaveEvent(None)
-        files = [u.toLocalFile() for u in event.mimeData().urls()]
-        self.dropped_files.emit(files)
+class MaskDrawingLabel(QLabel):
+    """A QLabel that allows drawing a red mask over an image."""
+    def __init__(self):
+        super().__init__()
+        self.setAlignment(Qt.AlignCenter)
+        self.setMouseTracking(True)
+        self.drawing = False
+        self.last_point = QPoint()
+        self.brush_size = 20
+        self.erase_mode = False
+        
+        self.original_pixmap = None
+        self.mask_pixmap = None
+        self.scaled_bg = None # Cache for background
+        
+        self.setStyleSheet(f"border: 2px dashed {Theme.BORDER}; background-color: {Theme.BG_INPUT};")
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.setMinimumSize(200, 200)
+
+    def set_image(self, pixmap):
+        self.original_pixmap = pixmap
+        # Create an empty transparent mask of the same size
+        self.mask_pixmap = QPixmap(pixmap.size())
+        self.mask_pixmap.fill(Qt.transparent)
+        self.scaled_bg = None # Reset cache
+        self.update_display()
+
+    def update_display(self):
+        if not self.original_pixmap:
+            return
+            
+        target_size = self.size()
+        if target_size.width() <= 100:
+            target_size = QSize(1200, 800)
+
+        # 1. Update/Cache scaled background
+        if not self.scaled_bg or self.scaled_bg.size() != target_size:
+            # We use FastTransformation for background caching to keep it snappy
+            self.scaled_bg = self.original_pixmap.scaled(target_size, Qt.KeepAspectRatio, Qt.FastTransformation)
+            
+        # 2. Draw on cached background
+        # Note: We still draw the MASK overlay. To be fast, we draw the mask pixmap scaled.
+        display_pix = self.scaled_bg.copy()
+        painter = QPainter(display_pix)
+        painter.setOpacity(0.5)
+        # Use simple drawPixmap with scaling - Qt handles this efficiently
+        painter.drawPixmap(display_pix.rect(), self.mask_pixmap)
+        painter.end()
+        
+        super().setPixmap(display_pix)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drawing = True
+            self.last_point = self.map_to_pixmap(event.pos())
+            self.draw_on_mask(self.last_point)
+
+    def mouseMoveEvent(self, event):
+        if (event.buttons() & Qt.LeftButton) and self.drawing:
+            current_point = self.map_to_pixmap(event.pos())
+            self.draw_on_mask(current_point)
+            self.last_point = current_point
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drawing = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.scaled_bg = None # Invalidate cache
+        self.update_display()
+
+    def map_to_pixmap(self, pos):
+        if not self.pixmap() or self.pixmap().isNull() or not self.original_pixmap:
+            return pos
+            
+        pm_rect = self.pixmap().rect()
+        w_w = self.width()
+        w_h = self.height()
+        pm_w = self.pixmap().width()
+        pm_h = self.pixmap().height()
+        
+        offset_x = (w_w - pm_w) / 2
+        offset_y = (w_h - pm_h) / 2
+        
+        rel_x = (pos.x() - offset_x) / pm_w
+        rel_y = (pos.y() - offset_y) / pm_h
+        
+        final_x = int(rel_x * self.original_pixmap.width())
+        final_y = int(rel_y * self.original_pixmap.height())
+        
+        # Clamp to image bounds
+        final_x = max(0, min(final_x, self.original_pixmap.width() - 1))
+        final_y = max(0, min(final_y, self.original_pixmap.height() - 1))
+        
+        return QPoint(final_x, final_y)
+
+    def draw_on_mask(self, point):
+        if not self.mask_pixmap:
+            return
+            
+        painter = QPainter(self.mask_pixmap)
+        # CRITICAL: Always use the brush size even in eraser mode
+        pen = QPen(QColor(255, 0, 0, 200), self.brush_size, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        
+        if self.erase_mode:
+            painter.setCompositionMode(QPainter.CompositionMode_Clear)
+            # Use transparent color + CompositionMode_Clear to erase
+            pen.setColor(Qt.transparent)
+            
+        painter.setPen(pen)
+        painter.drawLine(self.last_point, point)
+        painter.end()
+        self.update_display()
+
+    def get_mask_as_qimage(self):
+        if not self.mask_pixmap:
+            return None
+        return self.mask_pixmap.toImage()
+
+    def clear_mask(self):
+        if self.mask_pixmap:
+            self.mask_pixmap.fill(Qt.transparent)
+            self.update_display()
 
 class WorkshopModule(BaseModule):
     def __init__(self):
@@ -205,6 +328,13 @@ class WorkshopModule(BaseModule):
                 "Reduce size significantly without losing perceptible quality.",
                 "#ffb86c", self.switch_to_optimizer
             ), 2, 0)
+
+            self.cards_grid.addWidget(self.create_tool_card(
+                "🎯 Face Scorer", 
+                "Score images by face clarity for optimal dataset curation.",
+                "#ff5555", self.switch_to_face_scorer
+            ), 2, 1)
+
             
             dashboard_layout.addLayout(self.cards_grid)
             dashboard_layout.addStretch()
@@ -932,6 +1062,115 @@ class WorkshopModule(BaseModule):
             self.optimizer_panel.setVisible(False)
             layout.addWidget(self.optimizer_panel)
 
+            # --- Face Scorer Content Area ---
+            self.face_scorer_panel = QWidget()
+            self.face_scorer_panel.setVisible(False)
+            fs_outer_layout = QVBoxLayout(self.face_scorer_panel)
+            fs_outer_layout.setContentsMargins(0, 10, 0, 0)
+            
+            fs_container = QWidget()
+            fs_container.setMaximumWidth(1400)
+            fs_layout = QVBoxLayout(fs_container)
+            fs_layout.setContentsMargins(0, 0, 0, 0)
+            fs_outer_layout.addWidget(fs_container, 1, Qt.AlignHCenter)
+            
+            fs_controls = QHBoxLayout()
+            
+            # Left: Controls Panel
+            fs_left_panel = QFrame()
+            fs_left_panel.setFixedWidth(300)
+            fs_left_panel.setStyleSheet(f"background-color: {Theme.BG_PANEL}; border: 1px solid {Theme.BORDER}; border-radius: 10px; padding: 15px;")
+            fs_left_layout = QVBoxLayout(fs_left_panel)
+            fs_left_layout.setSpacing(15)
+            
+            lbl_fs_title = QLabel("🎯 FACE SCORER")
+            lbl_fs_title.setStyleSheet(f"color: #ff5555; font-weight: bold; font-size: 14px;")
+            fs_left_layout.addWidget(lbl_fs_title)
+            
+            lbl_fs_desc = QLabel("Score images by face detection confidence for optimal dataset curation.")
+            lbl_fs_desc.setWordWrap(True)
+            lbl_fs_desc.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px;")
+            fs_left_layout.addWidget(lbl_fs_desc)
+            
+            fs_left_layout.addSpacing(10)
+            
+            self.btn_fs_load = QPushButton("📂 Load Folder")
+            self.btn_fs_load.setStyleSheet(Theme.get_action_button_style("#ff5555", "#ffffff"))
+            self.btn_fs_load.setFixedHeight(40)
+            self.btn_fs_load.clicked.connect(self._fs_load_folder)
+            fs_left_layout.addWidget(self.btn_fs_load)
+            
+            self.btn_fs_analyze = QPushButton("🔍 Analyze & Auto-Sort")
+            self.btn_fs_analyze.setEnabled(False)
+            self.btn_fs_analyze.setStyleSheet(Theme.get_action_button_style("#ff5555", "#ffffff"))
+            self.btn_fs_analyze.setFixedHeight(40)
+            self.btn_fs_analyze.clicked.connect(self._fs_analyze)
+            fs_left_layout.addWidget(self.btn_fs_analyze)
+            
+            fs_left_layout.addSpacing(10)
+            
+            # Threshold Slider
+            lbl_threshold = QLabel("Minimum Score Threshold:")
+            lbl_threshold.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: 12px;")
+            fs_left_layout.addWidget(lbl_threshold)
+            
+            threshold_row = QHBoxLayout()
+            self.fs_threshold_slider = QSlider(Qt.Horizontal)
+            self.fs_threshold_slider.setRange(0, 100)
+            self.fs_threshold_slider.setValue(50)
+            self.fs_threshold_slider.valueChanged.connect(self._fs_update_threshold_label)
+            threshold_row.addWidget(self.fs_threshold_slider)
+            
+            self.lbl_fs_threshold_val = QLabel("50")
+            self.lbl_fs_threshold_val.setFixedWidth(35)
+            self.lbl_fs_threshold_val.setStyleSheet("color: #ff5555; font-weight: bold;")
+            threshold_row.addWidget(self.lbl_fs_threshold_val)
+            fs_left_layout.addLayout(threshold_row)
+            
+            fs_left_layout.addStretch()
+            
+            # Auto-sort happens automatically now
+            note = QLabel("Images will be automatically sorted into\npercentage folders (100%/, 90%/...)")
+            note.setWordWrap(True)
+            note.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 10px;")
+            fs_left_layout.addWidget(note)
+            
+            fs_controls.addWidget(fs_left_panel)
+            
+            # Right: Results Grid
+            fs_right_panel = QFrame()
+            fs_right_panel.setStyleSheet(f"background-color: {Theme.BG_PANEL}; border: 1px solid {Theme.BORDER}; border-radius: 10px;")
+            fs_right_layout = QVBoxLayout(fs_right_panel)
+            
+            # Results Text Area (Stats)
+            self.fs_stats_text = QTextEdit()
+            self.fs_stats_text.setReadOnly(True)
+            self.fs_stats_text.setStyleSheet(f"background-color: #0a0a0a; color: {Theme.TEXT_PRIMARY}; border: none; font-family: Consolas, monospace;")
+            fs_right_layout.addWidget(self.fs_stats_text, 1)
+            
+            # Buttons to open folders
+            self.fs_folders_widget = QWidget()
+            self.fs_folders_layout = QHBoxLayout(self.fs_folders_widget)
+            self.fs_folders_layout.setAlignment(Qt.AlignLeft)
+            fs_right_layout.addWidget(self.fs_folders_widget)
+
+            
+            # Stats bar
+            self.lbl_fs_stats = QLabel("Ready. Load a folder to begin scoring.")
+            self.lbl_fs_stats.setStyleSheet("background-color: #1a1a1a; color: #ff5555; padding: 10px; border-top: 1px solid #333;")
+            fs_right_layout.addWidget(self.lbl_fs_stats)
+            
+            fs_controls.addWidget(fs_right_panel, 1)
+            fs_layout.addLayout(fs_controls)
+            
+            layout.addWidget(self.face_scorer_panel)
+            
+            # Instance variables for face scorer
+            self.fs_image_paths = []
+            self.fs_results = []
+            self.fs_selected_paths = set()
+            self.fs_thumbnails = {}  # path -> widget
+
             # --- Settings Content Area (initially hidden) ---
             self.settings_panel = QWidget()
             settings_layout = QVBoxLayout(self.settings_panel)
@@ -1009,69 +1248,6 @@ class WorkshopModule(BaseModule):
 
         return self.view
 
-    def switch_to_stripper(self):
-        """Switch to Metadata Stripper tool."""
-        if self.btn_tool_stripper.isChecked():
-            self.btn_tool_dummy.setChecked(False)
-            self.btn_tool_reader.setChecked(False)
-            self.btn_tool_watermarker.setChecked(False)
-            self.btn_tool_settings.setChecked(False)
-            self.stripper_panel.setVisible(True)
-            self.dummy_panel.setVisible(False)
-            self.reader_panel.setVisible(False)
-            self.watermarker_panel.setVisible(False)
-            self.settings_panel.setVisible(False)
-            self.btn_process.setEnabled(len(self.queue_paths) > 0)
-        else:
-            self.btn_tool_stripper.setChecked(True)
-    
-    def switch_to_optimizer(self):
-        """Switch to Image Optimizer tool."""
-        # Find the card if called from outside, or handle dashboard transition
-        self.btn_back_to_dash.setVisible(True)
-        self.workshop_dashboard.setVisible(False)
-        self.stripper_panel.setVisible(False)
-        self.dummy_panel.setVisible(False)
-        self.reader_panel.setVisible(False)
-        self.watermarker_panel.setVisible(False)
-        self.settings_panel.setVisible(False)
-        self.optimizer_panel.setVisible(True)
-        self.lbl_title.setText("⚡ Image Optimizer")
-        self.btn_process.setVisible(False) # Has its own process button
-        self.progress.setVisible(False)
-        self._update_optimizer_queue_grid()
-    
-    def switch_to_dummy(self):
-        """Switch to Dummy Creator tool."""
-        if self.btn_tool_dummy.isChecked():
-            self.btn_tool_stripper.setChecked(False)
-            self.btn_tool_reader.setChecked(False)
-            self.btn_tool_watermarker.setChecked(False)
-            self.btn_tool_settings.setChecked(False)
-            self.stripper_panel.setVisible(False)
-            self.dummy_panel.setVisible(True)
-            self.reader_panel.setVisible(False)
-            self.watermarker_panel.setVisible(False)
-            self.settings_panel.setVisible(False)
-            self.btn_process.setEnabled(False) # Dummy has its own button
-        else:
-            self.btn_tool_dummy.setChecked(True)
-
-    def switch_to_reader(self):
-        """Switch to Metadata Reader tool."""
-        if self.btn_tool_reader.isChecked():
-            self.btn_tool_stripper.setChecked(False)
-            self.btn_tool_dummy.setChecked(False)
-            self.btn_tool_watermarker.setChecked(False)
-            self.btn_tool_settings.setChecked(False)
-            self.stripper_panel.setVisible(False)
-            self.dummy_panel.setVisible(False)
-            self.reader_panel.setVisible(True)
-            self.watermarker_panel.setVisible(False)
-            self.settings_panel.setVisible(False)
-            self.btn_process.setEnabled(False)
-        else:
-            self.btn_tool_reader.setChecked(True)
 
     # --- Metadata Reader Logic ---
     def reader_open_images(self):
@@ -1317,10 +1493,10 @@ class WorkshopModule(BaseModule):
 
     def process_queue(self):
         """Processes the images in the queue based on the active tool."""
-        # 1. Determine active tool
-        if self.btn_tool_stripper.isChecked():
+        # Determine active tool by checking which panel is visible
+        if self.stripper_panel.isVisible():
             self._process_modifier_batch()
-        elif self.btn_tool_watermarker.isChecked():
+        elif self.watermarker_panel.isVisible():
             self._process_watermark_batch()
         else:
             QMessageBox.information(self.view, "Processing", "Please select a supported tool in the Workshop.")
@@ -1574,6 +1750,21 @@ class WorkshopModule(BaseModule):
         
         return card
 
+    def switch_to_face_scorer(self):
+        """Switch to Face Scorer tool."""
+        self.workshop_dashboard.setVisible(False)
+        self.stripper_panel.setVisible(False)
+        self.dummy_panel.setVisible(False)
+        self.reader_panel.setVisible(False)
+        self.watermarker_panel.setVisible(False)
+        self.optimizer_panel.setVisible(False)
+        self.face_scorer_panel.setVisible(True)
+        self.settings_panel.setVisible(False)
+        self.btn_process.setVisible(False)
+        self.btn_back_to_dash.setVisible(True)
+        self.lbl_title.setText("🎯 Face Scorer")
+        self.progress.setVisible(False)
+
     def switch_to_stripper(self):
         """Switch to Metadata Stripper tool."""
         self.workshop_dashboard.setVisible(False)
@@ -1581,11 +1772,31 @@ class WorkshopModule(BaseModule):
         self.dummy_panel.setVisible(False)
         self.reader_panel.setVisible(False)
         self.watermarker_panel.setVisible(False)
+        self.optimizer_panel.setVisible(False)
+        self.face_scorer_panel.setVisible(False)
         self.settings_panel.setVisible(False)
         self.btn_process.setVisible(True)
         self.btn_process.setEnabled(len(self.queue_paths) > 0)
         self.btn_back_to_dash.setVisible(True)
         self.lbl_title.setText("🛡️ Metadata Modifier")
+
+    def switch_to_optimizer(self):
+        """Switch to Image Optimizer tool."""
+        self.workshop_dashboard.setVisible(False)
+        self.stripper_panel.setVisible(False)
+        self.dummy_panel.setVisible(False)
+        self.reader_panel.setVisible(False)
+        self.watermarker_panel.setVisible(False)
+        self.optimizer_panel.setVisible(True)
+        self.face_scorer_panel.setVisible(False)
+        self.settings_panel.setVisible(False)
+        self.btn_process.setVisible(False) # Has its own process button
+        self.btn_back_to_dash.setVisible(True)
+        self.lbl_title.setText("⚡ Image Optimizer")
+        self.progress.setVisible(False)
+        # Ensure grid is up to date when switching
+        if hasattr(self, '_update_optimizer_queue_grid'):
+            self._update_optimizer_queue_grid()
     
     def switch_to_dummy(self):
         """Switch to Dummy Creator tool."""
@@ -1594,6 +1805,8 @@ class WorkshopModule(BaseModule):
         self.dummy_panel.setVisible(True)
         self.reader_panel.setVisible(False)
         self.watermarker_panel.setVisible(False)
+        self.optimizer_panel.setVisible(False)
+        self.face_scorer_panel.setVisible(False)
         self.settings_panel.setVisible(False)
         self.btn_process.setVisible(False)
         self.btn_back_to_dash.setVisible(True)
@@ -1606,6 +1819,8 @@ class WorkshopModule(BaseModule):
         self.dummy_panel.setVisible(False)
         self.reader_panel.setVisible(True)
         self.watermarker_panel.setVisible(False)
+        self.optimizer_panel.setVisible(False)
+        self.face_scorer_panel.setVisible(False)
         self.settings_panel.setVisible(False)
         self.btn_process.setVisible(False)
         self.btn_back_to_dash.setVisible(True)
@@ -1618,11 +1833,14 @@ class WorkshopModule(BaseModule):
         self.dummy_panel.setVisible(False)
         self.reader_panel.setVisible(False)
         self.watermarker_panel.setVisible(True)
+        self.optimizer_panel.setVisible(False)
+        self.face_scorer_panel.setVisible(False)
         self.settings_panel.setVisible(False)
         self.btn_process.setVisible(True)
         self.btn_process.setEnabled(len(self.watermark_queue) > 0)
         self.btn_back_to_dash.setVisible(True)
         self.lbl_title.setText("🖼️ Watermarker")
+
 
     def switch_to_settings(self):
         """Switch to Settings tool."""
@@ -1631,6 +1849,8 @@ class WorkshopModule(BaseModule):
         self.dummy_panel.setVisible(False)
         self.reader_panel.setVisible(False)
         self.watermarker_panel.setVisible(False)
+        self.optimizer_panel.setVisible(False)
+        self.face_scorer_panel.setVisible(False)
         self.settings_panel.setVisible(True)
         self.btn_process.setVisible(False)
         self.btn_back_to_dash.setVisible(True)
@@ -1643,6 +1863,139 @@ class WorkshopModule(BaseModule):
             self.export_dir = os.path.abspath(folder)
             self.lbl_current_export_path.setText(self.export_dir)
             self.settings.setValue("export_dir", self.export_dir)
+
+    # --- Face Scorer Logic ---
+    def _fs_load_folder(self):
+        """Load images from a folder for face scoring."""
+        folder = QFileDialog.getExistingDirectory(self.view, "Select Folder with Images", self.export_dir)
+        if not folder:
+            return
+        
+        extensions = ('.png', '.jpg', '.jpeg', '.webp')
+        self.fs_image_paths = []
+        
+        for root, _, files in os.walk(folder):
+            for f in files:
+                if f.lower().endswith(extensions):
+                    self.fs_image_paths.append(os.path.join(root, f))
+        
+        count = len(self.fs_image_paths)
+        self.lbl_fs_stats.setText(f"Loaded {count} images. Ready to score and auto-sort.")
+        self.btn_fs_analyze.setEnabled(count > 0)
+        
+        # Clear previous state
+        self.fs_results = []
+        if hasattr(self, 'fs_stats_text'):
+            self.fs_stats_text.clear()
+        
+        # Clear folder buttons
+        if hasattr(self, 'fs_folders_layout'):
+            while self.fs_folders_layout.count():
+                item = self.fs_folders_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+
+    def _fs_analyze(self):
+        """Run face detection, score, and IMMEDIATELY sort/move files."""
+        if not self.fs_image_paths:
+            return
+        
+        from modules.workshop.logic.face_scorer import score_batch, sort_files_by_score
+        
+        # 1. Score
+        self.progress.setRange(0, len(self.fs_image_paths))
+        self.progress.setValue(0)
+        self.progress.setVisible(True)
+        self.btn_fs_analyze.setEnabled(False)
+        self.lbl_fs_stats.setText("Scoring images...")
+        QApplication.instance().processEvents()
+        
+        def progress_cb(current, total, path):
+            self.progress.setValue(current)
+            self.lbl_fs_stats.setText(f"Analyzing: {os.path.basename(path)} ({current}/{total})")
+            QApplication.instance().processEvents()
+        
+        try:
+            self.fs_results = score_batch(self.fs_image_paths, progress_cb)
+        except Exception as e:
+            QMessageBox.critical(self.view, "Error", f"Face scoring failed: {str(e)}")
+            self.progress.setVisible(False)
+            self.btn_fs_analyze.setEnabled(True)
+            return
+            
+        # 2. Sort & Move (Auto process)
+        if not self.fs_results:
+            return
+            
+        threshold = self.fs_threshold_slider.value()
+        base_folder = os.path.dirname(self.fs_image_paths[0])
+        
+        self.lbl_fs_stats.setText("Sorting into folders...")
+        QApplication.instance().processEvents()
+        
+        # Move files
+        stats = sort_files_by_score(self.fs_results, threshold, base_folder=base_folder, move_files=True)
+        
+        # 3. Show Stats & Cleanup
+        self.progress.setVisible(False)
+        self.btn_fs_analyze.setEnabled(True)
+        
+        # Clear data since files moved
+        self.fs_image_paths.clear()
+        
+        self._fs_show_stats_summary(stats, base_folder)
+
+    def _fs_show_stats_summary(self, stats, base_folder):
+        """Display summary stats and folder buttons."""
+        moved = stats["moved_counts"] # {"100%": 5, "90%": 2}
+        total = stats["total_moved"]
+        errors = stats["errors"]
+        
+        # 1. Text Report
+        report = []
+        report.append("=== PROCESSING COMPLETE ===")
+        report.append(f"Base Folder: {base_folder}")
+        report.append(f"Total Moved: {total}")
+        report.append(f"Errors: {errors}")
+        report.append("-" * 30)
+        report.append("DISTRIBUTION:")
+        
+        sorted_buckets = sorted(moved.items(), key=lambda x: int(x[0].replace('%', '')), reverse=True)
+        bucket_count = 0
+        for bucket, count in sorted_buckets:
+            report.append(f"  [{bucket}] : {count} images")
+            bucket_count += 1
+            
+        if bucket_count == 0:
+            report.append("  (No images met the threshold moved)")
+            
+        self.fs_stats_text.setText("\n".join(report))
+        
+        # 2. Folder Buttons
+        # Clear previous buttons
+        while self.fs_folders_layout.count():
+            item = self.fs_folders_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Add 'Open Base Folder'
+        btn_base = QPushButton("📂 Open Root")
+        btn_base.setStyleSheet(Theme.get_button_style("#444"))
+        btn_base.clicked.connect(lambda: os.startfile(base_folder))
+        self.fs_folders_layout.addWidget(btn_base)
+        
+        # Add buttons for each created bucket
+        for bucket, _ in sorted_buckets:
+            bucket_path = os.path.join(base_folder, bucket)
+            btn = QPushButton(f"Open {bucket}")
+            btn.setStyleSheet(Theme.get_button_style(Theme.ACCENT_PRIMARY))
+            btn.clicked.connect(lambda checked=False, p=bucket_path: os.startfile(p))
+            self.fs_folders_layout.addWidget(btn)
+            
+        self.lbl_fs_stats.setText(f"Done. {total} images organized.")
+
+    def _fs_update_threshold_label(self, val):
+        self.lbl_fs_threshold_val.setText(str(val))
 
     # --- Watermarker Logic ---
     def load_watermark_asset(self):
@@ -2000,12 +2353,5 @@ class WorkshopModule(BaseModule):
             self.progress.setValue(self.progress.value() + 1)
             QApplication.instance().processEvents()
 
-        self.progress.setVisible(False)
-        self.btn_opt_process.setEnabled(True)
-        self.btn_opt_clear.setEnabled(True)
-        
-        saved_mb = total_saved / (1024 * 1024)
-        QMessageBox.information(self.view, "Optimization Complete", 
-                                f"Successfully optimized {success_count} images.\n"
-                                f"Total space saved: {saved_mb:.2f} MB\n\n"
-                                f"Files saved to: {export_path}")
+
+

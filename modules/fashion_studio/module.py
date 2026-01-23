@@ -10,6 +10,7 @@ from core.theme import Theme
 
 from modules.fashion_studio.logic.cropper_widget import ImageCropperWidget
 from modules.fashion_studio.logic.cropper_logic import crop_image
+import os
 
 class FashionStudioModule(BaseModule):
     def __init__(self):
@@ -385,6 +386,8 @@ class FashionStudioModule(BaseModule):
         self.px_w.setValue(int(rect_norm.width() * pixmap.width()))
         self.px_h.setValue(int(rect_norm.height() * pixmap.height()))
         self._updating_inputs = False
+        # Enable save button when a valid selection exists
+        self.btn_save.setEnabled(rect_norm.width() > 0 and rect_norm.height() > 0)
 
     def on_px_input_changed(self):
         if self._updating_inputs or not self.image_path: return

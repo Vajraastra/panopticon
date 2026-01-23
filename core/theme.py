@@ -18,6 +18,7 @@ class Theme:
     ACCENT_WARNING = "#ff5555" # Red
     ACCENT_INFO = "#bd93f9"    # Purple
     ACCENT_ACTION = "#f1fa8c"  # Yellow
+    ACCENT_SUCCESS = "#50fa7b" # Green
 
     @staticmethod
     def get_button_style(accent_color=ACCENT_MAIN):

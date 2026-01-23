@@ -1,6 +1,7 @@
 import struct
 import json
 import os
+from PIL import Image
 
 class UniversalParser:
     @staticmethod
@@ -13,6 +14,9 @@ class UniversalParser:
         if ext == '.png':
             png_data = UniversalParser._parse_png(path)
             result.update(png_data)
+        elif ext in ('.jpg', '.jpeg', '.webp'):
+            jpeg_data = UniversalParser._parse_jpeg(path)
+            result.update(jpeg_data)
         
         return result
 
@@ -56,6 +60,38 @@ class UniversalParser:
                         if len(parts) >= 6:
                             metadata[parts[0].decode('utf-8', errors='ignore')] = parts[5].decode('utf-8', errors='ignore')
             
+            return UniversalParser._extract_prompts(metadata)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @staticmethod
+    def _parse_jpeg(path):
+        """Extracts EXIF metadata from JPEG/WEBP files, focusing on AI prompt data."""
+        metadata = {}
+        try:
+            with Image.open(path) as img:
+                exif = img.getexif()
+                if exif:
+                    # 0x9286 = UserComment (where A1111/NAI store prompts)
+                    if 0x9286 in exif:
+                        user_comment = exif[0x9286]
+                        # Handle bytes vs string
+                        if isinstance(user_comment, bytes):
+                            user_comment = user_comment.decode('utf-8', errors='ignore')
+                        metadata["parameters"] = user_comment
+                    
+                    # 0x010F = Make (sometimes used for tool info)
+                    if 0x010F in exif:
+                        metadata["Make"] = str(exif[0x010F])
+                    
+                    # 0x0131 = Software
+                    if 0x0131 in exif:
+                        metadata["Software"] = str(exif[0x0131])
+                
+                # Also check for XMP data (some tools embed there)
+                if hasattr(img, 'info') and 'xmp' in img.info:
+                    metadata["xmp"] = img.info['xmp']
+                    
             return UniversalParser._extract_prompts(metadata)
         except Exception as e:
             return {"error": str(e)}

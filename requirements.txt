@@ -1,4 +1,5 @@
 Pillow>=10.0.0
 PySide6>=6.0.0
 requests
-
+opencv-python
+ultralytics>=8.0.0

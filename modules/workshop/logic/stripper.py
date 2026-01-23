@@ -1,5 +1,5 @@
 import os
-from PIL import PngImagePlugin
+from PIL import Image, PngImagePlugin
 
 def modify_metadata(source_path, output_path, metadata_text=None):
     """
