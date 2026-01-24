@@ -20,7 +20,7 @@ class ResponsiveImageLabel(QLabel):
     def set_image(self, path):
         if not path or not os.path.exists(path):
             self._pixmap = None
-            self.setText("No Image Loaded")
+            self.setText(LocaleManager().tr("meta.no_file", "No Image Loaded"))
             self.update() # Trigger repaint
             return
             
@@ -95,19 +95,19 @@ class MetadataModule(BaseModule):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(15)
 
-        lbl = QLabel("🛠️ MODE")
+        lbl = QLabel(self.tr("meta.mode", "🛠️ MODE"))
         lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #888;")
         layout.addWidget(lbl)
 
         # Mode Selector (Toggle)
-        self.btn_mode_view = QPushButton("🔍 Viewer Mode")
+        self.btn_mode_view = QPushButton(self.tr("meta.viewer", "🔍 Viewer Mode"))
         self.btn_mode_view.setCheckable(True)
         self.btn_mode_view.setChecked(True)
         self.btn_mode_view.setFixedHeight(40)
         self.btn_mode_view.clicked.connect(lambda: self.set_mode(self.MODE_VIEWER))
         layout.addWidget(self.btn_mode_view)
 
-        self.btn_mode_edit = QPushButton("✍️ Editor Mode")
+        self.btn_mode_edit = QPushButton(self.tr("meta.editor", "✍️ Editor Mode"))
         self.btn_mode_edit.setCheckable(True)
         self.btn_mode_edit.setFixedHeight(40)
         self.btn_mode_edit.clicked.connect(lambda: self.set_mode(self.MODE_EDITOR))
@@ -117,18 +117,18 @@ class MetadataModule(BaseModule):
         self._update_mode_styles()
 
         layout.addSpacing(10)
-        lbl_act = QLabel("⚡ ACTIONS")
+        lbl_act = QLabel(self.tr("meta.actions", "⚡ ACTIONS"))
         lbl_act.setStyleSheet("font-size: 14px; font-weight: bold; color: #888;")
         layout.addWidget(lbl_act)
 
-        self.btn_save = QPushButton("💾 Save Changes")
+        self.btn_save = QPushButton(self.tr("meta.save", "💾 Save Changes"))
         self.btn_save.setFixedHeight(40)
         self.btn_save.setCursor(Qt.PointingHandCursor)
         self.btn_save.clicked.connect(self.action_save_current)
         self.btn_save.setStyleSheet("background-color: #222; color: #00ffcc; border: 1px solid #444; border-radius: 6px;")
         layout.addWidget(self.btn_save)
 
-        self.btn_export = QPushButton("📂 Export Copy")
+        self.btn_export = QPushButton(self.tr("meta.export", "📂 Export Copy"))
         self.btn_export.setFixedHeight(35)
         self.btn_export.setCursor(Qt.PointingHandCursor)
         self.btn_export.clicked.connect(self.action_export_copy)
@@ -137,11 +137,11 @@ class MetadataModule(BaseModule):
 
         layout.addStretch()
         
-        lbl_info = QLabel("IMAGE LIST")
+        lbl_info = QLabel(self.tr("meta.list", "IMAGE LIST"))
         lbl_info.setStyleSheet("font-size: 11px; font-weight: bold; color: #555;")
         layout.addWidget(lbl_info)
         
-        self.lbl_carousel_stats = QLabel("0 / 0 images")
+        self.lbl_carousel_stats = QLabel(self.tr("meta.stats", "{current} / {total} images").format(current=0, total=0))
         self.lbl_carousel_stats.setStyleSheet("color: #888;")
         layout.addWidget(self.lbl_carousel_stats)
         
@@ -161,13 +161,13 @@ class MetadataModule(BaseModule):
         
         # Action Bar (Top)
         top_bar = QHBoxLayout()
-        self.btn_open = QPushButton("📂 Open Image(s)")
+        self.btn_open = QPushButton(self.tr("opt.load_images", "📂 Open Image(s)"))
         self.btn_open.clicked.connect(self.open_files_dialog)
         self.btn_open.setStyleSheet("background: #333; color: white; padding: 8px 15px; border-radius: 5px;")
         top_bar.addWidget(self.btn_open)
         top_bar.addStretch()
         
-        self.lbl_file_name = QLabel("No file selected")
+        self.lbl_file_name = QLabel(self.tr("meta.no_file", "No file selected"))
         self.lbl_file_name.setStyleSheet("color: #888; font-family: Consolas;")
         top_bar.addWidget(self.lbl_file_name)
         viewer_layout.addLayout(top_bar)
@@ -177,11 +177,11 @@ class MetadataModule(BaseModule):
         
         # Carousel Controls
         carousel_layout = QHBoxLayout()
-        self.btn_prev = QPushButton("◀ Previous")
+        self.btn_prev = QPushButton(self.tr("meta.prev", "◀ Previous"))
         self.btn_prev.clicked.connect(self.go_prev)
         self.btn_prev.setStyleSheet("padding: 10px; background: #222; color: #ddd; border-radius: 5px;")
         
-        self.btn_next = QPushButton("Next ▶")
+        self.btn_next = QPushButton(self.tr("meta.next", "Next ▶"))
         self.btn_next.clicked.connect(self.go_next)
         self.btn_next.setStyleSheet("padding: 10px; background: #222; color: #ddd; border-radius: 5px;")
         
@@ -198,25 +198,25 @@ class MetadataModule(BaseModule):
         editor_layout = QVBoxLayout(editor_container)
         editor_layout.setSpacing(10)
         
-        lbl_pos = QLabel("✨ Positive Prompt:")
+        lbl_pos = QLabel(self.tr("meta.positive", "✨ Positive Prompt:"))
         lbl_pos.setStyleSheet("font-weight: bold; color: #aaffaa; font-size: 13px;")
         editor_layout.addWidget(lbl_pos)
         
         self.txt_pos = QTextEdit()
-        self.txt_pos.setPlaceholderText("Enter positive prompt...")
+        self.txt_pos.setPlaceholderText(self.tr("meta.placeholder.pos", "Enter positive prompt..."))
         self.txt_pos.setStyleSheet("background: #0a0a0a; color: #eee; border: 1px solid #333; border-radius: 5px; font-family: Consolas;")
         editor_layout.addWidget(self.txt_pos, 2)
         
-        lbl_neg = QLabel("🚫 Negative Prompt:")
+        lbl_neg = QLabel(self.tr("meta.negative", "🚫 Negative Prompt:"))
         lbl_neg.setStyleSheet("font-weight: bold; color: #ffaaaa; font-size: 13px;")
         editor_layout.addWidget(lbl_neg)
         
         self.txt_neg = QTextEdit()
-        self.txt_neg.setPlaceholderText("Enter negative prompt...")
+        self.txt_neg.setPlaceholderText(self.tr("meta.placeholder.neg", "Enter negative prompt..."))
         self.txt_neg.setStyleSheet("background: #0a0a0a; color: #eee; border: 1px solid #333; border-radius: 5px; font-family: Consolas;")
         editor_layout.addWidget(self.txt_neg, 1)
         
-        lbl_tech = QLabel("⚙️ Technical Metadata:")
+        lbl_tech = QLabel(self.tr("meta.tech_meta", "⚙️ Technical Metadata:"))
         lbl_tech.setStyleSheet("font-weight: bold; color: #888; font-size: 12px;")
         editor_layout.addWidget(lbl_tech)
         
@@ -289,7 +289,7 @@ class MetadataModule(BaseModule):
         self.active_path = self.image_list[self.current_index]
         self.image_label.set_image(self.active_path)
         self.lbl_file_name.setText(os.path.basename(self.active_path))
-        self.lbl_carousel_stats.setText(f"{self.current_index + 1} / {len(self.image_list)} images")
+        self.lbl_carousel_stats.setText(self.tr("meta.stats", "{current} / {total} images").format(current=self.current_index + 1, total=len(self.image_list)))
         
         # Parse Metadata
         result = UniversalParser.parse_image(self.active_path)
@@ -323,7 +323,7 @@ class MetadataModule(BaseModule):
             self.display_current()
 
     def open_files_dialog(self):
-        files, _ = QFileDialog.getOpenFileNames(None, "Select Images", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        files, _ = QFileDialog.getOpenFileNames(None, self.tr("opt.load_images", "Select Images"), "", "Images (*.png *.jpg *.jpeg *.webp)")
         if files:
             self.load_image_set(files)
 
@@ -335,15 +335,10 @@ class MetadataModule(BaseModule):
         
         # Safety Check: If fields are empty, are they sure they want to strip?
         if not pos and not neg:
-            msg = (
-                "⚠️ IRREVERSIBLE ACTION DETECTED\n\n"
-                "You are about to save this image with ZERO metadata. "
-                "This will permanently erase the prompts (the 'recipe') and AI generation data from the original file.\n\n"
-                "This cannot be undone. Are you absolutely sure?"
-            )
+            msg = self.tr("meta.warn.empty", "⚠️ IRREVERSIBLE ACTION DETECTED\n\nYou are about to save this image with ZERO metadata. This will permanently erase the prompts (the 'recipe') and AI generation data from the original file.\n\nThis cannot be undone. Are you absolutely sure?")
             reply = QMessageBox.critical(
                 None, 
-                "DANGEROUS OPERATION", 
+                self.tr("common.error", "DANGEROUS OPERATION"), 
                 msg, 
                 QMessageBox.Yes | QMessageBox.No, 
                 QMessageBox.No
@@ -356,14 +351,14 @@ class MetadataModule(BaseModule):
         
         success, msg = modify_metadata(self.active_path, self.active_path, metadata_text=combined)
         if success:
-            QMessageBox.information(None, "Success", "Metadata updated successfully.")
+            QMessageBox.information(None, self.tr("common.success", "Success"), self.tr("meta.save.success", "Metadata updated successfully."))
             self.display_current()
         else:
-            QMessageBox.critical(None, "Error", msg)
+            QMessageBox.critical(None, self.tr("common.error", "Error"), msg)
 
     def action_export_copy(self):
         if not self.active_path: return
-        dest = QFileDialog.getSaveFileName(None, "Export Copy", self.active_path, "Same as source (*.*)")[0]
+        dest = QFileDialog.getSaveFileName(None, self.tr("meta.export.title", "Export Copy"), self.active_path, "Same as source (*.*)")[0]
         if dest:
             pos = self.txt_pos.toPlainText().strip()
             neg = self.txt_neg.toPlainText().strip()
@@ -371,6 +366,6 @@ class MetadataModule(BaseModule):
             
             success, msg = modify_metadata(self.active_path, dest, metadata_text=combined)
             if success:
-                QMessageBox.information(None, "Success", f"Exported to:\n{dest}")
+                QMessageBox.information(None, self.tr("common.success", "Success"), self.tr("meta.export.success", "Exported to:\n{dest}").format(dest=dest))
             else:
-                QMessageBox.critical(None, "Error", msg)
+                QMessageBox.critical(None, self.tr("common.error", "Error"), msg)

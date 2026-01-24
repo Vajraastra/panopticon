@@ -109,7 +109,7 @@ class CropperModule(BaseModule):
         lbl_icon.setStyleSheet("font-size: 48px;")
         lbl_icon.setAlignment(Qt.AlignCenter)
         
-        lbl_text = QLabel("Drop image here\nor click 'Open Image'")
+        lbl_text = QLabel(self.tr("crop.drop_zone", "Drop image here\nor click 'Open Image'"))
         lbl_text.setStyleSheet(f"color: {text_dim}; font-size: 16px; font-weight: bold;")
         lbl_text.setAlignment(Qt.AlignCenter)
         
@@ -141,17 +141,22 @@ class CropperModule(BaseModule):
         text_col = tm.get_color("text_primary") if tm else "#FFF"
         
         # --- Instructions ---
-        lbl_info = QLabel("Crop Settings")
+        lbl_info = QLabel(self.tr("crop.settings", "Crop Settings"))
         lbl_info.setStyleSheet(f"color: {text_col}; font-weight: bold; font-size: 14px;")
         layout.addWidget(lbl_info)
         
         # --- Aspect Ratios ---
-        lbl_ar = QLabel("Aspect Ratio:")
+        lbl_ar = QLabel(self.tr("crop.ratio", "Aspect Ratio:"))
         lbl_ar.setStyleSheet(f"color: {text_col};")
         layout.addWidget(lbl_ar)
         
         self.combo_ar = QComboBox()
-        self.combo_ar.addItems(["Free", "Custom", "1:1 (Square)", "4:3", "16:9", "3:4", "9:16"])
+        self.combo_ar.addItems([
+            self.tr("crop.free", "Free"),
+            self.tr("crop.custom", "Custom"),
+            self.tr("crop.square", "1:1 (Square)"),
+            "4:3", "16:9", "3:4", "9:16"
+        ])
         self.combo_ar.currentIndexChanged.connect(self._on_ar_changed)
         layout.addWidget(self.combo_ar)
 
@@ -194,7 +199,7 @@ class CropperModule(BaseModule):
         layout.setSpacing(15)
         
         # Left Side: Open
-        self.btn_open = QPushButton("📂 Open Image")
+        self.btn_open = QPushButton(self.tr("crop.open", "📂 Open Image"))
         self.btn_open.clicked.connect(self.open_image_dialog)
         self.btn_open.setFixedWidth(120)
         layout.addWidget(self.btn_open)
@@ -202,7 +207,7 @@ class CropperModule(BaseModule):
         layout.addStretch()
 
         # Right Side: Save
-        self.btn_save = QPushButton("💾 Save Crop")
+        self.btn_save = QPushButton(self.tr("crop.save", "💾 Save Crop"))
         self.btn_save.clicked.connect(self.save_crop)
         self.btn_save.setFixedWidth(120)
         # Style it as an action button
@@ -272,7 +277,7 @@ class CropperModule(BaseModule):
 
     def open_image_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
-            self.view, "Open Image", "", "Images (*.png *.jpg *.jpeg *.bmp)"
+            self.view, self.tr("common.load_image", "Open Image"), "", "Images (*.png *.jpg *.jpeg *.bmp)"
         )
         if path:
             self.load_image(path)
@@ -309,16 +314,17 @@ class CropperModule(BaseModule):
         
         if rect:
             save_path, _ = QFileDialog.getSaveFileName(
-                self.view, "Save Crop", "", "PNG (*.png);;JPG (*.jpg)"
+                self.view, self.tr("common.save_copy", "Save Crop"), "", "PNG (*.png);;JPG (*.jpg)"
             )
             if save_path:
                 try:
                     crop_image(self.cropper_widget.image_path, rect, save_path)
-                    QMessageBox.information(self.view, "Success", f"Saved to {save_path}")
+                    QMessageBox.information(self.view, self.tr("opt.done", "Done"), 
+                                            self.tr("crop.saved", "Saved to {path}").format(path=save_path))
                 except Exception as e:
-                    QMessageBox.critical(self.view, "Error", str(e))
+                    QMessageBox.critical(self.view, self.tr("common.error", "Error"), str(e))
         else:
-             QMessageBox.warning(self.view, "Warning", "No selection made.")
+             QMessageBox.warning(self.view, self.tr("common.error", "Warning"), self.tr("common.no_selection", "No selection made."))
     def load_image_set(self, paths: list):
         """Standard interface for receiving sets from Librarian."""
         if paths:

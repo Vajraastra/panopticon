@@ -50,18 +50,12 @@ class DummyCreatorModule(BaseModule):
         panel_layout = QVBoxLayout(panel)
         panel_layout.setSpacing(20)
         
-        lbl_info = QLabel("🎭 Dummy Creator")
+        lbl_info = QLabel(self.tr("dummy.title", "🎭 Dummy Creator"))
         lbl_info.setAlignment(Qt.AlignCenter)
         lbl_info.setStyleSheet("font-size: 28px; font-weight: bold; color: #f1fa8c; margin-bottom: 10px;")
         panel_layout.addWidget(lbl_info)
         
-        lbl_desc = QLabel(
-            "Archive your scraped collections while preserving scraper state.\n\n"
-            "• Moves originals to 'originals/' subfolder\n"
-            "• Creates tiny dummy files (32x32 gray images, 1-byte for others)\n"
-            "• Incremental processing (only handles new files on re-runs)\n"
-            "• No manifest needed - self-detecting system"
-        )
+        lbl_desc = QLabel(self.tr("dummy.desc", "Archive collections..."))
         lbl_desc.setAlignment(Qt.AlignCenter)
         lbl_desc.setWordWrap(True)
         lbl_desc.setStyleSheet("font-size: 14px; color: #aaa; line-height: 1.6;")
@@ -69,7 +63,7 @@ class DummyCreatorModule(BaseModule):
         
         panel_layout.addSpacing(40)
         
-        self.btn_run = QPushButton("📂 Select Folder to Dummify")
+        self.btn_run = QPushButton(self.tr("dummy.btn_select", "📂 Select Folder to Dummify"))
         self.btn_run.setFixedSize(350, 60)
         self.btn_run.setCursor(Qt.PointingHandCursor)
         self.btn_run.clicked.connect(self.open_dummy_creator_dialog)
@@ -95,7 +89,7 @@ class DummyCreatorModule(BaseModule):
 
     def open_dummy_creator_dialog(self):
         # Implementation ported and cleaned from Workshop
-        folder = QFileDialog.getExistingDirectory(None, "Select Folder to Dummify", self.last_asset_dir)
+        folder = QFileDialog.getExistingDirectory(None, self.tr("common.select_folder", "Select Folder to Dummify"), self.last_asset_dir)
         if not folder: return
         
         self.last_asset_dir = folder
@@ -103,24 +97,21 @@ class DummyCreatorModule(BaseModule):
         
         stats = get_folder_stats(folder)
         if not stats:
-            QMessageBox.warning(None, "Invalid Path", "Could not access folder.")
+            QMessageBox.warning(None, self.tr("common.error", "Invalid Path"), self.tr("dummy.invalid", "Could not access folder."))
             return
             
-        preview_msg = (
-            f"📊 Folder Analysis\n\n"
-            f"Total Files: {stats['total_files']}\n"
-            f"Already Dummies: {stats['dummies']}\n"
-            f"Originals to Process: {stats['originals']}\n\n"
-            f"Action: Move {stats['originals']} files to 'originals/' subfolder and create dummy placeholders.\n\n"
-            f"⚠️ This operation cannot be easily undone. Continue?"
+        preview_msg = self.tr("dummy.analysis", "📊 Folder Analysis...").format(
+            total=stats['total_files'],
+            dummies=stats['dummies'],
+            originals=stats['originals']
         )
         
-        reply = QMessageBox.question(None, "Confirm Action", preview_msg, QMessageBox.Yes | QMessageBox.No)
+        reply = QMessageBox.question(None, self.tr("common.confirm", "Confirm Action"), preview_msg, QMessageBox.Yes | QMessageBox.No)
         if reply != QMessageBox.Yes: return
 
         # Progress Dialog
         dlg = QDialog(None)
-        dlg.setWindowTitle("Dummy Creator - Processing")
+        dlg.setWindowTitle(self.tr("dummy.processing", "Dummy Creator - Processing"))
         dlg.setMinimumSize(600, 400)
         dlg_layout = QVBoxLayout(dlg)
         
@@ -132,7 +123,7 @@ class DummyCreatorModule(BaseModule):
         pbar = QProgressBar()
         dlg_layout.addWidget(pbar)
         
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(self.tr("dummy.close", "Close"))
         btn_close.setEnabled(False)
         btn_close.clicked.connect(dlg.accept)
         dlg_layout.addWidget(btn_close)
@@ -148,11 +139,10 @@ class DummyCreatorModule(BaseModule):
         try:
             results = process_folder(folder, progress_callback=on_progress)
             space_mb = results['space_saved_bytes'] / (1024 * 1024)
-            summary = (
-                f"\n--- MISSION COMPLETE ---\n"
-                f"Files Dummified: {results['processed']}\n"
-                f"Disk Space Reclaimed: {space_mb:.2f} MB\n"
-                f"Errors: {results['errors']}\n"
+            summary = self.tr("dummy.summary", "\n--- MISSION COMPLETE ---\n").format(
+                processed=results['processed'],
+                saved=f"{space_mb:.2f}",
+                errors=results['errors']
             )
             log.append(summary)
         except Exception as e:

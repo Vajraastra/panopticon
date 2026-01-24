@@ -152,7 +152,7 @@ class LibrarianModule(BaseModule):
         layout.setSpacing(10)
         
         # Header
-        lbl = QLabel("📚 Library Sources")
+        lbl = QLabel(self.tr("lib.title", "📚 Library Sources"))
         lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: white;")
         layout.addWidget(lbl)
         
@@ -175,11 +175,11 @@ class LibrarianModule(BaseModule):
         
         # Buttons
         btn_layout = QHBoxLayout()
-        self.btn_add = QPushButton("➕ Add")
+        self.btn_add = QPushButton(self.tr("lib.add", "➕ Add"))
         self.btn_add.clicked.connect(self.add_folder)
         self.btn_add.setStyleSheet("background-color: #222; color: #00ffcc; border: 1px solid #444; border-radius: 4px; padding: 6px;")
         
-        self.btn_remove = QPushButton("❌ Remove")
+        self.btn_remove = QPushButton(self.tr("lib.remove", "❌ Remove"))
         self.btn_remove.clicked.connect(self.remove_folder)
         self.btn_remove.setStyleSheet("background-color: #222; color: #ff5555; border: 1px solid #444; border-radius: 4px; padding: 6px;")
         
@@ -189,7 +189,7 @@ class LibrarianModule(BaseModule):
         
         # --- Section 2: Tag Selection ---
         layout.addSpacing(20)
-        lbl_tags = QLabel("🏷️ Available Tags")
+        lbl_tags = QLabel(self.tr("lib.tags_title", "🏷️ Available Tags"))
         lbl_tags.setStyleSheet("font-size: 14px; font-weight: bold; color: #888;")
         layout.addWidget(lbl_tags)
         
@@ -211,7 +211,7 @@ class LibrarianModule(BaseModule):
         
         # Stats at bottom of sidebar
         layout.addStretch()
-        self.lbl_stats = QLabel("Loading...")
+        self.lbl_stats = QLabel(self.tr("common.status.loading", "Loading..."))
         self.lbl_stats.setWordWrap(True)
         self.lbl_stats.setStyleSheet("color: #888; font-size: 12px; border-top: 1px solid #333; padding-top: 10px;")
         layout.addWidget(self.lbl_stats)
@@ -231,14 +231,14 @@ class LibrarianModule(BaseModule):
         sf_layout = QVBoxLayout(search_frame)
         sf_layout.setContentsMargins(0, 0, 0, 0)
         
-        lbl_search = QLabel("🔭 Tag Explorer")
+        lbl_search = QLabel(self.tr("lib.explorer_title", "🔭 Tag Explorer"))
         lbl_search.setStyleSheet("font-size: 18px; font-weight: bold; color: white;")
         sf_layout.addWidget(lbl_search)
         
         # Input
         input_layout = QHBoxLayout()
         self.input_search = QLineEdit()
-        self.input_search.setPlaceholderText("Type a tag and hit Enter (e.g. 'portrait', 'blue')...")
+        self.input_search.setPlaceholderText(self.tr("lib.search_placeholder", "Type a tag and hit Enter..."))
         self.input_search.returnPressed.connect(self.add_tag_from_input)
         self.input_search.setStyleSheet("""
             QLineEdit {
@@ -277,9 +277,9 @@ class LibrarianModule(BaseModule):
         
         # Pagination Header
         self.pagination_layout = QHBoxLayout()
-        self.btn_prev = QPushButton("◀ Prev")
-        self.btn_next = QPushButton("Next ▶")
-        self.lbl_page_info = QLabel("Page 1 of 1")
+        self.btn_prev = QPushButton(self.tr("common.prev", "◀ Prev"))
+        self.btn_next = QPushButton(self.tr("common.next", "Next ▶"))
+        self.lbl_page_info = QLabel(self.tr("common.pagination", "Page 1 of 1").format(curr=1, total=1))
         self.lbl_page_info.setStyleSheet("color: #888; font-weight: bold;")
         
         for b in [self.btn_prev, self.btn_next]:
@@ -315,16 +315,16 @@ class LibrarianModule(BaseModule):
         action_bar.setStyleSheet("background-color: #151515; border-radius: 10px; padding: 10px;")
         ab_layout = QHBoxLayout(action_bar)
         
-        lbl_act = QLabel("🎯 Selection Action:")
+        lbl_act = QLabel(self.tr("lib.selection_action", "🎯 Selection Action:"))
         lbl_act.setStyleSheet("color: #888; font-weight: bold;")
         ab_layout.addWidget(lbl_act)
         
         self.combo_actions = QComboBox()
         self.combo_actions.addItems([
-            "--- Send Selection to... ---",
-            "🖼️ Open in Gallery",
-            "🚀 Send to Optimizer",
-            "✂️ Send to Cropper"
+            f"--- {self.tr('lib.selection_action', 'Send Selection to...')} ---",
+            self.tr("lib.actions.gallery", "🖼️ Open in Gallery"),
+            self.tr("lib.actions.optimizer", "🚀 Send to Optimizer"),
+            self.tr("lib.actions.cropper", "✂️ Send to Cropper")
         ])
         self.combo_actions.setStyleSheet("""
             QComboBox { 
@@ -342,7 +342,7 @@ class LibrarianModule(BaseModule):
         self.combo_actions.currentIndexChanged.connect(self._on_action_selection_changed)
         ab_layout.addWidget(self.combo_actions)
         
-        self.btn_execute = QPushButton("⚡ Execute")
+        self.btn_execute = QPushButton(self.tr("lib.execute", "⚡ Execute"))
         self.btn_execute.setCursor(Qt.PointingHandCursor)
         self.btn_execute.setEnabled(False)
         self.btn_execute.clicked.connect(self.execute_selected_action)
@@ -369,7 +369,7 @@ class LibrarianModule(BaseModule):
         layout.setSpacing(15)
         
         # Scan Status / Progress
-        self.lbl_status = QLabel("Ready")
+        self.lbl_status = QLabel(self.tr("lib.status.ready", "Ready"))
         self.lbl_status.setStyleSheet("color: #aaa;")
         layout.addWidget(self.lbl_status)
         
@@ -385,13 +385,13 @@ class LibrarianModule(BaseModule):
         layout.addStretch()
         
         # Controls
-        self.btn_sync = QPushButton("🧹 Purge Ghost Files")
+        self.btn_sync = QPushButton(self.tr("lib.purge", "Sweep Ghost Files"))
         self.btn_sync.clicked.connect(lambda: self.toggle_scan(sync_only=True))
         self.btn_sync.setFixedWidth(150)
         self.btn_sync.setCursor(Qt.PointingHandCursor)
         self.btn_sync.setStyleSheet("background-color: transparent; color: #aaa; border: 1px solid #444; border-radius: 4px; padding: 6px;")
 
-        self.btn_scan = QPushButton("🚀 Run Indexer")
+        self.btn_scan = QPushButton(self.tr("lib.run_indexer", "🚀 Run Indexer"))
         self.btn_scan.clicked.connect(self.toggle_scan)
         self.btn_scan.setFixedWidth(150)
         self.btn_scan.setCursor(Qt.PointingHandCursor)
@@ -453,7 +453,7 @@ class LibrarianModule(BaseModule):
                 self.total_paths = []
                 self.current_page = 0
                 self.refresh_thumbnails_grid()
-                self.lbl_folder_stats.setText("Tag Explorer Cleared.")
+                self.lbl_folder_stats.setText(self.tr("lib.explorer_cleared", "Tag Explorer Cleared."))
             return
 
         # Fetch results
@@ -462,15 +462,16 @@ class LibrarianModule(BaseModule):
         self.current_page = 0
         
         if count == 0:
-            self.lbl_folder_stats.setText("⚠️ No images found with these tags.")
+            self.lbl_folder_stats.setText(self.tr("lib.msg.no_results", "⚠️ No images found with these tags."))
         else:
-            self.lbl_folder_stats.setText(f"🔍 Found {count} items matching tags")
+            self.lbl_folder_stats.setText(self.tr("lib.msg.found_tags", "🔍 Found {count} items matching tags").format(count=count))
             
         self.refresh_thumbnails_grid()
         
         # Update Footer Stats
         folders = self.db.get_watched_folders()
-        self.lbl_stats.setText(f"📊 SEARCH | {len(self.active_tags)} tags | Found: {count} | Folders: {len(folders)}")
+        self.lbl_stats.setText(self.tr("lib.stats.search", "📊 SEARCH | {tags} tags | Found: {count} | Folders: {total}")
+                               .format(tags=len(self.active_tags), count=count, total=len(folders)))
 
     def execute_selected_action(self):
         """Dispatches the current selection to the chosen tool."""
@@ -513,7 +514,7 @@ class LibrarianModule(BaseModule):
         # Update Pagination UI
         total = len(self.total_paths)
         num_pages = (total - 1) // self.page_size + 1 if total > 0 else 1
-        self.lbl_page_info.setText(f"Page {self.current_page + 1} of {num_pages}")
+        self.lbl_page_info.setText(self.tr("common.pagination", "Page {curr} of {total}").format(curr=self.current_page + 1, total=num_pages))
         
         self.btn_prev.setEnabled(self.current_page > 0)
         self.btn_next.setEnabled(self.current_page < num_pages - 1)
@@ -539,7 +540,7 @@ class LibrarianModule(BaseModule):
     def on_thumbnail_clicked(self, path):
         """Opens the clicked thumbnail in a larger dialog."""
         dlg = QDialog(self.view)
-        dlg.setWindowTitle("Image Preview")
+        dlg.setWindowTitle(self.tr("lib.preview.title", "Image Preview"))
         dlg.resize(800, 600)
         
         vbox = QVBoxLayout(dlg)
@@ -550,7 +551,7 @@ class LibrarianModule(BaseModule):
         if not pix.isNull():
             lbl_img.setPixmap(pix.scaled(750, 550, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         else:
-            lbl_img.setText("Error loading image")
+            lbl_img.setText(self.tr("gal.viewer.load_error", "Error loading image"))
             
         vbox.addWidget(lbl_img)
         dlg.exec()
@@ -563,12 +564,11 @@ class LibrarianModule(BaseModule):
 
     def load_folder_paths(self, folder_path):
         """Helper to fetch and display paths for a specific folder."""
-        # Get paths from DB
         paths = self.db.get_files_recursive(folder_path, limit=10000)
         self.total_paths = paths
         self.current_page = 0
         
-        self.lbl_folder_stats.setText(f"📂 {os.path.basename(folder_path)} | {len(paths)} Images Found")
+        self.lbl_folder_stats.setText(self.tr("lib.stats.folder", "📂 {name} | {count} Images Found").format(name=os.path.basename(folder_path), count=len(paths)))
         self.refresh_thumbnails_grid()
 
 
@@ -578,7 +578,8 @@ class LibrarianModule(BaseModule):
             cursor.execute("SELECT count(*) FROM files")
             count = cursor.fetchone()[0]
             folders = self.db.get_watched_folders()
-            self.lbl_stats.setText(f"📊 Global Status | Indexed Files: {count} | Watched Folders: {len(folders)}")
+            self.lbl_stats.setText(self.tr("lib.stats.global", "📊 Global Status | Indexed Files: {count} | Watched Folders: {total}")
+                                   .format(count=count, total=len(folders)))
 
     def refresh_ui(self):
         # specific reload logic
@@ -604,24 +605,24 @@ class LibrarianModule(BaseModule):
             self.total_paths = []
             self.current_page = 0
             self.refresh_thumbnails_grid()
-            self.lbl_folder_stats.setText("No Selection")
+            self.lbl_folder_stats.setText(self.tr("common.no_selection", "No Selection"))
 
     def add_folder(self):
-        folder = QFileDialog.getExistingDirectory(self.view, "Select Folder to Index")
+        folder = QFileDialog.getExistingDirectory(self.view, self.tr("common.select_folder", "Select Folder to Index"))
         if folder:
             if self.db.add_watched_folder(folder):
                 self.refresh_ui()
                 self.update_global_stats()
             else:
-                QMessageBox.warning(self.view, "Error", "Could not add folder (maybe it's already there?)")
+                QMessageBox.warning(self.view, self.tr("common.error", "Error"), self.tr("lib.msg.add_error", "Could not add folder"))
 
     def remove_folder(self):
         selected = self.folder_list.currentItem()
         if not selected: return
         
         path = selected.text()
-        confirm = QMessageBox.question(self.view, "Remove Folder", 
-                                       f"Stop watching '{path}' and remove its images from the database?\n(Files on disk will NOT be deleted)",
+        confirm = QMessageBox.question(self.view, self.tr("common.confirm", "Remove Folder"), 
+                                       self.tr("lib.msg.remove_confirm", "Stop watching '{path}'?").format(path=path),
                                        QMessageBox.Yes | QMessageBox.No)
         
         if confirm == QMessageBox.Yes:
@@ -637,7 +638,7 @@ class LibrarianModule(BaseModule):
         if self.indexer_thread and self.indexer_thread.isRunning():
             # Stop logic
             self.indexer_thread.stop()
-            self.btn_scan.setText("Stopping...")
+            self.btn_scan.setText(self.tr("lib.status.stopping", "Stopping..."))
             if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(False)
             self.btn_scan.setEnabled(False)
         else:
@@ -645,18 +646,17 @@ class LibrarianModule(BaseModule):
             folders = self.db.get_watched_folders()
             if not folders:
                 if not auto:
-                    QMessageBox.warning(self.view, "No Folders", "Please add at least one folder to index.")
+                    QMessageBox.warning(self.view, self.tr("common.error", "No Folders"), self.tr("lib.msg.no_folders", "Please add at least one folder to index."))
                 return
             
             # Update UI state
             if not auto:
-                self.btn_scan.setText("🛑 Stop Scanning")
+                self.btn_scan.setText(self.tr("lib.stop_indexer", "🛑 Stop Scanning"))
                 self.btn_scan.setStyleSheet("background-color: #ff5555; color: white; border-radius: 4px; padding: 6px; font-weight: bold;")
                 if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(False)
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setValue(0)
-            else:
-                self.lbl_status.setText("🔍 Running Background Sync...")
+                self.lbl_status.setText(self.tr("lib.indexing", "🔍 Running Background Sync..."))
             
             # Pass sync_only as deep_clean to trigger Full Audit + Vacuum
             self.indexer_thread = IndexerWorker(self.db, folders, deep_clean=sync_only)
@@ -681,7 +681,7 @@ class LibrarianModule(BaseModule):
         self.progress_bar.setVisible(False)
         self.refresh_ui()
         self.populate_tag_sidebar() # Ensure new tags appear
-        QMessageBox.information(self.view, "Done", "Library Scan Complete!")
+        QMessageBox.information(self.view, self.tr("common.success", "Done"), self.tr("lib.msg.done", "Library Scan Complete!"))
 
     def _get_active_paths(self, limit=1000):
         """Helper to get currently filtered or selected paths."""
@@ -704,11 +704,11 @@ class LibrarianModule(BaseModule):
         if paths:
             self.request_open_optimizer.emit(paths)
         else:
-            QMessageBox.warning(self.view, "No Files", "No files found to send.")
+            QMessageBox.warning(self.view, self.tr("common.error", "No Files"), self.tr("lib.msg.no_files", "No files found to send."))
 
     def send_to_cropper(self):
         paths = self._get_active_paths()
         if paths:
             self.request_open_cropper.emit(paths)
         else:
-            QMessageBox.warning(self.view, "No Files", "No files found to send.")
+            QMessageBox.warning(self.view, self.tr("common.error", "No Files"), self.tr("lib.msg.no_files", "No files found to send."))

@@ -59,24 +59,24 @@ class FaceScorerModule(BaseModule):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(15)
 
-        lbl_title = QLabel("🎯 FACE SCORER")
+        lbl_title = QLabel(self.tr("fs.title", "🎯 FACE SCORER"))
         lbl_title.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 14px;")
         layout.addWidget(lbl_title)
         
-        lbl_desc = QLabel("Analiza la calidad de las imágenes basándose en la confianza del rostro detectado y su nitidez.")
+        lbl_desc = QLabel(self.tr("fs.desc", "Analyze image quality based on face detection confidence and sharpness."))
         lbl_desc.setWordWrap(True)
         lbl_desc.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px;")
         layout.addWidget(lbl_desc)
         
         layout.addSpacing(10)
         
-        self.btn_load = QPushButton("📂 Cargar Carpeta")
+        self.btn_load = QPushButton(self.tr("fs.load", "📂 Load Folder"))
         self.btn_load.setStyleSheet(Theme.get_action_button_style(self.accent_color, "#ffffff"))
         self.btn_load.setFixedHeight(40)
         self.btn_load.clicked.connect(self.load_folder_dialog)
         layout.addWidget(self.btn_load)
         
-        self.btn_analyze = QPushButton("🔍 Analizar y Auto-Clasificar")
+        self.btn_analyze = QPushButton(self.tr("fs.analyze", "🔍 Analyze & Auto-Sort"))
         self.btn_analyze.setEnabled(False)
         self.btn_analyze.setStyleSheet(Theme.get_action_button_style(self.accent_color, "#ffffff"))
         self.btn_analyze.setFixedHeight(40)
@@ -86,7 +86,7 @@ class FaceScorerModule(BaseModule):
         layout.addSpacing(10)
         
         # Threshold Slider
-        lbl_threshold = QLabel("Umbral de Puntuación Mínima:")
+        lbl_threshold = QLabel(self.tr("fs.threshold", "Min Score Threshold:"))
         lbl_threshold.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: 12px;")
         layout.addWidget(lbl_threshold)
         
@@ -105,7 +105,7 @@ class FaceScorerModule(BaseModule):
         
         layout.addStretch()
         
-        note = QLabel("Las imágenes se clasificarán en subcarpetas (100%/, 90%...) según su puntuación.")
+        note = QLabel(self.tr("fs.note", "Images will be sorted into subfolders (100%/, 90%/...) based on their score."))
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 10px;")
         layout.addWidget(note)
@@ -121,7 +121,7 @@ class FaceScorerModule(BaseModule):
         dz_layout = QVBoxLayout(self.dropzone)
         dz_layout.setAlignment(Qt.AlignCenter)
         
-        lbl_dz = QLabel("📥 Arrastra una carpeta aquí\no usa el botón 'Cargar Carpeta'")
+        lbl_dz = QLabel(self.tr("fs.dropzone", "📥 Drop a folder here\nor use the 'Load Folder' button"))
         lbl_dz.setAlignment(Qt.AlignCenter)
         lbl_dz.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 18px; font-weight: bold;")
         dz_layout.addWidget(lbl_dz)
@@ -133,11 +133,11 @@ class FaceScorerModule(BaseModule):
         
         # Pagination Controls
         pag_layout = QHBoxLayout()
-        self.btn_prev = QPushButton("◀ Anterior")
+        self.btn_prev = QPushButton(self.tr("common.prev", "◀ Previous"))
         self.btn_prev.clicked.connect(self.prev_page)
-        self.btn_next = QPushButton("Siguiente ▶")
+        self.btn_next = QPushButton(self.tr("common.next", "Next ▶"))
         self.btn_next.clicked.connect(self.next_page)
-        self.lbl_page_info = QLabel("Página 1 de 1")
+        self.lbl_page_info = QLabel(self.tr("common.pagination", "Page 1 of 1").format(curr=1, total=1))
         self.lbl_page_info.setStyleSheet(f"color: {self.accent_color}; font-weight: bold;")
         
         pag_layout.addWidget(self.btn_prev)
@@ -184,7 +184,7 @@ class FaceScorerModule(BaseModule):
         layout.addWidget(self.content_stack)
         
         # Footer / Progress
-        self.lbl_status = QLabel("Listo. Carga una carpeta para comenzar.")
+        self.lbl_status = QLabel(self.tr("common.status.ready", "Ready."))
         self.lbl_status.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; padding: 5px;")
         layout.addWidget(self.lbl_status)
         
@@ -220,7 +220,7 @@ class FaceScorerModule(BaseModule):
                 self.process_loaded_files()
 
     def load_folder_dialog(self):
-        folder = QFileDialog.getExistingDirectory(None, "Seleccionar carpeta con imágenes", self.last_dir)
+        folder = QFileDialog.getExistingDirectory(None, self.tr("common.select_folder", "Select Folder"), self.last_dir)
         if folder:
             self.load_folder(folder)
 
@@ -239,7 +239,7 @@ class FaceScorerModule(BaseModule):
     def process_loaded_files(self):
         count = len(self.fs_image_paths)
         if count == 0:
-            QMessageBox.warning(None, "Sin imágenes", "No se encontraron imágenes en la ruta seleccionada.")
+            QMessageBox.warning(None, self.tr("common.error", "Error"), self.tr("fs.msg.no_images", "No images found in path."))
             return
             
         self.total_pages = math.ceil(count / self.page_size)
@@ -247,7 +247,7 @@ class FaceScorerModule(BaseModule):
         self.refresh_grid()
         
         self.content_stack.setCurrentIndex(1)
-        self.lbl_status.setText(f"Cargadas {count} imágenes. Lista para analizar.")
+        self.lbl_status.setText(self.tr("common.status.loaded", "Loaded {count} images.").format(count=count))
         self.btn_analyze.setEnabled(True)
 
     def refresh_grid(self):
@@ -277,9 +277,9 @@ class FaceScorerModule(BaseModule):
             
             self.grid_layout.addWidget(thumb, row, col)
             
-        self.lbl_page_info.setText(f"Página {self.current_page + 1} de {self.total_pages}")
-        self.btn_prev.setEnabled(self.current_page > 0)
-        self.btn_next.setEnabled(self.current_page < self.total_pages - 1)
+            self.lbl_page_info.setText(self.tr("common.pagination", "Page {curr} of {total}").format(curr=self.current_page + 1, total=self.total_pages))
+            self.btn_prev.setEnabled(self.current_page > 0)
+            self.btn_next.setEnabled(self.current_page < self.total_pages - 1)
 
     def prev_page(self):
         if self.current_page > 0:
@@ -302,7 +302,8 @@ class FaceScorerModule(BaseModule):
         
         def progress_cb(current, total, path):
             self.progress.setValue(current)
-            self.lbl_status.setText(f"Analizando: {os.path.basename(path)} ({current}/{total})")
+            self.lbl_status.setText(self.tr("fs.status.scoring", "Scoring: {name} ({curr}/{total})")
+                                    .format(name=os.path.basename(path), curr=current, total=total))
             QApplication.instance().processEvents()
         
         try:
@@ -312,7 +313,7 @@ class FaceScorerModule(BaseModule):
             
             threshold = self.threshold_slider.value()
             
-            self.lbl_status.setText("Ordenando archivos...")
+            self.lbl_status.setText(self.tr("fs.status.sorting", "Sorting files..."))
             QApplication.instance().processEvents()
             
             # Note: sort_files_by_score MOVES files, so we should keep track of where they went
@@ -320,7 +321,7 @@ class FaceScorerModule(BaseModule):
             self._display_results_visual(results, stats, base_folder)
             
         except Exception as e:
-            QMessageBox.critical(None, "Error", f"El análisis falló: {str(e)}")
+            QMessageBox.critical(None, self.tr("common.error", "Error"), self.tr("fs.msg.fail", "Analysis failed: {error}").format(error=str(e)))
         finally:
             self.progress.setVisible(False)
             self.btn_analyze.setEnabled(True)
@@ -336,7 +337,8 @@ class FaceScorerModule(BaseModule):
         self.content_stack.setCurrentIndex(2)
         
         # Summary Header
-        summary = QLabel(f"🎯 Análisis Completado: {stats['total_moved']} imágenes organizadas.")
+        summary_txt = self.tr("fs.results.title", "🎯 Analysis Complete: {total} images organized.").format(total=stats['total_moved'])
+        summary = QLabel(summary_txt)
         summary.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {self.accent_color}; margin: 10px;")
         self.res_layout.addWidget(summary)
         
@@ -348,7 +350,8 @@ class FaceScorerModule(BaseModule):
             cat_frame.setStyleSheet(f"background: {Theme.BG_PANEL}; border-radius: 10px; margin-bottom: 20px;")
             cat_layout = QVBoxLayout(cat_frame)
             
-            title = QLabel(f"📂 Clase: {bucket} ({count} imágenes)")
+            title_txt = self.tr("fs.result.bucket", "📂 Class: {bucket} ({count} images)").format(bucket=bucket, count=count)
+            title = QLabel(title_txt)
             title.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {Theme.TEXT_PRIMARY};")
             cat_layout.addWidget(title)
             
@@ -383,7 +386,7 @@ class FaceScorerModule(BaseModule):
             self.res_layout.addWidget(cat_frame)
             
         if not buckets:
-            no_res = QLabel("No se encontraron imágenes que superen el umbral.")
+            no_res = QLabel(self.tr("fs.msg.no_results", "No images found exceeding threshold."))
             no_res.setAlignment(Qt.AlignCenter)
             self.res_layout.addWidget(no_res)
             
@@ -397,14 +400,15 @@ class FaceScorerModule(BaseModule):
             item = self.folders_layout.takeAt(0)
             if item.widget(): item.widget().deleteLater()
         
-        btn_root = QPushButton("📂 Abrir Carpeta Raíz")
+        btn_root = QPushButton(self.tr("common.open_root", "📂 Open Root Folder"))
         btn_root.setStyleSheet(Theme.get_button_style("#444"))
         btn_root.clicked.connect(lambda: os.startfile(base_folder))
         self.folders_layout.addWidget(btn_root)
         
         for bucket, _ in buckets:
             p = os.path.join(base_folder, bucket)
-            btn = QPushButton(f"Abrir {bucket}")
+            btn_txt = self.tr("fs.open_bucket", "Open {bucket}").format(bucket=bucket)
+            btn = QPushButton(btn_txt)
             btn.setStyleSheet(Theme.get_button_style(self.accent_color))
             btn.clicked.connect(lambda checked=False, path=p: os.startfile(path))
             self.folders_layout.addWidget(btn)

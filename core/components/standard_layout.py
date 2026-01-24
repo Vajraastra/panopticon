@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QScrollArea, 
                                QFrame, QPushButton, QSplitter, QSizePolicy)
 from PySide6.QtCore import Qt
+from core.locale_manager import LocaleManager
 
 class StandardToolLayout(QWidget):
     """
@@ -43,7 +44,7 @@ class StandardToolLayout(QWidget):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(15, 0, 0, 0)
         
-        self.btn_back = QPushButton("← Dashboard")
+        self.btn_back = QPushButton(f"← {LocaleManager().tr('settings.back', 'Dashboard')}")
         self.btn_back.setCursor(Qt.PointingHandCursor)
         accent_col = self.theme.get_color('accent_main') if self.theme else "#00ffcc"
         self.btn_back.setStyleSheet(f"border: none; background: transparent; font-weight: bold; font-size: 14px; color: {accent_col}; text-align: left;")

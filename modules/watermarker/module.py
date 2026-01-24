@@ -55,48 +55,48 @@ class WatermarkerModule(BaseModule):
         layout.setSpacing(15)
 
         # 1. Image
-        lbl_img = QLabel("🖼️ 1. BASE IMAGE")
+        lbl_img = QLabel(self.tr("wm.section.base", "🖼️ 1. BASE IMAGE"))
         lbl_img.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 11px;")
         layout.addWidget(lbl_img)
 
-        self.btn_load_image = QPushButton("📂 Load Image")
+        self.btn_load_image = QPushButton(self.tr("common.load_image", "📂 Load Image"))
         self.btn_load_image.clicked.connect(self.load_source_image)
         layout.addWidget(self.btn_load_image)
 
-        self.lbl_image_status = QLabel("No image loaded")
+        self.lbl_image_status = QLabel(self.tr("wm.status.no_img", "No image loaded"))
         self.lbl_image_status.setStyleSheet("color: #888; font-size: 10px;")
         layout.addWidget(self.lbl_image_status)
 
         layout.addSpacing(5)
 
         # 2. Marca de Agua (Watermark)
-        lbl_wm_section = QLabel("🎨 2. MARCA DE AGUA")
+        lbl_wm_section = QLabel(self.tr("wm.section.wm", "🎨 2. WATERMARK"))
         lbl_wm_section.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 11px;")
         layout.addWidget(lbl_wm_section)
 
-        self.btn_load_watermark = QPushButton("📂 Cargar Marca de Agua")
+        self.btn_load_watermark = QPushButton(self.tr("wm.load_wm", "📂 Load Watermark"))
         self.btn_load_watermark.clicked.connect(self.load_watermark_asset)
         layout.addWidget(self.btn_load_watermark)
 
-        self.lbl_watermark_status = QLabel("Ninguna")
+        self.lbl_watermark_status = QLabel(self.tr("wm.status.none", "None"))
         self.lbl_watermark_status.setStyleSheet("color: #888; font-size: 10px;")
         layout.addWidget(self.lbl_watermark_status)
 
-        layout.addWidget(QLabel("Ángulo de Rotación:"))
+        layout.addWidget(QLabel(self.tr("wm.angle", "Rotation Angle:")))
         self.combo_angle = QComboBox()
         self.combo_angle.addItems(["0°", "45°", "90°", "135°", "180°", "225°", "270°", "315°"])
         self.combo_angle.setStyleSheet(Theme.get_input_style(self.accent_color))
         self.combo_angle.currentIndexChanged.connect(self.generate_preview)
         layout.addWidget(self.combo_angle)
 
-        layout.addWidget(QLabel("Escala de la Marca:"))
+        layout.addWidget(QLabel(self.tr("wm.scale", "Pattern Scale:")))
         self.slider_scale = QSlider(Qt.Horizontal)
         self.slider_scale.setRange(10, 200)
         self.slider_scale.setValue(100)
         self.slider_scale.valueChanged.connect(self.generate_preview)
         layout.addWidget(self.slider_scale)
 
-        layout.addWidget(QLabel("Opacidad:"))
+        layout.addWidget(QLabel(self.tr("wm.opacity", "Opacity:")))
         self.slider_opacity = QSlider(Qt.Horizontal)
         self.slider_opacity.setRange(0, 100)
         self.slider_opacity.setValue(30)
@@ -106,26 +106,26 @@ class WatermarkerModule(BaseModule):
         layout.addSpacing(15)
 
         # 3. Logo
-        lbl_logo_section = QLabel("🏷️ 3. LOGOTIPO")
+        lbl_logo_section = QLabel(self.tr("wm.section.logo", "🏷️ 3. LOGOTIPO"))
         lbl_logo_section.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 11px;")
         layout.addWidget(lbl_logo_section)
 
-        self.btn_load_logo = QPushButton("📂 Cargar Logo")
+        self.btn_load_logo = QPushButton(self.tr("wm.load_logo", "📂 Load Logo"))
         self.btn_load_logo.clicked.connect(self.load_logo_asset)
         layout.addWidget(self.btn_load_logo)
 
-        self.lbl_logo_status = QLabel("Ninguno")
+        self.lbl_logo_status = QLabel(self.tr("wm.status.none", "None"))
         self.lbl_logo_status.setStyleSheet("color: #888; font-size: 10px;")
         layout.addWidget(self.lbl_logo_status)
 
-        layout.addWidget(QLabel("Posición del Logo:"))
+        layout.addWidget(QLabel(self.tr("wm.logo_pos", "Logo Position:")))
         self.combo_logo_pos = QComboBox()
         self.combo_logo_pos.addItems(["Top-Right", "Top-Left", "Bottom-Right", "Bottom-Left"])
         self.combo_logo_pos.setStyleSheet(Theme.get_input_style(self.accent_color))
         self.combo_logo_pos.currentIndexChanged.connect(self.generate_preview)
         layout.addWidget(self.combo_logo_pos)
 
-        layout.addWidget(QLabel("Tamaño del Logo (px):"))
+        layout.addWidget(QLabel(self.tr("wm.logo_size", "Logo Size (px):")))
         self.slider_logo_size = QSlider(Qt.Horizontal)
         self.slider_logo_size.setRange(50, 500)
         self.slider_logo_size.setValue(150)
@@ -134,7 +134,7 @@ class WatermarkerModule(BaseModule):
 
         layout.addStretch()
         
-        self.btn_save = QPushButton("💾 SAVE COPY")
+        self.btn_save = QPushButton(self.tr("common.save_copy", "💾 SAVE COPY"))
         self.btn_save.clicked.connect(self.save_copy)
         self.btn_save.setMinimumHeight(45)
         self.btn_save.setStyleSheet(f"background-color: {self.accent_color}; color: black; font-weight: bold; border-radius: 6px;")
@@ -151,7 +151,7 @@ class WatermarkerModule(BaseModule):
         preview_frame.setStyleSheet("background-color: #050505; border: 1px solid #222; border-radius: 10px;")
         preview_layout = QVBoxLayout(preview_frame)
         
-        self.lbl_preview = QLabel("Drop or Load Image to Begin")
+        self.lbl_preview = QLabel(self.tr("wm.preview_prompt", "Drop or Load Image to Begin"))
         self.lbl_preview.setAlignment(Qt.AlignCenter)
         self.lbl_preview.setStyleSheet("color: #444; font-size: 14px; font-weight: bold;")
         preview_layout.addWidget(self.lbl_preview)
@@ -166,7 +166,7 @@ class WatermarkerModule(BaseModule):
         return container
 
     def load_source_image(self):
-        path, _ = QFileDialog.getOpenFileName(None, "Select Image", self.last_dir, "Images (*.png *.jpg *.jpeg *.webp)")
+        path, _ = QFileDialog.getOpenFileName(None, self.tr("common.select_image", "Select Image"), self.last_dir, "Images (*.png *.jpg *.jpeg *.webp)")
         if path:
             self.source_image = path
             self.lbl_image_status.setText(os.path.basename(path))
@@ -174,14 +174,14 @@ class WatermarkerModule(BaseModule):
             self.generate_preview()
 
     def load_watermark_asset(self):
-        path, _ = QFileDialog.getOpenFileName(None, "Select Watermark", self.last_dir, "Images (*.png *.jpg *.svg)")
+        path, _ = QFileDialog.getOpenFileName(None, self.tr("wm.load_wm", "Select Watermark"), self.last_dir, "Images (*.png *.jpg *.svg)")
         if path:
             self.watermark_asset = path
             self.lbl_watermark_status.setText(os.path.basename(path))
             self.generate_preview()
 
     def load_logo_asset(self):
-        path, _ = QFileDialog.getOpenFileName(None, "Select Logo", self.last_dir, "Images (*.png *.jpg *.svg)")
+        path, _ = QFileDialog.getOpenFileName(None, self.tr("wm.load_logo", "Select Logo"), self.last_dir, "Images (*.png *.jpg *.svg)")
         if path:
             self.logo_asset = path
             self.lbl_logo_status.setText(os.path.basename(path))
@@ -234,14 +234,14 @@ class WatermarkerModule(BaseModule):
 
     def save_copy(self):
         if not self.source_image:
-            QMessageBox.warning(None, "No Image", "Please load an image first.")
+            QMessageBox.warning(None, self.tr("common.error", "No Image"), self.tr("wm.msg.no_img", "Please load an image first."))
             return
             
         if not self.watermark_asset and not self.logo_asset:
-            QMessageBox.warning(None, "No Assets", "Please load a watermark or logo.")
+            QMessageBox.warning(None, self.tr("common.error", "No Assets"), self.tr("wm.msg.no_assets", "Please load a watermark or logo."))
             return
 
-        out_path, _ = QFileDialog.getSaveFileName(None, "Save Watermarked Image", self.last_dir, "Images (*.png *.jpg *.jpeg *.webp)")
+        out_path, _ = QFileDialog.getSaveFileName(None, self.tr("common.save_copy", "Save Watermarked Image"), self.last_dir, "Images (*.png *.jpg *.jpeg *.webp)")
         if not out_path: return
         
         success, msg = watermark_image(
@@ -256,9 +256,9 @@ class WatermarkerModule(BaseModule):
         )
         
         if success:
-            QMessageBox.information(None, "Saved", f"Image saved successfully to:\n{out_path}")
+            QMessageBox.information(None, self.tr("common.success", "Saved"), self.tr("wm.msg.saved", "Image saved successfully to:\n{path}").format(path=out_path))
         else:
-            QMessageBox.critical(None, "Error", f"Failed to save image: {msg}")
+            QMessageBox.critical(None, self.tr("common.error", "Error"), f"{self.tr('common.error', 'Failed to save image')}: {msg}")
 
     def on_load(self, context):
         super().on_load(context)

@@ -75,14 +75,17 @@ class ImageOptimizerModule(BaseModule):
         layout.setAlignment(Qt.AlignTop)
         
         # Title
-        lbl_title = QLabel("Settings")
+        lbl_title = QLabel(self.tr("opt.settings", "Settings"))
         lbl_title.setStyleSheet("font-size: 16px; font-weight: bold; margin-bottom: 10px;")
         layout.addWidget(lbl_title)
         
         # Format
-        layout.addWidget(QLabel("Output Format:"))
+        layout.addWidget(QLabel(self.tr("opt.format", "Output Format:")))
         self.combo_format = QComboBox()
-        self.combo_format.addItems(["Original", "PNG", "JPEG", "WebP"])
+        self.combo_format.addItems([
+            self.tr("common.status.none", "Original"), 
+            "PNG", "JPEG", "WebP"
+        ])
         
         # FIX: Force opaque view using Palette AND Style
         from PySide6.QtWidgets import QListView
@@ -116,9 +119,14 @@ class ImageOptimizerModule(BaseModule):
         layout.addWidget(self.combo_format)
         
         # Resize
-        layout.addWidget(QLabel("Resize Strategy:"))
+        layout.addWidget(QLabel(self.tr("opt.resize", "Resize Strategy:")))
         self.combo_resize = QComboBox()
-        self.combo_resize.addItems(["Keep Original Size", "Longest Side: 1024px", "Longest Side: 2048px", "Custom Longest Side"])
+        self.combo_resize.addItems([
+            self.tr("opt.resize.original", "Keep Original Size"),
+            self.tr("opt.resize.1024", "Longest Side: 1024px"),
+            self.tr("opt.resize.2048", "Longest Side: 2048px"),
+            self.tr("opt.resize.custom", "Custom Longest Side")
+        ])
         
         rsz_view = QListView()
         # Apply same fix to resize combo
@@ -154,13 +162,13 @@ class ImageOptimizerModule(BaseModule):
         layout.addWidget(self.spin_max_side)
         
         # Checkboxes
-        self.chk_meta = QCheckBox("Preserve Metadata")
+        self.chk_meta = QCheckBox(self.tr("opt.preserve_meta", "Preserve Metadata"))
         self.chk_meta.setChecked(True)
         layout.addWidget(self.chk_meta)
         
         # Analysis
         layout.addSpacing(20)
-        btn_analyze = QPushButton("Analyze Suggestion")
+        btn_analyze = QPushButton(self.tr("opt.analyze", "Analyze Suggestion"))
         btn_analyze.clicked.connect(self._analyze_first)
         layout.addWidget(btn_analyze)
         
@@ -198,7 +206,7 @@ class ImageOptimizerModule(BaseModule):
         empty_layout = QVBoxLayout(self.page_empty)
         empty_layout.setAlignment(Qt.AlignCenter)
         
-        self.lbl_empty = QLabel("📂\n\nDrop images here\nor use 'Load Images'")
+        self.lbl_empty = QLabel(self.tr("opt.drop_zone", "📂\n\nDrop images here\nor use 'Load Images'"))
         self.lbl_empty.setStyleSheet(f"color: {text_dim}; font-size: 16px; font-weight: bold;")
         self.lbl_empty.setAlignment(Qt.AlignCenter)
         empty_layout.addWidget(self.lbl_empty)
@@ -249,7 +257,7 @@ class ImageOptimizerModule(BaseModule):
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0,0,0,0)
         
-        self.btn_load = QPushButton("Load Images")
+        self.btn_load = QPushButton(self.tr("opt.load_images", "Load Images"))
         self.btn_load.setCursor(Qt.PointingHandCursor)
         self.btn_load.clicked.connect(self._load_images)
         layout.addWidget(self.btn_load)
@@ -272,7 +280,7 @@ class ImageOptimizerModule(BaseModule):
         """)
         layout.addWidget(self.progress)
         
-        self.btn_run = QPushButton("Process Queue")
+        self.btn_run = QPushButton(self.tr("opt.process", "Process Queue"))
         self.btn_run.setCursor(Qt.PointingHandCursor)
         self.btn_run.setObjectName("action_btn") 
         
@@ -306,7 +314,7 @@ class ImageOptimizerModule(BaseModule):
         self.spin_max_side.setEnabled(is_custom)
 
     def _load_images(self):
-        files, _ = QFileDialog.getOpenFileNames(None, "Select Images", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        files, _ = QFileDialog.getOpenFileNames(None, self.tr("common.select_image", "Select Images"), "", "Images (*.png *.jpg *.jpeg *.webp)")
         if files:
             self.queue.extend(files)
             self._update_ui()
@@ -315,7 +323,10 @@ class ImageOptimizerModule(BaseModule):
         if not self.queue: return
         res = analyze_image(self.queue[0])
         if "error" not in res:
-            self.lbl_suggestion.setText(f"Suggestion: {res['suggested_format']} ({res['suggestion_reason']})")
+            self.lbl_suggestion.setText(self.tr("opt.suggestion", "Suggestion: {format} ({reason})").format(
+                format=res['suggested_format'],
+                reason=res['suggestion_reason']
+            ))
 
     def _update_ui(self):
         # 1. Update State
@@ -368,7 +379,7 @@ class ImageOptimizerModule(BaseModule):
     def _run_all(self):
         if not self.queue: return
         
-        export_path = QFileDialog.getExistingDirectory(None, "Select Export Directory")
+        export_path = QFileDialog.getExistingDirectory(None, self.tr("common.select_folder", "Select Export Directory"))
         if not export_path: return
         
         settings = {
@@ -397,7 +408,11 @@ class ImageOptimizerModule(BaseModule):
     def _on_finished(self, stats):
         self.btn_run.setEnabled(True)
         self.progress.setVisible(False)
-        QMessageBox.information(None, "Done", f"Processed {stats['success'] + stats['failed']} images.\nSaved: {stats['saved_bytes']/1024/1024:.2f} MB")
+        QMessageBox.information(None, self.tr("opt.done", "Done"), 
+                                self.tr("opt.stats", "Processed {total} images.\nSaved: {saved} MB").format(
+                                    total=stats['success'] + stats['failed'],
+                                    saved=f"{stats['saved_bytes']/1024/1024:.2f}"
+                                ))
         self.queue = []
         self._update_ui()
 

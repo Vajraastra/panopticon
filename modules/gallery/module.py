@@ -54,7 +54,7 @@ class FolderCard(QFrame):
         if cover_path:
             self.lbl_cover.setText("⏳") # Placeholder
         else:
-            self.lbl_cover.setText("📁 Empty")
+            self.lbl_cover.setText(self.tr("gal.empty", "📁 Empty"))
             
         layout.addWidget(self.lbl_cover)
         
@@ -67,7 +67,7 @@ class FolderCard(QFrame):
         layout.addWidget(self.lbl_name)
         
         # Count
-        self.lbl_count = QLabel(f"{count} items")
+        self.lbl_count = QLabel(self.tr("gal.item_count", "{count} items").format(count=count))
         self.lbl_count.setStyleSheet("color: #888; font-size: 12px;")
         self.lbl_count.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.lbl_count)
@@ -153,8 +153,8 @@ class GalleryModule(BaseModule):
             self.content,
             self.sidebar,
             self.bottom,
-            theme_manager=None, # Themes handle internally if needed
-            event_bus=None
+            theme_manager=self.context.get('theme_manager'),
+            event_bus=self.context.get('event_bus')
         )
         
         # Hook resize event via EventFilter for grid reflow
@@ -229,17 +229,17 @@ class GalleryModule(BaseModule):
         layout.setSpacing(15)
         
         # Navigation Section
-        lbl_nav = QLabel("NAVIGATION")
+        lbl_nav = QLabel(self.tr("gal.navigation", "NAVIGATION"))
         lbl_nav.setStyleSheet("font-size: 11px; font-weight: bold; color: #666; letter-spacing: 1px;")
         layout.addWidget(lbl_nav)
         
-        self.btn_back = QPushButton("  🔙  Back to Albums")
+        self.btn_back = QPushButton(f"  {self.tr('gal.back', '🔙 Back to Albums')}")
         self.btn_back.clicked.connect(self.switch_to_albums)
         self.btn_back.setVisible(False)
         self.btn_back.setStyleSheet("background-color: #2a2a2a; color: #00ffcc; font-weight: bold;")
         layout.addWidget(self.btn_back)
         
-        self.btn_open_local = QPushButton("  📂  Open Local Folder")
+        self.btn_open_local = QPushButton(f"  {self.tr('gal.open_local', '📂 Open Local Folder')}")
         self.btn_open_local.clicked.connect(self.open_custom_folder)
         layout.addWidget(self.btn_open_local)
         
@@ -254,38 +254,38 @@ class GalleryModule(BaseModule):
         layout.addSpacing(10)
         
         # Filter & Search
-        lbl_filter = QLabel("SEARCH & FILTER")
+        lbl_filter = QLabel(self.tr("gal.search_filter_title", "SEARCH & FILTER"))
         lbl_filter.setStyleSheet("font-size: 11px; font-weight: bold; color: #666; letter-spacing: 1px;")
         layout.addWidget(lbl_filter)
         
         # Broad Search
         self.txt_broad_search = QLineEdit()
-        self.txt_broad_search.setPlaceholderText("🔍  Search keywords...")
+        self.txt_broad_search.setPlaceholderText(self.tr("gal.search_placeholder", "🔍  Search keywords..."))
         self.txt_broad_search.returnPressed.connect(self.on_search_triggered)
         layout.addWidget(self.txt_broad_search)
         
         # Tag Search
         self.txt_tag_search = QLineEdit()
-        self.txt_tag_search.setPlaceholderText("🏷️  Filter by tags...")
+        self.txt_tag_search.setPlaceholderText(self.tr("gal.tag_filter_placeholder", "🏷️  Filter by tags..."))
         self.txt_tag_search.returnPressed.connect(self.on_search_triggered)
         layout.addWidget(self.txt_tag_search)
         
         # Quality Dropdown (Moved Up)
         self.combo_rating = QComboBox()
         self.combo_rating.addItems([
-            "All Quality Levels",
+            self.tr("gal.quality_all", "All Quality Levels"),
             "⭐ 1+ Stars",
             "⭐⭐ 2+ Stars",
             "⭐⭐⭐ 3+ Stars",
             "⭐⭐⭐⭐ 4+ Stars",
-            "⭐⭐⭐⭐⭐ 5 Stars Only"
+            f"⭐⭐⭐⭐⭐ {self.tr('gal.stars_only', '5 Stars Only')}"
         ])
         self.combo_rating.currentIndexChanged.connect(self.on_rating_changed)
         self.combo_rating.setCursor(Qt.PointingHandCursor)
         layout.addWidget(self.combo_rating)
 
         # Clear Button (Moved Up)
-        self.btn_clear_all = QPushButton("✕ Clear Filters")
+        self.btn_clear_all = QPushButton(self.tr("gal.clear_filters", "✕ Clear Filters"))
         self.btn_clear_all.clicked.connect(self.clear_all_filters)
         self.btn_clear_all.setStyleSheet("color: #ff5555; background: transparent; border: 1px solid #331111; text-align: center;")
         layout.addWidget(self.btn_clear_all)
@@ -304,11 +304,11 @@ class GalleryModule(BaseModule):
         info_layout = QVBoxLayout(self.info_panel)
         info_layout.setContentsMargins(10, 10, 10, 10)
         
-        lbl_info_title = QLabel("📄 Selection Info")
+        lbl_info_title = QLabel(self.tr("gal.selection_info", "📄 Selection Info"))
         lbl_info_title.setStyleSheet("color: #00ffcc; font-weight: bold; font-size: 11px; border: none;")
         info_layout.addWidget(lbl_info_title)
         
-        self.lbl_selected_info = QLabel("No Selection")
+        self.lbl_selected_info = QLabel(self.tr("gal.no_selection", "No Selection"))
         self.lbl_selected_info.setStyleSheet("color: #eee; font-size: 11px; border: none;")
         self.lbl_selected_info.setWordWrap(True)
         info_layout.addWidget(self.lbl_selected_info)
@@ -323,7 +323,7 @@ class GalleryModule(BaseModule):
         self.selected_tags_layout = FlowLayout(self.selected_tags_container)
         info_layout.addWidget(self.selected_tags_container)
 
-        self.btn_view_image = QPushButton("👁️ Fullscreen View")
+        self.btn_view_image = QPushButton(self.tr("gal.fullscreen", "👁️ Fullscreen View"))
         self.btn_view_image.clicked.connect(self.open_current_in_viewer)
         self.btn_view_image.setStyleSheet("margin-top: 10px; font-weight: bold; height: 35px;")
         info_layout.addWidget(self.btn_view_image)
@@ -334,13 +334,13 @@ class GalleryModule(BaseModule):
 
         # Future Tools Placeholder
         self.combo_tools_placeholder = QComboBox()
-        self.combo_tools_placeholder.addItem("🛠️  Batch Tools (Future)")
+        self.combo_tools_placeholder.addItem(f"🛠️  {self.tr('gal.batch_tools', 'Batch Tools (Future)')}")
         self.combo_tools_placeholder.setEnabled(False)
         self.combo_tools_placeholder.setStyleSheet("background-color: #1a1a1a; color: #555; border: 1px dashed #444;")
         layout.addWidget(self.combo_tools_placeholder)
 
         # Picker Mode at the very bottom
-        self.btn_picker_toggle = QPushButton("🎯 Picker Mode")
+        self.btn_picker_toggle = QPushButton(self.tr("gal.picker_mode", "🎯 Picker Mode"))
         self.btn_picker_toggle.setCheckable(True)
         self.btn_picker_toggle.clicked.connect(self.toggle_picker_mode)
         self.btn_picker_toggle.setFixedSize(170, 40)
@@ -379,7 +379,7 @@ class GalleryModule(BaseModule):
         layout.setSpacing(0)
 
         # 1. Header / Title
-        self.lbl_title = QLabel("🖼️ Gallery Albums")
+        self.lbl_title = QLabel(self.tr("gal.title", "🖼️ Gallery Albums"))
         self.lbl_title.setStyleSheet("color: white; font-size: 18px; font-weight: bold; padding: 15px; background-color: #111;")
         layout.addWidget(self.lbl_title)
 
@@ -406,7 +406,7 @@ class GalleryModule(BaseModule):
         layout.setContentsMargins(10, 5, 10, 5)
         
         # Status Left
-        self.lbl_status = QLabel("Ready")
+        self.lbl_status = QLabel(self.tr("common.status.ready", "Ready"))
         self.lbl_status.setStyleSheet("color: #888;")
         layout.addWidget(self.lbl_status)
         
@@ -417,11 +417,11 @@ class GalleryModule(BaseModule):
         pa_layout = QHBoxLayout(self.picker_actions)
         pa_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.lbl_picked_count = QLabel("0 Selected")
+        self.lbl_picked_count = QLabel(self.tr("gal.picked_count", "0 Selected").format(count=0))
         self.lbl_picked_count.setStyleSheet("color: #00ffcc; font-weight: bold; margin-right: 10px;")
         pa_layout.addWidget(self.lbl_picked_count)
         
-        self.btn_send_picked = QPushButton("🚀 Send to Workshop")
+        self.btn_send_picked = QPushButton(self.tr("gal.send_workshop", "🚀 Send to Workshop"))
         self.btn_send_picked.clicked.connect(self.send_to_workshop)
         self.btn_send_picked.setStyleSheet("background-color: #ffaa00; color: black; font-weight: bold; border-radius: 4px; padding: 5px 10px;")
         pa_layout.addWidget(self.btn_send_picked)

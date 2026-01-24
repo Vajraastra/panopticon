@@ -2,6 +2,7 @@ import json
 import os
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QColor
+from core.locale_manager import LocaleManager
 
 class ThemeManager(QObject):
     """
@@ -50,6 +51,10 @@ class ThemeManager(QObject):
 
     def get_color(self, key):
         return self.colors.get(key, "#ff00ff")
+
+    def tr(self, key, default=None):
+        """Proxy to LocaleManager for convenience in themed components."""
+        return LocaleManager().tr(key, default)
 
     def set_color(self, key, value):
         self.colors[key] = value

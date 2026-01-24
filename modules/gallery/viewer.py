@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import QPixmap, QKeySequence, QAction, QMouseEvent
 from modules.librarian.logic.tagging_ui import FlowLayout, TagChip
 from modules.librarian.logic.db_manager import DatabaseManager
+from core.locale_manager import LocaleManager
 import os
 
 class ClickableRatingLabel(QLabel):
@@ -21,6 +22,7 @@ class FullscreenHelper(QDialog):
     """Borderless fullscreen window for immersive viewing."""
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.tr = LocaleManager().tr
         self.parent_viewer = parent
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.showFullScreen()
@@ -122,7 +124,8 @@ class FullscreenHelper(QDialog):
 class AdvancedViewer(QDialog):
     def __init__(self, paths, start_index=0, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Panopticon Viewer")
+        self.tr = LocaleManager().tr
+        self.setWindowTitle(self.tr("gal.viewer.title", "Panopticon Viewer"))
         self.resize(1100, 800)
         self.setWindowState(Qt.WindowMaximized) # Start maximized for better view
         self.setStyleSheet("background-color: #121212; color: #ddd;")
@@ -160,35 +163,35 @@ class AdvancedViewer(QDialog):
         data_layout.setContentsMargins(20, 20, 20, 20)
         
         # Metadata Section
-        lbl_meta_title = QLabel("📝 Image Details")
+        lbl_meta_title = QLabel(self.tr("gal.viewer.details", "📝 Image Details"))
         lbl_meta_title.setStyleSheet("color: #00ffcc; font-size: 18px; font-weight: bold; margin-bottom: 10px;")
         data_layout.addWidget(lbl_meta_title)
         
-        self.lbl_filename = QLabel("Filename: ...")
+        self.lbl_filename = QLabel(self.tr("gal.viewer.filename", "Filename:") + " ...")
         self.lbl_filename.setWordWrap(True)
         self.lbl_filename.setStyleSheet("color: white; font-weight: bold; font-size: 14px;")
         data_layout.addWidget(self.lbl_filename)
         
-        self.lbl_path = QLabel("Path: ...")
+        self.lbl_path = QLabel(self.tr("gal.viewer.path", "Path:") + " ...")
         self.lbl_path.setWordWrap(True)
         self.lbl_path.setStyleSheet("color: #aaa; font-size: 11px; margin-bottom: 10px;")
         data_layout.addWidget(self.lbl_path)
         
         # Stats Table
         grid_stats = QGridLayout()
-        grid_stats.addWidget(QLabel("Resolution:"), 0, 0)
+        grid_stats.addWidget(QLabel(self.tr("gal.viewer.resolution", "Resolution:")), 0, 0)
         self.lbl_res = QLabel("...")
         self.lbl_res.setStyleSheet("color: #ddd; font-weight: bold;")
         grid_stats.addWidget(self.lbl_res, 0, 1)
 
         # Rating Row
-        grid_stats.addWidget(QLabel("Rating:"), 1, 0)
-        self.lbl_rating_stars = ClickableRatingLabel("None")
+        grid_stats.addWidget(QLabel(self.tr("gal.viewer.rating", "Rating:")), 1, 0)
+        self.lbl_rating_stars = ClickableRatingLabel(self.tr("wm.status.none", "None"))
         self.lbl_rating_stars.setStyleSheet("color: #ffcc00; font-weight: bold; font-size: 18px;")
         self.lbl_rating_stars.clicked.connect(self.cycle_current_rating)
         grid_stats.addWidget(self.lbl_rating_stars, 1, 1)
         
-        self.lbl_filesize = QLabel("Size: ...")
+        self.lbl_filesize = QLabel(self.tr("gal.viewer.size", "Size:") + " ...")
         self.lbl_filesize.setStyleSheet("color: #aaa;")
         grid_stats.addWidget(self.lbl_filesize, 2, 1)
         
@@ -202,14 +205,14 @@ class AdvancedViewer(QDialog):
         data_layout.addWidget(line)
         
         # --- Tags Section ---
-        lbl_tags = QLabel("🏷️ Tags")
+        lbl_tags = QLabel(self.tr("gal.viewer.tags", "🏷️ Tags"))
         lbl_tags.setStyleSheet("color: #00ffcc; font-weight: bold; font-size: 14px;")
         data_layout.addWidget(lbl_tags)
         
         # Tag Input Area
         input_layout = QHBoxLayout()
         self.input_tag = QLineEdit()
-        self.input_tag.setPlaceholderText("Add tag...")
+        self.input_tag.setPlaceholderText(self.tr("gal.viewer.add_tag", "Add tag..."))
         self.input_tag.setStyleSheet("""
             QLineEdit { background-color: #111; color: white; border: 1px solid #444; padding: 5px; border-radius: 4px; }
             QLineEdit:focus { border: 1px solid #00ffcc; }
@@ -262,11 +265,11 @@ class AdvancedViewer(QDialog):
         data_layout.addSpacing(20)
         
         # Fullscreen Controls
-        lbl_fs = QLabel("🖥️ Presentation Modes")
+        lbl_fs = QLabel(self.tr("gal.viewer.modes", "🖥️ Presentation Modes"))
         lbl_fs.setStyleSheet("color: #eee; font-weight: bold; margin-top: 10px; border-bottom: 1px solid #444; padding-bottom: 5px;")
         data_layout.addWidget(lbl_fs)
         
-        self.btn_fullscreen = QPushButton("Enter Fullscreen")
+        self.btn_fullscreen = QPushButton(self.tr("gal.viewer.fullscreen", "Enter Fullscreen"))
         self.btn_fullscreen.setFocusPolicy(Qt.NoFocus)
         self.btn_fullscreen.clicked.connect(self.toggle_fullscreen)
         self.btn_fullscreen.setStyleSheet("background-color: #222; color: #ccc; padding: 10px; border: 1px solid #444; border-radius: 5px;")
@@ -275,7 +278,7 @@ class AdvancedViewer(QDialog):
         # Timer Section
         data_layout.addSpacing(10)
         
-        self.btn_slideshow = QPushButton("Start Slideshow ⏳")
+        self.btn_slideshow = QPushButton(self.tr("gal.viewer.slideshow_start", "Start Slideshow ⏳"))
         self.btn_slideshow.setFocusPolicy(Qt.NoFocus)
         self.btn_slideshow.clicked.connect(self.start_slideshow)
         self.btn_slideshow.setObjectName("btn_slideshow")
@@ -287,7 +290,7 @@ class AdvancedViewer(QDialog):
         data_layout.addWidget(self.btn_slideshow)
         
         timer_layout = QHBoxLayout()
-        timer_layout.addWidget(QLabel("Timer (seconds):"))
+        timer_layout.addWidget(QLabel(self.tr("gal.viewer.timer", "Timer (seconds):")))
         self.spin_timer = QSpinBox()
         self.spin_timer.setRange(1, 60)
         self.spin_timer.setValue(5)
@@ -382,25 +385,25 @@ class AdvancedViewer(QDialog):
         
         # Load Rating
         rating = self.db.get_file_rating(path)
-        self.lbl_rating_stars.setText("⭐" * rating if rating > 0 else "None")
+        self.lbl_rating_stars.setText("⭐" * rating if rating > 0 else self.tr("wm.status.none", "None"))
         
         # Load Pixmap
         pix = QPixmap(path)
         if not pix.isNull():
             # Scale to fit currently available space
             self.lbl_image.setPixmap(pix.scaled(self.lbl_image.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            self.lbl_res.setText(f"Resolution: {pix.width()} x {pix.height()}")
+            self.lbl_res.setText(f"{pix.width()} x {pix.height()}")
         else:
-            self.lbl_image.setText("Image Load Error")
+            self.lbl_image.setText(self.tr("gal.viewer.load_error", "Image Load Error"))
             
         # Update Metadata
-        self.lbl_filename.setText(os.path.basename(path))
-        self.lbl_path.setText(path)
+        self.lbl_filename.setText(self.tr("gal.viewer.filename", "Filename:") + " " + os.path.basename(path))
+        self.lbl_path.setText(self.tr("gal.viewer.path", "Path:") + " " + path)
         try:
              size_mb = os.path.getsize(path) / (1024*1024)
-             self.lbl_filesize.setText(f"Size: {size_mb:.2f} MB")
+             self.lbl_filesize.setText(f"{self.tr('gal.viewer.size', 'Size:')} {size_mb:.2f} MB")
         except:
-             self.lbl_filesize.setText("Size: Unknown")
+             self.lbl_filesize.setText(self.tr("gal.viewer.size", "Size:") + " Unknown")
              
         # Update Fullscreen if active
         if self.fs_window and self.fs_window.isVisible():
@@ -422,7 +425,7 @@ class AdvancedViewer(QDialog):
         new_rating = (current + 1) % 6
         
         if self.db.update_file_rating(path, new_rating):
-            self.lbl_rating_stars.setText("⭐" * new_rating if new_rating > 0 else "None")
+            self.lbl_rating_stars.setText("⭐" * new_rating if new_rating > 0 else self.tr("wm.status.none", "None"))
             # If we had a signal to notify the parent, we'd use it here.
             # But for now, the parent (Gallery) will handle its own refresh if needed.
 
@@ -438,11 +441,11 @@ class AdvancedViewer(QDialog):
     def start_slideshow(self):
         if self.btn_slideshow.isChecked():
             # Start
-            self.btn_slideshow.setText("Stop Slideshow ⏹️")
+            self.btn_slideshow.setText(self.tr("gal.viewer.slideshow_stop", "Stop Slideshow ⏹️"))
             self.toggle_fullscreen() # Auto enter FS
             interval = self.spin_timer.value() * 1000
             self.timer.start(interval)
         else:
             # Stop
-            self.btn_slideshow.setText("Start Slideshow ⏳")
+            self.btn_slideshow.setText(self.tr("gal.viewer.slideshow_start", "Start Slideshow ⏳"))
             self.timer.stop()

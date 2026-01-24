@@ -151,7 +151,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(30)
         
         # Title
-        lbl = QLabel("Settings / Configuración")
+        lbl = QLabel(self.tr("settings.title", "Settings / Configuración"))
         lbl.setStyleSheet("color: white; font-size: 32px; font-weight: bold;")
         lbl.setAlignment(Qt.AlignCenter)
         layout.addWidget(lbl)
@@ -161,7 +161,7 @@ class MainWindow(QMainWindow):
         lang_box.setStyleSheet(f"background: {Theme.BG_PANEL}; border-radius: 10px; padding: 20px;")
         lb_layout = QHBoxLayout(lang_box)
         
-        lbl_lang = QLabel("Language:")
+        lbl_lang = QLabel(self.tr("settings.language", "Language:"))
         lbl_lang.setStyleSheet("color: white; font-size: 18px; border: none;")
         lb_layout.addWidget(lbl_lang)
         
@@ -195,7 +195,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(box_wrapper)
         
         # Save Button
-        btn_save = QPushButton("Save & Restart")
+        btn_save = QPushButton(self.tr("settings.save_restart", "Save & Restart"))
         btn_save.setFixedSize(250, 50)
         btn_save.setCursor(Qt.PointingHandCursor)
         btn_save.setStyleSheet(f"""
@@ -212,7 +212,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(btn_save)
         
         # Back Button
-        btn_back = QPushButton("Back to Dashboard")
+        btn_back = QPushButton(self.tr("settings.back", "Back to Dashboard"))
         btn_back.setCursor(Qt.PointingHandCursor)
         btn_back.setStyleSheet(f"color: {Theme.TEXT_DIM}; background: transparent; text-decoration: underline;")
         btn_back.clicked.connect(lambda: self.root_stack.setCurrentIndex(0))
@@ -222,7 +222,8 @@ class MainWindow(QMainWindow):
         index = self.combo_lang.currentIndex()
         code = "es" if index == 1 else "en"
         self.locale_manager.set_locale(code)
-        QMessageBox.information(self, "Restart Required", "Please restart Panopticon to apply language changes.")
+        QMessageBox.information(self, self.tr("settings.restart_required", "Restart Required"), 
+                                self.tr("settings.restart_msg", "Please restart Panopticon to apply language changes."))
 
     def load_available_modules(self):
         """Discover and load modules into the UI."""
@@ -286,14 +287,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(lbl_icon)
         
         # Title
-        lbl_title = QLabel(module.name)
+        title_key = f"tool.{module.name.lower().replace(' ', '_')}.name"
+        lbl_title = QLabel(self.tr(title_key, module.name))
         lbl_title.setAlignment(Qt.AlignCenter)
         lbl_title.setWordWrap(True)
         lbl_title.setStyleSheet("font-size: 15px; font-weight: bold; color: white; background: transparent; border: none;")
         layout.addWidget(lbl_title)
         
         # Description
-        desc = getattr(module, "description", module.tr("desc.missing", "No Info"))
+        desc_key = f"tool.{module.name.lower().replace(' ', '_')}.desc"
+        default_desc = getattr(module, "description", "No Info")
+        desc = self.tr(desc_key, default_desc)
+        
         if len(desc) > 60: desc = desc[:57] + "..."
         lbl_desc = QLabel(desc)
         lbl_desc.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
