@@ -18,8 +18,10 @@ Panopticon is not just an application; it is a **visual orchestration framework*
 *   **Lazy Loading**: Do not build complex UI components in the constructor. Only initialize the view inside `get_view()` when the user actually switches to your tool.
 *   **Memory Stewardship**: Large image sets should be processed using generators or batching to prevent RAM spikes.
 
-### C. Functional Depth
+### C. Functional Depth & Persistence
 *   **Data Pipelines**: Tools should be designed to receive data from the `Librarian` or `Gallery` and potentially pass results forward.
+*   **Mobile Asset Principle**: Metadata (tags, ratings) must be persistent. If a file is moved or renamed, the system must recognize it via its **Hash** (File ID).
+*   **Metadata Synchronization**: Optional writing of tags directly into the file (PNG chunks or JPEG XMP) should be supported for total portability outside Panopticon.
 *   **Headless Capability**: Implement `run_headless()` so your tool logic can be used in bulk automation without a GUI.
 
 ---

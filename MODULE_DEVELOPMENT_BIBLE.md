@@ -18,8 +18,10 @@ Panopticon no es solo una aplicación, es un **framework de orquestación visual
 *   **Carga Perezosa (Lazy Loading)**: No construyas componentes complejos de la UI en el constructor (`__init__`). Inicializa la vista solo dentro de `get_view()` cuando sea estrictamente necesario.
 *   **Gestión de Memoria**: Al manejar miles de imágenes, usa generadores o procesamiento por lotes para evitar picos de consumo de RAM.
 
-### C. Profundidad Funcional
-*   **Pipelines de Datos**: Diseña las herramientas para recibir datos del `Librarian` (Biblioteca) y poder pasar los resultados a la siguiente herramienta.
+### C. Profundidad Funcional y Persistencia
+*   **Pipelines de Datos**: Diseña las herramientas para recibir datos del `Librarian` (Biblioteca) y poder pasar los resultados a la próxima herramienta.
+*   **Principio de Activo Móvil**: Los metadatos (etiquetas, rating) deben ser persistentes. Si un archivo se mueve o renombra, el sistema debe ser capaz de reconocerlo mediante su **Hash** (DNI del archivo).
+*   **Sincronización de Metadatos**: Se debe dar la opción de escribir etiquetas directamente en el archivo (chunks de PNG o XMP en JPEG) para asegurar la portabilidad total fuera de Panopticon.
 *   **Capacidad Headless**: Implementa `run_headless()` para que la lógica de tu herramienta pueda usarse en automatizaciones masivas sin necesidad de una interfaz gráfica.
 
 ---
