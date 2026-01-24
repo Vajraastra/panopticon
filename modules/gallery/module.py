@@ -83,71 +83,55 @@ class FolderCard(QFrame):
             self.clicked.emit(self.path)
 
 class GalleryModule(BaseModule):
-    # Signals
+    """
+    La Galería (Gallery).
+    Módulo visual para la exploración avanzada de la librería de imágenes.
+    Soporta visualización por álbumes (carpetas), búsqueda por etiquetas y
+    un modo de selección (Picker) para enviar archivos a otras herramientas.
+    """
+    # Señal para enviar imágenes al Workshop/Herramientas
     request_open_workshop = Signal(list)
     
-    # View Modes
-    VIEW_ALBUMS = "albums"
-    VIEW_IMAGES = "images"
-    VIEW_CUSTOM = "custom"
+    # Modos de Visualización
+    VIEW_ALBUMS = "albums"   # Vista de carpetas como tarjetas
+    VIEW_IMAGES = "images"   # Vista de rejilla de miniaturas
+    VIEW_CUSTOM = "custom"   # Resultados de búsqueda o carpetas locales externas
 
     def __init__(self):
         super().__init__()
+        self._name = "Gallery"
+        self._description = "Exploración visual avanzada de la librería de imágenes."
+        self._icon = "🖼️"
+        
         self.view = None
         self.db = DatabaseManager() 
         
-        # State
+        # Estado Interno
         self.current_view_mode = self.VIEW_ALBUMS
         self.current_page = 0
         self.page_size = 50 
-        self.current_query_tags = [] 
-        self.current_folder_filter = None # If set, we are browsing a specific folder
+        self.current_folder_filter = None
         self.current_paths = []
-        self.custom_paths_source = [] # Store custom paths here
         self.total_items = 0
         
-        # Selection / Picker Mode
+        # Modo de Selección (Picker)
         self.picker_mode = False
         self.picked_paths = set()
         
-        # Responsive Grid State
+        # Gestión de Rejilla Responsiva
         self.active_widgets = [] 
         self.current_cols = 5
 
-        # Rating Mode / Filter
-        self.rating_mode = False
-        self.current_rating_filter = 0 # 0 = All
-
-        # Tag Mode / Search
-        self.tag_mode = False
-        self.current_query_tags = []
-        self.current_query_terms = []
-        
-        # Loader Integration
-        self.loader = get_loader()
-        self.loader.thumbnail_ready.connect(self.on_thumbnail_ready)
-
-    @property
-    def name(self):
-        return "The Gallery"
-
-    @property
-    def icon(self):
-        return "🖼️"
-
-    @property
-    def description(self):
-        return "Visual Image Browser & Gallery"
-
     def get_view(self) -> QWidget:
+        """Inicializa la UI y configura el EventFilter para el redimensionamiento dinámico."""
         if self.view: return self.view
         
-        # Create Components
+        # 1. Crear componentes (Barra lateral, Rejilla, Paginación)
         self.sidebar = self._create_sidebar()
-        self.content = self._create_content() # Contains Grid
-        self.bottom = self._create_bottom_bar() # Contains Pagination
+        self.content = self._create_content()
+        self.bottom = self._create_bottom_bar()
         
-        # Assemble
+        # 2. Ensamblar usando StandardToolLayout
         from core.components.standard_layout import StandardToolLayout
         self.view = StandardToolLayout(
             self.content,
@@ -157,12 +141,10 @@ class GalleryModule(BaseModule):
             event_bus=self.context.get('event_bus')
         )
         
-        # Hook resize event via EventFilter for grid reflow
+        # Inyectar filtro de eventos para detectar cambios de tamaño y ajustar columnas
         self.grid_container.installEventFilter(self)
         
-        # Initial Load
         self.refresh_grid()
-        
         return self.view
 
     def _create_sidebar(self) -> QWidget:

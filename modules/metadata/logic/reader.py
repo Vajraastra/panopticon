@@ -4,8 +4,15 @@ import os
 from PIL import Image
 
 class UniversalParser:
+    """
+    Extractor universal de metadatos de IA.
+    Capaz de leer parámetros de generación (Prompts, Seed, Modelos) integrados
+    en archivos PNG (tEXt/iTXt), JPEG (EXIF) y WEBP.
+    Soporta formatos populares como Automatic1111, Forge y ComfyUI.
+    """
     @staticmethod
     def parse_image(path):
+        """Punto de entrada: detecta la extensión y delega al extractor adecuado."""
         ext = os.path.splitext(path)[1].lower()
         stats = UniversalParser._get_file_stats(path)
         
@@ -36,6 +43,7 @@ class UniversalParser:
 
     @staticmethod
     def _parse_png(path):
+        """Lee los chunks de texto binarios (tEXt e iTXt) del formato PNG."""
         metadata = {}
         try:
             with open(path, 'rb') as f:
@@ -51,6 +59,7 @@ class UniversalParser:
                     data = f.read(length)
                     f.read(4) # CRC
                     
+                    # Chunks comunes donde las IAs guardan información de generación
                     if chunk_type == b'tEXt':
                         parts = data.split(b'\x00', 1)
                         if len(parts) == 2:
@@ -98,6 +107,10 @@ class UniversalParser:
 
     @staticmethod
     def _extract_prompts(raw_metadata):
+        """
+        Lógica heurística para separar Prompts Positivos, Negativos y Parámetros Técnicos.
+        Diferencia inteligentemente entre el formato lineal de A1111 y el grafo JSON de ComfyUI.
+        """
         processed = {
             "raw": raw_metadata, 
             "positive": "", 

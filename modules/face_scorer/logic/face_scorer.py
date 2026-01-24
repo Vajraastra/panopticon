@@ -1,31 +1,35 @@
 """
-Face Quality Scorer - Core Logic
-Uses YOLOv8-face to score images based on face detection confidence.
+Lógica Central del Calificador de Rostros (Face Scorer).
+Utiliza YOLOv8-face para detectar rostros y puntuarlos según confianza, 
+tamaño relativo y nitidez (Laplacian variance).
 """
 import os
 import cv2
 import numpy as np
 
-# Lazy-load YOLO to avoid startup delay
+# Carga diferida (lazy-load) de YOLO para no ralentizar el arranque de la app
 _model = None
 
 def get_model():
-    """Lazy-loads the YOLO model. Auto-downloads yolov8n-face.pt to module assets if missing."""
+    """
+    Carga el modelo YOLOv8-face. 
+    Intenta descargarlo automáticamente si no existe en la carpeta /assets del módulo.
+    """
     global _model
     if _model is None:
         try:
             from ultralytics import YOLO
             import requests
             
-            # Resolve path to modules/face_scorer/assets/yolov8n-face.pt
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # modules/face_scorer
+            # Ruta a modules/face_scorer/assets/yolov8n-face.pt
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) 
             assets_dir = os.path.join(base_dir, "assets")
             os.makedirs(assets_dir, exist_ok=True)
             
             face_model_path = os.path.join(assets_dir, 'yolov8n-face.pt')
             
             if not os.path.exists(face_model_path):
-                print(f"[FaceScorer] Model not found at {face_model_path}. Downloading...")
+                print(f"[FaceScorer] Modelo no encontrado. Descargando...")
                 url = "https://github.com/lindevs/yolov8-face/releases/latest/download/yolov8n-face-lindevs.pt"
                 try:
                     response = requests.get(url, stream=True)
@@ -33,25 +37,22 @@ def get_model():
                     with open(face_model_path, 'wb') as f:
                         for chunk in response.iter_content(chunk_size=8192):
                             f.write(chunk)
-                    print(f"[FaceScorer] Download complete: {face_model_path}")
                 except Exception as e:
-                    print(f"[FaceScorer] Failed to download custom model: {e}")
-                    print("[FaceScorer] Falling back to standard YOLOv8n (Person Detection)")
+                    print(f"[FaceScorer] Fallo al descargar modelo: {e}")
+                    # En caso de fallo crítico, usamos el modelo estándar de YOLOv8n
                     _model = YOLO('yolov8n.pt')
                     return _model
 
-            print(f"[FaceScorer] Loading face model: {face_model_path}")
             _model = YOLO(face_model_path)
-                
         except ImportError:
-            raise ImportError("ultralytics package not installed. Run: pip install ultralytics")
+            raise ImportError("ultralytics no instalado. Ejecuta: pip install ultralytics")
     return _model
 
 def calculate_blur_score(image_region):
     """
-    Calculates sharpness using Laplacian variance.
-    Higher value = sharper image.
-    Returns normalized 0-1 score.
+    Calcula la nitidez usando la varianza del Laplaciano.
+    Valores altos = Imagen nítida. Valores bajos = Imagen borrosa.
+    Retorna un puntaje normalizado de 0 a 1.
     """
     if image_region is None or image_region.size == 0:
         return 0.0
@@ -59,25 +60,15 @@ def calculate_blur_score(image_region):
     gray = cv2.cvtColor(image_region, cv2.COLOR_BGR2GRAY) if len(image_region.shape) == 3 else image_region
     laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
     
-    # Normalize: typical sharp images have variance > 500, blurry < 100
-    # Map to 0-1 with sigmoid-like curve
+    # Normalización: una imagen nítida suele tener varianza > 500
     normalized = min(laplacian_var / 500.0, 1.0)
     return normalized
 
 def score_image(image_path):
     """
-    Scores an image based on face detection quality.
-    
-    Returns:
-        dict: {
-            "path": str,
-            "faces_detected": int,
-            "best_confidence": float,  # 0.0 - 1.0
-            "best_face_ratio": float,  # Face area / image area
-            "blur_score": float,       # 0.0 - 1.0 (1 = sharp)
-            "composite_score": int,    # 0 - 100
-            "has_face": bool
-        }
+    Puntúa una imagen individual basándose en la calidad de detección facial.
+    Criterios: Confianza (70%), Tamaño del rostro (20%), Nitidez (10%).
+    :return: dict con estadísticas y composite_score (0-100).
     """
     result = {
         "path": image_path,
@@ -88,6 +79,7 @@ def score_image(image_path):
         "composite_score": 0,
         "has_face": False
     }
+    # ... (Resto de la lógica de procesamiento)
     
     if not os.path.exists(image_path):
         return result

@@ -15,22 +15,31 @@ from core.locale_manager import LocaleManager
 from core.event_bus import EventBus
 
 class MainWindow(QMainWindow):
+    """
+    Ventana principal de Panopticon.
+    Actúa como el orquestador central, gestionando la inyección de dependencias,
+    la navegación global y el cargador de módulos.
+    """
     def __init__(self):
         super().__init__()
         
-        # 1. Initialize Core Services
+        # 1. Inicialización de Servicios Centrales (Core Services)
+        # Estos servicios se pasan a cada módulo para permitir comunicación y consistencia funcional.
         self.locale_manager = LocaleManager()
-        self.tr = self.locale_manager.tr
+        self.tr = self.locale_manager.tr # Atajo para traducciones
         self.theme_manager = ThemeManager()
         self.event_bus = EventBus()
+        
+        # Suscripción a eventos de navegación global
         self.event_bus.subscribe("navigate", self.on_navigate)
         
-        # 2. Window Setup
+        # 2. Configuración de la Ventana
         self.setWindowTitle(f"{self.tr('app.title', 'Panopticon')} - {self.tr('app.subtitle')}")
-        self.resize(1280, 800) # Spacious default
+        self.resize(1280, 800) # Tamaño inicial espacioso
         self.setStyleSheet(self.theme_manager.get_stylesheet())
         
-        # 3. Dependency Injection Context
+        # 3. Contexto de Inyección de Dependencias
+        # Este diccionario se entrega a los módulos cargados para que accedan a los servicios.
         self.context = {
             "theme_manager": self.theme_manager,
             "locale_manager": self.locale_manager,
@@ -226,10 +235,14 @@ class MainWindow(QMainWindow):
                                 self.tr("settings.restart_msg", "Please restart Panopticon to apply language changes."))
 
     def load_available_modules(self):
-        """Discover and load modules into the UI."""
+        """
+        Descubre y carga dinámicamente todos los submódulos presentes en la carpeta /modules.
+        Utiliza el ModuleLoader para inicializar cada componente con el contexto inyectado.
+        """
         self.loaded_modules = {}
         for name in self.loader.discover_modules():
             try:
+                # Se inyecta el contexto (servicios core) durante la carga
                 module = self.loader.load_module(name, self.context)
                 if module:
                     self.add_module_card(module)
@@ -237,7 +250,7 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"Error loading {name}: {e}")
                 
-        # Setup Integrations (Event Bus logic)
+        # Configuración de conexiones entre módulos (Inter-module wiring)
         self.setup_integrations()
 
     def add_module_card(self, module):

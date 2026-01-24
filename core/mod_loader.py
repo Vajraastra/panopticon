@@ -6,7 +6,9 @@ from core.base_module import BaseModule
 
 class ModuleLoader:
     """
-    Handles dynamic discovery and loading of modules from the modules/ directory.
+    Encargado del descubrimiento y carga dinámica de módulos.
+    Escanea la carpeta /modules en busca de subcarpetas que contengan
+    una implementación válida de BaseModule.
     """
     def __init__(self, modules_dir="modules"):
         self.modules_dir = modules_dir
@@ -14,8 +16,8 @@ class ModuleLoader:
 
     def discover_modules(self):
         """
-        Scans the modules directory for valid modules.
-        Returns a list of module names (folders).
+        Escanea el directorio de módulos y retorna una lista de nombres de carpetas.
+        Ignora archivos internos y carpetas ocultas.
         """
         if not os.path.exists(self.modules_dir):
             return []
@@ -27,21 +29,25 @@ class ModuleLoader:
 
     def load_module(self, module_name, context=None):
         """
-        Loads a specific module by name.
-        :param context: Dict containing services (ThemeManager, EventBus) to inject.
+        Carga un módulo específico por su nombre utilizando importación dinámica.
+        Busca una clase dentro de 'module.py' que herede de BaseModule.
+        :param module_name: Nombre de la carpeta del módulo.
+        :param context: Diccionario de servicios (Theme, EventBus) para inyectar vía on_load.
+        :return: Instancia del módulo cargado o None si falla.
         """
         if module_name in self.loaded_modules:
             return self.loaded_modules[module_name]
 
         try:
-            # Try to import the module's entry point (expected to be in modules/name/__init__.py or modules/name/main.py)
-            # For simplicity, we'll look for modules/name/module.py and a class that inherits from BaseModule
+            # Importación dinámica del archivo module.py dentro de la carpeta del módulo
             module_path = f"modules.{module_name}.module"
             imported_module = importlib.import_module(module_path)
 
+            # Inspección de miembros para encontrar la clase que hereda de BaseModule
             for name, obj in inspect.getmembers(imported_module):
                 if inspect.isclass(obj) and issubclass(obj, BaseModule) and obj is not BaseModule:
                     instance = obj()
+                    # Inyección de dependencias
                     instance.on_load(context)
                     self.loaded_modules[module_name] = instance
                     return instance

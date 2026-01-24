@@ -6,29 +6,27 @@ from .logic.logic import process_folder, get_folder_stats
 import os
 
 class DummyCreatorModule(BaseModule):
+    """
+    Módulo Dummy Creator (Creador de Marcadores).
+    Herramienta diseñada para ahorrar espacio en disco reemplazando imágenes pesadas
+    por archivos "dummy" de 32x32 píxeles, manteniendo los originales en una 
+    carpeta segura para su posterior restauración si es necesario.
+    """
     def __init__(self):
         super().__init__()
+        self._name = "Dummy Creator"
+        self._description = "Archivado de colecciones reemplazando imágenes por marcadores ligeros."
+        self._icon = "🎭"
+        
         self.view = None
         self.settings = QSettings("Panopticon", "DummyCreator")
         self.last_asset_dir = self.settings.value("last_asset_dir", os.path.expanduser("~"))
 
-    @property
-    def name(self):
-        return "Dummy Creator"
-
-    @property
-    def description(self):
-        return "Archive collections by replacing images with tiny 32x32 placeholders."
-
-    @property
-    def icon(self):
-        return "🎭"
-
     def get_view(self) -> QWidget:
+        """Configura la interfaz centrada en la acción de selección de carpeta."""
         if self.view: return self.view
         
-        # UI Implementation ported from Workshop
-        content = self._create_content()
+        content = self._create_content() # Botón de acción principal
         
         from core.components.standard_layout import StandardToolLayout
         self.view = StandardToolLayout(

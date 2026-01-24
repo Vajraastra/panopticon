@@ -81,45 +81,44 @@ class ClickableThumbnail(QLabel):
                 self.clicked.emit(self.path)
 
 class LibrarianModule(BaseModule):
-    # Signals for Integration
-    request_open_gallery = Signal(list, str)   # paths, title_context
-    request_open_optimizer = Signal(list)     # paths
-    request_open_cropper = Signal(list)       # paths
+    """
+    El Bibliotecario (Librarian).
+    Módulo core encargado de la gestión de la base de datos de imágenes,
+    escaneo de carpetas, etiquetado y búsqueda avanzada.
+    Sirve como fuente de datos para casi todos los demás módulos.
+    """
+    # Señales para comunicación con otros módulos vía EventBus
+    request_open_gallery = Signal(list, str)   # (lista_rutas, contexto_titulo)
+    request_open_optimizer = Signal(list)     # (lista_rutas)
+    request_open_cropper = Signal(list)       # (lista_rutas)
 
     def __init__(self):
         super().__init__()
+        self._name = "Librarian"
+        self._description = "Indexador central y gestor de etiquetas de la librería."
+        self._icon = "📚"
+        
         self.view = None
-        # Initialize DB Manager (using default 'panopticon.db' in the root)
+        # Gestor de base de datos SQLite persistente
         self.db = DatabaseManager()
         self.indexer_thread = None
         
-        # Pagination State
+        # Estado de Paginación del Explorador de Tags
         self.current_page = 0
         self.page_size = 100
         self.total_paths = []
         self.current_folder_path = None
 
-    @property
-    def name(self):
-        return "The Librarian"
-
-    @property
-    def description(self):
-        return "Image Database & Tag Manager"
-
-    @property
-    def icon(self):
-        return "📚"
-
     def get_view(self) -> QWidget:
+        """Inicializa y retorna la vista principal del bibliotecario."""
         if self.view: return self.view
         
-        # Create sub-components
+        # 1. Crear sub-componentes UI
         self.sidebar = self._create_sidebar()
         self.content = self._create_content()
         self.bottom = self._create_bottom_bar()
         
-        # Assemble using StandardToolLayout
+        # 2. Ensamblar usando el Layout Estándar de 3 paneles
         from core.components.standard_layout import StandardToolLayout
         self.view = StandardToolLayout(
             self.content,
@@ -129,15 +128,15 @@ class LibrarianModule(BaseModule):
             event_bus=self.context.get('event_bus')
         )
         
-        # Initial Load/Sync
+        # 3. Cargar datos iniciales
         self.refresh_ui()
         self.update_global_stats()
         
-        # Setup Autocomplete
+        # 4. Configurar autocompletado de tags
         self.setup_completer()
         self.populate_tag_sidebar()
 
-        # Trigger initial sync (Intelligent)
+        # 5. Disparar escaneo inicial inteligente si hay carpetas registradas
         if self.db.get_watched_folders():
             from PySide6.QtCore import QTimer
             QTimer.singleShot(500, lambda: self.toggle_scan(auto=True))

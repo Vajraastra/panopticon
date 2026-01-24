@@ -6,22 +6,24 @@ from core.locale_manager import LocaleManager
 
 class ThemeManager(QObject):
     """
-    Manages application-wide themes and colors.
-    Supports hot-reloading of styles.
+    Gestor de temas y estilos visuales de la aplicación.
+    Maneja una paleta de colores global, permite la persistencia de cambios
+    en un archivo JSON y genera hojas de estilo (QSS) dinámicas.
     """
-    theme_changed = Signal()
+    theme_changed = Signal() # Se emite cuando se actualiza un color para refrescar la UI
 
+    # Colores por defecto (Aestética Cyber/Dark)
     DEFAULTS = {
-        "bg_main": "#050505",       # Very dark, almost black
-        "bg_sidebar": "#0a0a0a",    # Slightly lighter
-        "bg_panel": "#111111",      # Panels
-        "bg_input": "#000000",      # Deep black for inputs
-        "border": "#333333",        # Base border
-        "border_highlight": "#00ffcc", # Accent border
+        "bg_main": "#050505",       # Fondo principal (casi negro)
+        "bg_sidebar": "#0a0a0a",    # Fondo lateral (ligeramente más claro)
+        "bg_panel": "#111111",      # Fondos de paneles y tarjetas
+        "bg_input": "#000000",      # Negro puro para los inputs
+        "border": "#333333",        # Bordes base
+        "border_highlight": "#00ffcc", # Bordes de acento (Cyan)
         "text_primary": "#ffffff",
         "text_secondary": "#cccccc",
         "text_dim": "#666666",
-        "accent_main": "#00ffcc",   # Cyber Cyan
+        "accent_main": "#00ffcc",   # Acento principal Cyber Cyan
         "accent_hover": "#00ccaa",
         "accent_warning": "#ff3333",
         "accent_success": "#00ff66",
@@ -34,6 +36,7 @@ class ThemeManager(QObject):
         self.load_config()
 
     def load_config(self):
+        """Carga los colores personalizados desde el archivo de configuración si existe."""
         if os.path.exists(self.config_path):
             try:
                 with open(self.config_path, 'r') as f:
@@ -43,6 +46,7 @@ class ThemeManager(QObject):
                 print(f"Error loading theme config: {e}")
 
     def save_config(self):
+        """Persiste la paleta de colores actual en disco."""
         try:
             with open(self.config_path, 'w') as f:
                 json.dump(self.colors, f, indent=4)
@@ -50,21 +54,27 @@ class ThemeManager(QObject):
             print(f"Error saving theme config: {e}")
 
     def get_color(self, key):
+        """Retorna un código de color Hex por su clave."""
         return self.colors.get(key, "#ff00ff")
 
     def tr(self, key, default=None):
-        """Proxy to LocaleManager for convenience in themed components."""
+        """Atajo al LocaleManager para componentes que solo inyectan el ThemeManager."""
         return LocaleManager().tr(key, default)
 
     def set_color(self, key, value):
+        """Actualiza un color, guarda y notifica a la aplicación para refrescar estilos."""
         self.colors[key] = value
         self.save_config()
         self.theme_changed.emit()
 
     def get_stylesheet(self):
+        """
+        Genera el bloque masivo de CSS (QSS) inyectando los colores de la paleta actual.
+        Define la estética global de botones, inputs, barras de desplazamiento, etc.
+        """
         c = self.colors
         return f"""
-            /* Global Reset */
+            /* Reset Global y Tipografía */
             QMainWindow, QWidget {{
                 background-color: {c['bg_main']};
                 color: {c['text_primary']};
@@ -72,7 +82,7 @@ class ThemeManager(QObject):
                 font-size: 14px;
             }}
             
-            /* Frames & Containers */
+            /* Contenedores y Marcos */
             QFrame {{
                 border: none;
             }}
@@ -89,7 +99,7 @@ class ThemeManager(QObject):
                 background-color: {c['bg_panel']};
             }}
 
-            /* Inputs */
+            /* Campos de Entrada (Inputs) */
             QLineEdit, QSpinBox, QComboBox {{
                 background-color: {c['bg_input']};
                 color: {c['text_primary']};
@@ -105,7 +115,7 @@ class ThemeManager(QObject):
                 background-color: {c['bg_panel']};
             }}
 
-            /* ComboBox Specifics */
+            /* Menús Desplegables (ComboBox) */
             QComboBox::drop-down {{
                 subcontrol-origin: padding;
                 subcontrol-position: top right;
@@ -116,44 +126,13 @@ class ThemeManager(QObject):
             }}
             QComboBox QAbstractItemView {{
                 border: 2px solid {c['accent_main']};
-                background-color: #050505; /* Deep black to match main bg, ensuring opacity */
+                background-color: #050505;
                 selection-background-color: {c['accent_main']};
                 selection-color: black;
                 outline: none;
             }}
-            QComboBox QAbstractItemView::item {{
-                height: 25px; /* Ensure good touch target */
-                color: {c['text_primary']};
-            }}
-            QComboBox QAbstractItemView::item:selected {{
-                background-color: {c['accent_main']};
-                color: black;
-            }}
 
-            /* Checkboxes - High Contrast */
-            QCheckBox {{
-                spacing: 8px;
-                color: {c['text_primary']};
-            }}
-            QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
-                border: 1px solid {c['text_dim']};
-                background: {c['bg_input']};
-                border-radius: 2px;
-            }}
-            QCheckBox::indicator:hover {{
-                border: 1px solid {c['accent_main']};
-            }}
-            QCheckBox::indicator:checked {{
-                background: {c['accent_main']};
-                border: 1px solid {c['accent_main']};
-                image: url(none); /* We use background color for now unless we have an icon */
-            }}
-            /* Add a pseudo-check symbol logic usually requires an image, 
-               but we can simulate 'filled' as checked for now logic */
-
-            /* Buttons */
+            /* Botones Estándar */
             QPushButton {{
                 background-color: {c['bg_panel']}; 
                 color: {c['text_primary']}; 
@@ -170,10 +149,8 @@ class ThemeManager(QObject):
                 background-color: {c['accent_main']};
                 color: black;
             }}
-            /* Primary Action Button overrides are handled in module code usually, 
-               but we can target object names if standardized */
 
-            /* Scrollbars */
+            /* Barras de Desplazamiento (ScrollBars) */
             QScrollBar:vertical {{
                 background: {c['bg_main']};
                 width: 8px;

@@ -5,13 +5,13 @@ from modules.metadata.logic.reader import UniversalParser
 
 class IndexerWorker(QThread):
     """
-    Robust 2-Phase Indexer.
-    Phase 1: Discovery (Files appear instantly).
-    Phase 2: Analysis (Metadata enrichment).
+    Hilo de trabajo (Worker) para el indexado robusto de archivos.
+    Fase 1: Descubrimiento (Los archivos aparecen instantáneamente en la DB).
+    Fase 2: Limpieza de huérfanos (Elimina registros de archivos borrados en disco).
     """
-    progress_signal = Signal(str)
-    count_signal = Signal(int, int)
-    finished_signal = Signal()
+    progress_signal = Signal(str) # Notifica mensajes de estado a la UI
+    count_signal = Signal(int, int) # Notifica el progreso numérico (actual, total)
+    finished_signal = Signal() # Notifica la finalización del hilo
     
     def __init__(self, db_manager, folders, deep_clean=False):
         super().__init__()
@@ -22,14 +22,15 @@ class IndexerWorker(QThread):
         self.batch_size = 100
 
     def run(self):
-        self.progress_signal.emit("🚀 Starting Indexer...")
+        """Ejecuta el proceso de escaneo recursivo en segundo plano."""
+        self.progress_signal.emit("🚀 Iniciando el indexador...")
         
         extensions = ('.png', '.jpg', '.jpeg', '.webp')
         total_found = 0
-        total_new = 0
+        total_new = 0 # Reservado para uso futuro
         
-        # --- PHASE 1: DISCOVERY (The "Survival" Phase) ---
-        # Objective: Get files into DB as fast as possible.
+        # --- FASE 1: DESCUBRIMIENTO ---
+        # Objetivo: Registrar archivos en la DB lo más rápido posible.
         
         for folder in self.folders:
             if not self.is_running: break
@@ -68,21 +69,16 @@ class IndexerWorker(QThread):
                     batch = disk_files[i : i + self.batch_size]
                     self.db.register_files_minimal(batch)
             
-            # 3. Cleanup Orphans (Files in DB but not on Disk)
+            # --- FASE 2: LIMPIEZA DE HUÉRFANOS ---
+            # Borra de la DB los archivos que ya no existen físicamente.
             if self.deep_clean:
                 known_paths = self.db.get_known_files_in_folder(folder)
                 orphans = list(known_paths - disk_paths)
                 if orphans:
-                    self.progress_signal.emit(f"🧹 Removing {len(orphans)} deleted files...")
+                    self.progress_signal.emit(f"🧹 Eliminando {len(orphans)} archivos inexistentes...")
                     self.db.remove_files(orphans)
 
-        # --- PHASE 2: ENRICHMENT (Optional / Background) ---
-        # The user said: "No need to worry if metadata doesn't exist".
-        # So we will do a very lightweight pass or skip it entirely if not needed.
-        # For now, we SKIP deep parsing to guarantee speed and stability as requested.
-        # If we need tags later, we can add a specific "Scan Tags" button.
-        
-        self.progress_signal.emit(f"✅ Indexing Complete. Found {total_found} active files.")
+        self.progress_signal.emit(f"✅ Indexado completo. {total_found} archivos activos.")
         self.finished_signal.emit()
 
     def stop(self):

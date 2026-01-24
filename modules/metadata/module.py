@@ -47,30 +47,29 @@ class ResponsiveImageLabel(QLabel):
         painter.drawPixmap(x, y, s.width(), s.height(), self._pixmap)
 
 class MetadataModule(BaseModule):
+    """
+    Metadata Hub.
+    Motor unificado para leer, editar y limpiar metadatos de imágenes.
+    Permite visualizar los Prompts originales de la IA y modificarlos o eliminarlos.
+    Incluye un visor (Viewer) y un editor (Editor) integrados.
+    """
     MODE_VIEWER = 0
     MODE_EDITOR = 1
 
     def __init__(self):
         super().__init__()
+        self._name = "Metadata Hub"
+        self._description = "Motor unificado para leer, editar y limpiar metadatos de imágenes."
+        self._icon = "🔍"
+        
         self.view = None
-        self.image_list = []
+        self.image_list = [] # Lista de imágenes en el carrusel
         self.current_index = -1
         self.active_path = None
         self.current_mode = self.MODE_VIEWER
 
-    @property
-    def name(self):
-        return "Metadata Hub"
-
-    @property
-    def description(self):
-        return "Unified engine to read, edit, and clean image metadata."
-
-    @property
-    def icon(self):
-        return "🔍"
-
     def get_view(self) -> QWidget:
+        """Configura el Hub con una vista de carrusel y paneles de edición lateral."""
         if self.view: return self.view
         
         sidebar = self._create_sidebar()
@@ -84,7 +83,7 @@ class MetadataModule(BaseModule):
             event_bus=self.context.get('event_bus')
         )
         
-        # Apply initial mode AFTER both content and sidebar are ready
+        # Establece el modo inicial (solo lectura por defecto)
         self.set_mode(self.MODE_VIEWER)
         
         return self.view

@@ -10,39 +10,35 @@ import math
 from modules.face_scorer.logic.face_scorer import score_batch, sort_files_by_score
 
 class FaceScorerModule(BaseModule):
+    """
+    Módulo Face Scorer.
+    Permite filtrar colecciones masivas de imágenes quedándose solo con aquellas
+    donde el rostro sea claramente visible y nítido.
+    Flujo: 1. Cargar Imágenes -> 2. Vista Previa -> 3. Analizar -> 4. Resultados con Auto-Sort.
+    """
     def __init__(self):
         super().__init__()
+        self._name = "Face Scorer"
+        self._description = "Califica imágenes por la claridad del rostro para curar datasets óptimos."
+        self._icon = "🎯"
+        self.accent_color = "#ff5555"
+        
         self.view = None
         self.fs_image_paths = []
         self.fs_results = []
         self.last_dir = os.path.expanduser("~")
         
-        # Pagination
+        # Paginación para manejar miles de imágenes sin consumir RAM excesiva
         self.current_page = 0
         self.page_size = 100
         self.total_pages = 0
-        
-    @property
-    def name(self):
-        return "Face Scorer"
-
-    @property
-    def description(self):
-        return "Califica imágenes por la claridad del rostro para curar datasets óptimos."
-
-    @property
-    def icon(self):
-        return "🎯"
-
-    @property
-    def accent_color(self):
-        return "#ff5555"
 
     def get_view(self) -> QWidget:
+        """Configura la vista usando un QStackedWidget para las fases del proceso."""
         if self.view: return self.view
         
-        content = self._create_content()
-        sidebar = self._create_sidebar()
+        content = self._create_content() # Contiene las páginas (Dropzone, Rejilla, Resultados)
+        sidebar = self._create_sidebar() # Controles de ejecución y umbrales (thresholds)
         
         from core.components.standard_layout import StandardToolLayout
         self.view = StandardToolLayout(

@@ -10,28 +10,23 @@ from modules.cropper.logic.cropper_widget import ImageCropperWidget
 import os
 
 class CropperModule(BaseModule):
+    """
+    Módulo Smart Cropper (Recorte Inteligente).
+    Proporciona una interfaz de alta precisión para recortar imágenes,
+    especialmente útil para preparar datasets de entrenamiento de IA (LoRA/Dreambooth).
+    Soporta relaciones de aspecto fijas y personalizadas.
+    """
     def __init__(self):
         super().__init__()
         self._name = "Smart Cropper"
-        self._description = "High-precision image cropping tool."
+        self._description = "Herramienta de recorte de alta precisión para datasets de IA."
         self._icon = "✂️"
-        self.accent_color = "#ff79c6"  # Pink/Purple for Cropper
-        self.view = None # Keep reference to view for D&D
-
-    @property
-    def name(self):
-        return self.tr("tool.cropper.name", self._name)
-
-    @property
-    def description(self):
-        return self.tr("tool.cropper.desc", self._description)
-
-    @property
-    def icon(self):
-        return self._icon
+        self.accent_color = "#ff79c6"  # Color Rosa/Púrpura para el Cropper
+        self.view = None
 
     def get_view(self) -> QWidget:
-        # Create Internal Widgets
+        """Crea el widget de recorte y los controles laterales."""
+        # Widget especializado para la interacción de recorte (Crop Area)
         self.cropper_widget = ImageCropperWidget()
         
         self.sidebar = self._create_sidebar()
@@ -46,18 +41,8 @@ class CropperModule(BaseModule):
             event_bus=self.context.get('event_bus')
         )
         
-        # Enable Drag & Drop on the main view
+        # Habilitar Drag & Drop en la vista principal
         self.view.setAcceptDrops(True)
-        # We need to monkey-patch or subclass to handle events if StandardToolLayout doesn't emit them.
-        # But BaseModule doesn't automatically handle them on the returned widget unless we set it up.
-        # Actually, PySide widgets handle events via methods. 
-        # Since 'self.view' is an instance of StandardToolLayout (which is a QWidget),
-        # we can attach event handlers or filter events.
-        # Simplest way: Override the events on the instance directly if Python allows, 
-        # or better, rely on the module's wrapper if the layout forwards them.
-        # StandardToolLayout probably doesn't implement dragEnterEvent.
-        
-        # Let's bind the events to methods on this module
         self.view.dragEnterEvent = self.dragEnterEvent
         self.view.dropEvent = self.dropEvent
         

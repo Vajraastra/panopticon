@@ -122,26 +122,31 @@ class FullscreenHelper(QDialog):
         if self.parent_viewer: self.parent_viewer.next_image()
 
 class AdvancedViewer(QDialog):
+    """
+    Visor de imágenes avanzado en pantalla completa.
+    Permite visualizar metadatos técnicos, editar etiquetas, calificar imágenes
+    con estrellas y ejecutar pases de diapositivas (slideshow).
+    """
     def __init__(self, paths, start_index=0, parent=None):
         super().__init__(parent)
         self.tr = LocaleManager().tr
         self.setWindowTitle(self.tr("gal.viewer.title", "Panopticon Viewer"))
         self.resize(1100, 800)
-        self.setWindowState(Qt.WindowMaximized) # Start maximized for better view
+        self.setWindowState(Qt.WindowMaximized) # Iniciar maximizado para mejor experiencia
         self.setStyleSheet("background-color: #121212; color: #ddd;")
         
         self.paths = paths
         self.current_idx = start_index
         self.fs_window = None
-        self.timer = QTimer()
+        self.timer = QTimer() # Temporizador para el slideshow
         self.timer.timeout.connect(self.next_image)
         self.db = DatabaseManager()
         
-        # Main Layout
+        # Diseño Principal
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         
-        # Left: Image Area (75%)
+        # Panel Izquierdo: Visualización de Imagen (75% del ancho)
         self.img_container = QFrame()
         self.img_container.setStyleSheet("background-color: black;")
         layout.addWidget(self.img_container, 75)

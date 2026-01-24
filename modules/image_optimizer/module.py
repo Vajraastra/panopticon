@@ -10,6 +10,10 @@ from core.components.standard_layout import StandardToolLayout
 from .logic.optimizer import optimize_image, analyze_image, get_export_path
 
 class OptimizerWorker(QThread):
+    """
+    Hilo de trabajo para la optimización asíncrona.
+    Procesa la cola de imágenes una por una aplicando los ajustes de calidad y tamaño.
+    """
     progress = Signal(int)
     finished = Signal(dict)
     
@@ -50,17 +54,23 @@ class OptimizerWorker(QThread):
         self.finished.emit(stats)
 
 class ImageOptimizerModule(BaseModule):
+    """
+    Módulo Image Optimizer (Optimizador).
+    Herramienta de procesamiento por lotes para comprimir, redimensionar
+    y convertir imágenes de forma eficiente. Utiliza hilos de fondo (QThread)
+    para no bloquear la interfaz durante tareas pesadas.
+    """
     def __init__(self):
         super().__init__()
         self._name = "Image Optimizer"
-        self._description = "Compress, Resize, and Convert images efficiently."
+        self._description = "Herramienta masiva para comprimir, redimensionar y convertir imágenes."
         self._icon = "🚀"
         self.accent_color = "#00ffcc"
         
-        self.queue = []
+        self.queue = [] # Cola de archivos para procesar
 
     def get_view(self) -> QWidget:
-        # 1. Create Internal Widgets
+        """Inicializa los componentes y los organiza en el layout estándar."""
         self.sidebar = self._create_sidebar()
         self.content = self._create_content()
         self.bottom = self._create_bottom_bar()

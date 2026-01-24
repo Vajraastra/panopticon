@@ -18,15 +18,14 @@ SIZE_THRESHOLD_KB = 10  # Files < 10KB are considered dummies
 
 def is_dummy_file(filepath):
     """
-    Detects if a file is a dummy by analyzing its size and content.
+    Detecta si un archivo es un "dummy" analizando su tamaño y contenido.
     
-    Detection Strategy:
-    1. Size-based: Files < 10KB are suspect
-    2. Image-based: Check if 32x32 gray image
-    3. Generic: Very small files (< 100 bytes) for non-images
+    Estrategia de detección:
+    1. Por tamaño: Archivos menores a 10KB son sospechosos.
+    2. Por imagen: Se verifica si tiene dimensiones de 32x32.
+    3. Genérico: Archivos muy pequeños (< 100 bytes) para no-imágenes.
     
-    Returns:
-        bool: True if file is detected as dummy
+    :return: True si el archivo es detectado como dummy.
     """
     if not os.path.isfile(filepath):
         return False

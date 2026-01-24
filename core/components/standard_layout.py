@@ -5,14 +5,17 @@ from core.locale_manager import LocaleManager
 
 class StandardToolLayout(QWidget):
     """
-    Standard 3-Panel Layout:
-    [ Sidebar (Fixed 320px) ] [ Workspace (Stretch) ]
-    |  [ Back Button      ] | |                     |
-    |  [ Settings (Scroll)] | | [ Content Area    ] |
-    |  [ File Browser     ] | |                     |
-    |_______________________| |_____________________|
-                              | [ Bottom Bar      ] |
-                              |_____________________|
+    Layout Estándar de 3 Paneles para Herramientas.
+    Garantiza una interfaz coherente en todos los módulos de Panopticon.
+    
+    Estructura:
+    [ Sidebar (Izquierda, 320px fija) ] [ Canvas de Trabajo (Derecha, Expandible) ]
+    |  [ Botón Volver               ] | |                                     |
+    |  [ Ajustes/Filtros (Scroll)   ] | | [ Área de Contenido Principal    ] |
+    |  [ Otros Controles            ] | |                                     |
+    |_________________________________| |_____________________________________|
+                                      | [ Barra de Acciones (Inferior)      ] |
+                                      |_______________________________________|
     """
     def __init__(self, content_widget: QWidget, sidebar_widget: QWidget = None, bottom_widget: QWidget = None, theme_manager=None, event_bus=None):
         super().__init__()

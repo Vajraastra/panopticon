@@ -9,35 +9,31 @@ from .logic.watermarker import process_image as watermark_image, get_export_path
 import os
 
 class WatermarkerModule(BaseModule):
+    """
+    Módulo Watermarker (Marca de Agua).
+    Herramienta para la protección de imágenes mediante la aplicación de 
+    patrones repetitivos (watermarks) y logotipos en posiciones específicas.
+    Permite previsualizar los cambios en tiempo real antes de guardar.
+    """
     def __init__(self):
         super().__init__()
+        self._name = "Watermarker"
+        self._description = "Protección de imágenes mediante marcas de agua y logotipos."
+        self._icon = "🎨"
+        self.accent_color = "#50fa7b"
+        
         self.view = None
         self.source_image = None
         self.watermark_asset = None
         self.logo_asset = None
         self.last_dir = os.path.expanduser("~")
-        
-    @property
-    def name(self):
-        return "Watermarker"
-
-    @property
-    def description(self):
-        return "Individual image watermarking and logo placement."
-
-    @property
-    def icon(self):
-        return "🎨"
-
-    @property
-    def accent_color(self):
-        return "#50fa7b"
 
     def get_view(self) -> QWidget:
+        """Ensambla la UI con previsualización central y controles laterales."""
         if self.view: return self.view
         
-        content = self._create_content()
-        sidebar = self._create_sidebar()
+        content = self._create_content() # Contenedor de previsualización
+        sidebar = self._create_sidebar() # Paneles de configuración (opacidad, escala, etc.)
         
         from core.components.standard_layout import StandardToolLayout
         self.view = StandardToolLayout(

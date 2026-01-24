@@ -2,20 +2,22 @@ from PySide6.QtCore import QObject, Signal
 
 class EventBus(QObject):
     """
-    Central event hub for module communication.
-    Decouples modules so they don't need to import each other.
+    Bus de eventos central para la comunicación desacoplada entre módulos.
+    Permite que un módulo notifique acciones (ej. "navigate") sin conocer
+    quién las escuchará, evitando dependencias circulares.
     """
-    # Define standard signals/events here
-    # Using a generic 'event_emitted' signal for flexibility: (topic, data)
+    # Señal genérica para observadores globales: emite (tópico, datos)
     event_emitted = Signal(str, object)
 
     def __init__(self):
         super().__init__()
-        self._subscribers = {}
+        self._subscribers = {} # Diccionario de {tópico: [callbacks]}
 
     def subscribe(self, topic, callback):
         """
-        Subscribe a callback function to a specific topic.
+        Registra una función para ser llamada cuando se publique un evento en el tópico.
+        :param topic: String identificador del evento.
+        :param callback: Función o método a ejecutar.
         """
         if topic not in self._subscribers:
             self._subscribers[topic] = []
@@ -23,12 +25,14 @@ class EventBus(QObject):
 
     def publish(self, topic, data=None):
         """
-        Publish an event to a specific topic.
+        Emite un evento a todos los suscriptores interesados.
+        :param topic: El evento que se está disparando.
+        :param data: Datos opcionales asociados al evento.
         """
-        # Emit the generic signal for global listeners (like loggers)
+        # Emitir señal genérica (útil para logs o depuración)
         self.event_emitted.emit(topic, data)
 
-        # Notify direct subscribers
+        # Notificar a los suscriptores directos
         if topic in self._subscribers:
             for callback in self._subscribers[topic]:
                 try:

@@ -3,7 +3,9 @@ from PySide6.QtCore import QObject
 
 class BaseModule(QObject):
     """
-    Abstract base class for all Panopticon modules.
+    Clase base abstracta para todos los módulos de Panopticon.
+    Define la interfaz estándar que permite al Core cargar, inicializar
+    y comunicar módulos entre sí.
     """
     def __init__(self):
         super().__init__()
@@ -13,50 +15,56 @@ class BaseModule(QObject):
 
     @property
     def name(self):
+        """Nombre amigable del módulo."""
         return self._name
 
     @property
     def description(self):
+        """Breve descripción de la funcionalidad del módulo."""
         return self._description
+
+    @property
+    def icon(self):
+        """Icono representativo del módulo (emoji o ruta)."""
+        return self._icon
 
     def get_view(self) -> QWidget:
         """
-        Returns the QWidget that represents the module's primary view.
+        Retorna el QWidget que representa la interfaz de usuario del módulo.
+        Debe ser implementado por las clases hijas.
         """
         pass
 
     def on_load(self, context=None):
         """
-        Called when the module is loaded by the core.
-        :param context: A dictionary or object containing core services (theme_manager, settings, etc.)
+        Se llama cuando el Core carga el módulo.
+        :param context: Diccionario con servicios inyectados (theme_manager, locale_manager, event_bus).
         """
         self.context = context
 
     def on_unload(self):
-        """
-        Called when the module is unloaded.
-        """
+        """Lógica de limpieza opcional cuando se descarga el módulo."""
         pass
 
     def run_headless(self, params: dict, input_data: any) -> any:
         """
-        Execute the module's core logic without UI. 
-        Required for automation and node systems.
-        :param params: Dictionary of settings/parameters.
-        :param input_data: The input to process (e.g., list of file paths).
-        :return: Processed data or result.
+        Ejecuta la lógica del módulo sin interfaz gráfica.
+        Útil para automatización o procesamiento por lotes externo.
         """
         pass
 
     def load_image_set(self, paths: list):
         """
-        Populate the module with a specific set of images.
-        To be implemented by child modules that handle image sets.
+        Interfaz estándar para recibir una lista de rutas de imagen
+        desde otros módulos (ej. desde Librarian o Gallery).
         """
         pass
 
     def tr(self, key, default=None):
-        """Translate a key using the LocaleManager in context."""
+        """
+        Traduce una clave usando el LocaleManager inyectado en el contexto.
+        Si el servicio no está disponible, retorna el valor por defecto o la clave.
+        """
         if hasattr(self, 'context') and self.context and 'locale_manager' in self.context:
             return self.context['locale_manager'].tr(key, default)
         return default if default else key
