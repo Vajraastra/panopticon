@@ -5,8 +5,6 @@ from PySide6.QtCore import Qt, Signal, Slot, QSize, QSettings
 from PySide6.QtGui import QPixmap, QIcon, QDragEnterEvent, QDropEvent, QImage, QKeyEvent
 from core.base_module import BaseModule
 from modules.librarian.module import ClickableThumbnail
-from modules.workshop.logic.stripper import modify_metadata, get_export_path
-from modules.workshop.logic.parser import UniversalParser
 from modules.workshop.logic.watermarker import process_image as watermark_image, get_export_path as watermark_export_path
 from modules.workshop.logic.optimizer import (optimize_image, analyze_image, 
                                             get_export_path as optimizer_export_path)
@@ -19,7 +17,7 @@ from PySide6.QtCore import QPoint
 # ... (Previous imports kept if needed, assuming they're at top)
 
 class ResponsiveImageLabel(QLabel):
-    """A QLabel that automatically scales its pixmap to fit its size and handles drops."""
+    """A QLabel that paints its pixmap scaled to fit, avoiding layout loops and handling drops."""
     dropped_files = Signal(list)
 
     def __init__(self, text="Drop images or folders here\n(or click 'Open')"):
@@ -31,28 +29,36 @@ class ResponsiveImageLabel(QLabel):
                 color: {Theme.TEXT_DIM}; 
                 background-color: {Theme.BG_INPUT};
                 font-size: 16px;
-                border-radius: 10px;
+                border_radius: 10px;
             }}
         """)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.setMinimumSize(300, 300)
         self.setAcceptDrops(True)
         self._pixmap = None
 
     def set_image(self, pixmap):
         self._pixmap = pixmap
-        self.update_pixmap()
+        self.setText("") if pixmap and not pixmap.isNull() else self.setText("Drop images or folders here\n(or click 'Open')")
+        self.update()
 
-    def update_pixmap(self):
-        if self._pixmap and not self._pixmap.isNull():
-            scaled = self._pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            super().setPixmap(scaled)
-        else:
-            self.setPixmap(QPixmap()) 
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.update_pixmap()
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._pixmap or self._pixmap.isNull():
+            return
+            
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        
+        # Calculate scaling to fit
+        s = self._pixmap.size()
+        s.scale(self.size(), Qt.KeepAspectRatio)
+        
+        # Center the image
+        x = (self.width() - s.width()) // 2
+        y = (self.height() - s.height()) // 2
+        
+        painter.drawPixmap(x, y, s.width(), s.height(), self._pixmap)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -300,40 +306,28 @@ class WorkshopModule(BaseModule):
             
             # Tool Cards
             self.cards_grid.addWidget(self.create_tool_card(
-                "🛡️ Metadata Modifier", 
-                "Clean stripping or custom prompt injection for batch images.",
-                "#00ffcc", self.switch_to_stripper
-            ), 0, 0)
-            
-            self.cards_grid.addWidget(self.create_tool_card(
-                "🎭 Dummy Creator", 
-                "Save disk space by creating 32x32 placeholders for your library.",
-                "#f1fa8c", self.switch_to_dummy
-            ), 0, 1)
-            
-            self.cards_grid.addWidget(self.create_tool_card(
-                "📋 Metadata Reader", 
-                "Deep inspection of AI generation data (SD, ComfyUI, etc).",
-                "#bd93f9", self.switch_to_reader
-            ), 1, 0)
-            
-            self.cards_grid.addWidget(self.create_tool_card(
                 "🖼️ Watermarker", 
                 "Apply patterns and logos with professional transparency.",
                 "#50fa7b", self.switch_to_watermarker
-            ), 1, 1)
-
+            ), 0, 0)
+            
             self.cards_grid.addWidget(self.create_tool_card(
                 "⚡ Image Optimizer", 
                 "Reduce size significantly without losing perceptible quality.",
                 "#ffb86c", self.switch_to_optimizer
-            ), 2, 0)
+            ), 0, 1)
 
             self.cards_grid.addWidget(self.create_tool_card(
                 "🎯 Face Scorer", 
                 "Score images by face clarity for optimal dataset curation.",
                 "#ff5555", self.switch_to_face_scorer
-            ), 2, 1)
+            ), 1, 0)
+
+            self.cards_grid.addWidget(self.create_tool_card(
+                "🎯 Face Scorer", 
+                "Score images by face clarity for optimal dataset curation.",
+                "#ff5555", self.switch_to_face_scorer
+            ), 2, 0)
 
             
             dashboard_layout.addLayout(self.cards_grid)
@@ -351,315 +345,8 @@ class WorkshopModule(BaseModule):
             
             layout.addWidget(self.workshop_dashboard)
 
-            # --- Metadata Stripper Content Area ---
-            self.stripper_panel = QWidget()
-            self.stripper_panel.setVisible(False)
-            stripper_outer_layout = QVBoxLayout(self.stripper_panel)
-            stripper_outer_layout.setContentsMargins(0, 10, 0, 0)
-            
-            # Centering Container
-            stripper_container = QWidget()
-            stripper_container.setMaximumWidth(1400)
-            stripper_layout = QVBoxLayout(stripper_container)
-            stripper_layout.setContentsMargins(0, 0, 0, 0)
-            
-            stripper_outer_layout.addWidget(stripper_container, 1, Qt.AlignHCenter)
-            
-            # Stripper Controls
-            stripper_controls = QHBoxLayout()
-            
-            # Left: Controls Panel
-            input_panel = QFrame()
-            input_panel.setFixedWidth(280)
-            input_panel.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333; border-radius: 10px; padding: 15px;")
-            input_layout = QVBoxLayout(input_panel)
-            input_layout.setSpacing(10)
-            
-            lbl_input = QLabel("📥 1. ADD TO QUEUE")
-            lbl_input.setStyleSheet("color: #00ffcc; font-weight: bold; font-size: 11px; margin-bottom: 5px;")
-            input_layout.addWidget(lbl_input)
-
-            btn_add_layout = QHBoxLayout()
-            self.btn_add_files = QPushButton("🖼️ Images")
-            self.btn_add_files.clicked.connect(self.add_images_dialog)
-            self.btn_add_files.setStyleSheet("background-color: #333; color: white; padding: 10px; border-radius: 5px;")
-            
-            self.btn_add_folder = QPushButton("📂 Folder")
-            self.btn_add_folder.clicked.connect(self.add_folder_dialog)
-            self.btn_add_folder.setStyleSheet("background-color: #333; color: white; padding: 10px; border-radius: 5px;")
-            
-            btn_add_layout.addWidget(self.btn_add_files)
-            btn_add_layout.addWidget(self.btn_add_folder)
-            input_layout.addLayout(btn_add_layout)
-
-            input_layout.addSpacing(15)
-            
-            # --- New Metadata Input ---
-            lbl_meta = QLabel("✍️ 2. NEW METADATA / PROMPT")
-            lbl_meta.setStyleSheet("color: #00ffcc; font-weight: bold; font-size: 11px;")
-            input_layout.addWidget(lbl_meta)
-            
-            self.txt_modifier_meta = QTextEdit()
-            self.txt_modifier_meta.setPlaceholderText("Leave empty to STRIP all metadata...\n\nOr type new metadata to inject (e.g. AI Prompts)")
-            self.txt_modifier_meta.setStyleSheet("""
-                QTextEdit {
-                    background-color: #111;
-                    color: #bd93f9;
-                    border: 1px solid #333;
-                    border-radius: 5px;
-                    font-family: Consolas;
-                    font-size: 11px;
-                }
-            """)
-            self.txt_modifier_meta.setFixedHeight(150)
-            input_layout.addWidget(self.txt_modifier_meta)
-            
-            input_layout.addSpacing(15)
-
-            # Export Settings
-            lbl_set = QLabel("📁 3. EXPORT SETTINGS")
-            lbl_set.setStyleSheet("color: #00ffcc; font-weight: bold; font-size: 11px;")
-            input_layout.addWidget(lbl_set)
-
-            self.lbl_export_path = QLabel(self.export_dir)
-            self.lbl_export_path.setWordWrap(True)
-            self.lbl_export_path.setStyleSheet("color: #888; font-size: 10px; background: #222; padding: 8px; border-radius: 5px; border: 1px solid #333;")
-            input_layout.addWidget(self.lbl_export_path)
-
-            self.btn_change_export = QPushButton("📁 Change Target Folder")
-            self.btn_change_export.clicked.connect(self.change_export_dir)
-            self.btn_change_export.setStyleSheet("background-color: #333; color: white; padding: 8px; font-size: 11px;")
-            input_layout.addWidget(self.btn_change_export)
-            
-            input_layout.addStretch()
-            
-            stripper_controls.addWidget(input_panel)
-            
-            # Right: Queue Grid
-            queue_container = QFrame()
-            queue_container.setStyleSheet("background-color: #111; border-radius: 10px;")
-            queue_layout = QVBoxLayout(queue_container)
-            
-            # Header for queue with buttons
-            queue_header = QHBoxLayout()
-            lbl_queue = QLabel("PROCESSING QUEUE (Drop files here)")
-            lbl_queue.setStyleSheet("color: #888; font-weight: bold; font-size: 10px;")
-            queue_header.addWidget(lbl_queue)
-            queue_header.addStretch()
-            
-            self.btn_clean_selected = QPushButton("🧹 Remove Selected")
-            self.btn_clean_selected.setEnabled(False)
-            self.btn_clean_selected.clicked.connect(self.remove_selected)
-            self.btn_clean_selected.setFixedWidth(130)
-            self.btn_clean_selected.setStyleSheet("""
-                QPushButton { background-color: #222; color: #ff5555; font-size: 10px; border: 1px solid #444; border-radius: 4px; padding: 2px; }
-                QPushButton:hover { background-color: #333; border: 1px solid #ff5555; }
-                QPushButton:disabled { color: #444; border-color: #222; }
-            """)
-            queue_header.addWidget(self.btn_clean_selected)
-            
-            self.btn_clear = QPushButton("🗑️ Clear All")
-            self.btn_clear.clicked.connect(self.clear_queue)
-            self.btn_clear.setFixedWidth(80)
-            self.btn_clear.setStyleSheet("""
-                QPushButton { background-color: #222; color: #aaa; font-size: 10px; border: 1px solid #444; border-radius: 4px; padding: 2px; }
-                QPushButton:hover { background-color: #333; color: white; }
-            """)
-            queue_header.addWidget(self.btn_clear)
-            
-            queue_layout.addLayout(queue_header)
-            
-            self.scroll = QScrollArea()
-            self.scroll.setWidgetResizable(True)
-            self.scroll.setStyleSheet("border: none; background: transparent;")
-            
-            self.grid_widget = QWidget()
-            self.grid_layout = QGridLayout(self.grid_widget)
-            self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-            self.scroll.setWidget(self.grid_widget)
-            
-            queue_layout.addWidget(self.scroll)
-            stripper_controls.addWidget(queue_container)
-            
-            stripper_layout.addLayout(stripper_controls)
-            
             # Add stripper panel to main layout
-            layout.addWidget(self.stripper_panel)
             
-            # --- Dummy Creator Content Area (initially hidden) ---
-            self.dummy_panel = QWidget()
-            dummy_outer_layout = QVBoxLayout(self.dummy_panel)
-            dummy_outer_layout.setContentsMargins(0, 50, 0, 50)
-            
-            # Centering Container
-            dummy_container = QWidget()
-            dummy_container.setMaximumWidth(800)  # Narrower for text-heavy panel
-            dummy_layout = QVBoxLayout(dummy_container)
-            dummy_layout.setContentsMargins(0, 0, 0, 0)
-            
-            dummy_outer_layout.addWidget(dummy_container, 1, Qt.AlignHCenter)
-            
-            lbl_dummy_info = QLabel("🎭 Dummy Creator")
-            lbl_dummy_info.setAlignment(Qt.AlignCenter)
-            lbl_dummy_info.setStyleSheet("font-size: 24px; font-weight: bold; color: #f1fa8c; margin-bottom: 20px;")
-            dummy_layout.addWidget(lbl_dummy_info)
-            
-            lbl_dummy_desc = QLabel(
-                "Archive your scraped collections while preserving scraper state.\n\n"
-                "• Moves originals to 'originals/' subfolder\n"
-                "• Creates tiny dummy files (32x32 gray images, 1-byte for others)\n"
-                "• Incremental processing (only handles new files on re-runs)\n"
-                "• No manifest needed - self-detecting system"
-            )
-            lbl_dummy_desc.setAlignment(Qt.AlignCenter)
-            lbl_dummy_desc.setWordWrap(True)
-            lbl_dummy_desc.setStyleSheet("font-size: 13px; color: #aaa; line-height: 1.6;")
-            dummy_layout.addWidget(lbl_dummy_desc)
-            
-            dummy_layout.addSpacing(30)
-            
-            btn_run_dummy = QPushButton("📂 Select Folder to Dummify")
-            btn_run_dummy.setFixedSize(300, 50)
-            btn_run_dummy.clicked.connect(self.open_dummy_creator_dialog)
-            btn_run_dummy.setStyleSheet("""
-                QPushButton {
-                    background-color: #332211;
-                    color: #f1fa8c;
-                    font-size: 16px;
-                    font-weight: bold;
-                    border: 2px solid #f1fa8c;
-                    border-radius: 8px;
-                    padding: 10px;
-                }
-                QPushButton:hover {
-                    background-color: #443322;
-                }
-            """)
-            dummy_layout.addWidget(btn_run_dummy, alignment=Qt.AlignCenter)
-            dummy_layout.addStretch()
-            
-            self.dummy_panel.setVisible(False)  # Initially hidden
-            layout.addWidget(self.dummy_panel)
-
-            # --- Metadata Reader Content Area (initially hidden) ---
-            self.reader_panel = QWidget()
-            reader_outer_layout = QVBoxLayout(self.reader_panel)
-            reader_outer_layout.setContentsMargins(0, 10, 0, 0)
-            
-            # Centering Container
-            reader_container = QWidget()
-            reader_container.setMaximumWidth(1400)
-            reader_layout = QVBoxLayout(reader_container)
-            reader_layout.setContentsMargins(0, 0, 0, 0)
-            reader_layout.setSpacing(15)
-            
-            reader_outer_layout.addWidget(reader_container, 1, Qt.AlignHCenter)
-            
-            self.reader_splitter = QSplitter(Qt.Horizontal)
-            
-            # Left Panel: Image and Carousel
-            reader_left = QWidget()
-            reader_left_layout = QVBoxLayout(reader_left)
-            
-            # Action Buttons
-            btn_reader_layout = QHBoxLayout()
-            self.btn_reader_open = QPushButton("📂 Open Image(s)")
-            self.btn_reader_open.clicked.connect(self.reader_open_images)
-            self.btn_reader_open.setStyleSheet("""
-                QPushButton { background-color: #bd93f9; color: black; font-weight: bold; padding: 10px; border-radius: 5px; }
-                QPushButton:hover { background-color: #a37df0; }
-            """)
-            
-            self.btn_reader_folder = QPushButton("📁 Open Folder")
-            self.btn_reader_folder.clicked.connect(self.reader_open_folder)
-            self.btn_reader_folder.setStyleSheet("""
-                QPushButton { background-color: #333; color: white; padding: 10px; border-radius: 5px; border: 1px solid #444; }
-                QPushButton:hover { background-color: #444; }
-            """)
-            
-            btn_reader_layout.addWidget(self.btn_reader_open)
-            btn_reader_layout.addWidget(self.btn_reader_folder)
-            reader_left_layout.addLayout(btn_reader_layout)
-            
-            # Carousel
-            carousel_layout = QHBoxLayout()
-            self.btn_reader_prev = QPushButton("◀ Previous")
-            self.btn_reader_prev.clicked.connect(self.reader_prev)
-            self.btn_reader_prev.setStyleSheet("padding: 8px; font-weight: bold; border-radius: 5px; background-color: #222; color: white;")
-            
-            self.reader_index_label = QLabel("0 / 0")
-            self.reader_index_label.setAlignment(Qt.AlignCenter)
-            self.reader_index_label.setStyleSheet("color: #bd93f9; font-size: 15px; font-weight: bold; min-width: 100px;")
-            
-            self.btn_reader_next = QPushButton("Next ▶")
-            self.btn_reader_next.clicked.connect(self.reader_next)
-            self.btn_reader_next.setStyleSheet("padding: 8px; font-weight: bold; border-radius: 5px; background-color: #222; color: white;")
-            
-            carousel_layout.addWidget(self.btn_reader_prev)
-            carousel_layout.addWidget(self.reader_index_label)
-            carousel_layout.addWidget(self.btn_reader_next)
-            reader_left_layout.addLayout(carousel_layout)
-            
-            self.reader_stats_label = QLabel("ℹ File Info: -")
-            self.reader_stats_label.setStyleSheet("color: #888; font-size: 11px;")
-            reader_left_layout.addWidget(self.reader_stats_label)
-            
-            self.reader_image_label = ResponsiveImageLabel()
-            self.reader_image_label.dropped_files.connect(self.reader_handle_dropped)
-            reader_left_layout.addWidget(self.reader_image_label, 1)
-            
-            self.reader_splitter.addWidget(reader_left)
-            
-            # Right Panel: Metadata
-            reader_right = QWidget()
-            reader_right_layout = QVBoxLayout(reader_right)
-            
-            lbl_pos = QLabel("✨ Positive Prompt:")
-            lbl_pos.setStyleSheet("font-weight: bold; color: #eee;")
-            reader_right_layout.addWidget(lbl_pos)
-            
-            self.reader_pos_prompt = QTextEdit()
-            self.reader_pos_prompt.setPlaceholderText("Positive prompt...")
-            self.reader_pos_prompt.setStyleSheet("background: #1a1a1a; color: #aaffaa; border: 1px solid #333; border-radius: 8px;")
-            reader_right_layout.addWidget(self.reader_pos_prompt, 2)
-            
-            lbl_neg = QLabel("🚫 Negative Prompt:")
-            lbl_neg.setStyleSheet("font-weight: bold; color: #eee;")
-            reader_right_layout.addWidget(lbl_neg)
-            
-            self.reader_neg_prompt = QTextEdit()
-            self.reader_neg_prompt.setPlaceholderText("Negative prompt...")
-            self.reader_neg_prompt.setStyleSheet("background: #1a1a1a; color: #faa; border: 1px solid #333; border-radius: 8px;")
-            reader_right_layout.addWidget(self.reader_neg_prompt, 1)
-            
-            lbl_tech = QLabel("⚙️ Technical Details:")
-            lbl_tech.setStyleSheet("font-weight: bold; color: #eee;")
-            reader_right_layout.addWidget(lbl_tech)
-            
-            self.reader_meta_info = QTextEdit()
-            self.reader_meta_info.setReadOnly(True)
-            self.reader_meta_info.setStyleSheet("background: #111; color: #bbb; border: 1px solid #222; border-radius: 8px; font-family: Consolas;")
-            reader_right_layout.addWidget(self.reader_meta_info, 2)
-            
-            self.reader_splitter.addWidget(reader_right)
-            
-            # Stretch factors: Image=3, Metadata=2
-            self.reader_splitter.setStretchFactor(0, 3)
-            self.reader_splitter.setStretchFactor(1, 2)
-            
-            reader_layout.addWidget(self.reader_splitter)
-            
-            self.reader_panel.setVisible(False)
-            layout.addWidget(self.reader_panel)
-            
-            # Injecting Key Events for carousel
-            def reader_key_event(event):
-                if self.reader_panel.isVisible():
-                    if event.key() == Qt.Key_Left:
-                        self.reader_prev()
-                    elif event.key() == Qt.Key_Right:
-                        self.reader_next()
-            self.view.keyPressEvent = reader_key_event
 
             # --- Watermarker Content Area (initially hidden) ---
             self.watermarker_panel = QWidget()
@@ -1590,102 +1277,6 @@ class WorkshopModule(BaseModule):
         QMessageBox.information(self.view, "Watermarking Complete", 
                                 f"Successfully processed {success_count} of {count} images.\nResults saved in: {export_path}")
 
-    def open_dummy_creator_dialog(self):
-        """Opens the Dummy Creator dialog for folder selection and processing."""
-        from PySide6.QtWidgets import QDialog, QLabel, QTextEdit, QApplication
-        from modules.workshop.logic.dummy_manager import process_folder, get_folder_stats
-        
-        # Select folder
-        folder = QFileDialog.getExistingDirectory(self.view, "Select Folder to Dummify", self.last_asset_dir)
-        if not folder:
-            return
-        
-        self.last_asset_dir = folder
-        self.settings.setValue("last_asset_dir", self.last_asset_dir)
-        
-        # Preview stats
-        stats = get_folder_stats(folder)
-        if not stats:
-            QMessageBox.warning(self.view, "Invalid Path", "Could not access folder.")
-            return
-        
-        # Show preview dialog
-        preview_msg = (
-            f"📊 Folder Analysis\n\n"
-            f"Total Files: {stats['total_files']}\n"
-            f"Already Dummies: {stats['dummies']}\n"
-            f"Originals to Process: {stats['originals']}\n\n"
-            f"Action: Move {stats['originals']} files to 'originals/' subfolder and create dummy placeholders.\n\n"
-            f"⚠️ This operation cannot be easily undone. Continue?"
-        )
-        
-        reply = QMessageBox.question(
-            self.view, 
-            "Dummy Creator - Confirm",
-            preview_msg,
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        
-        if reply != QMessageBox.Yes:
-            return
-        
-        # Progress dialog
-        progress_dialog = QDialog(self.view)
-        progress_dialog.setWindowTitle("Dummy Creator - Processing")
-        progress_dialog.setModal(True)
-        progress_dialog.resize(500, 300)
-        
-        layout = QVBoxLayout(progress_dialog)
-        
-        lbl_title = QLabel("🎭 Creating Dummies...")
-        lbl_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #f1fa8c;")
-        layout.addWidget(lbl_title)
-        
-        log_box = QTextEdit()
-        log_box.setReadOnly(True)
-        log_box.setStyleSheet("background: #111; color: #ccc; font-family: Consolas; font-size: 11px;")
-        layout.addWidget(log_box)
-        
-        progress_bar = QProgressBar()
-        layout.addWidget(progress_bar)
-        
-        btn_close = QPushButton("Close")
-        btn_close.setEnabled(False)
-        btn_close.clicked.connect(progress_dialog.accept)
-        layout.addWidget(btn_close)
-        
-        progress_dialog.show()
-        
-        # Progress callback
-        def on_progress(current, total, filename):
-            progress_bar.setMaximum(total)
-            progress_bar.setValue(current)
-            log_box.append(f"[{current}/{total}] {filename}")
-            QApplication.instance().processEvents()
-        
-        # Execute
-        try:
-            log_box.append(f"➤ Processing: {folder}\n")
-            final_stats = process_folder(folder, progress_callback=on_progress)
-            
-            # Summary
-            space_saved_mb = final_stats['space_saved_bytes'] / (1024 * 1024)
-            summary = (
-                f"\n✅ DONE!\n\n"
-                f"Processed: {final_stats['processed']}\n"
-                f"Skipped (already dummies): {final_stats['skipped_dummies']}\n"
-                f"Skipped (already in originals/): {final_stats['skipped_originals']}\n"
-                f"Errors: {final_stats['errors']}\n"
-                f"Space Saved: {space_saved_mb:.2f} MB\n"
-            )
-            log_box.append(summary)
-            
-        except Exception as e:
-            log_box.append(f"\n❌ ERROR: {str(e)}\n")
-        
-        btn_close.setEnabled(True)
-        progress_dialog.exec()
 
     def switch_to_dashboard(self):
         """Show main workshop dashboard."""
@@ -1769,7 +1360,6 @@ class WorkshopModule(BaseModule):
         """Switch to Metadata Stripper tool."""
         self.workshop_dashboard.setVisible(False)
         self.stripper_panel.setVisible(True)
-        self.dummy_panel.setVisible(False)
         self.reader_panel.setVisible(False)
         self.watermarker_panel.setVisible(False)
         self.optimizer_panel.setVisible(False)
@@ -1798,19 +1388,6 @@ class WorkshopModule(BaseModule):
         if hasattr(self, '_update_optimizer_queue_grid'):
             self._update_optimizer_queue_grid()
     
-    def switch_to_dummy(self):
-        """Switch to Dummy Creator tool."""
-        self.workshop_dashboard.setVisible(False)
-        self.stripper_panel.setVisible(False)
-        self.dummy_panel.setVisible(True)
-        self.reader_panel.setVisible(False)
-        self.watermarker_panel.setVisible(False)
-        self.optimizer_panel.setVisible(False)
-        self.face_scorer_panel.setVisible(False)
-        self.settings_panel.setVisible(False)
-        self.btn_process.setVisible(False)
-        self.btn_back_to_dash.setVisible(True)
-        self.lbl_title.setText("🎭 Dummy Creator")
 
     def switch_to_reader(self):
         """Switch to Metadata Reader tool."""

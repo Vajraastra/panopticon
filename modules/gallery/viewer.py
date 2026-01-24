@@ -94,15 +94,12 @@ class FullscreenHelper(QDialog):
     def set_image(self, path):
         pix = QPixmap(path)
         if not pix.isNull():
-            # Scale to screen size
-            # Safety check for null screen (can happen during early show)
+            # Scale to screen size - ensure we don't exceed screen
             scr = self.screen()
             if scr:
-                screen_size = scr.size()
-                self.lbl_image.setPixmap(pix.scaled(screen_size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                target_size = scr.size()
+                self.lbl_image.setPixmap(pix.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             else:
-                # Fallback to a large size or wait? 
-                # For now just use a default large size if screen is not yet available
                 self.lbl_image.setPixmap(pix.scaled(1920, 1080, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             
     def keyPressEvent(self, event):
@@ -150,7 +147,7 @@ class AdvancedViewer(QDialog):
         img_layout.setContentsMargins(0,0,0,0)
         self.lbl_image = QLabel()
         self.lbl_image.setAlignment(Qt.AlignCenter)
-        self.lbl_image.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.lbl_image.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         img_layout.addWidget(self.lbl_image)
         
         # Right: Data & Controls (25%)
@@ -390,8 +387,8 @@ class AdvancedViewer(QDialog):
         # Load Pixmap
         pix = QPixmap(path)
         if not pix.isNull():
-            # Scale to fit container (approx size)
-            self.lbl_image.setPixmap(pix.scaled(700, 650, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            # Scale to fit currently available space
+            self.lbl_image.setPixmap(pix.scaled(self.lbl_image.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
             self.lbl_res.setText(f"Resolution: {pix.width()} x {pix.height()}")
         else:
             self.lbl_image.setText("Image Load Error")

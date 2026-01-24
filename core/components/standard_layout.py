@@ -13,7 +13,7 @@ class StandardToolLayout(QWidget):
                               | [ Bottom Bar      ] |
                               |_____________________|
     """
-    def __init__(self, content_widget: QWidget, sidebar_widget: QWidget, bottom_widget: QWidget = None, theme_manager=None, event_bus=None):
+    def __init__(self, content_widget: QWidget, sidebar_widget: QWidget = None, bottom_widget: QWidget = None, theme_manager=None, event_bus=None):
         super().__init__()
         self.theme = theme_manager
         self.event_bus = event_bus
@@ -65,7 +65,10 @@ class StandardToolLayout(QWidget):
         
         self.settings_scroll = QScrollArea()
         self.settings_scroll.setWidgetResizable(True)
-        self.settings_scroll.setWidget(sidebar_widget)
+        if sidebar_widget:
+            self.settings_scroll.setWidget(sidebar_widget)
+        else:
+            self.settings_scroll.setWidget(QWidget())
         self.settings_scroll.setFrameShape(QFrame.NoFrame)
         self.settings_scroll.setStyleSheet("background: transparent;") # Allow container bg to show
         
