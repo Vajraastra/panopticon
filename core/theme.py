@@ -76,6 +76,13 @@ class Theme:
             QComboBox::drop-down {{
                 border: none;
             }}
+            QComboBox QAbstractItemView {{
+                background-color: {Theme.BG_PANEL};
+                color: white;
+                border: 1px solid #444;
+                selection-background-color: {accent_color};
+                outline: none;
+            }}
             QSpinBox::up-button, QSpinBox::down-button {{
                 background: transparent;
             }}

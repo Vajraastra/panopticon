@@ -7,7 +7,7 @@ import os
 
 from core.base_module import BaseModule
 from core.components.standard_layout import StandardToolLayout
-from .logic import optimize_image, analyze_image, get_export_path
+from .logic.optimizer import optimize_image, analyze_image, get_export_path
 
 class OptimizerWorker(QThread):
     progress = Signal(int)
