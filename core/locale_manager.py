@@ -1,0 +1,77 @@
+import json
+import os
+import locale
+
+class LocaleManager:
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(LocaleManager, cls).__new__(cls)
+            cls._instance.current_locale = "en"
+            cls._instance.translations = {}
+            cls._instance._detect_locale()
+            cls._instance._load_translations()
+        return cls._instance
+    
+    def set_locale(self, locale_code):
+        if locale_code in ["en", "es"]:
+            self.current_locale = locale_code
+            self._load_translations()
+            self._save_config()
+
+    def _save_config(self):
+        config = {"locale": self.current_locale}
+        try:
+            with open("config.json", "w") as f:
+                json.dump(config, f)
+        except Exception as e:
+            print(f"Error saving config: {e}")
+
+    def _detect_locale(self):
+        # Check for config file first
+        if os.path.exists("config.json"):
+            try:
+                with open("config.json", "r") as f:
+                    config = json.load(f)
+                    if "locale" in config:
+                        self.current_locale = config["locale"]
+                        return
+            except:
+                pass
+
+        # Fallback to system
+        sys_lang = locale.getdefaultlocale()[0]
+        if sys_lang and sys_lang.startswith("es"):
+            self.current_locale = "es"
+        else:
+            self.current_locale = "en"
+            
+    def get_locale(self):
+        return self.current_locale
+            
+    def _load_translations(self):
+        # Load JSON files
+        base_path = os.path.join(os.getcwd(), "locales")
+        path = os.path.join(base_path, f"{self.current_locale}.json")
+        
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    self.translations = json.load(f)
+            except Exception as e:
+                print(f"Error loading locale {self.current_locale}: {e}")
+                self.translations = {}
+        else:
+            print(f"Locale file not found: {path} (using keys as defaults)")
+            self.translations = {}
+            
+    def tr(self, key, default=None):
+        """Translate a key. If not found, returns default or the key itself."""
+        val = self.translations.get(key)
+        if val:
+            return val
+        return default if default is not None else key
+
+    def get_locale(self):
+        return self.current_locale

@@ -401,6 +401,12 @@ class ImageOptimizerModule(BaseModule):
         self.queue = []
         self._update_ui()
 
+    def load_image_set(self, paths: list):
+        """Standard interface for receiving sets from Librarian."""
+        if paths:
+            self.queue = list(paths)
+            self._update_ui()
+
     def run_headless(self, params: dict, input_data: any) -> any:
         # Implement for future automation
         pass

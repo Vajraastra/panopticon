@@ -10,20 +10,39 @@ import numpy as np
 _model = None
 
 def get_model():
-    """Lazy-loads the YOLO model. Prefers yolov8n-face.pt, falls back to yolov8n.pt."""
+    """Lazy-loads the YOLO model. Auto-downloads yolov8n-face.pt to module assets if missing."""
     global _model
     if _model is None:
         try:
             from ultralytics import YOLO
+            import requests
             
-            # Check if custom face model exists
-            face_model_path = 'yolov8n-face.pt'
-            if os.path.exists(face_model_path):
-                print(f"[FaceScorer] Loading custom face model: {face_model_path}")
-                _model = YOLO(face_model_path)
-            else:
-                print("[FaceScorer] Custom 'yolov8n-face.pt' not found. Usage fallback: 'yolov8n.pt' (Person Detection).")
-                _model = YOLO('yolov8n.pt') # Downloads automatically
+            # Resolve path to modules/workshop/assets/yolov8n-face.pt
+            # Assumes this file is in modules/workshop/logic/
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # modules/workshop
+            assets_dir = os.path.join(base_dir, "assets")
+            os.makedirs(assets_dir, exist_ok=True)
+            
+            face_model_path = os.path.join(assets_dir, 'yolov8n-face.pt')
+            
+            if not os.path.exists(face_model_path):
+                print(f"[FaceScorer] Model not found at {face_model_path}. Downloading...")
+                url = "https://github.com/lindevs/yolov8-face/releases/latest/download/yolov8n-face-lindevs.pt"
+                try:
+                    response = requests.get(url, stream=True)
+                    response.raise_for_status()
+                    with open(face_model_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    print(f"[FaceScorer] Download complete: {face_model_path}")
+                except Exception as e:
+                    print(f"[FaceScorer] Failed to download custom model: {e}")
+                    print("[FaceScorer] Falling back to standard YOLOv8n (Person Detection)")
+                    _model = YOLO('yolov8n.pt')
+                    return _model
+
+            print(f"[FaceScorer] Loading face model: {face_model_path}")
+            _model = YOLO(face_model_path)
                 
         except ImportError:
             raise ImportError("ultralytics package not installed. Run: pip install ultralytics")

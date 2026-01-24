@@ -1,0 +1,8 @@
+{
+    "app.title": "PANOPTICON",
+    "app.subtitle": "Organizador de Imágenes Modular",
+    "dashboard.welcome": "PANOPTICON",
+    "dashboard.tools": "HERRAMIENTAS DISPONIBLES",
+    "tool.cropper.name": "Recortador Inteligente",
+    "tool.cropper.desc": "Herramienta de recorte de imágenes de alta precisión."
+}

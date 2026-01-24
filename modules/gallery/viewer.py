@@ -1,10 +1,21 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
                                QDialog, QFrame, QSizePolicy, QSpinBox, QGridLayout, QLineEdit, QScrollArea, QCompleter)
 from PySide6.QtCore import Qt, QTimer, Signal, QEvent
-from PySide6.QtGui import QPixmap, QKeySequence, QAction
+from PySide6.QtGui import QPixmap, QKeySequence, QAction, QMouseEvent
 from modules.librarian.logic.tagging_ui import FlowLayout, TagChip
 from modules.librarian.logic.db_manager import DatabaseManager
 import os
+
+class ClickableRatingLabel(QLabel):
+    """A label that cycles ratings when clicked."""
+    clicked = Signal()
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
 
 class FullscreenHelper(QDialog):
     """Borderless fullscreen window for immersive viewing."""
@@ -84,8 +95,15 @@ class FullscreenHelper(QDialog):
         pix = QPixmap(path)
         if not pix.isNull():
             # Scale to screen size
-            screen_size = self.screen().size()
-            self.lbl_image.setPixmap(pix.scaled(screen_size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            # Safety check for null screen (can happen during early show)
+            scr = self.screen()
+            if scr:
+                screen_size = scr.size()
+                self.lbl_image.setPixmap(pix.scaled(screen_size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            else:
+                # Fallback to a large size or wait? 
+                # For now just use a default large size if screen is not yet available
+                self.lbl_image.setPixmap(pix.scaled(1920, 1080, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Left:
@@ -168,8 +186,9 @@ class AdvancedViewer(QDialog):
 
         # Rating Row
         grid_stats.addWidget(QLabel("Rating:"), 1, 0)
-        self.lbl_rating_stars = QLabel("None")
-        self.lbl_rating_stars.setStyleSheet("color: #ffcc00; font-weight: bold; font-size: 14px;")
+        self.lbl_rating_stars = ClickableRatingLabel("None")
+        self.lbl_rating_stars.setStyleSheet("color: #ffcc00; font-weight: bold; font-size: 18px;")
+        self.lbl_rating_stars.clicked.connect(self.cycle_current_rating)
         grid_stats.addWidget(self.lbl_rating_stars, 1, 1)
         
         self.lbl_filesize = QLabel("Size: ...")
@@ -397,6 +416,18 @@ class AdvancedViewer(QDialog):
     def prev_image(self):
         self.current_idx = (self.current_idx - 1) % len(self.paths)
         self.load_current_image()
+
+    def cycle_current_rating(self):
+        """Cycles rating for the current image in the viewer."""
+        if not self.paths: return
+        path = self.paths[self.current_idx]
+        current = self.db.get_file_rating(path)
+        new_rating = (current + 1) % 6
+        
+        if self.db.update_file_rating(path, new_rating):
+            self.lbl_rating_stars.setText("⭐" * new_rating if new_rating > 0 else "None")
+            # If we had a signal to notify the parent, we'd use it here.
+            # But for now, the parent (Gallery) will handle its own refresh if needed.
 
     def toggle_fullscreen(self):
         if not self.fs_window:

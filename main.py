@@ -1,215 +1,364 @@
 
 import sys
+import os
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLabel, QStackedWidget,
-                             QFrame, QSizePolicy)
-from PySide6.QtCore import Qt
+                             QFrame, QGridLayout, QComboBox, QMessageBox)
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QIcon, QFont
+
+# Core Imports
 from core.theme import Theme
 from core.mod_loader import ModuleLoader
 from core.theme_manager import ThemeManager
+from core.locale_manager import LocaleManager
 from core.event_bus import EventBus
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Panopticon - Modular Image Organizer")
-        self.resize(1024, 768)
-        self.resize(1024, 768)
         
+        # 1. Initialize Core Services
+        self.locale_manager = LocaleManager()
+        self.tr = self.locale_manager.tr
         self.theme_manager = ThemeManager()
-        self.setStyleSheet(self.theme_manager.get_stylesheet())
-        
         self.event_bus = EventBus()
         self.event_bus.subscribe("navigate", self.on_navigate)
         
-        # Core Service Context to be injected into modules
+        # 2. Window Setup
+        self.setWindowTitle(f"{self.tr('app.title', 'Panopticon')} - {self.tr('app.subtitle')}")
+        self.resize(1280, 800) # Spacious default
+        self.setStyleSheet(self.theme_manager.get_stylesheet())
+        
+        # 3. Dependency Injection Context
         self.context = {
             "theme_manager": self.theme_manager,
+            "locale_manager": self.locale_manager,
             "event_bus": self.event_bus,
             "main_window": self
         }
 
-        self.loader = ModuleLoader()
+        # 4. UI Initialization
+        self.module_grid_count = 0
+        self.loaded_modules = {}
+        self.root_stack = None
         self.init_ui()
+        
+        # 5. Load Modules
+        self.loader = ModuleLoader()
         self.load_available_modules()
 
     def init_ui(self):
-        # ROOT CONTAINER: Stacked Widget
+        """Initialize the main application layout."""
+        # Root Container (Stacked Widget for Dashboard vs Settings vs Modules)
         self.root_stack = QStackedWidget()
         self.setCentralWidget(self.root_stack)
         
-        # --- PAGE 0: DASHBOARD CONTAINER ---
-        self.dashboard_page = QWidget()
-        self.dashboard_layout = QHBoxLayout(self.dashboard_page)
-        self.dashboard_layout.setContentsMargins(0, 0, 0, 0)
-        self.dashboard_layout.setSpacing(0)
-        
-        # 1. Main Sidebar (Only lives here now)
-        self.sidebar = QFrame()
-        self.sidebar.setFixedWidth(200)
-        self.sidebar.setStyleSheet(f"background-color: {Theme.BG_SIDEBAR}; border-right: 1px solid {Theme.BORDER};")
-        self.sidebar_layout = QVBoxLayout(self.sidebar)
-        self.sidebar_layout.setAlignment(Qt.AlignTop)
-        
-        title_label = QLabel("PANOPTICON")
-        title_label.setStyleSheet(f"color: {Theme.ACCENT_MAIN}; font-weight: bold; font-size: 18px; margin: 20px 0;")
-        title_label.setAlignment(Qt.AlignCenter)
-        self.sidebar_layout.addWidget(title_label)
-        
-        self.dashboard_layout.addWidget(self.sidebar)
-        
-        # 2. Dashboard Content (Welcome + Buttons)
-        self.dashboard_content = QWidget()
-        self.dashboard_content.setStyleSheet(f"background-color: {Theme.BG_MAIN};")
-        db_content_layout = QVBoxLayout(self.dashboard_content)
-        db_content_layout.setAlignment(Qt.AlignCenter)
-        
-        welcome_label = QLabel("Welcome to Panopticon")
-        welcome_label.setStyleSheet(f"color: white; font-size: 24px;")
-        db_content_layout.addWidget(welcome_label)
-        
-        self.modules_btn_container = QWidget()
-        self.modules_btn_layout = QHBoxLayout(self.modules_btn_container)
-        db_content_layout.addWidget(self.modules_btn_container)
-        
-        self.dashboard_layout.addWidget(self.dashboard_content)
-        
-        # Add Dashboard Page to Root Stack
+        # --- PAGE 0: DASHBOARD ---
+        self.create_dashboard_page()
         self.root_stack.addWidget(self.dashboard_page) # Index 0
+        
+        # --- PAGE 1: SETTINGS ---
+        self.create_settings_page()
+        self.root_stack.addWidget(self.settings_page) # Index 1
+
+    def create_dashboard_page(self):
+        self.dashboard_page = QWidget()
+        self.dashboard_page.setStyleSheet(f"background-color: {Theme.BG_MAIN};")
+        
+        # Main Vertical Layout
+        layout = QVBoxLayout(self.dashboard_page)
+        layout.setAlignment(Qt.AlignTop)
+        layout.setSpacing(0)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 1. HEADER AREA (Yellow Zone equivalent)
+        header = QFrame()
+        header.setFixedHeight(140)
+        header_layout = QVBoxLayout(header)
+        header_layout.setAlignment(Qt.AlignCenter)
+        header_layout.setSpacing(5)
+        
+        lbl_title = QLabel(self.tr('dashboard.welcome', 'PANOPTICON'))
+        lbl_title.setStyleSheet("color: white; font-size: 56px; font-weight: bold; letter-spacing: 4px;")
+        lbl_title.setAlignment(Qt.AlignCenter)
+        header_layout.addWidget(lbl_title)
+        
+        lbl_subtitle = QLabel(self.tr('app.subtitle', 'Modular Image Organizer'))
+        lbl_subtitle.setStyleSheet(f"color: {Theme.ACCENT_MAIN}; font-size: 18px; letter-spacing: 2px;")
+        lbl_subtitle.setAlignment(Qt.AlignCenter)
+        header_layout.addWidget(lbl_subtitle)
+        
+        layout.addWidget(header)
+        
+        # 2. SETTINGS AREA (Purple Zone equivalent)
+        settings_bar = QFrame()
+        settings_bar.setFixedHeight(80)
+        sb_layout = QHBoxLayout(settings_bar)
+        sb_layout.setAlignment(Qt.AlignCenter)
+        
+        btn_settings = QPushButton(f"⚙ {self.tr('settings.title', 'Settings / Configuración')}")
+        btn_settings.setFixedSize(280, 45)
+        btn_settings.setCursor(Qt.PointingHandCursor)
+        btn_settings.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Theme.BG_PANEL};
+                color: {Theme.TEXT_DIM};
+                border: 1px solid {Theme.BORDER};
+                border-radius: 22px;
+                font-weight: bold;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{
+                background-color: {Theme.BG_SIDEBAR};
+                color: white;
+                border-color: {Theme.ACCENT_MAIN};
+            }}
+        """)
+        btn_settings.clicked.connect(lambda: self.root_stack.setCurrentIndex(1))
+        sb_layout.addWidget(btn_settings)
+        
+        layout.addWidget(settings_bar)
+        
+        # 3. TOOLS GRID AREA
+        # Container frame for the grid
+        grid_container = QWidget()
+        grid_layout_outer = QVBoxLayout(grid_container)
+        grid_layout_outer.setContentsMargins(40, 20, 40, 20)
+        
+        # Label
+        lbl_tools = QLabel(self.tr('dashboard.tools', 'AVAILABLE TOOLS'))
+        lbl_tools.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 12px; font-weight: bold; letter-spacing: 1px;")
+        grid_layout_outer.addWidget(lbl_tools)
+        
+        # The Grid Widget
+        self.modules_grid_widget = QWidget()
+        self.modules_grid_layout = QGridLayout(self.modules_grid_widget)
+        self.modules_grid_layout.setSpacing(25) # Space between cards
+        self.modules_grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        
+        grid_layout_outer.addWidget(self.modules_grid_widget)
+        grid_layout_outer.addStretch() # Push everything up
+        
+        layout.addWidget(grid_container)
+
+    def create_settings_page(self):
+        self.settings_page = QWidget()
+        self.settings_page.setStyleSheet(f"background-color: {Theme.BG_MAIN};")
+        
+        layout = QVBoxLayout(self.settings_page)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(30)
+        
+        # Title
+        lbl = QLabel("Settings / Configuración")
+        lbl.setStyleSheet("color: white; font-size: 32px; font-weight: bold;")
+        lbl.setAlignment(Qt.AlignCenter)
+        layout.addWidget(lbl)
+        
+        # Language Selector
+        lang_box = QFrame()
+        lang_box.setStyleSheet(f"background: {Theme.BG_PANEL}; border-radius: 10px; padding: 20px;")
+        lb_layout = QHBoxLayout(lang_box)
+        
+        lbl_lang = QLabel("Language:")
+        lbl_lang.setStyleSheet("color: white; font-size: 18px; border: none;")
+        lb_layout.addWidget(lbl_lang)
+        
+        self.combo_lang = QComboBox()
+        self.combo_lang.addItems(["English", "Español"])
+        self.combo_lang.setFixedSize(200, 40)
+        
+        # Determine current index
+        current = self.locale_manager.get_locale()
+        self.combo_lang.setCurrentIndex(1 if current == "es" else 0)
+        
+        # Style
+        self.combo_lang.setStyleSheet(f"""
+            QComboBox {{
+                background-color: {Theme.BG_INPUT};
+                color: white;
+                border: 1px solid {Theme.BORDER};
+                border-radius: 5px;
+                padding: 5px;
+                font-size: 16px;
+            }}
+            QComboBox::drop-down {{ border: none; }}
+        """)
+        lb_layout.addWidget(self.combo_lang)
+        
+        # Set alignment wrapper for box
+        box_wrapper = QWidget()
+        bw_layout = QHBoxLayout(box_wrapper)
+        bw_layout.setAlignment(Qt.AlignCenter)
+        bw_layout.addWidget(lang_box)
+        layout.addWidget(box_wrapper)
+        
+        # Save Button
+        btn_save = QPushButton("Save & Restart")
+        btn_save.setFixedSize(250, 50)
+        btn_save.setCursor(Qt.PointingHandCursor)
+        btn_save.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Theme.ACCENT_MAIN};
+                color: black;
+                border-radius: 25px;
+                font-weight: bold;
+                font-size: 16px;
+            }}
+            QPushButton:hover {{ background-color: white; }}
+        """)
+        btn_save.clicked.connect(self.apply_settings)
+        layout.addWidget(btn_save)
+        
+        # Back Button
+        btn_back = QPushButton("Back to Dashboard")
+        btn_back.setCursor(Qt.PointingHandCursor)
+        btn_back.setStyleSheet(f"color: {Theme.TEXT_DIM}; background: transparent; text-decoration: underline;")
+        btn_back.clicked.connect(lambda: self.root_stack.setCurrentIndex(0))
+        layout.addWidget(btn_back)
+
+    def apply_settings(self):
+        index = self.combo_lang.currentIndex()
+        code = "es" if index == 1 else "en"
+        self.locale_manager.set_locale(code)
+        QMessageBox.information(self, "Restart Required", "Please restart Panopticon to apply language changes.")
 
     def load_available_modules(self):
-        self.loaded_modules = {} # Registry
-        module_names = self.loader.discover_modules()
-        for name in module_names:
+        """Discover and load modules into the UI."""
+        self.loaded_modules = {}
+        for name in self.loader.discover_modules():
             try:
                 module = self.loader.load_module(name, self.context)
                 if module:
-                    self.add_module_to_ui(module)
+                    self.add_module_card(module)
                     self.loaded_modules[module.name] = module
             except Exception as e:
-                print(f"Failed to load module {name}: {e}")
-        
-    # ... (rest of load_available_modules)
+                print(f"Error loading {name}: {e}")
+                
+        # Setup Integrations (Event Bus logic)
         self.setup_integrations()
 
-    def setup_integrations(self):
-        # Librarian -> Gallery / Metadata
-        librarian = self.get_module_by_partial_name("Librarian")
-        gallery = self.get_module_by_partial_name("Gallery")
-        workshop = self.get_module_by_partial_name("Workshop")
-        
-        if librarian and gallery:
-            librarian.request_open_gallery.connect(
-                lambda paths, title: self.switch_to_module(gallery, paths, title)
-            )
-            
-        if librarian and workshop:
-            librarian.request_open_metadata.connect(
-                lambda paths: self.switch_to_module(workshop, paths, "reader")
-            )
-            librarian.request_open_workshop.connect(
-                lambda paths: self.switch_to_module(workshop, paths, "modifier")
-            )
-            
-        if gallery and workshop:
-            gallery.request_open_workshop.connect(
-                lambda paths: self.switch_to_module(workshop, paths)
-            )
-
-    def get_module_by_partial_name(self, partial):
-        for name, mod in self.loaded_modules.items():
-            if partial.lower() in name.lower():
-                return mod
-        return None
-
-    def add_module_to_ui(self, module):
-        # Prevent ghost buttons by ensuring view loads first
+    def add_module_card(self, module):
+        """Create and add a module card to the grid."""
+        # Initialize view mostly to ensure it's ready, but we don't show it yet
         try:
             view = module.get_view()
-            if view is None:
-                print(f"Module {module.name} returned no view.")
-                return
-        except Exception as e:
-            print(f"Failed to initialize view for {module.name}: {e}")
-            raise e
+            if not view: return
+        except:
+            return
 
-        # Determine module accent color
+        # 1. Create Card Widget
+        card = QFrame()
+        card.setFixedSize(220, 220)
+        card.setCursor(Qt.PointingHandCursor)
+        
+        # Accent Color
         accent = getattr(module, "accent_color", Theme.ACCENT_MAIN)
         if "Fashion" in module.name: accent = Theme.ACCENT_FASHION
         
-        # Add to sidebar
-        icon = getattr(module, "icon", "🧩")
-        btn = QPushButton(f"{icon} {module.name}")
-        btn.setStyleSheet(f"""
-            QPushButton {{
-                color: #ddd; 
-                padding: 12px; 
-                text-align: left; 
-                border: none;
-                border-radius: 5px;
-                margin: 2px 5px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {Theme.BORDER};
-                color: {accent};
-            }}
-        """)
-        btn.clicked.connect(lambda: self.switch_to_module(module))
-        self.sidebar_layout.addWidget(btn)
-        
-        # Add to dashboard
-        icon = getattr(module, "icon", "✨")
-        dash_btn = QPushButton(f"{icon}\n{module.name}")
-        dash_btn.setFixedSize(160, 160)
-        # Use a slightly modified card style for main dashboard buttons
-        dash_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {Theme.BG_PANEL}; 
-                color: white; 
-                border-radius: 20px; 
-                font-size: 16px; 
-                font-weight: bold;
+        # Styling
+        card.setStyleSheet(f"""
+            QFrame {{
+                background-color: {Theme.BG_PANEL};
                 border: 2px solid {Theme.BORDER};
+                border-radius: 16px;
             }}
-            QPushButton:hover {{
-                background-color: #2a2a2a;
-                border: 2px solid {accent};
-                color: {accent};
+            QFrame:hover {{
+                background-color: {Theme.BG_SIDEBAR};
+                border-color: {accent};
             }}
         """)
-        dash_btn.clicked.connect(lambda: self.switch_to_module(module))
-        self.modules_btn_layout.addWidget(dash_btn)
         
-        # Add view to stack
+        # Layout
+        layout = QVBoxLayout(card)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+        
+        # Content
+        # Icon
+        icon_txt = str(getattr(module, "icon", "📦"))
+        lbl_icon = QLabel(icon_txt)
+        lbl_icon.setAlignment(Qt.AlignCenter)
+        lbl_icon.setFixedHeight(50)
+        lbl_icon.setStyleSheet("font-size: 40px; color: white; background: transparent; border: none;")
+        layout.addWidget(lbl_icon)
+        
+        # Title
+        lbl_title = QLabel(module.name)
+        lbl_title.setAlignment(Qt.AlignCenter)
+        lbl_title.setWordWrap(True)
+        lbl_title.setStyleSheet("font-size: 15px; font-weight: bold; color: white; background: transparent; border: none;")
+        layout.addWidget(lbl_title)
+        
+        # Description
+        desc = getattr(module, "description", module.tr("desc.missing", "No Info"))
+        if len(desc) > 60: desc = desc[:57] + "..."
+        lbl_desc = QLabel(desc)
+        lbl_desc.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        lbl_desc.setWordWrap(True)
+        lbl_desc.setStyleSheet(f"font-size: 11px; color: {Theme.TEXT_DIM}; background: transparent; border: none;")
+        layout.addWidget(lbl_desc, 1) # Stretch
+        
+        # Events
+        # We start the module view and switch stack
         self.root_stack.addWidget(view)
         module.stack_index = self.root_stack.indexOf(view)
+        
+        # Monkey-patch click
+        def on_click(e):
+            self.switch_to_module(module)
+        card.mousePressEvent = on_click
+        
+        # Place in Grid (5 Columns)
+        row = self.module_grid_count // 5
+        col = self.module_grid_count % 5
+        self.modules_grid_layout.addWidget(card, row, col)
+        
+        self.module_grid_count += 1
 
     def switch_to_module(self, module, *args):
-        # Simply switch the root stack. The Sidebar is part of Page 0, so it disappears automatically.
-        print(f"DEBUG: Switching to {module.name} (Index {module.stack_index})")
         self.root_stack.setCurrentIndex(module.stack_index)
-        
-        # Pass data if needed
+        # Pass args if supported
         if args:
-            if "Gallery" in module.name and hasattr(module, "load_custom_view"):
-                if len(args) >= 2:
-                    module.load_custom_view(args[0], args[1])
-                elif len(args) == 1:
-                    module.load_custom_view(args[0])
-                    
-            elif "Workshop" in module.name and hasattr(module, "load_images"):
-                if len(args) >= 2:
-                    module.load_images(args[0], args[1])
-                else:
-                    module.load_images(args[0])
+            if hasattr(module, "load_image_set"):
+                module.load_image_set(*args)
+            elif hasattr(module, "load_images"):
+                module.load_images(*args)
+            elif hasattr(module, "load_custom_view"):
+                module.load_custom_view(*args)
+
+    def setup_integrations(self):
+        # Wiring up known module connections
+        librarian = self.get_module("Librarian")
+        gallery = self.get_module("Gallery")
+        optimizer = self.get_module("Image Optimizer")
+        cropper = self.get_module("Smart Cropper")
+        
+        if librarian:
+            if gallery:
+                librarian.request_open_gallery.connect(
+                    lambda paths, title: self.switch_to_module(gallery, paths) # title ignored for standard set load
+                )
+            if optimizer:
+                librarian.request_open_optimizer.connect(
+                    lambda paths: self.switch_to_module(optimizer, paths)
+                )
+            if cropper:
+                librarian.request_open_cropper.connect(
+                    lambda paths: self.switch_to_module(cropper, paths)
+                )
+
+    def get_module(self, partial_name):
+        for name, mod in self.loaded_modules.items():
+            if partial_name.lower() in name.lower():
+                return mod
+        return None
 
     def on_navigate(self, target):
-        """Handle navigation events from EventBus."""
         if target == "dashboard":
-            print("DEBUG: Returning to Dashboard")
-            self.root_stack.setCurrentIndex(0) # 0 is dashboard page
-
+            self.root_stack.setCurrentIndex(0)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

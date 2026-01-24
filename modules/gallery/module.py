@@ -9,6 +9,17 @@ from .logic.loader import get_loader
 from modules.librarian.logic.tagging_ui import FlowLayout, TagChip
 import os
 
+class ClickableRatingLabel(QLabel):
+    """A label that cycles ratings when clicked."""
+    clicked = Signal()
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+
 class FolderCard(QFrame):
     clicked = Signal(str)
     
@@ -131,35 +142,248 @@ class GalleryModule(BaseModule):
     def get_view(self) -> QWidget:
         if self.view: return self.view
         
-        self.view = QWidget()
-        layout = QVBoxLayout(self.view)
-        layout.setContentsMargins(10, 10, 10, 10)
+        # Create Components
+        self.sidebar = self._create_sidebar()
+        self.content = self._create_content() # Contains Grid
+        self.bottom = self._create_bottom_bar() # Contains Pagination
         
-        # --- Top Bar (Controls) ---
-        top_bar = QHBoxLayout()
+        # Assemble
+        from core.components.standard_layout import StandardToolLayout
+        self.view = StandardToolLayout(
+            self.content,
+            self.sidebar,
+            self.bottom,
+            theme_manager=None, # Themes handle internally if needed
+            event_bus=None
+        )
         
-        self.btn_back = QPushButton("🔙 Albums")
-        self.btn_back.clicked.connect(self.switch_to_albums)
-        self.btn_back.setStyleSheet("background-color: #444; color: white; padding: 5px 10px; border-radius: 5px;")
-        self.btn_back.setVisible(False) # Hidden by default
-        top_bar.addWidget(self.btn_back)
+        # Hook resize event via EventFilter for grid reflow
+        self.grid_container.installEventFilter(self)
         
-        self.lbl_title = QLabel("🖼️ Gallery Albums")
-        self.lbl_title.setStyleSheet("font-size: 20px; font-weight: bold; color: #00ffcc;")
-        top_bar.addWidget(self.lbl_title)
+        # Initial Load
+        self.refresh_grid()
         
-        self.btn_open_local = QPushButton("📂 Open Folder")
-        self.btn_open_local.clicked.connect(self.open_custom_folder)
-        self.btn_open_local.setStyleSheet("background-color: #333; color: #00ffcc; padding: 5px 10px; border-radius: 5px; font-weight: bold;")
-        top_bar.addWidget(self.btn_open_local)
-        
-        top_bar.addStretch()
-        layout.addLayout(top_bar)
+        return self.view
 
-        # --- Middle Area: Grid + Right Sidebar ---
-        self.middle_layout = QHBoxLayout()
+    def _create_sidebar(self) -> QWidget:
+        """Sidebar: Navigation & Filters"""
+        container = QWidget()
+        container.setStyleSheet("""
+            QWidget {
+                background-color: #1a1a1a;
+                border-right: 1px solid #333;
+            }
+            QLabel {
+                color: #e0e0e0;
+                font-family: 'Segoe UI', sans-serif;
+            }
+            QLineEdit {
+                background-color: #222;
+                color: #eee;
+                border: 1px solid #333;
+                border-radius: 6px;
+                padding: 8px;
+                selection-background-color: #00ffcc;
+                selection-color: black;
+            }
+            QLineEdit:focus {
+                border: 1px solid #00ffcc;
+                background-color: #2a2a2a;
+            }
+            QPushButton {
+                background-color: #252525;
+                color: #ccc;
+                border: 1px solid #333;
+                border-radius: 6px;
+                padding: 8px;
+                text-align: left;
+            }
+            QPushButton:hover {
+                background-color: #333;
+                border-color: #555;
+                color: white;
+            }
+            QComboBox {
+                background-color: #222;
+                color: #eee;
+                border: 1px solid #333;
+                border-radius: 6px;
+                padding: 6px;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid #666;
+                width: 0;
+                height: 0;
+                margin-right: 8px;
+            }
+        """)
         
-        # 1. Grid Area (Left)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(15, 20, 15, 20)
+        layout.setSpacing(15)
+        
+        # Navigation Section
+        lbl_nav = QLabel("NAVIGATION")
+        lbl_nav.setStyleSheet("font-size: 11px; font-weight: bold; color: #666; letter-spacing: 1px;")
+        layout.addWidget(lbl_nav)
+        
+        self.btn_back = QPushButton("  🔙  Back to Albums")
+        self.btn_back.clicked.connect(self.switch_to_albums)
+        self.btn_back.setVisible(False)
+        self.btn_back.setStyleSheet("background-color: #2a2a2a; color: #00ffcc; font-weight: bold;")
+        layout.addWidget(self.btn_back)
+        
+        self.btn_open_local = QPushButton("  📂  Open Local Folder")
+        self.btn_open_local.clicked.connect(self.open_custom_folder)
+        layout.addWidget(self.btn_open_local)
+        
+        layout.addSpacing(10)
+        
+        # Separator
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("background-color: #333;")
+        layout.addWidget(line)
+        
+        layout.addSpacing(10)
+        
+        # Filter & Search
+        lbl_filter = QLabel("SEARCH & FILTER")
+        lbl_filter.setStyleSheet("font-size: 11px; font-weight: bold; color: #666; letter-spacing: 1px;")
+        layout.addWidget(lbl_filter)
+        
+        # Broad Search
+        self.txt_broad_search = QLineEdit()
+        self.txt_broad_search.setPlaceholderText("🔍  Search keywords...")
+        self.txt_broad_search.returnPressed.connect(self.on_search_triggered)
+        layout.addWidget(self.txt_broad_search)
+        
+        # Tag Search
+        self.txt_tag_search = QLineEdit()
+        self.txt_tag_search.setPlaceholderText("🏷️  Filter by tags...")
+        self.txt_tag_search.returnPressed.connect(self.on_search_triggered)
+        layout.addWidget(self.txt_tag_search)
+        
+        # Quality Dropdown (Moved Up)
+        self.combo_rating = QComboBox()
+        self.combo_rating.addItems([
+            "All Quality Levels",
+            "⭐ 1+ Stars",
+            "⭐⭐ 2+ Stars",
+            "⭐⭐⭐ 3+ Stars",
+            "⭐⭐⭐⭐ 4+ Stars",
+            "⭐⭐⭐⭐⭐ 5 Stars Only"
+        ])
+        self.combo_rating.currentIndexChanged.connect(self.on_rating_changed)
+        self.combo_rating.setCursor(Qt.PointingHandCursor)
+        layout.addWidget(self.combo_rating)
+
+        # Clear Button (Moved Up)
+        self.btn_clear_all = QPushButton("✕ Clear Filters")
+        self.btn_clear_all.clicked.connect(self.clear_all_filters)
+        self.btn_clear_all.setStyleSheet("color: #ff5555; background: transparent; border: 1px solid #331111; text-align: center;")
+        layout.addWidget(self.btn_clear_all)
+
+        # Active Chips (Search Tags)
+        self.tags_container = QWidget()
+        self.tags_container.setStyleSheet("background: transparent;")
+        self.tags_layout = FlowLayout(self.tags_container)
+        layout.addWidget(self.tags_container)
+        
+        layout.addSpacing(10)
+
+        # --- AZURE ZONE: IMAGE INFO (Selection Metadata) ---
+        self.info_panel = QFrame()
+        self.info_panel.setStyleSheet("background-color: #222; border-radius: 8px; border: 1px solid #333;")
+        info_layout = QVBoxLayout(self.info_panel)
+        info_layout.setContentsMargins(10, 10, 10, 10)
+        
+        lbl_info_title = QLabel("📄 Selection Info")
+        lbl_info_title.setStyleSheet("color: #00ffcc; font-weight: bold; font-size: 11px; border: none;")
+        info_layout.addWidget(lbl_info_title)
+        
+        self.lbl_selected_info = QLabel("No Selection")
+        self.lbl_selected_info.setStyleSheet("color: #eee; font-size: 11px; border: none;")
+        self.lbl_selected_info.setWordWrap(True)
+        info_layout.addWidget(self.lbl_selected_info)
+
+        self.lbl_selected_rating = ClickableRatingLabel("")
+        self.lbl_selected_rating.setStyleSheet("color: #ffcc00; font-weight: bold; border: none; font-size: 18px;")
+        self.lbl_selected_rating.clicked.connect(self.cycle_selected_rating)
+        info_layout.addWidget(self.lbl_selected_rating)
+        
+        self.selected_tags_container = QWidget()
+        self.selected_tags_container.setStyleSheet("border: none;")
+        self.selected_tags_layout = FlowLayout(self.selected_tags_container)
+        info_layout.addWidget(self.selected_tags_container)
+
+        self.btn_view_image = QPushButton("👁️ Fullscreen View")
+        self.btn_view_image.clicked.connect(self.open_current_in_viewer)
+        self.btn_view_image.setStyleSheet("margin-top: 10px; font-weight: bold; height: 35px;")
+        info_layout.addWidget(self.btn_view_image)
+        
+        layout.addWidget(self.info_panel)
+        
+        layout.addStretch()
+
+        # Future Tools Placeholder
+        self.combo_tools_placeholder = QComboBox()
+        self.combo_tools_placeholder.addItem("🛠️  Batch Tools (Future)")
+        self.combo_tools_placeholder.setEnabled(False)
+        self.combo_tools_placeholder.setStyleSheet("background-color: #1a1a1a; color: #555; border: 1px dashed #444;")
+        layout.addWidget(self.combo_tools_placeholder)
+
+        # Picker Mode at the very bottom
+        self.btn_picker_toggle = QPushButton("🎯 Picker Mode")
+        self.btn_picker_toggle.setCheckable(True)
+        self.btn_picker_toggle.clicked.connect(self.toggle_picker_mode)
+        self.btn_picker_toggle.setFixedSize(170, 40)
+        self.btn_picker_toggle.setStyleSheet("""
+            QPushButton { background-color: #333; color: #aaa; border-radius: 6px; }
+            QPushButton:checked { background-color: #004433; color: #00ffcc; border: 1px solid #00ffcc; }
+        """)
+        layout.addWidget(self.btn_picker_toggle, 0, Qt.AlignCenter)
+        
+        return container
+
+    def open_current_in_viewer(self):
+        if hasattr(self, 'current_selected_path') and self.current_selected_path:
+            full_paths = self._get_full_context_paths()
+            try:
+                idx = full_paths.index(self.current_selected_path)
+            except ValueError:
+                idx = 0
+                if self.current_selected_path not in full_paths:
+                    full_paths.insert(0, self.current_selected_path)
+            
+            try:
+                from .viewer import AdvancedViewer
+                viewer = AdvancedViewer(full_paths, start_index=idx, parent=self.view)
+                viewer.exec()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+
+    def _create_content(self) -> QWidget:
+        """Main Content: The Grid"""
+        # Outer container to hold Title + Grid
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 1. Header / Title
+        self.lbl_title = QLabel("🖼️ Gallery Albums")
+        self.lbl_title.setStyleSheet("color: white; font-size: 18px; font-weight: bold; padding: 15px; background-color: #111;")
+        layout.addWidget(self.lbl_title)
+
+        # 2. Scroll Area for Grid
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("background-color: #111; border: none;")
@@ -167,171 +391,66 @@ class GalleryModule(BaseModule):
         self.grid_container = QWidget()
         self.grid_layout = QGridLayout(self.grid_container)
         self.grid_layout.setSpacing(15)
-        self.grid_layout.setContentsMargins(10, 10, 10, 10)
+        self.grid_layout.setContentsMargins(15, 15, 15, 15)
         self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         
-        # Hook resize event via EventFilter for robustness
-        self.grid_container.installEventFilter(self)
-        
         scroll.setWidget(self.grid_container)
-        self.middle_layout.addWidget(scroll, 1) # Stretch ratio 1
+        layout.addWidget(scroll)
+        
+        return container
 
-        # 2. Right Sidebar (Panel)
-        self.right_panel = QFrame()
-        self.right_panel.setFixedWidth(200)
-        self.right_panel.setStyleSheet("""
-            QFrame { background-color: #1a1a1a; border-left: 1px solid #333; }
-        """)
-        self.right_layout = QVBoxLayout(self.right_panel)
-        self.right_layout.setAlignment(Qt.AlignTop)
-        self.right_layout.setContentsMargins(10, 20, 10, 10)
-        self.right_layout.setSpacing(15)
+    def _create_bottom_bar(self) -> QWidget:
+        """Bottom: Status, Pagination, Context Actions"""
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(10, 5, 10, 5)
         
-        self.btn_picker_toggle = QPushButton("🎯 Picker Mode")
-        self.btn_picker_toggle.setCheckable(True)
-        self.btn_picker_toggle.clicked.connect(self.toggle_picker_mode)
-        self.btn_picker_toggle.setFixedHeight(40)
-        self.btn_picker_toggle.setStyleSheet("""
-            QPushButton { background-color: #333; color: #888; border-radius: 5px; font-weight: bold; border: 1px solid #444; }
-            QPushButton:checked { background-color: #224433; color: #00ffcc; border-color: #00ffcc; }
-        """)
-        self.right_layout.addWidget(self.btn_picker_toggle)
-
-        self.btn_search_toggle = QPushButton("🕵️ Search & Filter")
-        self.btn_search_toggle.setCheckable(True)
-        self.btn_search_toggle.clicked.connect(self.toggle_search_panel)
-        self.btn_search_toggle.setFixedHeight(40)
-        self.btn_search_toggle.setStyleSheet("""
-            QPushButton { background-color: #333; color: #eee; border-radius: 5px; font-weight: bold; border: 1px solid #444; }
-            QPushButton:checked { background-color: #222244; color: #aaaaff; border-color: #aaaaff; }
-        """)
-        self.right_layout.addWidget(self.btn_search_toggle)
-
-        # Unified Search Panel
-        self.search_panel = QWidget()
-        self.search_panel_layout = QVBoxLayout(self.search_panel)
-        self.search_panel_layout.setContentsMargins(0, 0, 0, 0)
-        self.search_panel_layout.setSpacing(10)
-        self.search_panel.setVisible(False)
-        self.right_layout.addWidget(self.search_panel)
-
-        # 1. Broad Search
-        self.lbl_broad = QLabel("🌐 Broad Search")
-        self.lbl_broad.setStyleSheet("color: #888; font-size: 10px; font-weight: bold;")
-        self.search_panel_layout.addWidget(self.lbl_broad)
-        
-        self.txt_broad_search = QLineEdit()
-        self.txt_broad_search.setPlaceholderText("Keywords, filename...")
-        self.txt_broad_search.setStyleSheet("background-color: #222; color: #fff; border: 1px solid #444; padding: 6px; border-radius: 4px;")
-        self.txt_broad_search.returnPressed.connect(self.on_search_triggered)
-        self.search_panel_layout.addWidget(self.txt_broad_search)
-
-        # 2. Tag Search
-        self.lbl_tag_lbl = QLabel("🏷️ Tag Search")
-        self.lbl_tag_lbl.setStyleSheet("color: #888; font-size: 10px; font-weight: bold;")
-        self.search_panel_layout.addWidget(self.lbl_tag_lbl)
-        
-        self.txt_tag_search = QLineEdit()
-        self.txt_tag_search.setPlaceholderText("Exact tags...")
-        self.txt_tag_search.setStyleSheet("background-color: #222; color: #fff; border: 1px solid #444; padding: 6px; border-radius: 4px;")
-        self.txt_tag_search.returnPressed.connect(self.on_search_triggered)
-        self.search_panel_layout.addWidget(self.txt_tag_search)
-
-        # 3. Active Chips (Shared area for both)
-        self.tags_container = QWidget()
-        self.tags_layout = FlowLayout(self.tags_container)
-        self.search_panel_layout.addWidget(self.tags_container)
-
-        # 4. Rating Filter
-        self.lbl_rate_lbl = QLabel("⭐ Quality Filter")
-        self.lbl_rate_lbl.setStyleSheet("color: #888; font-size: 10px; font-weight: bold;")
-        self.search_panel_layout.addWidget(self.lbl_rate_lbl)
-
-        self.rating_filter_container = QWidget()
-        self.rating_filter_layout = QVBoxLayout(self.rating_filter_container)
-        self.rating_filter_layout.setContentsMargins(0, 0, 0, 0)
-        self.rating_filter_layout.setSpacing(5)
-        
-        self.rating_btns = []
-        for i in range(6): # 0 (All) to 5 Stars
-            btn = QPushButton("ALL STARS" if i == 0 else "⭐" * i)
-            btn.setCheckable(True)
-            if i == 0: btn.setChecked(True)
-            btn.setFixedHeight(25)
-            btn.setStyleSheet("""
-                QPushButton { background-color: #222; color: #ffcc00; border-radius: 3px; font-size: 10px; }
-                QPushButton:checked { background-color: #ffcc00; color: black; font-weight: bold; }
-            """)
-            btn.clicked.connect(lambda checked, val=i: self.apply_rating_filter(val))
-            self.rating_btns.append(btn)
-            self.rating_filter_layout.addWidget(btn)
-        
-        self.search_panel_layout.addWidget(self.rating_filter_container)
-
-        # 5. Reset Button
-        self.btn_clear_all = QPushButton("🔄 Clear All Filters")
-        self.btn_clear_all.clicked.connect(self.clear_all_filters)
-        self.btn_clear_all.setStyleSheet("""
-            background-color: #442222; color: #ff5555; padding: 5px; border-radius: 4px; font-weight: bold; margin-top: 10px;
-        """)
-        self.search_panel_layout.addWidget(self.btn_clear_all)
-
-        # Picker specific count
-        self.lbl_picked_count = QLabel("0 selected")
-        self.lbl_picked_count.setAlignment(Qt.AlignCenter)
-        self.lbl_picked_count.setStyleSheet("color: #00ffcc; font-weight: bold; margin-top: 10px;")
-        self.lbl_picked_count.setVisible(False)
-        self.right_layout.addWidget(self.lbl_picked_count)
-
-        self.btn_send_picked = QPushButton("🚀 SEND TO WORKSHOP")
-        self.btn_send_picked.setFixedHeight(50)
-        self.btn_send_picked.clicked.connect(self.send_to_workshop)
-        self.btn_send_picked.setStyleSheet("""
-            background-color: #ffaa00; color: black; border-radius: 8px; font-weight: bold; font-size: 11px;
-        """)
-        self.btn_send_picked.setVisible(False)
-        self.right_layout.addWidget(self.btn_send_picked)
-        
-        # Spacer before pagination
-        self.right_layout.addStretch()
-
-        # Pagination Section
-        pagination_group = QFrame()
-        pagination_group.setStyleSheet("background-color: #222; border-radius: 5px; border: none;")
-        pag_layout = QVBoxLayout(pagination_group)
-        
-        self.lbl_page_info = QLabel("Page 1 / ?")
-        self.lbl_page_info.setAlignment(Qt.AlignCenter)
-        self.lbl_page_info.setStyleSheet("color: #eee; font-weight: bold; margin-bottom: 5px; border: none;")
-        pag_layout.addWidget(self.lbl_page_info)
-        
-        pag_btns = QHBoxLayout()
-        self.btn_prev = QPushButton("◀")
-        self.btn_prev.clicked.connect(self.prev_page)
-        self.btn_prev.setStyleSheet("padding: 10px; font-weight: bold; border: 1px solid #444;")
-        
-        self.btn_next = QPushButton("▶")
-        self.btn_next.clicked.connect(self.next_page)
-        self.btn_next.setStyleSheet("padding: 10px; font-weight: bold; border: 1px solid #444;")
-        
-        pag_btns.addWidget(self.btn_prev)
-        pag_btns.addWidget(self.btn_next)
-        pag_layout.addLayout(pag_btns)
-        
-        self.right_layout.addWidget(pagination_group)
-        
-        self.middle_layout.addWidget(self.right_panel)
-        layout.addLayout(self.middle_layout)
-        
-        # --- Footer ---
-        self.lbl_status = QLabel("Ready.")
-        self.lbl_status.setStyleSheet("color: #888; padding: 5px;")
+        # Status Left
+        self.lbl_status = QLabel("Ready")
+        self.lbl_status.setStyleSheet("color: #888;")
         layout.addWidget(self.lbl_status)
         
-        # Initial Load
-        self.refresh_grid()
+        layout.addStretch()
         
-        return self.view
+        # Picker Actions (Hidden by default)
+        self.picker_actions = QWidget()
+        pa_layout = QHBoxLayout(self.picker_actions)
+        pa_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.lbl_picked_count = QLabel("0 Selected")
+        self.lbl_picked_count.setStyleSheet("color: #00ffcc; font-weight: bold; margin-right: 10px;")
+        pa_layout.addWidget(self.lbl_picked_count)
+        
+        self.btn_send_picked = QPushButton("🚀 Send to Workshop")
+        self.btn_send_picked.clicked.connect(self.send_to_workshop)
+        self.btn_send_picked.setStyleSheet("background-color: #ffaa00; color: black; font-weight: bold; border-radius: 4px; padding: 5px 10px;")
+        pa_layout.addWidget(self.btn_send_picked)
+        
+        layout.addWidget(self.picker_actions)
+        self.picker_actions.setVisible(False)
+        
+        layout.addStretch()
+        
+        # Pagination Right
+        self.btn_prev = QPushButton("◀")
+        self.btn_prev.setFixedSize(30, 30)
+        self.btn_prev.clicked.connect(self.prev_page)
+        
+        self.lbl_page_info = QLabel("Page 1")
+        self.lbl_page_info.setStyleSheet("color: white; padding: 0 10px;")
+        
+        self.btn_next = QPushButton("▶")
+        self.btn_next.setFixedSize(30, 30)
+        self.btn_next.clicked.connect(self.next_page)
+        
+        for btn in [self.btn_prev, self.btn_next]:
+            btn.setStyleSheet("background-color: #333; color: white; border: 1px solid #555; border-radius: 4px;")
+        
+        layout.addWidget(self.btn_prev)
+        layout.addWidget(self.lbl_page_info)
+        layout.addWidget(self.btn_next)
+        
+        return container
 
     def switch_to_albums(self):
         self.current_view_mode = self.VIEW_ALBUMS
@@ -389,6 +508,12 @@ class GalleryModule(BaseModule):
         
         self.lbl_status.setText(f"Filter active: {len(self.current_query_tags)} tags, {len(self.current_query_terms)} terms")
 
+    def on_rating_changed(self, index):
+        """Index 0 = All, 1 = 1 Star, etc."""
+        self.current_rating_filter = index
+        self.current_page = 0
+        self.refresh_grid()
+        
     def clear_all_filters(self):
         """Resets all search and rating filters."""
         self.current_query_tags = []
@@ -396,8 +521,7 @@ class GalleryModule(BaseModule):
         self.current_rating_filter = 0
         
         # Reset Stars UI
-        for i, btn in enumerate(self.rating_btns):
-            btn.setChecked(i == 0)
+        self.combo_rating.setCurrentIndex(0)
             
         self.txt_broad_search.clear()
         self.txt_tag_search.clear()
@@ -483,6 +607,10 @@ class GalleryModule(BaseModule):
         self.btn_picker_toggle.setVisible(True)
         self.lbl_title.setText(f"🔎 {title}")
         self.refresh_grid()
+
+    def load_image_set(self, paths: list):
+        """Standard interface for receiving sets from Librarian."""
+        self.load_custom_view(paths, title="Imported Set")
 
     def open_custom_folder(self):
         """Allows user to select a folder and view its images directly."""
@@ -695,6 +823,7 @@ class GalleryModule(BaseModule):
             self.loader.get_thumbnail_image(path)
 
     def on_thumbnail_clicked(self, path):
+        # Update Selection State Logic
         if self.picker_mode:
             # Toggle Selection
             norm_path = os.path.normpath(path)
@@ -702,34 +831,92 @@ class GalleryModule(BaseModule):
                 self.picked_paths.remove(norm_path)
             else:
                 self.picked_paths.add(norm_path)
-            
-            # Update visual state of the clicked widget
+            # Update visual state
             for i in range(self.grid_layout.count()):
                 widget = self.grid_layout.itemAt(i).widget()
                 if isinstance(widget, ClickableThumbnail) and widget.path == norm_path:
                     widget.setSelected(norm_path in self.picked_paths)
                     break
-            
-            # Update UI
-            count = len(self.picked_paths)
-            self.lbl_picked_count.setText(f"{count} selected")
-            self.btn_send_picked.setVisible(count > 0)
-            return
+        else:
+            # Single Select Logic
+            self.current_selected_path = path
+            # Update Visual Highlight
+            for i in range(self.grid_layout.count()):
+                widget = self.grid_layout.itemAt(i).widget()
+                if isinstance(widget, ClickableThumbnail):
+                    widget.setSelected(widget.path == path)
 
-        # Regular Click: Use FULL context for viewer carousel
-        full_paths = self._get_full_context_paths()
-        try:
-            idx = full_paths.index(path)
-        except ValueError:
-            # Fallback if somehow path not in fresh query (rare race condition)
-            idx = 0
-            if path not in full_paths:
-                full_paths.insert(0, path)
+        # ALWAYS update the Edit Panel (Blue Zone)
+        self.update_properties_panel()
+
+    def update_properties_panel(self, path=None): # Path arg deprecated but kept for compat
+        """Refreshes the 'Edit Selection' Blue Zone."""
+        
+        # Case A: Picker Mode with Multiple Items
+        if self.picker_mode:
+            count = len(self.picked_paths)
+            self.lbl_selected_info.setText(f"{count} images selected")
+            self.btn_view_image.setVisible(False)
+            self.lbl_selected_rating.setText("") # Clear rating in picker mode
             
-        # Open Advanced Viewer
-        from .viewer import AdvancedViewer
-        viewer = AdvancedViewer(full_paths, start_index=idx, parent=self.view)
-        viewer.exec()
+            # Clear Tags List
+            while self.selected_tags_layout.count():
+                item = self.selected_tags_layout.takeAt(0)
+                if item.widget(): item.widget().deleteLater()
+
+        # Case B: Single Selection
+        else:
+            if hasattr(self, 'current_selected_path') and self.current_selected_path:
+                path = self.current_selected_path
+                self.lbl_selected_info.setText(os.path.basename(path))
+                self.btn_view_image.setVisible(True)
+
+                # Update Rating Display
+                rating = self.db.get_file_rating(path)
+                self.lbl_selected_rating.setText("★" * rating if rating > 0 else "☆☆☆☆☆")
+                
+                # Show Tags for this single file
+                tags = self.db.get_tags_for_file(path)
+                while self.selected_tags_layout.count():
+                    item = self.selected_tags_layout.takeAt(0)
+                    if item.widget(): item.widget().deleteLater()
+                    
+                for tag in tags:
+                    chip = TagChip(tag)
+                    chip.removed.connect(lambda t=tag, p=path: self.remove_tag_from_current_image(t, p))
+                    self.selected_tags_layout.addWidget(chip)
+            else:
+                self.lbl_selected_info.setText("No image selected")
+                self.btn_view_image.setVisible(False)
+                self.lbl_selected_rating.setText("")
+                
+    def cycle_selected_rating(self):
+        """Cycles rating for the currently selected image."""
+        if not hasattr(self, 'current_selected_path') or not self.current_selected_path:
+            return
+            
+        path = self.current_selected_path
+        current = self.db.get_file_rating(path)
+        new_rating = (current + 1) % 6
+        
+        if self.db.update_file_rating(path, new_rating):
+            self.lbl_selected_rating.setText("★" * new_rating if new_rating > 0 else "☆☆☆☆☆")
+            # Update thumbnail in grid
+            for i in range(self.grid_layout.count()):
+                w = self.grid_layout.itemAt(i).widget()
+                if isinstance(w, ClickableThumbnail) and w.path == path:
+                    w.setRating(new_rating)
+                    break 
+
+
+    def remove_tag_from_current_image(self, tag, path):
+        # Remove from DB
+        success = self.db.remove_tag_from_file(path, tag)
+        if success:
+            self.update_properties_panel(path) # Refresh UI
+            self.lbl_status.setText(f"Removed tag '{tag}'")
+        else:
+            self.lbl_status.setText("Failed to remove tag.")
 
     def _get_full_context_paths(self):
         """Returns the complete list of paths for the current view, ignoring pagination."""

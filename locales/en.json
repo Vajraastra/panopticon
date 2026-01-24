@@ -1,0 +1,8 @@
+{
+    "app.title": "PANOPTICON",
+    "app.subtitle": "Modular Image Organizer",
+    "dashboard.welcome": "PANOPTICON",
+    "dashboard.tools": "AVAILABLE TOOLS",
+    "tool.cropper.name": "Smart Cropper",
+    "tool.cropper.desc": "High-precision image cropping tool."
+}

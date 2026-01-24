@@ -20,11 +20,11 @@ class CropperModule(BaseModule):
 
     @property
     def name(self):
-        return self._name
+        return self.tr("tool.cropper.name", self._name)
 
     @property
     def description(self):
-        return self._description
+        return self.tr("tool.cropper.desc", self._description)
 
     @property
     def icon(self):
@@ -319,3 +319,7 @@ class CropperModule(BaseModule):
                     QMessageBox.critical(self.view, "Error", str(e))
         else:
              QMessageBox.warning(self.view, "Warning", "No selection made.")
+    def load_image_set(self, paths: list):
+        """Standard interface for receiving sets from Librarian."""
+        if paths:
+            self.load_image(paths[0])

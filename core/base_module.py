@@ -47,3 +47,16 @@ class BaseModule(QObject):
         :return: Processed data or result.
         """
         pass
+
+    def load_image_set(self, paths: list):
+        """
+        Populate the module with a specific set of images.
+        To be implemented by child modules that handle image sets.
+        """
+        pass
+
+    def tr(self, key, default=None):
+        """Translate a key using the LocaleManager in context."""
+        if hasattr(self, 'context') and self.context and 'locale_manager' in self.context:
+            return self.context['locale_manager'].tr(key, default)
+        return default if default else key

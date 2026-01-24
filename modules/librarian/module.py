@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
                                QListWidget, QFileDialog, QMessageBox, QProgressBar, QFrame,
-                               QLineEdit, QDialog, QCompleter)
+                               QLineEdit, QDialog, QCompleter, QScrollArea, QGridLayout, QComboBox)
 from PySide6.QtGui import QPixmap, QIcon, QMouseEvent
 from PySide6.QtCore import Qt, QSize, Signal
 from core.base_module import BaseModule
@@ -82,9 +82,9 @@ class ClickableThumbnail(QLabel):
 
 class LibrarianModule(BaseModule):
     # Signals for Integration
-    request_open_gallery = Signal(list, str) # paths, title_context
-    request_open_metadata = Signal(list)     # paths
-    request_open_workshop = Signal(list)     # paths
+    request_open_gallery = Signal(list, str)   # paths, title_context
+    request_open_optimizer = Signal(list)     # paths
+    request_open_cropper = Signal(list)       # paths
 
     def __init__(self):
         super().__init__()
@@ -92,6 +92,12 @@ class LibrarianModule(BaseModule):
         # Initialize DB Manager (using default 'panopticon.db' in the root)
         self.db = DatabaseManager()
         self.indexer_thread = None
+        
+        # Pagination State
+        self.current_page = 0
+        self.page_size = 100
+        self.total_paths = []
+        self.current_folder_path = None
 
     @property
     def name(self):
@@ -108,20 +114,49 @@ class LibrarianModule(BaseModule):
     def get_view(self) -> QWidget:
         if self.view: return self.view
         
-        self.view = QWidget()
-        layout = QVBoxLayout(self.view)
-        layout.setContentsMargins(20, 20, 20, 20)
+        # Create sub-components
+        self.sidebar = self._create_sidebar()
+        self.content = self._create_content()
+        self.bottom = self._create_bottom_bar()
+        
+        # Assemble using StandardToolLayout
+        from core.components.standard_layout import StandardToolLayout
+        self.view = StandardToolLayout(
+            self.content,
+            self.sidebar, 
+            self.bottom,
+            theme_manager=self.context.get('theme_manager'),
+            event_bus=self.context.get('event_bus')
+        )
+        
+        # Initial Load/Sync
+        self.refresh_ui()
+        self.update_global_stats()
+        
+        # Setup Autocomplete
+        self.setup_completer()
+        self.populate_tag_sidebar()
+
+        # Trigger initial sync (Intelligent)
+        if self.db.get_watched_folders():
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(500, lambda: self.toggle_scan(auto=True))
+            
+        return self.view
+
+    def _create_sidebar(self) -> QWidget:
+        """Sidebar: Watched Folders Management"""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
         
         # Header
-        title = QLabel("📚 Library Manager")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #00ffcc; margin-bottom: 10px;")
-        layout.addWidget(title)
+        lbl = QLabel("📚 Library Sources")
+        lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: white;")
+        layout.addWidget(lbl)
         
-        # Watched Folders Section
-        lbl_folders = QLabel("📂 Watched Folders for Indexing:")
-        lbl_folders.setStyleSheet("font-size: 16px; font-weight: bold; color: #eee;")
-        layout.addWidget(lbl_folders)
-        
+        # List
         self.folder_list = QListWidget()
         self.folder_list.setStyleSheet("""
             QListWidget {
@@ -129,282 +164,243 @@ class LibrarianModule(BaseModule):
                 border: 1px solid #333;
                 border-radius: 8px;
                 color: #ddd;
-                font-size: 14px;
-                padding: 5px;
+                font-size: 13px;
+                outline: none;
             }
-            QListWidget::item {
-                padding: 8px;
-            }
-            QListWidget::item:selected {
-                background-color: #333;
-                color: #00ffcc;
-            }
+            QListWidget::item { padding: 8px; }
+            QListWidget::item:selected { background-color: #333; color: #00ffcc; border: 1px solid #00ffcc; }
         """)
         self.folder_list.itemClicked.connect(self.on_folder_selected)
         layout.addWidget(self.folder_list)
         
-        # Button Bar
+        # Buttons
         btn_layout = QHBoxLayout()
-        
-        self.btn_add = QPushButton("➕ Add Folder")
+        self.btn_add = QPushButton("➕ Add")
         self.btn_add.clicked.connect(self.add_folder)
-        self.btn_add.setStyleSheet("""
-            QPushButton {
-                background-color: #222;
-                color: #00ffcc;
-                border: 1px solid #00ffcc;
-                border-radius: 5px;
-                padding: 10px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #00ffcc;
-                color: black;
-            }
-        """)
+        self.btn_add.setStyleSheet("background-color: #222; color: #00ffcc; border: 1px solid #444; border-radius: 4px; padding: 6px;")
         
-        self.btn_remove = QPushButton("❌ Remove Selected")
+        self.btn_remove = QPushButton("❌ Remove")
         self.btn_remove.clicked.connect(self.remove_folder)
-        self.btn_remove.setStyleSheet("""
-            QPushButton {
-                background-color: #222;
-                color: #ff5555;
-                border: 1px solid #ff5555;
-                border-radius: 5px;
-                padding: 10px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #ff5555;
-                color: white;
-            }
-        """)
+        self.btn_remove.setStyleSheet("background-color: #222; color: #ff5555; border: 1px solid #444; border-radius: 4px; padding: 6px;")
         
         btn_layout.addWidget(self.btn_add)
         btn_layout.addWidget(self.btn_remove)
         layout.addLayout(btn_layout)
         
-        # --- Preview Section ---
-        layout.addSpacing(15)
-        self.preview_frame = QFrame()
-        self.preview_frame.setStyleSheet("background-color: #1a1a1a; border-radius: 10px; border: 1px solid #333;")
-        self.preview_frame.setFixedHeight(120)
-        self.preview_frame.hide() # Hidden by default until selection
+        # --- Section 2: Tag Selection ---
+        layout.addSpacing(20)
+        lbl_tags = QLabel("🏷️ Available Tags")
+        lbl_tags.setStyleSheet("font-size: 14px; font-weight: bold; color: #888;")
+        layout.addWidget(lbl_tags)
         
-        # Layout for images only
-        self.preview_layout_images = QHBoxLayout(self.preview_frame)
-        self.preview_layout_images.setContentsMargins(10, 10, 10, 10)
-        layout.addWidget(self.preview_frame)
-        
-        # Folder Stats Label (Between Preview and Scan)
-        self.lbl_folder_stats = QLabel("")
-        self.lbl_folder_stats.setStyleSheet("color: #00ffcc; font-size: 14px; font-weight: bold; margin-top: 5px; margin-bottom: 5px;")
-        self.lbl_folder_stats.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.lbl_folder_stats)
-
-        # Indexer Controls
-        layout.addSpacing(5)
-        idx_layout = QHBoxLayout()
-        
-        self.btn_scan = QPushButton("🚀 Scan & Index Library")
-        self.btn_scan.clicked.connect(self.toggle_scan)
-        self.btn_scan.setStyleSheet("""
-            QPushButton {
-                background-color: #00ba88;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                padding: 15px;
-                font-size: 16px;
-                font-weight: bold;
+        self.tag_list = QListWidget()
+        self.tag_list.setStyleSheet("""
+            QListWidget {
+                background-color: #0a0a0a;
+                border: 1px solid #222;
+                border-radius: 6px;
+                color: #bbb;
+                font-size: 12px;
+                outline: none;
             }
-            QPushButton:hover {
-                background-color: #00e6a8;
-            }
-            QPushButton:disabled {
-                background-color: #444;
-                color: #888;
-            }
+            QListWidget::item { padding: 5px; }
+            QListWidget::item:selected { background-color: #00ffcc; color: black; border-radius: 4px; }
         """)
+        self.tag_list.itemClicked.connect(self._on_tag_item_clicked)
+        layout.addWidget(self.tag_list)
+        
+        # Stats at bottom of sidebar
+        layout.addStretch()
+        self.lbl_stats = QLabel("Loading...")
+        self.lbl_stats.setWordWrap(True)
+        self.lbl_stats.setStyleSheet("color: #888; font-size: 12px; border-top: 1px solid #333; padding-top: 10px;")
+        layout.addWidget(self.lbl_stats)
+        
+        return container
 
-        self.btn_sync = QPushButton("🧹 Sync & Clean")
-        self.btn_sync.clicked.connect(lambda: self.toggle_scan(sync_only=True))
-        self.btn_sync.setStyleSheet("""
-            QPushButton {
-                background-color: #222;
-                color: #00ffcc;
-                border: 1px solid #00ffcc;
-                border-radius: 8px;
-                padding: 15px;
-                font-size: 16px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #00ffcc;
-                color: black;
-            }
-            QPushButton:disabled {
-                background-color: #444;
-                color: #888;
-            }
-        """)
-        idx_layout.addWidget(self.btn_scan)
-        idx_layout.addWidget(self.btn_sync)
-        layout.addLayout(idx_layout)
+    def _create_content(self) -> QWidget:
+        """Main Content: Tag Explorer and Preview"""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0) # StandardLayout handles padding
+        layout.setSpacing(15)
         
-        # Progress Bar
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                border: 1px solid #444;
-                border-radius: 5px;
-                background-color: #111;
-                text-align: center;
-                color: white;
-            }
-            QProgressBar::chunk {
-                background-color: #00ffcc;
-                width: 10px; 
-            }
-        """)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
-        
-        self.lbl_status = QLabel("")
-        self.lbl_status.setStyleSheet("color: #888; font-size: 12px; margin-top: 5px;")
-        self.lbl_status.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.lbl_status)
-
-        # Trigger initial sync (Intelligent)
-        if self.db.get_watched_folders():
-            # Small delay to let the UI render
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(500, lambda: self.toggle_scan(auto=True))
-        
-        # --- Tag Explorer ---
-        layout.addSpacing(15)
-        
-        # Divider
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Sunken)
-        line.setStyleSheet("background-color: #333;")
-        layout.addWidget(line)
+        # --- Section 1: Tag Explorer ---
+        search_frame = QFrame()
+        search_frame.setStyleSheet("background-color: transparent;")
+        sf_layout = QVBoxLayout(search_frame)
+        sf_layout.setContentsMargins(0, 0, 0, 0)
         
         lbl_search = QLabel("🔭 Tag Explorer")
-        lbl_search.setStyleSheet("font-size: 16px; font-weight: bold; color: #eee; margin-top: 10px;")
-        layout.addWidget(lbl_search)
+        lbl_search.setStyleSheet("font-size: 18px; font-weight: bold; color: white;")
+        sf_layout.addWidget(lbl_search)
         
-        # Tag Display Area (Flow Layout)
-        self.tag_container = QWidget()
-        self.tag_flow_layout = FlowLayout(self.tag_container)
-        layout.addWidget(self.tag_container)
-        
-        self.active_tags = [] # Keep track of current tags
-        
-        # Input Area
-        search_layout = QHBoxLayout()
+        # Input
+        input_layout = QHBoxLayout()
         self.input_search = QLineEdit()
-        self.input_search.setPlaceholderText("Type a tag and hit Enter (or separate with commas)...")
+        self.input_search.setPlaceholderText("Type a tag and hit Enter (e.g. 'portrait', 'blue')...")
         self.input_search.returnPressed.connect(self.add_tag_from_input)
         self.input_search.setStyleSheet("""
             QLineEdit {
                 background-color: #222;
-                border: 1px solid #444;
-                border-radius: 5px;
-                padding: 8px;
+                border: 1px solid #444; #555;
+                border-radius: 6px;
+                padding: 10px;
                 color: white;
+                font-size: 14px;
             }
-            QLineEdit:focus {
-                border: 1px solid #00ffcc;
-            }
-        """)
-        search_layout.addWidget(self.input_search)
-        
-        self.btn_search = QPushButton("Search")
-        self.btn_search.setStyleSheet("""
-            QPushButton {
-                background-color: #333;
-                border: 1px solid #555;
-                color: white;
-                padding: 8px 15px;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #555;
-            }
-        """)
-        self.btn_search.clicked.connect(self.mock_search)
-        search_layout.addWidget(self.btn_search)
-        layout.addLayout(search_layout)
-        
-        self.btn_to_viewer = QPushButton("📤 Send to Viewer")
-        self.btn_to_viewer.setEnabled(False) 
-        self.btn_to_viewer.clicked.connect(self.send_to_viewer)
-        self.btn_to_viewer.setStyleSheet("""
-            QPushButton {
-                background-color: #222;
-                color: #aaa;
-                border: 1px solid #444;
-                border-radius: 5px;
-                padding: 10px;
-                margin-top: 5px;
-            }
-            QPushButton:hover { background-color: #333; }
+            QLineEdit:focus { border: 1px solid #00ffcc; }
         """)
         
-        self.btn_to_workshop = QPushButton("🛠️ Send to Workshop")
-        self.btn_to_workshop.setEnabled(False) 
-        self.btn_to_workshop.clicked.connect(self.send_to_workshop)
-        self.btn_to_workshop.setStyleSheet("""
-            QPushButton {
-                background-color: #222;
-                color: #aaa;
-                border: 1px solid #444;
-                border-radius: 5px;
-                padding: 10px;
-                margin-top: 5px;
-            }
-            QPushButton:hover { background-color: #333; }
-        """)
+        self.btn_search = QPushButton("🔍")
+        self.btn_search.setFixedWidth(50)
+        self.btn_search.clicked.connect(self.perform_search)
+        self.btn_search.setStyleSheet("background-color: #333; color: white; border-radius: 6px; border: 1px solid #444;")
+        
+        input_layout.addWidget(self.input_search)
+        input_layout.addWidget(self.btn_search)
+        sf_layout.addLayout(input_layout)
+        
+        # Active Tags Area
+        self.tag_container = QWidget()
+        self.tag_flow_layout = FlowLayout(self.tag_container)
+        sf_layout.addWidget(self.tag_container)
+        self.active_tags = [] 
+        
+        layout.addWidget(search_frame)
+        
+        # --- Section 2: Preview (GRID) ---
+        self.lbl_folder_stats = QLabel("") 
+        self.lbl_folder_stats.setAlignment(Qt.AlignCenter)
+        self.lbl_folder_stats.setStyleSheet("color: #00ffcc; font-size: 14px; font-weight: bold;")
+        layout.addWidget(self.lbl_folder_stats)
+        
+        # Pagination Header
+        self.pagination_layout = QHBoxLayout()
+        self.btn_prev = QPushButton("◀ Prev")
+        self.btn_next = QPushButton("Next ▶")
+        self.lbl_page_info = QLabel("Page 1 of 1")
+        self.lbl_page_info.setStyleSheet("color: #888; font-weight: bold;")
+        
+        for b in [self.btn_prev, self.btn_next]:
+            b.setFixedWidth(80)
+            b.setEnabled(False)
+            b.setCursor(Qt.PointingHandCursor)
+            
+        self.btn_prev.clicked.connect(self.prev_page)
+        self.btn_next.clicked.connect(self.next_page)
+        
+        self.pagination_layout.addStretch()
+        self.pagination_layout.addWidget(self.btn_prev)
+        self.pagination_layout.addWidget(self.lbl_page_info)
+        self.pagination_layout.addWidget(self.btn_next)
+        self.pagination_layout.addStretch()
+        layout.addLayout(self.pagination_layout)
 
-        self.btn_to_metadata = QPushButton("📋 Send to Metadata Reader")
-        self.btn_to_metadata.setEnabled(False) 
-        self.btn_to_metadata.clicked.connect(self.send_to_metadata)
-        self.btn_to_metadata.setStyleSheet("""
-            QPushButton {
-                background-color: #222;
-                color: #aaa;
-                border: 1px solid #444;
-                border-radius: 5px;
-                padding: 10px;
-                margin-top: 5px;
-            }
-            QPushButton:hover { background-color: #333; }
-        """)
+        # Scrollable Grid Area
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("background-color: #111; border: 1px solid #333; border-radius: 8px;")
         
-        btns_export_layout = QHBoxLayout()
-        btns_export_layout.addWidget(self.btn_to_viewer)
-        btns_export_layout.addWidget(self.btn_to_workshop)
-        btns_export_layout.addWidget(self.btn_to_metadata)
-        layout.addLayout(btns_export_layout)
+        self.grid_widget = QWidget()
+        self.grid_layout_images = QGridLayout(self.grid_widget)
+        self.grid_layout_images.setSpacing(10)
+        self.grid_layout_images.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        
+        self.scroll_area.setWidget(self.grid_widget)
+        layout.addWidget(self.scroll_area)
+        
+        # --- Section 3: Actions (DROPDOWN) ---
+        action_bar = QFrame()
+        action_bar.setStyleSheet("background-color: #151515; border-radius: 10px; padding: 10px;")
+        ab_layout = QHBoxLayout(action_bar)
+        
+        lbl_act = QLabel("🎯 Selection Action:")
+        lbl_act.setStyleSheet("color: #888; font-weight: bold;")
+        ab_layout.addWidget(lbl_act)
+        
+        self.combo_actions = QComboBox()
+        self.combo_actions.addItems([
+            "--- Send Selection to... ---",
+            "🖼️ Open in Gallery",
+            "🚀 Send to Optimizer",
+            "✂️ Send to Cropper"
+        ])
+        self.combo_actions.setStyleSheet("""
+            QComboBox { 
+                background-color: #222; 
+                color: white; 
+                padding: 8px; 
+                border-radius: 6px; 
+                min-width: 250px;
+                border: 1px solid #444;
+                font-weight: bold;
+            }
+            QComboBox::drop-down { border: none; width: 30px; }
+            QComboBox QAbstractItemView { background-color: #222; color: white; selection-background-color: #00ffcc; selection-color: black; }
+        """)
+        self.combo_actions.currentIndexChanged.connect(self._on_action_selection_changed)
+        ab_layout.addWidget(self.combo_actions)
+        
+        self.btn_execute = QPushButton("⚡ Execute")
+        self.btn_execute.setCursor(Qt.PointingHandCursor)
+        self.btn_execute.setEnabled(False)
+        self.btn_execute.clicked.connect(self.execute_selected_action)
+        self.btn_execute.setStyleSheet("""
+            QPushButton { background-color: #00ffcc; color: black; font-weight: bold; padding: 8px 20px; border-radius: 4px; }
+            QPushButton:hover { background-color: white; }
+            QPushButton:disabled { background-color: #333; color: #666; }
+        """)
+        ab_layout.addWidget(self.btn_execute)
+        
+        layout.addWidget(action_bar)
+        
+        return container
 
+    def _on_action_selection_changed(self, index):
+        """Enables execute button only if a valid tool is selected and we have images."""
+        self.btn_execute.setEnabled(index > 0 and len(self.total_paths) > 0)
+
+    def _create_bottom_bar(self) -> QWidget:
+        """Bottom: Indexing Controls"""
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setSpacing(15)
+        
+        # Scan Status / Progress
+        self.lbl_status = QLabel("Ready")
+        self.lbl_status.setStyleSheet("color: #aaa;")
+        layout.addWidget(self.lbl_status)
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedWidth(200)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar { border: 1px solid #444; border-radius: 4px; background: #111; color: transparent; }
+            QProgressBar::chunk { background: #00ffcc; border-radius: 3px; }
+        """)
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+        
         layout.addStretch()
         
-        # DB Stats Footer
-        self.lbl_stats = QLabel("Loading...")
-        self.lbl_stats.setStyleSheet("color: #888; font-size: 13px; border-top: 1px solid #333; padding-top: 10px;")
-        layout.addWidget(self.lbl_stats)
+        # Controls
+        self.btn_sync = QPushButton("🧹 Purge Ghost Files")
+        self.btn_sync.clicked.connect(lambda: self.toggle_scan(sync_only=True))
+        self.btn_sync.setFixedWidth(150)
+        self.btn_sync.setCursor(Qt.PointingHandCursor)
+        self.btn_sync.setStyleSheet("background-color: transparent; color: #aaa; border: 1px solid #444; border-radius: 4px; padding: 6px;")
+
+        self.btn_scan = QPushButton("🚀 Run Indexer")
+        self.btn_scan.clicked.connect(self.toggle_scan)
+        self.btn_scan.setFixedWidth(150)
+        self.btn_scan.setCursor(Qt.PointingHandCursor)
+        self.btn_scan.setStyleSheet("background-color: #00ffcc; color: black; font-weight: bold; border-radius: 4px; padding: 6px;")
         
-        # Initial Load
-        self.refresh_ui()
-        self.update_global_stats()
+        layout.addWidget(self.btn_sync)
+        layout.addWidget(self.btn_scan)
         
-        # Setup Autocomplete for Tags
-        self.setup_completer()
-        
-        return self.view
+        return container
 
     def setup_completer(self):
         """Initializes the QCompleter for the tag input."""
@@ -445,59 +441,100 @@ class LibrarianModule(BaseModule):
     def remove_tag(self, tag_text):
         if tag_text in self.active_tags:
             self.active_tags.remove(tag_text)
-            self.perform_search() # Update search on remove
+            self.perform_search() # Real-time update
 
     def perform_search(self):
         """Executes search based on active_tags and updates UI."""
-        
-        # If no tags, reset to default state
         if not self.active_tags:
-            self.preview_frame.hide()
-            self.lbl_folder_stats.clear()
-            self.update_global_stats() # Reset footer to global
+            # If search cleared, fallback to folder or show nothing
+            if hasattr(self, 'current_folder_path') and self.current_folder_path:
+                self.load_folder_paths(self.current_folder_path)
+            else:
+                self.total_paths = []
+                self.current_page = 0
+                self.refresh_thumbnails_grid()
+                self.lbl_folder_stats.setText("Tag Explorer Cleared.")
             return
 
-        # Perform Search
-        count, preview_paths = self.db.search_by_terms(self.active_tags, limit=5)
+        # Fetch results
+        count, paths = self.db.search_by_terms(self.active_tags, limit=10000)
+        self.total_paths = paths
+        self.current_page = 0
         
-        # Update Preview UI
-        self.preview_frame.show()
-        # Ensure we clear any folder selection highlight since we are now in "Search Mode"
-        self.folder_list.clearSelection() 
-        
-        tags_display = ", ".join(self.active_tags[:3])
-        if len(self.active_tags) > 3: tags_display += "..."
-        
-        self.lbl_folder_stats.setText(f"📊 Search: [{tags_display}] | 👁️ Matching Images: {count}")
-        
-        # Clear previous thumbnails
-        while self.preview_layout_images.count():
-            child = self.preview_layout_images.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-                
         if count == 0:
-            lbl = QLabel("No matches found.")
-            lbl.setStyleSheet("color: #666; font-style: italic;")
-            self.preview_layout_images.addWidget(lbl)
+            self.lbl_folder_stats.setText("⚠️ No images found with these tags.")
         else:
-            # Add new thumbnails (Clickable)
-            for p in preview_paths:
-                thumb = ClickableThumbnail(p)
-                thumb.clicked.connect(self.on_thumbnail_clicked)
-                self.preview_layout_images.addWidget(thumb)
+            self.lbl_folder_stats.setText(f"🔍 Found {count} items matching tags")
             
-        self.preview_layout_images.addStretch()
+        self.refresh_thumbnails_grid()
         
-        # Update Footer Stats with Search Info
+        # Update Footer Stats
         folders = self.db.get_watched_folders()
-        self.lbl_stats.setText(f"📊 SEARCH MODE | Criteria: {len(self.active_tags)} tags | Found: {count} | Watched Folders: {len(folders)}")
+        self.lbl_stats.setText(f"📊 SEARCH | {len(self.active_tags)} tags | Found: {count} | Folders: {len(folders)}")
 
-        # Enable export buttons if results found
-        has_results = count > 0
-        self.btn_to_viewer.setEnabled(has_results)
-        self.btn_to_workshop.setEnabled(has_results)
-        self.btn_to_metadata.setEnabled(has_results)
+    def execute_selected_action(self):
+        """Dispatches the current selection to the chosen tool."""
+        action = self.combo_actions.currentText()
+        if "Gallery" in action:
+            self.send_to_gallery()
+        elif "Optimizer" in action:
+            self.send_to_optimizer()
+        elif "Cropper" in action:
+            self.send_to_cropper()
+
+    def prev_page(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.refresh_thumbnails_grid()
+
+    def next_page(self):
+        max_pages = (len(self.total_paths) - 1) // self.page_size
+        if self.current_page < max_pages:
+            self.current_page += 1
+            self.refresh_thumbnails_grid()
+
+    def refresh_thumbnails_grid(self):
+        """Redraws the thumbnails for the current page."""
+        # Clear Previous
+        while self.grid_layout_images.count():
+            item = self.grid_layout_images.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+            
+        start = self.current_page * self.page_size
+        end = start + self.page_size
+        page_items = self.total_paths[start:end]
+        
+        cols = 5 # Standard columns for Librarian
+        for i, path in enumerate(page_items):
+            thumb = ClickableThumbnail(path)
+            thumb.clicked.connect(self.on_thumbnail_clicked)
+            self.grid_layout_images.addWidget(thumb, i // cols, i % cols)
+            
+        # Update Pagination UI
+        total = len(self.total_paths)
+        num_pages = (total - 1) // self.page_size + 1 if total > 0 else 1
+        self.lbl_page_info.setText(f"Page {self.current_page + 1} of {num_pages}")
+        
+        self.btn_prev.setEnabled(self.current_page > 0)
+        self.btn_next.setEnabled(self.current_page < num_pages - 1)
+        
+        # Enable Execute if we have results
+        self.btn_execute.setEnabled(total > 0 and self.combo_actions.currentIndex() > 0)
+
+    def _on_tag_item_clicked(self, item):
+        """Adds a tag from the sidebar list to the search input."""
+        tag = item.text()
+        if tag not in self.active_tags:
+            self.active_tags.append(tag)
+            self.add_chip_to_ui(tag)
+            self.perform_search()
+
+    def populate_tag_sidebar(self):
+        """Fetches all tags from the DB and populates the sidebar list."""
+        self.tag_list.clear()
+        all_tags = self.db.get_all_tags()
+        if all_tags:
+            self.tag_list.addItems(all_tags)
 
     def on_thumbnail_clicked(self, path):
         """Opens the clicked thumbnail in a larger dialog."""
@@ -521,46 +558,19 @@ class LibrarianModule(BaseModule):
     def on_folder_selected(self, item):
         """Displays preview for the selected folder."""
         folder_path = item.text()
-        
-        # Get count
-        count = self.db.get_folder_count(folder_path)
-        
-        # Get thumbnails
-        preview_paths = self.db.get_folder_preview(folder_path, limit=5)
-        
-        # Update UI
-        self.preview_frame.show()
-        # Update the standalone stats label instead of the title
-        self.lbl_folder_stats.setText(f"📁 {(os.path.basename(folder_path))} | 👁️ Images Found: {count}")
-        
-        # Clear previous thumbnails
-        while self.preview_layout_images.count():
-            child = self.preview_layout_images.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-                
-        # Add new thumbnails (Clickable)
-        for p in preview_paths:
-            thumb = ClickableThumbnail(p)
-            thumb.clicked.connect(self.on_thumbnail_clicked)
-            self.preview_layout_images.addWidget(thumb)
-            
-        self.preview_layout_images.addStretch()
+        self.current_folder_path = folder_path
+        self.load_folder_paths(folder_path)
 
-        # Enable export buttons
-        has_results = count > 0
-        self.btn_to_viewer.setEnabled(has_results)
-        self.btn_to_workshop.setEnabled(has_results)
-        self.btn_to_metadata.setEnabled(has_results)
+    def load_folder_paths(self, folder_path):
+        """Helper to fetch and display paths for a specific folder."""
+        # Get paths from DB
+        paths = self.db.get_files_recursive(folder_path, limit=10000)
+        self.total_paths = paths
+        self.current_page = 0
+        
+        self.lbl_folder_stats.setText(f"📂 {os.path.basename(folder_path)} | {len(paths)} Images Found")
+        self.refresh_thumbnails_grid()
 
-    def mock_search(self):
-        """Placeholder for search functionality."""
-        if not self.active_tags:
-             QMessageBox.information(self.view, "Search", "Please add some tags first!")
-             return
-             
-        tags_str = ", ".join(self.active_tags)
-        QMessageBox.information(self.view, "Search", f"Searching for tags: [{tags_str}] is not yet implemented.\nThis will filter the database and update the preview box.")
 
     def update_global_stats(self):
         if self.db.conn:
@@ -575,8 +585,26 @@ class LibrarianModule(BaseModule):
         self.folder_list.clear()
         folders = self.db.get_watched_folders()
         self.folder_list.addItems(folders)
-        self.preview_frame.hide() # Reset preview on refresh
-        self.lbl_folder_stats.clear() # Clear stats
+        self.refresh_current_view()
+        self.update_global_stats()
+
+    def refresh_current_view(self):
+        """Forces a re-fetch of data for the current search or folder."""
+        # Check if current folder is still valid
+        if hasattr(self, 'current_folder_path') and self.current_folder_path:
+             folders = self.db.get_watched_folders()
+             if self.current_folder_path not in folders:
+                 self.current_folder_path = None
+
+        if self.active_tags:
+            self.perform_search()
+        elif hasattr(self, 'current_folder_path') and self.current_folder_path:
+            self.load_folder_paths(self.current_folder_path)
+        else:
+            self.total_paths = []
+            self.current_page = 0
+            self.refresh_thumbnails_grid()
+            self.lbl_folder_stats.setText("No Selection")
 
     def add_folder(self):
         folder = QFileDialog.getExistingDirectory(self.view, "Select Folder to Index")
@@ -600,6 +628,8 @@ class LibrarianModule(BaseModule):
             if self.db.remove_watched_folder(path):
                 # Trigger VACUUM to reclaim disk space immediately
                 self.db.vacuum_database()
+                if hasattr(self, 'current_folder_path') and self.current_folder_path == path:
+                    self.current_folder_path = None
                 self.refresh_ui()
                 self.update_global_stats()
 
@@ -621,7 +651,7 @@ class LibrarianModule(BaseModule):
             # Update UI state
             if not auto:
                 self.btn_scan.setText("🛑 Stop Scanning")
-                self.btn_scan.setStyleSheet("background-color: #ff5555; color: white; border-radius: 8px; padding: 15px; font-weight: bold;")
+                self.btn_scan.setStyleSheet("background-color: #ff5555; color: white; border-radius: 4px; padding: 6px; font-weight: bold;")
                 if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(False)
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setValue(0)
@@ -644,69 +674,41 @@ class LibrarianModule(BaseModule):
         self.progress_bar.setValue(current)
 
     def scan_finished(self):
-        self.btn_scan.setText("🚀 Scan & Index Library")
-        self.btn_scan.setStyleSheet("background-color: #00ba88; color: white; border-radius: 8px; padding: 15px; font-weight: bold;")
+        self.btn_scan.setText("🚀 Run Indexer")
+        self.btn_scan.setStyleSheet("background-color: #00ffcc; color: black; font-weight: bold; border-radius: 4px; padding: 6px;")
+        if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(True)
         self.btn_scan.setEnabled(True)
-        if hasattr(self, 'btn_sync'):
-            self.btn_sync.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.refresh_ui()
-        self.update_global_stats()
+        self.populate_tag_sidebar() # Ensure new tags appear
         QMessageBox.information(self.view, "Done", "Library Scan Complete!")
 
-    def send_to_viewer(self):
-        tags = self.active_tags
-        if not tags: return
-        
-        # Get ALL matching files, not just preview
-        count, paths = self.db.search_by_terms(tags, limit=9999)
+    def _get_active_paths(self, limit=1000):
+        """Helper to get currently filtered or selected paths."""
+        if self.active_tags:
+            _, paths = self.db.search_by_terms(self.active_tags, limit=limit)
+            return paths
+        elif self.folder_list.currentItem():
+            folder_path = self.folder_list.currentItem().text()
+            return self.db.get_files_recursive(folder_path, limit=limit)
+        return []
+
+    def send_to_gallery(self):
+        paths = self._get_active_paths()
         if paths:
-             self.request_open_gallery.emit(paths, f"Search: {', '.join(tags)}")
+            title = f"Librarian: {', '.join(self.active_tags)}" if self.active_tags else f"Librarian: {os.path.basename(self.folder_list.currentItem().text())}"
+            self.request_open_gallery.emit(paths, title)
              
-    def send_to_metadata(self):
-        # We send the currently filtered results
-        # OR do we send selected files? 
-        # User said: "Send to Metadata Reader" similar to drag and drop multiple images
-        
-        # Strategy: If folder selected, send folder contents. If Search Mode, send search results.
-        
-        paths_to_send = []
-        
-        # Check if in search mode
-        if self.active_tags:
-             _, paths = self.db.search_by_terms(self.active_tags, limit=100) # Limit to 100 for safety?
-             paths_to_send = paths
-        
-        # Check if folder selected (and no active tags potentially) or just prioritizing folder
-        elif self.folder_list.currentItem():
-             folder_path = self.folder_list.currentItem().text()
-             paths_to_send = self.db.get_folder_preview(folder_path, limit=100) # Re-using preview logic for now, or get all
-             # Actually get_folder_preview only returns 5. We might need a `get_folder_files` logic.
-             # Let's simple use the search logic with folder path if we had it, but for now let's rely on what we have.
-             # We can query DB for all files in folder.
-             
-             cursor = self.db.conn.cursor()
-             # We need to handle windows paths...
-             cursor.execute("SELECT path FROM files WHERE path LIKE ?", (f"{folder_path}%",))
-             paths_to_send = [r[0] for r in cursor.fetchall()]
-
-        if paths_to_send:
-             self.request_open_metadata.emit(paths_to_send)
+    def send_to_optimizer(self):
+        paths = self._get_active_paths()
+        if paths:
+            self.request_open_optimizer.emit(paths)
         else:
-             QMessageBox.warning(self.view, "No Files", "No files selected or found to send.")
+            QMessageBox.warning(self.view, "No Files", "No files found to send.")
 
-    def send_to_workshop(self):
-        paths_to_send = []
-        if self.active_tags:
-             _, paths = self.db.search_by_terms(self.active_tags, limit=500)
-             paths_to_send = paths
-        elif self.folder_list.currentItem():
-             folder_path = self.folder_list.currentItem().text()
-             cursor = self.db.conn.cursor()
-             cursor.execute("SELECT path FROM files WHERE path LIKE ?", (f"{folder_path}%",))
-             paths_to_send = [r[0] for r in cursor.fetchall()]
-
-        if paths_to_send:
-             self.request_open_workshop.emit(paths_to_send)
+    def send_to_cropper(self):
+        paths = self._get_active_paths()
+        if paths:
+            self.request_open_cropper.emit(paths)
         else:
-             QMessageBox.warning(self.view, "No Files", "No files selected or found to send.")
+            QMessageBox.warning(self.view, "No Files", "No files found to send.")
