@@ -258,16 +258,8 @@ class WatermarkerModule(BaseModule):
         out_path, _ = QFileDialog.getSaveFileName(None, self.tr("common.save_copy", "Save Watermarked Image"), self.last_dir, "Images (*.png *.jpg *.jpeg *.webp)")
         if not out_path: return
         
-        # [NEW] Fetch metadata from DB
-        tags = []
-        rating = 0
-        from modules.librarian.logic.db_manager import DatabaseManager
-        # We instantiate DB manager locally to fetch tags. 
-        # Ideally this should be shared, but strict isolation allows this safety net.
-        # Assuming panopticon.db is in standard location
-        db = DatabaseManager()
-        tags = db.get_tags_for_file(self.source_image)
-        rating = db.get_file_rating(self.source_image)
+        # Note: Watermarked images for public distribution have ALL metadata stripped
+        # for privacy protection (no AI prompts, tags, or ratings are preserved)
         
         success, msg = watermark_image(
             self.source_image, out_path,
@@ -277,8 +269,7 @@ class WatermarkerModule(BaseModule):
             wm_scale=self.slider_scale.value() / 100.0,
             wm_opacity=self.slider_opacity.value() / 100.0,
             logo_position=self.combo_logo_pos.currentText().lower(),
-            logo_size=self.slider_logo_size.value(),
-            tags=tags, rating=rating
+            logo_size=self.slider_logo_size.value()
         )
         
         if success:
