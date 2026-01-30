@@ -195,5 +195,22 @@
     "dummy.analysis": "📊 Análisis de Carpeta\n\nTotal de Archivos: {total}\nYa son Dummies: {dummies}\nOriginales a Procesar: {originals}\n\nAcción: Mover {originals} archivos a 'originals/' y crear marcadores dummy.\n\n⚠️ Esta operación no se puede deshacer fácilmente. ¿Continuar?",
     "dummy.processing": "Dummy Creator - Procesando",
     "dummy.close": "Cerrar",
-    "dummy.summary": "\n--- MISIÓN COMPLETADA ---\nArchivos Dummificados: {processed}\nEspacio en Disco Reclamado: {saved} MB\nErrores: {errors}\n"
+    "dummy.summary": "\n--- MISIÓN COMPLETADA ---\nArchivos Dummificados: {processed}\nEspacio en Disco Reclamado: {saved} MB\nErrores: {errors}\n",
+    "tool.quality_scorer.name": "Quality Scorer",
+    "tool.quality_scorer.desc": "Evalúa calidad técnica de imágenes para curación de datasets de IA.",
+    "qs.title": "📊 QUALITY SCORER",
+    "qs.desc": "Analiza calidad técnica para curación de datasets de IA.",
+    "qs.profile": "Perfil de Contenido:",
+    "qs.input_title": "📁 Entrada",
+    "qs.load_folder": "📂 Cargar Carpeta",
+    "qs.load_image": "🖼️ Cargar Imagen Individual",
+    "qs.scan": "🔍 Iniciar Escaneo",
+    "qs.dropzone": "📥 Arrastra una carpeta o imagen aquí\no usa los botones del panel",
+    "qs.note": "Las copias se guardan en 'score/'. Los originales se preservan.",
+    "qs.enhance_title": "🔧 Mejoras",
+    "qs.improve_info": "Ejecuta el escaneo primero para ver el potencial de mejora.",
+    "qs.enhance_btn": "✨ Aplicar Mejoras y Re-escanear",
+    "qs.skip_btn": "⏭️ Omitir Mejoras, Catalogar Ahora",
+    "qs.msg.no_images": "No se encontraron imágenes.",
+    "qs.msg.fail": "La operación falló: {error}"
 }

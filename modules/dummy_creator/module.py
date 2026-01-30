@@ -37,6 +37,9 @@ class DummyCreatorModule(BaseModule):
         return self.view
 
     def _create_content(self) -> QWidget:
+        from core.theme import Theme
+        accent = "#f1fa8c"
+        
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 50, 0, 50)
@@ -50,13 +53,13 @@ class DummyCreatorModule(BaseModule):
         
         lbl_info = QLabel(self.tr("dummy.title", "🎭 Dummy Creator"))
         lbl_info.setAlignment(Qt.AlignCenter)
-        lbl_info.setStyleSheet("font-size: 28px; font-weight: bold; color: #f1fa8c; margin-bottom: 10px;")
+        lbl_info.setStyleSheet(f"font-size: 28px; font-weight: bold; color: {accent}; margin-bottom: 10px;")
         panel_layout.addWidget(lbl_info)
         
-        lbl_desc = QLabel(self.tr("dummy.desc", "Archive collections..."))
+        lbl_desc = QLabel(self.tr("dummy.desc", "Archive collections by replacing images with lightweight placeholders."))
         lbl_desc.setAlignment(Qt.AlignCenter)
         lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet("font-size: 14px; color: #aaa; line-height: 1.6;")
+        lbl_desc.setStyleSheet(f"font-size: 14px; color: {Theme.TEXT_DIM}; line-height: 1.6;")
         panel_layout.addWidget(lbl_desc)
         
         panel_layout.addSpacing(40)
@@ -65,19 +68,19 @@ class DummyCreatorModule(BaseModule):
         self.btn_run.setFixedSize(350, 60)
         self.btn_run.setCursor(Qt.PointingHandCursor)
         self.btn_run.clicked.connect(self.open_dummy_creator_dialog)
-        self.btn_run.setStyleSheet("""
-            QPushButton {
+        self.btn_run.setStyleSheet(f"""
+            QPushButton {{
                 background-color: #332211;
-                color: #f1fa8c;
+                color: {accent};
                 font-size: 18px;
                 font-weight: bold;
-                border: 2px solid #f1fa8c;
+                border: 2px solid {accent};
                 border-radius: 10px;
-            }
-            QPushButton:hover {
+            }}
+            QPushButton:hover {{
                 background-color: #443322;
                 border-color: white;
-            }
+            }}
         """)
         panel_layout.addWidget(self.btn_run, alignment=Qt.AlignCenter)
         panel_layout.addStretch()

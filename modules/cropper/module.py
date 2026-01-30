@@ -120,19 +120,25 @@ class CropperModule(BaseModule):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
         
-        tm = self.context.get('theme_manager')
-        text_col = tm.get_color("text_primary") if tm else "#FFF"
+        from core.theme import Theme
         
-        # --- Instructions ---
-        lbl_info = QLabel(self.tr("crop.settings", "Crop Settings"))
-        lbl_info.setStyleSheet(f"color: {text_col}; font-weight: bold; font-size: 14px;")
-        layout.addWidget(lbl_info)
+        # Title
+        lbl_title = QLabel(self.tr("crop.title", "✂️ SMART CROPPER"))
+        lbl_title.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 14px;")
+        layout.addWidget(lbl_title)
+        
+        lbl_desc = QLabel(self.tr("crop.desc", "High-precision cropping for AI datasets."))
+        lbl_desc.setWordWrap(True)
+        lbl_desc.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px;")
+        layout.addWidget(lbl_desc)
+        
+        layout.addSpacing(10)
         
         # --- Aspect Ratios ---
         lbl_ar = QLabel(self.tr("crop.ratio", "Aspect Ratio:"))
-        lbl_ar.setStyleSheet(f"color: {text_col};")
+        lbl_ar.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: 12px;")
         layout.addWidget(lbl_ar)
         
         self.combo_ar = QComboBox()
@@ -303,7 +309,15 @@ class CropperModule(BaseModule):
             )
             if save_path:
                 try:
-                    crop_image(self.cropper_widget.image_path, rect, save_path)
+                    # [NEW] Fetch Metadata
+                    tags = []
+                    rating = 0
+                    from modules.librarian.logic.db_manager import DatabaseManager
+                    db = DatabaseManager()
+                    tags = db.get_tags_for_file(self.cropper_widget.image_path)
+                    rating = db.get_file_rating(self.cropper_widget.image_path)
+
+                    crop_image(self.cropper_widget.image_path, rect, save_path, tags=tags, rating=rating)
                     QMessageBox.information(self.view, self.tr("opt.done", "Done"), 
                                             self.tr("crop.saved", "Saved to {path}").format(path=save_path))
                 except Exception as e:

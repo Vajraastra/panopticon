@@ -195,5 +195,22 @@
     "dummy.analysis": "📊 Folder Analysis\n\nTotal Files: {total}\nAlready Dummies: {dummies}\nOriginals to Process: {originals}\n\nAction: Move {originals} files to 'originals/' subfolder and create dummy placeholders.\n\n⚠️ This operation cannot be easily undone. Continue?",
     "dummy.processing": "Dummy Creator - Processing",
     "dummy.close": "Close",
-    "dummy.summary": "\n--- MISSION COMPLETE ---\nFiles Dummified: {processed}\nDisk Space Reclaimed: {saved} MB\nErrors: {errors}\n"
+    "dummy.summary": "\n--- MISSION COMPLETE ---\nFiles Dummified: {processed}\nDisk Space Reclaimed: {saved} MB\nErrors: {errors}\n",
+    "tool.quality_scorer.name": "Quality Scorer",
+    "tool.quality_scorer.desc": "Evaluate technical image quality for AI dataset curation.",
+    "qs.title": "📊 QUALITY SCORER",
+    "qs.desc": "Analyze technical quality for AI dataset curation.",
+    "qs.profile": "Content Profile:",
+    "qs.input_title": "📁 Input",
+    "qs.load_folder": "📂 Load Folder",
+    "qs.load_image": "🖼️ Load Single Image",
+    "qs.scan": "🔍 Start Scan",
+    "qs.dropzone": "📥 Drop a folder or image here\nor use the sidebar buttons",
+    "qs.note": "Copies saved to 'score/' subfolder. Originals preserved.",
+    "qs.enhance_title": "🔧 Enhancement",
+    "qs.improve_info": "Run scan first to see improvement potential.",
+    "qs.enhance_btn": "✨ Apply Enhancements & Re-scan",
+    "qs.skip_btn": "⏭️ Skip Enhancement, Catalog Now",
+    "qs.msg.no_images": "No images found.",
+    "qs.msg.fail": "Operation failed: {error}"
 }

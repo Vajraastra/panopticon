@@ -92,23 +92,38 @@ class MetadataModule(BaseModule):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(15)
+        layout.setSpacing(12)
+        
+        from core.theme import Theme
+        accent = "#00ffcc"
+
+        # Title
+        lbl_title = QLabel(self.tr("meta.title", "🔍 METADATA HUB"))
+        lbl_title.setStyleSheet(f"color: {accent}; font-weight: bold; font-size: 14px;")
+        layout.addWidget(lbl_title)
+        
+        lbl_desc = QLabel(self.tr("meta.desc", "Read, edit and clean image metadata."))
+        lbl_desc.setWordWrap(True)
+        lbl_desc.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px;")
+        layout.addWidget(lbl_desc)
+        
+        layout.addSpacing(10)
 
         lbl = QLabel(self.tr("meta.mode", "🛠️ MODE"))
-        lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #888;")
+        lbl.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 12px;")
         layout.addWidget(lbl)
 
         # Mode Selector (Toggle)
         self.btn_mode_view = QPushButton(self.tr("meta.viewer", "🔍 Viewer Mode"))
         self.btn_mode_view.setCheckable(True)
         self.btn_mode_view.setChecked(True)
-        self.btn_mode_view.setFixedHeight(40)
+        self.btn_mode_view.setFixedHeight(38)
         self.btn_mode_view.clicked.connect(lambda: self.set_mode(self.MODE_VIEWER))
         layout.addWidget(self.btn_mode_view)
 
         self.btn_mode_edit = QPushButton(self.tr("meta.editor", "✍️ Editor Mode"))
         self.btn_mode_edit.setCheckable(True)
-        self.btn_mode_edit.setFixedHeight(40)
+        self.btn_mode_edit.setFixedHeight(38)
         self.btn_mode_edit.clicked.connect(lambda: self.set_mode(self.MODE_EDITOR))
         layout.addWidget(self.btn_mode_edit)
         
@@ -117,31 +132,31 @@ class MetadataModule(BaseModule):
 
         layout.addSpacing(10)
         lbl_act = QLabel(self.tr("meta.actions", "⚡ ACTIONS"))
-        lbl_act.setStyleSheet("font-size: 14px; font-weight: bold; color: #888;")
+        lbl_act.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 12px;")
         layout.addWidget(lbl_act)
 
         self.btn_save = QPushButton(self.tr("meta.save", "💾 Save Changes"))
         self.btn_save.setFixedHeight(40)
         self.btn_save.setCursor(Qt.PointingHandCursor)
         self.btn_save.clicked.connect(self.action_save_current)
-        self.btn_save.setStyleSheet("background-color: #222; color: #00ffcc; border: 1px solid #444; border-radius: 6px;")
+        self.btn_save.setStyleSheet(Theme.get_action_button_style(accent, "#000000"))
         layout.addWidget(self.btn_save)
 
         self.btn_export = QPushButton(self.tr("meta.export", "📂 Export Copy"))
-        self.btn_export.setFixedHeight(35)
+        self.btn_export.setFixedHeight(36)
         self.btn_export.setCursor(Qt.PointingHandCursor)
         self.btn_export.clicked.connect(self.action_export_copy)
-        self.btn_export.setStyleSheet("background-color: #111; color: #aaa; border: 1px solid #333; border-radius: 6px;")
+        self.btn_export.setStyleSheet(Theme.get_button_style("#555"))
         layout.addWidget(self.btn_export)
 
         layout.addStretch()
         
         lbl_info = QLabel(self.tr("meta.list", "IMAGE LIST"))
-        lbl_info.setStyleSheet("font-size: 11px; font-weight: bold; color: #555;")
+        lbl_info.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-weight: bold; font-size: 11px;")
         layout.addWidget(lbl_info)
         
         self.lbl_carousel_stats = QLabel(self.tr("meta.stats", "{current} / {total} images").format(current=0, total=0))
-        self.lbl_carousel_stats.setStyleSheet("color: #888;")
+        self.lbl_carousel_stats.setStyleSheet(f"color: {Theme.TEXT_DIM};")
         layout.addWidget(self.lbl_carousel_stats)
         
         return container

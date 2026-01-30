@@ -37,7 +37,9 @@ class OptimizerWorker(QThread):
                     format_override=self.settings['format'],
                     quality=self.settings['quality'],
                     max_side=self.settings['max_side'],
-                    preserve_metadata=self.settings['preserve_meta']
+                    preserve_metadata=self.settings['preserve_meta'],
+                    tags=self.settings.get('tags_map', {}).get(path, []),
+                    rating=self.settings.get('rating_map', {}).get(path, 0)
                 )
                 
                 if result['success']:
@@ -82,12 +84,22 @@ class ImageOptimizerModule(BaseModule):
     def _create_sidebar(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(12)
         layout.setAlignment(Qt.AlignTop)
         
         # Title
-        lbl_title = QLabel(self.tr("opt.settings", "Settings"))
-        lbl_title.setStyleSheet("font-size: 16px; font-weight: bold; margin-bottom: 10px;")
+        from core.theme import Theme
+        lbl_title = QLabel(self.tr("opt.title", "🚀 IMAGE OPTIMIZER"))
+        lbl_title.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 14px;")
         layout.addWidget(lbl_title)
+        
+        lbl_desc = QLabel(self.tr("opt.desc", "Batch compress, resize and convert images."))
+        lbl_desc.setWordWrap(True)
+        lbl_desc.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px;")
+        layout.addWidget(lbl_desc)
+        
+        layout.addSpacing(10)
         
         # Format
         layout.addWidget(QLabel(self.tr("opt.format", "Output Format:")))
@@ -399,6 +411,24 @@ class ImageOptimizerModule(BaseModule):
             "preserve_meta": self.chk_meta.isChecked(),
             "export_path": export_path
         }
+        
+        # [NEW] Pre-fetch metadata for the queue to pass to worker
+        # Doing it here avoids DB concurrency weirdness inside QThread if sharing connection,
+        # and creating connection per file per thread is slow. 
+        # Batch fetching is better.
+        from modules.librarian.logic.db_manager import DatabaseManager
+        db = DatabaseManager()
+        tags_map = {}
+        rating_map = {}
+        
+        # This loop might be slightly heavy for thousands of items, but safer than threaded DB access without mutex
+        # For 'Basic' tier, it's acceptable.
+        for path in self.queue:
+            tags_map[path] = db.get_tags_for_file(path)
+            rating_map[path] = db.get_file_rating(path)
+            
+        settings['tags_map'] = tags_map
+        settings['rating_map'] = rating_map
         
         # Parse predefined presets
         preset = self.combo_resize.currentText()

@@ -48,34 +48,50 @@ class WatermarkerModule(BaseModule):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(15)
+        layout.setSpacing(12)
+
+        # Title
+        lbl_title = QLabel(self.tr("wm.title", "🎨 WATERMARKER"))
+        lbl_title.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 14px;")
+        layout.addWidget(lbl_title)
+        
+        lbl_desc = QLabel(self.tr("wm.desc", "Protect images with watermarks and logos."))
+        lbl_desc.setWordWrap(True)
+        lbl_desc.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px;")
+        layout.addWidget(lbl_desc)
+        
+        layout.addSpacing(10)
 
         # 1. Image
         lbl_img = QLabel(self.tr("wm.section.base", "🖼️ 1. BASE IMAGE"))
-        lbl_img.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 11px;")
+        lbl_img.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 12px;")
         layout.addWidget(lbl_img)
 
         self.btn_load_image = QPushButton(self.tr("common.load_image", "📂 Load Image"))
+        self.btn_load_image.setStyleSheet(Theme.get_action_button_style(self.accent_color, "#000000"))
+        self.btn_load_image.setFixedHeight(36)
         self.btn_load_image.clicked.connect(self.load_source_image)
         layout.addWidget(self.btn_load_image)
 
         self.lbl_image_status = QLabel(self.tr("wm.status.no_img", "No image loaded"))
-        self.lbl_image_status.setStyleSheet("color: #888; font-size: 10px;")
+        self.lbl_image_status.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 10px;")
         layout.addWidget(self.lbl_image_status)
 
-        layout.addSpacing(5)
+        layout.addSpacing(10)
 
         # 2. Marca de Agua (Watermark)
         lbl_wm_section = QLabel(self.tr("wm.section.wm", "🎨 2. WATERMARK"))
-        lbl_wm_section.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 11px;")
+        lbl_wm_section.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 12px;")
         layout.addWidget(lbl_wm_section)
 
         self.btn_load_watermark = QPushButton(self.tr("wm.load_wm", "📂 Load Watermark"))
+        self.btn_load_watermark.setStyleSheet(Theme.get_button_style("#555"))
+        self.btn_load_watermark.setFixedHeight(36)
         self.btn_load_watermark.clicked.connect(self.load_watermark_asset)
         layout.addWidget(self.btn_load_watermark)
 
         self.lbl_watermark_status = QLabel(self.tr("wm.status.none", "None"))
-        self.lbl_watermark_status.setStyleSheet("color: #888; font-size: 10px;")
+        self.lbl_watermark_status.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 10px;")
         layout.addWidget(self.lbl_watermark_status)
 
         layout.addWidget(QLabel(self.tr("wm.angle", "Rotation Angle:")))
@@ -99,19 +115,21 @@ class WatermarkerModule(BaseModule):
         self.slider_opacity.valueChanged.connect(self.generate_preview)
         layout.addWidget(self.slider_opacity)
 
-        layout.addSpacing(15)
+        layout.addSpacing(10)
 
         # 3. Logo
         lbl_logo_section = QLabel(self.tr("wm.section.logo", "🏷️ 3. LOGOTIPO"))
-        lbl_logo_section.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 11px;")
+        lbl_logo_section.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 12px;")
         layout.addWidget(lbl_logo_section)
 
         self.btn_load_logo = QPushButton(self.tr("wm.load_logo", "📂 Load Logo"))
+        self.btn_load_logo.setStyleSheet(Theme.get_button_style("#555"))
+        self.btn_load_logo.setFixedHeight(36)
         self.btn_load_logo.clicked.connect(self.load_logo_asset)
         layout.addWidget(self.btn_load_logo)
 
         self.lbl_logo_status = QLabel(self.tr("wm.status.none", "None"))
-        self.lbl_logo_status.setStyleSheet("color: #888; font-size: 10px;")
+        self.lbl_logo_status.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 10px;")
         layout.addWidget(self.lbl_logo_status)
 
         layout.addWidget(QLabel(self.tr("wm.logo_pos", "Logo Position:")))
@@ -132,8 +150,8 @@ class WatermarkerModule(BaseModule):
         
         self.btn_save = QPushButton(self.tr("common.save_copy", "💾 SAVE COPY"))
         self.btn_save.clicked.connect(self.save_copy)
-        self.btn_save.setMinimumHeight(45)
-        self.btn_save.setStyleSheet(f"background-color: {self.accent_color}; color: black; font-weight: bold; border-radius: 6px;")
+        self.btn_save.setFixedHeight(44)
+        self.btn_save.setStyleSheet(Theme.get_action_button_style(self.accent_color, "#000000"))
         layout.addWidget(self.btn_save)
 
         return container
@@ -240,6 +258,17 @@ class WatermarkerModule(BaseModule):
         out_path, _ = QFileDialog.getSaveFileName(None, self.tr("common.save_copy", "Save Watermarked Image"), self.last_dir, "Images (*.png *.jpg *.jpeg *.webp)")
         if not out_path: return
         
+        # [NEW] Fetch metadata from DB
+        tags = []
+        rating = 0
+        from modules.librarian.logic.db_manager import DatabaseManager
+        # We instantiate DB manager locally to fetch tags. 
+        # Ideally this should be shared, but strict isolation allows this safety net.
+        # Assuming panopticon.db is in standard location
+        db = DatabaseManager()
+        tags = db.get_tags_for_file(self.source_image)
+        rating = db.get_file_rating(self.source_image)
+        
         success, msg = watermark_image(
             self.source_image, out_path,
             watermark_path=self.watermark_asset,
@@ -248,7 +277,8 @@ class WatermarkerModule(BaseModule):
             wm_scale=self.slider_scale.value() / 100.0,
             wm_opacity=self.slider_opacity.value() / 100.0,
             logo_position=self.combo_logo_pos.currentText().lower(),
-            logo_size=self.slider_logo_size.value()
+            logo_size=self.slider_logo_size.value(),
+            tags=tags, rating=rating
         )
         
         if success:
