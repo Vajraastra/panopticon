@@ -104,13 +104,22 @@ class GalleryModule(BaseModule):
         self._icon = "🖼️"
         
         self.view = None
-        self.db = DatabaseManager() 
+        self.db = DatabaseManager()
+        self.loader = get_loader()
+        try:
+            self.loader.thumbnail_ready.connect(self.on_thumbnail_ready)
+            # print("Gallery: Loader signal connected")
+        except Exception as e:
+            print(f"Gallery Loader Connection Error: {e}")
         
         # Estado Interno
         self.current_view_mode = self.VIEW_ALBUMS
         self.current_page = 0
         self.page_size = 50 
         self.current_folder_filter = None
+        self.current_rating_filter = 0
+        self.current_query_tags = []
+        self.current_query_terms = []
         self.current_paths = []
         self.total_items = 0
         
@@ -336,7 +345,10 @@ class GalleryModule(BaseModule):
 
     def open_current_in_viewer(self):
         if hasattr(self, 'current_selected_path') and self.current_selected_path:
-            full_paths = self._get_full_context_paths()
+            raw_paths = self._get_full_context_paths()
+            # Filter None/Empty paths to prevent crashes
+            full_paths = [p for p in raw_paths if p]
+            
             try:
                 idx = full_paths.index(self.current_selected_path)
             except ValueError:
@@ -346,9 +358,12 @@ class GalleryModule(BaseModule):
             
             try:
                 from .viewer import AdvancedViewer
-                viewer = AdvancedViewer(full_paths, start_index=idx, parent=self.view)
+                # Using parent=None to avoid potential Shiboken/C++ casting issues with StandardToolLayout
+                # This makes the viewer a top-level window, which is fine for a fullscreen viewer.
+                viewer = AdvancedViewer(full_paths, start_index=idx, parent=None)
                 viewer.exec()
             except Exception as e:
+                print(f"[Gallery] Viewer Crash Prevented: {e}")
                 import traceback
                 traceback.print_exc()
 
