@@ -241,7 +241,7 @@ class FormatConverterModule(BaseModule):
         
         layout.addWidget(QLabel(self.tr("fc.target_format", "Target Format:")))
         self.combo_format = QComboBox()
-        self.combo_format.addItems(["WebP (Recommended)", "PNG (Lossless)", "JPEG (Lossy)"])
+        self.combo_format.addItems(["PNG (Standard)", "WebP (Legacy)", "JPEG (Lossy)"])
         self.combo_format.setStyleSheet(Theme.get_input_style(self.accent_color))
         self.combo_format.currentIndexChanged.connect(self.on_format_changed)
         layout.addWidget(self.combo_format)

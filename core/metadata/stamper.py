@@ -234,8 +234,12 @@ class MetadataStamper:
         }
         new_info.add_text("panopticon_data", json.dumps(panopticon_data))
         
-        # Si el bundle tiene prompts y el archivo no los tiene, añadirlos
-        if bundle.positive_prompt and "parameters" not in existing_info:
+        # Si tenemos el string original de parámetros (preserve fidelity), úsalo
+        if "parameters" in bundle.raw:
+            new_info.add_text("parameters", bundle.raw["parameters"])
+        
+        # Si no, reconstruir desde campos (fallback o info generada nueva)
+        elif bundle.positive_prompt and "parameters" not in existing_info:
             params = bundle.positive_prompt
             if bundle.negative_prompt:
                 params += f"\nNegative prompt: {bundle.negative_prompt}"
