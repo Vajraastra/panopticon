@@ -305,29 +305,7 @@ class MetadataStamper:
         json_payload = json.dumps(panopticon_data)
         xmp = f'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:pan="http://panopticon/ns/"><pan:data>{json_payload}</pan:data></rdf:Description></rdf:RDF></x:xmpmeta>'
         
-        # 2. Prepare EXIF (A1111 Compatibility)
-        # Reconstruct standard A1111 parameter string for external viewers
-        a1111_params = bundle.positive_prompt
-        if bundle.negative_prompt:
-            a1111_params += f"\nNegative prompt: {bundle.negative_prompt}"
-        
-        tech_parts = []
-        if bundle.steps: tech_parts.append(f"Steps: {bundle.steps}")
-        if bundle.sampler: tech_parts.append(f"Sampler: {bundle.sampler}")
-        if bundle.cfg: tech_parts.append(f"CFG scale: {bundle.cfg}")
-        if bundle.seed: tech_parts.append(f"Seed: {bundle.seed}")
-        if bundle.model: tech_parts.append(f"Model: {bundle.model}")
-        
-        if tech_parts:
-            a1111_params += "\n" + ", ".join(tech_parts)
-            
-        exif = img.getexif()
-        # 0x9286 is UserComment
-        prefix = b'ASCII\x00\x00\x00'
-        exif[0x9286] = prefix + a1111_params.encode('utf-8')
-        
-        # 3. Save with both XMP and EXIF
-        img.save(str(path), "WEBP", quality=95, xmp=xmp.encode('utf-8'), exif=exif)
+        img.save(str(path), "WEBP", quality=95, xmp=xmp.encode('utf-8'))
         img.close()
         return True
     
