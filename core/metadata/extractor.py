@@ -129,6 +129,16 @@ class MetadataExtractor:
                             user_comment = user_comment.decode('utf-8', errors='ignore')
                         raw_metadata["parameters"] = user_comment
                     
+                    # 0x010e = ImageDescription (Panopticon Data)
+                    if 0x010e in exif:
+                        desc = exif[0x010e]
+                        if isinstance(desc, bytes):
+                             desc = desc.decode('utf-8', errors='ignore').strip('\x00')
+                        
+                        # Check if it's our JSON payload
+                        if desc and desc.strip().startswith('{') and '"tags"' in desc:
+                             raw_metadata["panopticon_data"] = desc
+
                     # 0x0131 = Software
                     if 0x0131 in exif:
                         raw_metadata["Software"] = str(exif[0x0131])

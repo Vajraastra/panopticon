@@ -276,6 +276,13 @@ class FormatConverterModule(BaseModule):
         )
         quality_layout.addWidget(self.slider_quality)
         
+        # Warning label for WebP
+        self.lbl_webp_warning = QLabel(self.tr("fc.webp_warning", "⚠️ WebP metadata is Internal-Only (Not visible to external tools)"))
+        self.lbl_webp_warning.setStyleSheet("color: #ffaa00; font-size: 10px; font-style: italic;")
+        self.lbl_webp_warning.setWordWrap(True)
+        self.lbl_webp_warning.setVisible(False)
+        layout.addWidget(self.lbl_webp_warning)
+        
         layout.addWidget(self.quality_container)
         
         layout.addSpacing(10)
@@ -324,8 +331,9 @@ class FormatConverterModule(BaseModule):
         if not self.source_folder:
             return
         
-        format_map = {0: "WEBP", 1: "PNG", 2: "JPEG"}
-        target_format = format_map.get(self.combo_format.currentIndex(), "WEBP")
+        # Updated map: 0=PNG, 1=WEBP, 2=JPEG
+        format_map = {0: "PNG", 1: "WEBP", 2: "JPEG"}
+        target_format = format_map.get(self.combo_format.currentIndex(), "PNG")
         
         self.files_to_convert = scan_folder_for_conversion(
             self.source_folder,
@@ -337,12 +345,17 @@ class FormatConverterModule(BaseModule):
         self.lbl_file_count.setText(str(count))
         self.btn_convert.setEnabled(count > 0)
         
-        self.log(f"Found {count} files to convert")
+        self.log(f"Found {count} files to convert to {target_format}")
     
     def on_format_changed(self, index):
         """Actualiza UI según formato seleccionado."""
-        # Show quality only for lossy formats
-        self.quality_container.setVisible(index != 1)  # PNG is lossless
+        # Show quality only for lossy formats (JPEG=2, WebP=1 can be lossy but we use best)
+        # PNG is index 0 (Lossless)
+        self.quality_container.setVisible(index != 0) 
+        
+        # Show warning only for WebP (index 1)
+        self.lbl_webp_warning.setVisible(index == 1)
+        
         self.rescan_folder()
     
     def log(self, message: str):

@@ -234,6 +234,12 @@ class MetadataStamper:
         }
         new_info.add_text("panopticon_data", json.dumps(panopticon_data))
         
+        # Preserve ComfyUI Workflows (if present in source)
+        if "workflow" in bundle.raw:
+            new_info.add_text("workflow", bundle.raw["workflow"])
+        if "prompt" in bundle.raw:
+            new_info.add_text("prompt", bundle.raw["prompt"])
+        
         # Si tenemos el string original de parámetros (preserve fidelity), úsalo
         if "parameters" in bundle.raw:
             new_info.add_text("parameters", bundle.raw["parameters"])
@@ -265,21 +271,40 @@ class MetadataStamper:
         img = Image.open(path)
         exif = img.getexif()
         
-        # Crear payload combinado
+        # 1. Panopticon Data -> ImageDescription (0x010e)
+        # Esto separa nuestros datos de los prompts de A1111 (UserComment)
         panopticon_data = {
             "tags": bundle.tags,
             "rating": bundle.rating,
             "quality_score": bundle.quality_score,
             "software": "Panopticon"
         }
+        json_payload = json.dumps(panopticon_data)
         
-        # Para JPEG, usamos UserComment con prefijo especial
+        # 0x010e is ImageDescription
+        exif[0x010e] = json_payload.encode('utf-8')
+        
+        # 2. A1111 Prompts -> UserComment (0x9286)
+        # Solo escribir si no existe, o si queremos reconstruirlo.
+        # Preferimos preservar el existente si el bundle tiene raw['parameters']
         prefix = b'ASCII\x00\x00\x00'
-        payload_bytes = prefix + json.dumps(panopticon_data).encode('utf-8')
         
-        # Solo escribir si no hay UserComment existente con prompts
-        if 0x9286 not in exif:
-            exif[0x9286] = payload_bytes
+        if "parameters" in bundle.raw:
+             # Preserve fidelity
+             exif[0x9286] = prefix + bundle.raw["parameters"].encode('utf-8')
+             
+        elif bundle.positive_prompt and 0x9286 not in exif:
+             # Reconstruct
+             params = bundle.positive_prompt
+             if bundle.negative_prompt:
+                 params += f"\nNegative prompt: {bundle.negative_prompt}"
+             if bundle.steps:
+                 params += f"\nSteps: {bundle.steps}"
+                 # ... (simplificado, usar lógica completa si se requiere)
+                 if bundle.model:
+                     params += f", Model: {bundle.model}"
+             
+             exif[0x9286] = prefix + params.encode('utf-8')
         
         img.save(str(path), exif=exif, quality=95, optimize=True)
         img.close()
