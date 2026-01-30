@@ -20,8 +20,9 @@ Panopticon no es solo una aplicación, es un **framework de orquestación visual
 
 ### C. Profundidad Funcional y Persistencia
 *   **Pipelines de Datos**: Diseña las herramientas para recibir datos del `Librarian` (Biblioteca) y poder pasar los resultados a la próxima herramienta.
-*   **Principio de Activo Móvil**: Los metadatos (etiquetas, rating) deben ser persistentes. Si un archivo se mueve o renombra, el sistema debe ser capaz de reconocerlo mediante su **Hash** (DNI del archivo).
-*   **Sincronización de Metadatos**: Se debe dar la opción de escribir etiquetas directamente en el archivo (chunks de PNG o XMP en JPEG) para asegurar la portabilidad total fuera de Panopticon.
+*   **Principio de Activo Móvil**: Las herramientas que **transforman** archivos (Cropper, Watermarker) deben usar la librería `StampLib` para incrustar los metadatos originales en el nuevo archivo.
+*   **Librería Estática, No Servicio**: La persistencia se maneja bajo demanda mediante una librería utilitaria, no procesos en segundo plano.
+*   **Limpieza de Metadatos**: Herramientas de solo lectura (como Scorer) no deben tocar el archivo físico.
 *   **Capacidad Headless**: Implementa `run_headless()` para que la lógica de tu herramienta pueda usarse en automatizaciones masivas sin necesidad de una interfaz gráfica.
 
 ---
@@ -114,13 +115,170 @@ self.context.get('event_bus').publish("navigate", "dashboard")
 
 ---
 
-## ✅ Checklist de Implementación Correcta
+## 📂 7. Sistema de Cache Centralizado
 
+> [!IMPORTANT]
+> **Todas las herramientas deben usar el sistema de cache centralizado.**
+> No crear carpetas arbitrarias junto a los originales.
+
+### Estructura
+
+```
+PANOPTICON_CACHE/              # Definido en core/paths.py
+├── watermarked/               # Watermarker output
+├── optimized/                 # Image Optimizer output
+├── cropped/                   # Cropper output
+├── scored/                    # Quality Scorer output
+│   ├── 100%/
+│   ├── 90%/
+│   └── ...
+├── converted/                 # Format Converter output
+└── temp/                      # Operaciones intermedias
+```
+
+### Implementación
+
+```python
+from core.paths import CachePaths
+
+class MiHerramientaModule(BaseModule):
+    def get_output_folder(self):
+        """Retorna la subcarpeta de cache para este módulo."""
+        return CachePaths.get_tool_cache("mi_herramienta")
+    
+    def get_default_input_folder(self):
+        """Retorna la carpeta por defecto para seleccionar archivos."""
+        return CachePaths.get_cache_root()
+    
+    def on_process_complete(self, output_folder):
+        """Al finalizar, abrir la carpeta de output."""
+        CachePaths.open_folder(output_folder)
+```
+
+### Reglas
+
+1. **Output siempre a cache**: Nunca crear carpetas junto a originales
+2. **Default input**: Diálogos de selección inician en `PANOPTICON_CACHE`
+3. **Auto-abrir al finalizar**: Llamar `CachePaths.open_folder()` al terminar
+4. **Limpieza**: Usuario puede limpiar cache manualmente desde Settings
+
+---
+
+## 🔐 8. Manejo de Metadata
+
+> [!CAUTION]
+> **Los prompts, tags y ratings son datos críticos.** Nunca deben perderse accidentalmente.
+
+### Librerías Core
+
+| Archivo | Uso |
+|---------|-----|
+| `core/metadata/extractor.py` | Leer metadata de cualquier formato |
+| `core/metadata/stamper.py` | Escribir metadata preservando existente |
+| `core/metadata/verifier.py` | Verificar integridad post-copia |
+
+### Tipos de Herramientas
+
+#### Herramientas que TRANSFIEREN metadata
+*(Optimizer, Cropper, Quality Scorer, Format Converter)*
+
+```python
+from core.metadata.stamper import MetadataStamper
+
+def save_processed(self, source, dest):
+    # Guardar imagen procesada
+    processed_img.save(dest)
+    # Transferir metadata de original a copia
+    MetadataStamper.transfer(source, dest)
+```
+
+#### Herramientas que LIMPIAN metadata
+*(Watermarker - para distribución pública)*
+
+```python
+def save_watermarked(self, source, dest):
+    # Guardar SIN metadata (privacidad)
+    watermarked_img.save(dest)
+    # NO llamar transfer() - intencional
+```
+
+### Verificación Post-Batch
+
+Para operaciones masivas (100K+ imágenes):
+
+```python
+from core.metadata.batch_verifier import BatchVerifier
+
+def on_batch_complete(self):
+    verifier = BatchVerifier(self.source_folder, self.output_folder)
+    report = verifier.verify_all()
+    self.show_verification_report(report)
+```
+
+---
+
+## 🛡️ 9. Principios de Seguridad
+
+### REGLA #1: Nunca Modificar Originales
+
+```python
+# ❌ PROHIBIDO
+img.save(original_path)
+
+# ✅ CORRECTO
+output_path = CachePaths.get_tool_cache("mi_herramienta") / filename
+img.save(output_path)
+```
+
+### REGLA #2: Copias Primero, Cleanup Después
+
+```
+1. Procesar → crear copias en cache
+2. Verificar → confirmar metadata intacta
+3. Mostrar reporte → usuario revisa
+4. Cleanup (OPCIONAL) → solo si usuario aprueba
+```
+
+### REGLA #3: Preservar Errores
+
+```python
+# Si falla la verificación, NUNCA borrar original
+if verification.status == "FAILED":
+    # Mover a failed/ para revisión manual
+    move_to_failed_folder(original, copy)
+    log_error(verification.issues)
+```
+
+---
+
+## ✅ 10. Checklist de Implementación Correcta
+
+### Estructura
 - [ ] ¿Mi clase hereda de `BaseModule`?
 - [ ] ¿Están definidos los 4 campos de metadatos?
-- [ ] ¿La lógica pesada corre en un `QThread` separado?
 - [ ] ¿Uso `StandardToolLayout` para mantener la consistencia?
+
+### Rendimiento
+- [ ] ¿La lógica pesada corre en un `QThread` separado?
+- [ ] ¿Uso lazy loading para componentes de UI?
+
+### Localización
 - [ ] ¿Cada cadena de texto está localizada mediante `self.tr()`?
+
+### Cache y Archivos
+- [ ] ¿Output va a `CachePaths.get_tool_cache()`?
+- [ ] ¿Se abre la carpeta al finalizar el proceso?
+- [ ] ¿El diálogo de selección inicia en el cache?
+
+### Metadata
+- [ ] ¿Uso `MetadataStamper.transfer()` para copias?
+- [ ] ¿O limpio metadata intencionalmente (como Watermarker)?
+- [ ] ¿Para batch, uso `BatchVerifier` post-proceso?
+
+### Seguridad
+- [ ] ¿NUNCA modifico archivos originales?
+- [ ] ¿Preservo originales en caso de error?
+- [ ] ¿El cleanup requiere aprobación del usuario?
 
 ---
 > [!IMPORTANT]

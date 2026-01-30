@@ -20,8 +20,9 @@ Panopticon is not just an application; it is a **visual orchestration framework*
 
 ### C. Functional Depth & Persistence
 *   **Data Pipelines**: Tools should be designed to receive data from the `Librarian` or `Gallery` and potentially pass results forward.
-*   **Mobile Asset Principle**: Metadata (tags, ratings) must be persistent. If a file is moved or renamed, the system must recognize it via its **Hash** (File ID).
-*   **Metadata Synchronization**: Optional writing of tags directly into the file (PNG chunks or JPEG XMP) should be supported for total portability outside Panopticon.
+*   **Mobile Asset Principle**: Tools that **transform** files (Cropper, Watermarker) must use the `StampLib` utility to embed original metadata into the new file.
+*   **Static Library, Not Service**: Persistence is handled on-demand via a utility library, not background processes.
+*   **Metadata Hygiene**: Read-only tools (like Scorer) must NEVER touch the physical file.
 *   **Headless Capability**: Implement `run_headless()` so your tool logic can be used in bulk automation without a GUI.
 
 ---
