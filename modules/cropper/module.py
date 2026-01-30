@@ -163,7 +163,7 @@ class CropperModule(BaseModule):
         self.spin_w.valueChanged.connect(self._on_custom_values_changed)
         
         lbl_x = QLabel(":")
-        lbl_x.setStyleSheet(f"color: {text_col}; font-weight: bold;")
+        lbl_x.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-weight: bold;")
         
         self.spin_h = QSpinBox()
         self.spin_h.setRange(1, 999)
