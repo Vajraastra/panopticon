@@ -430,8 +430,9 @@ class FormatConverterModule(BaseModule):
             self.log(f"\nVerifying metadata integrity...")
             try:
                 verify_report = verify_batch_conversion(report)
-                self.log(f"  Verified: {verify_report.verified_count}/{verify_report.total_files}")
-                self.log(f"  Integrity: {verify_report.overall_integrity:.1f}%")
+                verified_count = verify_report.ok_count + verify_report.repaired_count
+                self.log(f"  Verified: {verified_count}/{verify_report.total_files}")
+                self.log(f"  Integrity: {verify_report.avg_integrity:.1f}%")
             except Exception as e:
                 self.log(f"  Verification error: {e}")
         

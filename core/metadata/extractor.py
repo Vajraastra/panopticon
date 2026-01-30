@@ -187,6 +187,9 @@ class MetadataExtractor:
         match = re.search(r'<pan:data>(.+?)</pan:data>', xmp, re.DOTALL)
         if match:
             try:
+                # Return raw JSON string so _parse_raw_metadata can extract all fields
+                result['panopticon_data'] = match.group(1)
+                
                 data = json.loads(match.group(1))
                 if 'tags' in data:
                     result['panopticon_tags'] = data['tags']
@@ -246,6 +249,25 @@ class MetadataExtractor:
                 bundle.tags = pan_data.get("tags", [])
                 bundle.rating = pan_data.get("rating", 0)
                 bundle.quality_score = pan_data.get("quality_score", 0)
+                
+                # Extract AI metadata if present (common in WebP XMP)
+                if "positive_prompt" in pan_data:
+                    bundle.positive_prompt = pan_data["positive_prompt"]
+                if "negative_prompt" in pan_data:
+                    bundle.negative_prompt = pan_data["negative_prompt"]
+                if "model" in pan_data:
+                    bundle.model = pan_data["model"]
+                if "seed" in pan_data:
+                    bundle.seed = str(pan_data["seed"])
+                if "steps" in pan_data:
+                    bundle.steps = str(pan_data["steps"])
+                if "cfg" in pan_data:
+                    bundle.cfg = str(pan_data["cfg"])
+                if "sampler" in pan_data:
+                    bundle.sampler = pan_data["sampler"]
+                if "tool" in pan_data:
+                    bundle.tool = pan_data["tool"]
+                    
             except json.JSONDecodeError:
                 pass
         
