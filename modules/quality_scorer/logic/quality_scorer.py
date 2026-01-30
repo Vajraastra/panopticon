@@ -15,6 +15,8 @@ import cv2
 import numpy as np
 import shutil
 
+from core.metadata import MetadataStamper
+
 # ============================================================================
 # PERFILES DE EVALUACIÓN
 # ============================================================================
@@ -563,6 +565,8 @@ def run_full_workflow(image_paths, base_folder, profile=DEFAULT_PROFILE,
         
         try:
             shutil.copy2(src_path, dest_path)
+            # Transfer metadata to destination
+            MetadataStamper.transfer(src_path, dest_path)
             result["final_path"] = dest_path
             result["bucket"] = bucket
             stats["categories"][bucket].append(result)

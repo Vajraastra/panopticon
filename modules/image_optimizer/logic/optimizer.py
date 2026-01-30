@@ -1,50 +1,14 @@
+"""
+Image Optimizer Logic - Refactored v2
+Usa el nuevo sistema de metadata centralizado.
+"""
 import os
-import json
-import struct
+from pathlib import Path
 from PIL import Image, PngImagePlugin
-# =========================
-# METADATA UTILITIES
-# =========================
 
-def extract_png_metadata(path):
-    """Extracts tEXt and iTXt chunks from a PNG file."""
-    metadata = {}
-    try:
-        with open(path, 'rb') as f:
-            sig = f.read(8)
-            if sig != b'\x89PNG\r\n\x1a\n':
-                return {}
-            
-            while True:
-                length_bin = f.read(4)
-                if not length_bin: break
-                length = struct.unpack('>I', length_bin)[0]
-                chunk_type = f.read(4)
-                data = f.read(length)
-                f.read(4) # CRC
-                
-                if chunk_type == b'tEXt':
-                    parts = data.split(b'\x00', 1)
-                    if len(parts) == 2:
-                        metadata[parts[0].decode('latin-1', errors='ignore')] = parts[1].decode('latin-1', errors='ignore')
-                elif chunk_type == b'iTXt':
-                    parts = data.split(b'\x00', 5)
-                    if len(parts) >= 6:
-                        metadata[parts[0].decode('utf-8', errors='ignore')] = parts[5].decode('utf-8', errors='ignore')
-        return metadata
-    except:
-        return {}
+from core.paths import CachePaths
+from core.metadata import MetadataExtractor, MetadataStamper, MetadataBundle
 
-def extract_jpeg_metadata(path):
-    """Extracts EXIF UserComment if present."""
-    try:
-        with Image.open(path) as img:
-            exif = img.getexif()
-            if exif and 0x9286 in exif:
-                return {"UserComment": exif[0x9286]}
-    except:
-        pass
-    return {}
 
 # =========================
 # ANALYSIS LOGIC
@@ -59,9 +23,9 @@ def has_real_transparency(image):
         image = image.convert('RGBA')
     
     alpha = image.split()[-1]
-    # getextrema() returns (min, max) values of the channel
     extrema = alpha.getextrema()
     return extrema[0] < 255
+
 
 def analyze_image(path):
     """Analyzes image complexity to suggest optimal format."""
@@ -69,7 +33,6 @@ def analyze_image(path):
         with Image.open(path) as img:
             has_alpha = has_real_transparency(img)
             
-            # For complexity, we check unique colors (limited to 5000 for speed)
             colors = img.getcolors(5000)
             color_count = len(colors) if colors else 5001
             
@@ -98,12 +61,13 @@ def analyze_image(path):
     except Exception as e:
         return {"error": str(e)}
 
+
 # =========================
 # PROCESSING PIPELINE
 # =========================
 
 def resize_image(image, max_side=None, width=None, height=None, lock_aspect=True):
-    """Resizes image. If max_side is provided, scales the longest side to that value."""
+    """Resizes image using Lanczos resampling for best quality."""
     orig_w, orig_h = image.size
     
     if max_side:
@@ -133,6 +97,7 @@ def resize_image(image, max_side=None, width=None, height=None, lock_aspect=True
 
     return image.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
+
 def optimize_image(source_path, output_path, 
                    format_override=None, 
                    quality=90, 
@@ -140,97 +105,181 @@ def optimize_image(source_path, output_path,
                    resize_width=None, 
                    resize_height=None,
                    lock_aspect=True,
-                   preserve_metadata=True):
+                   preserve_metadata=True,
+                   tags=None, rating=0):
     """
-    Complete optimization pipeline:
-    Extract Metadata -> Resize -> Convert -> Optimize -> Re-inject
+    Complete optimization pipeline with new metadata system.
+    
+    Steps:
+    1. Extract metadata from source (using MetadataExtractor)
+    2. Load and resize image
+    3. Determine output format (auto-convert if AI metadata)
+    4. Save optimized image
+    5. Transfer metadata to new file (using MetadataStamper)
+    
+    Args:
+        source_path: Path to source image
+        output_path: Path for output (may be adjusted for format)
+        format_override: Force output format (PNG, JPEG, WEBP)
+        quality: JPEG/WebP quality (1-100)
+        max_side: Max dimension for longest side
+        resize_width/height: Specific dimensions
+        lock_aspect: Maintain aspect ratio
+        preserve_metadata: Transfer AI prompts/tags
+        tags: Additional Panopticon tags to add
+        rating: Panopticon rating to add
+    
+    Returns:
+        dict with success status, paths, and size stats
     """
+    source_path = Path(source_path)
+    output_path = Path(output_path)
+    
     try:
-        # 1. Extract Metadata
-        metadata = {}
-        original_ext = os.path.splitext(source_path)[1].lower()
+        # 1. Extract metadata from source
+        source_bundle = None
         if preserve_metadata:
-            if original_ext == '.png':
-                metadata = extract_png_metadata(source_path)
-            elif original_ext in ('.jpg', '.jpeg'):
-                metadata = extract_jpeg_metadata(source_path)
-
-        # 2. Load Image
+            source_bundle = MetadataExtractor.extract(source_path)
+        
+        # 2. Load image
         img = Image.open(source_path)
+        original_format = img.format
         
-        # 3. Resize
+        # 3. Resize if needed
         if max_side or resize_width or resize_height:
-            img = resize_image(img, max_side=max_side, width=resize_width, height=resize_height, lock_aspect=lock_aspect)
-
-        # 4. Handle Format & Auto-conversion
-        target_format = format_override.upper() if format_override else img.format
-        if not target_format: target_format = "PNG" # Fallback
+            img = resize_image(img, max_side=max_side, 
+                             width=resize_width, height=resize_height, 
+                             lock_aspect=lock_aspect)
         
-        # JPEG + AI Metadata -> Auto-convert to PNG
-        is_ai_metadata = any(k in metadata for k in ("parameters", "prompt"))
-        if target_format in ("JPEG", "JPG") and is_ai_metadata:
+        # 4. Determine output format
+        target_format = format_override.upper() if format_override else original_format
+        if not target_format:
             target_format = "PNG"
-            # Adjust output path extension
-            base = os.path.splitext(output_path)[0]
-            output_path = base + ".png"
-
-        # 5. Prepare Output Path Extension
-        ext_map = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
-        actual_ext = ext_map.get(target_format, ".png")
-        if not output_path.lower().endswith(actual_ext):
-            output_path = os.path.splitext(output_path)[0] + actual_ext
-
-        # 6. Save with Optimization
-        save_args = {"optimize": True}
+        
+        # Auto-convert: JPEG with AI prompts -> PNG (preserves prompts better)
+        has_ai_prompts = source_bundle and source_bundle.has_prompts()
+        if target_format in ("JPEG", "JPG") and has_ai_prompts:
+            target_format = "PNG"
+        
+        # 5. Adjust output path extension
+        ext_map = {"JPEG": ".jpg", "JPG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
+        target_ext = ext_map.get(target_format, ".png")
+        output_path = output_path.with_suffix(target_ext)
+        
+        # 6. Prepare save arguments
+        save_kwargs = {"optimize": True}
         
         if target_format == "PNG":
-            save_args["compress_level"] = 9
-            if preserve_metadata and metadata:
-                pnginfo = PngImagePlugin.PngInfo()
-                for k, v in metadata.items():
-                    if k != "UserComment": # Don't inject JPEG comment into PNG directly
-                        pnginfo.add_text(str(k), str(v))
-                save_args["pnginfo"] = pnginfo
+            save_kwargs["compress_level"] = 9
+            # Mode conversion if needed
+            if img.mode == "P" and has_real_transparency(img):
+                img = img.convert("RGBA")
         
         elif target_format in ("JPEG", "JPG"):
-            save_args["quality"] = quality
-            # Ensure RGB mode for JPEG
+            save_kwargs["quality"] = quality
+            # JPEG requires RGB
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
-            if preserve_metadata and "UserComment" in metadata:
-                exif = img.getexif()
-                exif[0x9286] = metadata["UserComment"]
-                save_args["exif"] = exif
-                
+        
         elif target_format == "WEBP":
-            save_args["quality"] = quality
-            save_args["method"] = 6
+            save_kwargs["quality"] = quality
+            save_kwargs["method"] = 6
         
-        img.save(output_path, **save_args)
+        # 7. Save image (without metadata first)
+        img.save(str(output_path), **save_kwargs)
+        img.close()
         
-        # 7. Stats
-        orig_size = os.path.getsize(source_path)
-        new_size = os.path.getsize(output_path)
+        # 8. Transfer metadata from source to output
+        if preserve_metadata and source_bundle and source_bundle.is_valid():
+            # Add any new tags/rating
+            if tags:
+                source_bundle.tags = list(set(source_bundle.tags + tags))
+            if rating:
+                source_bundle.rating = rating
+            
+            # Stamp to output
+            MetadataStamper.stamp(output_path, source_bundle)
+        
+        elif tags or rating:
+            # No source metadata, but user wants to add tags
+            new_bundle = MetadataBundle(tags=tags or [], rating=rating)
+            MetadataStamper.stamp(output_path, new_bundle)
+        
+        # 9. Calculate stats
+        orig_size = source_path.stat().st_size
+        new_size = output_path.stat().st_size
         
         return {
             "success": True,
-            "output_path": output_path,
+            "output_path": str(output_path),
             "original_size": orig_size,
             "new_size": new_size,
             "saved_bytes": orig_size - new_size,
             "saved_percent": ((orig_size - new_size) / orig_size) * 100 if orig_size > 0 else 0,
-            "converted": target_format != (img.format if img.format else "PNG")
+            "format_changed": target_format != original_format,
+            "metadata_preserved": preserve_metadata and source_bundle is not None
         }
-
+    
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def get_export_path(source_path, export_dir="optimized", suffix=""):
-    """Generates an export path in the target directory. If suffix is empty, keeps original name."""
-    if not os.path.exists(export_dir):
-        os.makedirs(export_dir, exist_ok=True)
-    filename = os.path.basename(source_path)
+
+def get_export_path(source_path, export_dir=None, suffix=""):
+    """
+    Generates export path using centralized cache system.
+    
+    Args:
+        source_path: Original file path
+        export_dir: Custom export dir (uses CachePaths if None)
+        suffix: Optional suffix before extension
+    
+    Returns:
+        Path object for output file
+    """
+    if export_dir is None:
+        export_dir = CachePaths.get_tool_cache("optimizer")
+    else:
+        export_dir = Path(export_dir)
+        export_dir.mkdir(parents=True, exist_ok=True)
+    
+    source_path = Path(source_path)
+    filename = source_path.name
+    
     if suffix:
-        name, ext = os.path.splitext(filename)
-        filename = f"{name}{suffix}{ext}"
-    return os.path.join(export_dir, filename)
+        stem = source_path.stem
+        ext = source_path.suffix
+        filename = f"{stem}{suffix}{ext}"
+    
+    return export_dir / filename
+
+
+def batch_optimize(files, output_dir=None, **kwargs):
+    """
+    Optimizes multiple files with progress tracking.
+    
+    Args:
+        files: List of file paths
+        output_dir: Output directory (uses cache if None)
+        **kwargs: Arguments passed to optimize_image
+    
+    Yields:
+        (index, total, result_dict) for each file
+    """
+    if output_dir is None:
+        output_dir = CachePaths.get_tool_cache("optimizer")
+    else:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+    
+    total = len(files)
+    
+    for i, source in enumerate(files):
+        source = Path(source)
+        output = output_dir / source.name
+        
+        result = optimize_image(str(source), str(output), **kwargs)
+        result["source_path"] = str(source)
+        result["index"] = i + 1
+        result["total"] = total
+        
+        yield i + 1, total, result
