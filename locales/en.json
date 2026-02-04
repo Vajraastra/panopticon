@@ -212,5 +212,22 @@
     "qs.enhance_btn": "✨ Apply Enhancements & Re-scan",
     "qs.skip_btn": "⏭️ Skip Enhancement, Catalog Now",
     "qs.msg.no_images": "No images found.",
-    "qs.msg.fail": "Operation failed: {error}"
+    "qs.msg.fail": "Operation failed: {error}",
+    "remover.title": "🪄 SMART REMOVER",
+    "remover.algorithm": "Algorithm:",
+    "remover.batch_title": "Batch Processing",
+    "remover.apply_batch": "Apply to Image Set",
+    "remover.process": "✨ Remove Artifact",
+    "remover.processing": "⏳ Processing...",
+    "remover.algo_telea": "Telea (Fast)",
+    "remover.algo_ns": "Navier-Stokes",
+    "remover.algo_exemplar": "✨ Exemplar (Texture aware)",
+    "remover.algo_ai_pro": "🤖 AI Pro (Stable & High Quality)",
+    "remover.algo_hint_standard": "Fast, but may blur complex backgrounds.",
+    "remover.open_hint": "Drag an image or use the button below to start.",
+    "remover.sensitivity": "Sensitivity:",
+    "remover.dilation": "Dilation:",
+    "remover.show_mask": "Show Mask Preview",
+    "tool.remover.name": "Smart Remover",
+    "tool.remover.desc": "Remove watermarks and subtitles with intelligent shape discovery."
 }

@@ -93,6 +93,19 @@ Para mantener una estética premium y coherente, todas las herramientas deben us
 - **Canvas (Centro/Superior)**: Área de trabajo principal, previsualización o rejilla de resultados.
 - **Action Bar (Inferior)**: Botones de ejecución final (Ej: "Procesar Todo", "Exportar").
 
+### Estética Cyberpunk (Mandatoria)
+Todos los módulos deben respetar la paleta de colores del sistema:
+- **Cyan (`Theme.ACCENT_MAIN`)**: Acentos principales, títulos y bordes activos.
+- **Morado (`Theme.ACCENT_INFO`)**: Información secundaria, botones de acción manual.
+- **Verde Neón (`Theme.ACCENT_SUCCESS`)**: Confirmación o estados de éxito.
+- **Blanco (`Theme.TEXT_PRIMARY`)**: Datos de alto contraste y valores importantes.
+- **Sidebar Data**: Si el Canvas está vacío o es minimalista, el Sidebar debe enriquecerse con metadatos del archivo (Nombre, Peso, Tags, Dimensiones).
+
+### Visualización de Imágenes
+- **Regla de 1024px**: Para mantener la consistencia en el Canvas, las imágenes individuales deben escalarse para que su lado más largo sea **exactamente 1024px** (conservando relación de aspecto).
+- **Centrado**: Siempre centrar vertical y horizontalmente en el viewport.
+
+
 ---
 
 ## 🌍 5. Localización Global (i18n)

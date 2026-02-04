@@ -1,7 +1,5 @@
-import os
 from PySide6.QtWidgets import QWidget, QLabel
 from core.base_module import BaseModule
-from core.components.standard_layout import StandardToolLayout
 from core.paths import CachePaths
 from .ui.recognition_view import CharacterRecognitionView
 
@@ -21,17 +19,10 @@ class CharacterRecognizerModule(BaseModule):
         
         # 2. Construcción perezosa de la interfaz
         # El contenido principal será nuestra vista personalizada
+        # La vista ahora encapsula su propio StandardToolLayout
         self.content_view = CharacterRecognitionView(self.context)
+        self.view = self.content_view
         
-        # El sidebar se delegará a la vista para que pueda conectar sus controles
-        sidebar = self.content_view.get_sidebar_widget()
-        
-        self.view = StandardToolLayout(
-            self.content_view,
-            sidebar_widget=sidebar,
-            theme_manager=self.context.get('theme_manager'),
-            event_bus=self.context.get('event_bus')
-        )
         return self.view
 
     def get_output_folder(self):

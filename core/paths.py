@@ -10,6 +10,24 @@ from pathlib import Path
 from typing import Optional
 
 
+class ProjectPaths:
+    """
+    Gestiona paths fundamentales del proyecto (Root, AppData).
+    """
+    @staticmethod
+    def root() -> Path:
+        if getattr(sys, 'frozen', False):
+            return Path(sys.executable).parent
+        return Path(__file__).parent.parent
+
+    @staticmethod
+    def app_data() -> Path:
+        """Retorna carpeta para datos persistentes (DBs, configs)."""
+        # Por ahora usamos una carpeta 'data' en el root
+        path = ProjectPaths.root() / "data"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
 class CachePaths:
     """
     Gestiona paths de cache centralizados para todas las herramientas.
@@ -65,6 +83,21 @@ class CachePaths:
             cls._cache_root.mkdir(parents=True, exist_ok=True)
         
         return cls._cache_root
+    
+    @classmethod
+    def get_models_root(cls) -> Path:
+        """
+        Retorna la carpeta raíz para modelos de IA.
+        """
+        if getattr(sys, 'frozen', False):
+            base = Path(sys.executable).parent
+        else:
+            # Assumes core/paths.py -> core/ -> root/
+            base = Path(__file__).parent.parent
+            
+        models = base / "models"
+        models.mkdir(parents=True, exist_ok=True)
+        return models
     
     @classmethod
     def get_tool_cache(cls, tool_name: str) -> Path:

@@ -36,7 +36,14 @@ call "%VENV_DIR%\Scripts\activate.bat"
 
 :: 4. Dependencies
 echo [SETUP] Checking dependencies...
-python -m pip install -r requirements.txt --quiet --disable-pip-version-check
+echo [SETUP] Installing dependeces (Verbose Mode)...
+python -m pip install -r requirements.txt
+if !errorlevel! neq 0 (
+    color 0C
+    echo [ERROR] Failed to install dependencies.
+    pause
+    exit /b
+)
 
 :: 5. Launch
 echo [LAUNCH] Starting application...

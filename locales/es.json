@@ -212,5 +212,22 @@
     "qs.enhance_btn": "✨ Aplicar Mejoras y Re-escanear",
     "qs.skip_btn": "⏭️ Omitir Mejoras, Catalogar Ahora",
     "qs.msg.no_images": "No se encontraron imágenes.",
-    "qs.msg.fail": "La operación falló: {error}"
+    "qs.msg.fail": "La operación falló: {error}",
+    "remover.title": "🪄 SMART REMOVER",
+    "remover.algorithm": "Algoritmo:",
+    "remover.batch_title": "Procesamiento por Lote",
+    "remover.apply_batch": "Aplicar al Set de Imágenes",
+    "remover.process": "✨ Remover Artefacto",
+    "remover.processing": "⏳ Procesando...",
+    "remover.algo_telea": "Telea (Rápido)",
+    "remover.algo_ns": "Navier-Stokes",
+    "remover.algo_exemplar": "✨ Exemplar (Textura)",
+    "remover.algo_ai_pro": "🤖 AI Pro (Alta Calidad & Estable)",
+    "remover.algo_hint_standard": "Rápido, pero puede emborronar fondos complejos.",
+    "remover.open_hint": "Arrastra una imagen o usa el botón de abajo para empezar.",
+    "remover.sensitivity": "Sensibilidad:",
+    "remover.dilation": "Dilatación:",
+    "remover.show_mask": "Ver Máscara",
+    "tool.remover.name": "Smart Remover",
+    "tool.remover.desc": "Elimina marcas de agua y subtítulos con descubrimiento inteligente de formas."
 }

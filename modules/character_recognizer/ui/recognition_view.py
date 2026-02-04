@@ -1,8 +1,11 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, 
-                               QHBoxLayout, QFrame, QStackedLayout, QComboBox, QLineEdit, QFileDialog, QGridLayout)
-from PySide6.QtCore import Qt, Signal, Slot
+                               QHBoxLayout, QFrame, QStackedLayout, QComboBox, QLineEdit, QFileDialog, QGridLayout, QListWidget)
+from PySide6.QtCore import Qt, Signal, Slot, QFileInfo
 from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont
 from ..logic.profile_db import ProfileDB
+from modules.librarian.logic.db_manager import DatabaseManager
+from core.components.standard_layout import StandardToolLayout
+from core.theme import Theme
 import cv2
 import os
 
@@ -10,20 +13,37 @@ class CharacterRecognitionView(QWidget):
     def __init__(self, context):
         super().__init__()
         self.context = context
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.profile_db = ProfileDB()
         
+        # UI Components
+        content = self._create_content()
+        sidebar = self._create_sidebar()
+        
+        # Standard Layout
+        self.layout_manager = StandardToolLayout(
+            content,
+            sidebar_widget=sidebar,
+            theme_manager=self.context.get('theme_manager'),
+            event_bus=self.context.get('event_bus')
+        )
+        
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(self.layout_manager)
+        
+        # Init Data
+        self.refresh_profiles()
+        
+    def _create_content(self):
         # --- Viewport Container (Stacking) ---
         self.viewport = QWidget()
         self.stack_layout = QGridLayout(self.viewport) # Grid allows overlapping
         self.stack_layout.setContentsMargins(0, 0, 0, 0)
         
         # 1. Image Layer (Background)
-        self.image_label = QLabel("No image loaded")
+        self.image_label = QLabel("Drop images here")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setStyleSheet("background-color: #202020;")
-        # Fix: Ensure label doesn't prevent overlay from getting events?
-        # Default is fine.
+        self.image_label.setStyleSheet(f"background-color: {Theme.BG_MAIN}; color: {Theme.TEXT_DIM}; font-size: 16px;")
         
         # 2. Overlay Layer (Centered Menu)
         self.action_bar_container = QFrame()
@@ -36,7 +56,6 @@ class CharacterRecognitionView(QWidget):
             }
             QLabel { color: #EEE; }
         """)
-        # Removed setFixedWidth to allow auto-sizing
         
         # Shadow effect
         try:
@@ -114,11 +133,8 @@ class CharacterRecognitionView(QWidget):
         self.action_bar_layout.addWidget(self.page_manual)
         
         # Add to Grid (Overlapping)
-        # Row 0, Col 0 for both!
         self.stack_layout.addWidget(self.image_label, 0, 0)
         self.stack_layout.addWidget(self.action_bar_container, 0, 0, Qt.AlignmentFlag.AlignCenter)
-        
-        self.layout.addWidget(self.viewport, 1)
         
         # Connections
         self.btn_confirm.clicked.connect(self.on_confirm)
@@ -126,14 +142,125 @@ class CharacterRecognitionView(QWidget):
         btn_save.clicked.connect(self.on_manual_save)
         btn_cancel.clicked.connect(lambda: self.action_bar_layout.setCurrentIndex(0))
         
-        self.action_bar_container.hide() # Hide initially until image loads
+        self.action_bar_container.hide() # Hide initially
         
         # Enable Drag & Drop
-        self.setAcceptDrops(True)
+        self.viewport.setAcceptDrops(True)
+        # Note: We need to redirect Viewport's drop events to Self logic or bind them here
+        # Easiest way: Let the method names match (dropEvent) but bind them to the viewport instance?
+        # Or just keep drag logic on 'self' which is the wrapper?
+        # NO, 'self' is the wrapper now. StandardLayout puts content in center.
+        # So we should enable drop on 'self.viewport' (the content widget).
         
-        # Cache for Auto-Complete
-        self.profile_db = ProfileDB()
-        self.refresh_profiles()
+        # Monkey patch or properly subclass?
+        # Let's just bind the methods for now to keep it simple
+        self.viewport.dragEnterEvent = self.dragEnterEvent
+        self.viewport.dropEvent = self.dropEvent
+        
+        return self.viewport
+        
+    def _create_sidebar(self):
+        """Returns the widget to be placed in the sidebar."""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        
+        # --- Header ---
+        title_lbl = QLabel("RECOGNIZER")
+        title_lbl.setStyleSheet(f"color: {Theme.ACCENT_MAIN}; font-weight: bold; font-size: 14px; letter-spacing: 1px;") 
+        layout.addWidget(title_lbl)
+        
+        desc_lbl = QLabel("Auto-tag characters using facial recognition.")
+        desc_lbl.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px;")
+        desc_lbl.setWordWrap(True)
+        layout.addWidget(desc_lbl)
+        
+        layout.addSpacing(10)
+        
+        # --- File Info Section ---
+        lbl_meta = QLabel("FILE INFO")
+        lbl_meta.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 11px;")
+        layout.addWidget(lbl_meta)
+        
+        # HIGH CONTRAST: White text for data, keep consolas for tech feel
+        meta_style = f"color: {Theme.TEXT_PRIMARY}; font-family: 'Consolas', 'Monaco', monospace; font-size: 11px;"
+        
+        self.lbl_filename = QLabel("No File")
+        self.lbl_filename.setStyleSheet(f"color: {Theme.TEXT_PRIMARY}; font-size: 12px; font-weight: bold;")
+        self.lbl_filename.setWordWrap(True)
+        layout.addWidget(self.lbl_filename)
+        
+        self.lbl_dimensions = QLabel("--- x ---")
+        self.lbl_dimensions.setStyleSheet(meta_style)
+        layout.addWidget(self.lbl_dimensions)
+        
+        self.lbl_filesize = QLabel("--- KB")
+        self.lbl_filesize.setStyleSheet(meta_style)
+        layout.addWidget(self.lbl_filesize)
+        
+        layout.addSpacing(10)
+        
+        # --- Existing Tags ---
+        lbl_tags = QLabel("CURRENT TAGS")
+        lbl_tags.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 11px;")
+        layout.addWidget(lbl_tags)
+        
+        self.list_tags = QListWidget()
+        self.list_tags.setStyleSheet(f"""
+            QListWidget {{
+                background-color: {Theme.BG_INPUT};
+                border: 1px solid {Theme.BORDER};
+                border-radius: 4px;
+                color: {Theme.TEXT_PRIMARY};
+                font-size: 11px;
+            }}
+            QListWidget::item {{ margin: 2px; }}
+        """)
+        self.list_tags.setFixedHeight(100)
+        layout.addWidget(self.list_tags)
+
+        layout.addSpacing(10)
+        
+        # --- Controls ---
+        lbl_source = QLabel("SOURCE")
+        lbl_source.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 11px;")
+        layout.addWidget(lbl_source)
+        
+        btn_load = QPushButton("📂 Load Folder")
+        btn_load.clicked.connect(self.on_load_folder_clicked)
+        # Custom Style to fix Overflow (Reduced Padding directly)
+        btn_load.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Theme.ACCENT_INFO};
+                color: white;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 6px 4px; /* Tighter padding */
+            }}
+            QPushButton:hover {{ background-color: #a070e0; }}
+        """)
+        layout.addWidget(btn_load)
+        
+        layout.addSpacing(10)
+        
+        # --- Status ---
+        lbl_status_header = QLabel("STATUS")
+        lbl_status_header.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 11px;")
+        layout.addWidget(lbl_status_header)
+        
+        self.lbl_status = QLabel("Idle")
+        # Brighten status text slightly
+        self.lbl_status.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: 11px;") 
+        self.lbl_status.setWordWrap(True)
+        layout.addWidget(self.lbl_status)
+        
+        layout.addStretch()
+        return container
+        
+    # Remove old get_sidebar_widget since we renamed/refactored logic
+
 
     def refresh_profiles(self):
         """Loads names into ComboBox."""
@@ -149,6 +276,30 @@ class CharacterRecognitionView(QWidget):
             self.current_path = path
             self.current_embedding = embedding
             self.current_suggestion = suggestion
+            
+            # --- Update Metadata Sidebar ---
+            file_info = QFileInfo(path)
+            self.lbl_filename.setText(file_info.fileName())
+            
+            # Size
+            size_kb = file_info.size() / 1024.0
+            if size_kb > 1024:
+                self.lbl_filesize.setText(f"{size_kb/1024.0:.2f} MB")
+            else:
+                self.lbl_filesize.setText(f"{size_kb:.1f} KB")
+                
+            # Dimensions (Original)
+            orig_h, orig_w = cv_img.shape[:2]
+            self.lbl_dimensions.setText(f"{orig_w} x {orig_h} px")
+            
+            # Tags
+            db = DatabaseManager()
+            tags = db.get_tags_for_file(path)
+            self.list_tags.clear()
+            if tags:
+                self.list_tags.addItems(sorted(tags))
+            else:
+                self.list_tags.addItem("(No tags)")
             
             # Reset UI State
             self.action_bar_layout.setCurrentIndex(0) # Predict Mode
@@ -191,13 +342,13 @@ class CharacterRecognitionView(QWidget):
                 w = min(width - x, w + 2*pad_w)
                 h = min(height - y, h + 2*pad_h)
                 
-                # Color Logic
+                # Color Logic (Cyberpunk)
                 if confidence > 0.6:
-                    color = QColor(0, 255, 100) # Green
+                    color = QColor("#50fa7b") # Neon Green
                 elif confidence > 0.4:
-                    color = QColor(255, 200, 0) # Yellow
+                    color = QColor("#f1fa8c") # Yellow
                 else:
-                    color = QColor(255, 50, 50) # Red
+                    color = QColor("#ff5555") # Red/Pink
                     
                 pen = QPen(color)
                 pen.setWidth(3)
@@ -231,21 +382,31 @@ class CharacterRecognitionView(QWidget):
             
             self.image_label.repaint()
             
-            self.image_label.repaint()
-            
             # Update Status text but keep buttons
             if suggestion:
                 self.lbl_prediction.setText(f"{suggestion}?\n({confidence:.2f})")
+                
+                # Button 1: Confirm (Green)
                 self.btn_confirm.setText("Yes")
                 self.btn_confirm.setVisible(True)
+                self.btn_confirm.setStyleSheet(f"background-color: {Theme.ACCENT_SUCCESS}; color: black; border-radius: 4px; padding: 4px 12px; font-weight: bold;") 
+                
+                # Button 2: Reject/Edit (Red) - NOW "Edit" to fit
+                self.btn_reject.setText("Edit") 
+                self.btn_reject.setVisible(True)
+                self.btn_reject.setStyleSheet(f"background-color: {Theme.ACCENT_WARNING}; color: white; border-radius: 4px; padding: 4px 12px; font-weight: bold;")
+
             else:
                 self.lbl_prediction.setText("Unknown")
-                self.btn_confirm.setVisible(False) 
                 
-                if not suggestion:
-                    self.btn_confirm.setText("Manual")
-                    self.btn_confirm.setVisible(True)
-            
+                # Button 1: Confirm -> Acts as "Manual Tag" (Purple)
+                self.btn_confirm.setText("Identify")
+                self.btn_confirm.setVisible(True)
+                self.btn_confirm.setStyleSheet(f"background-color: {Theme.ACCENT_INFO}; color: white; border-radius: 4px; padding: 4px 12px; font-weight: bold;")
+                
+                # Button 2: Reject -> HIDE (Redundant)
+                self.btn_reject.setVisible(False) 
+
             # Helper to ensure size is correct before positioning
             self.action_bar_container.adjustSize()
             
@@ -414,36 +575,8 @@ class CharacterRecognitionView(QWidget):
             else:
                 print("DEBUG: DropEvent found NO valid images after expansion.")
 
-    def get_sidebar_widget(self):
-        """Returns the widget to be placed in the sidebar."""
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        
-        title_lbl = QLabel("Recognition Settings")
-        title_lbl.setStyleSheet("font-weight: bold; font-size: 14px;")
-        layout.addWidget(title_lbl)
-        
-        # Input Controls
-        btn_load = QPushButton("Load Folder")
-        btn_load.clicked.connect(self.on_load_folder_clicked)
-        btn_load.setStyleSheet("""
-            QPushButton {
-                background-color: #404040;
-                color: white;
-                padding: 8px;
-                border-radius: 4px;
-            }
-            QPushButton:hover { background-color: #505050; }
-        """)
-        layout.addWidget(btn_load)
-        
-        # Stats / Info
-        self.lbl_status = QLabel("Status: Idle")
-        self.lbl_status.setWordWrap(True)
-        layout.addWidget(self.lbl_status)
-        
-        layout.addStretch()
-        return container
+
+
         
     def on_load_folder_clicked(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder to Process")
