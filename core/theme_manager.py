@@ -124,12 +124,28 @@ class ThemeManager(QObject):
                 border-left-color: {c['border']};
                 border-left-style: solid;
             }}
+            
+            /* El menú que se despliega (Popup) */
             QComboBox QAbstractItemView {{
-                border: 2px solid {c['accent_main']};
-                background-color: #050505;
+                background-color: {c['bg_sidebar']} !important;
+                background: {c['bg_sidebar']} !important;
+                color: {c['text_primary']};
+                border: 1px solid {c['accent_main']};
                 selection-background-color: {c['accent_main']};
                 selection-color: black;
                 outline: none;
+            }}
+
+            QComboBox QAbstractItemView::item {{
+                background-color: {c['bg_sidebar']};
+                padding: 8px;
+            }}
+
+            /* Forzar el fondo del widget de lista interno y su zona de visualización */
+            QComboBox QListView, QComboBox QListView::viewport {{
+                background-color: {c['bg_sidebar']} !important;
+                background: {c['bg_sidebar']} !important;
+                border: none;
             }}
 
             /* Botones Estándar */

@@ -229,5 +229,7 @@
     "remover.dilation": "Dilatación:",
     "remover.show_mask": "Ver Máscara",
     "tool.remover.name": "Smart Remover",
-    "tool.remover.desc": "Elimina marcas de agua y subtítulos con descubrimiento inteligente de formas."
+    "tool.remover.desc": "Elimina marcas de agua y subtítulos con descubrimiento inteligente de formas.",
+    "tool.duplicate_finder.name": "Buscador de Duplicados",
+    "tool.duplicate_finder.desc": "Encuentra y gestiona archivos idénticos o similares."
 }

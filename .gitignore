@@ -35,4 +35,38 @@ logs/
 *.log
 temp/
 tmp/
-examples/images/ # If we don't want to track sample images
+examples/images/
+
+# AI Models (download separately, too large for GitHub)
+models/
+
+# Databases (user-specific data)
+*.db
+
+# User data
+data/
+
+# Cache
+cache/
+
+# Backups
+*.bak
+
+# Configuration (user-specific)
+config.json
+
+# Debug scripts
+debug_*.py
+
+# Development tools and test scripts
+tools/
+
+# Development log (private notes)
+bitácora.md
+
+# AI assistant / Agent config
+.agent/
+.gemini/
+
+# Launcher secundario
+scanner.bat

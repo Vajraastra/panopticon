@@ -3,7 +3,7 @@ import sys
 import os
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLabel, QStackedWidget,
-                             QFrame, QGridLayout, QComboBox, QMessageBox)
+                             QFrame, QGridLayout, QComboBox, QMessageBox, QScrollArea)
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QIcon, QFont
 
@@ -35,7 +35,7 @@ class MainWindow(QMainWindow):
         
         # 2. Configuración de la Ventana
         self.setWindowTitle(f"{self.tr('app.title', 'Panopticon')} - {self.tr('app.subtitle')}")
-        self.resize(1280, 800) # Tamaño inicial espacioso
+        self.resize(1280, 800) # Tamaño base razonable
         self.setStyleSheet(self.theme_manager.get_stylesheet())
         
         # 3. Contexto de Inyección de Dependencias
@@ -130,26 +130,31 @@ class MainWindow(QMainWindow):
         layout.addWidget(settings_bar)
         
         # 3. TOOLS GRID AREA
-        # Container frame for the grid
-        grid_container = QWidget()
-        grid_layout_outer = QVBoxLayout(grid_container)
-        grid_layout_outer.setContentsMargins(40, 20, 40, 20)
-        
         # Label
+        lbl_tools_container = QWidget()
+        lbl_tools_layout = QVBoxLayout(lbl_tools_container)
+        lbl_tools_layout.setContentsMargins(40, 20, 40, 0)
         lbl_tools = QLabel(self.tr('dashboard.tools', 'AVAILABLE TOOLS'))
         lbl_tools.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 12px; font-weight: bold; letter-spacing: 1px;")
-        grid_layout_outer.addWidget(lbl_tools)
+        lbl_tools_layout.addWidget(lbl_tools)
+        layout.addWidget(lbl_tools_container)
+
+        # Scroll Area for the Grid
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("background: transparent; border: none;")
         
         # The Grid Widget
         self.modules_grid_widget = QWidget()
+        self.modules_grid_widget.setStyleSheet("background: transparent;")
         self.modules_grid_layout = QGridLayout(self.modules_grid_widget)
         self.modules_grid_layout.setSpacing(25) # Space between cards
-        self.modules_grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.modules_grid_layout.setContentsMargins(40, 20, 40, 20)
+        self.modules_grid_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
         
-        grid_layout_outer.addWidget(self.modules_grid_widget)
-        grid_layout_outer.addStretch() # Push everything up
-        
-        layout.addWidget(grid_container)
+        scroll.setWidget(self.modules_grid_widget)
+        layout.addWidget(scroll, 1) # This will take all available space
 
     def create_settings_page(self):
         self.settings_page = QWidget()
@@ -258,8 +263,13 @@ class MainWindow(QMainWindow):
         # Initialize view mostly to ensure it's ready, but we don't show it yet
         try:
             view = module.get_view()
-            if not view: return
-        except:
+            if not view: 
+                print(f"[WARN] Module {module.name} returned empty view.")
+                return
+        except Exception as e:
+            print(f"[ERROR] Failed to get view for {module.name}: {e}")
+            import traceback
+            traceback.print_exc()
             return
 
         # 1. Create Card Widget
@@ -381,5 +391,5 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
-    window.show()
+    window.showMaximized() # Forzar maximizado al final para evitar re-dimensiones inesperadas
     sys.exit(app.exec())

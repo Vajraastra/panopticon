@@ -9,3 +9,5 @@ onnxruntime
 scikit-image
 numpy<2.0.0
 scikit-learn
+psd-tools
+imagehash

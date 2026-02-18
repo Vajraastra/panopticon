@@ -229,5 +229,7 @@
     "remover.dilation": "Dilation:",
     "remover.show_mask": "Show Mask Preview",
     "tool.remover.name": "Smart Remover",
-    "tool.remover.desc": "Remove watermarks and subtitles with intelligent shape discovery."
+    "tool.remover.desc": "Remove watermarks and subtitles with intelligent shape discovery.",
+    "tool.duplicate_finder.name": "Duplicate Finder",
+    "tool.duplicate_finder.desc": "Find and manage identical or similar files."
 }
