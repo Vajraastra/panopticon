@@ -231,5 +231,13 @@
     "tool.remover.name": "Smart Remover",
     "tool.remover.desc": "Remove watermarks and subtitles with intelligent shape discovery.",
     "tool.duplicate_finder.name": "Duplicate Finder",
-    "tool.duplicate_finder.desc": "Find and manage identical or similar files."
+    "tool.duplicate_finder.desc": "Find and manage identical or similar files.",
+    "tool.format_scanner.name": "Format Scanner",
+    "tool.format_scanner.desc": "Analyzes the distribution of image formats for statistical review.",
+    "fscanner.btn.select": "📂 Select Folder",
+    "fscanner.dialog.title": "Select Folder for Statistics",
+    "fscanner.log.start": "Starting scan in: {path}",
+    "fscanner.results.title": "\n--- STATISTICAL RESULTS ---",
+    "fscanner.results.no_images": "No images found.",
+    "fscanner.results.total": "\nTotal images analyzed: {total}"
 }

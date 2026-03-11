@@ -231,5 +231,13 @@
     "tool.remover.name": "Smart Remover",
     "tool.remover.desc": "Elimina marcas de agua y subtítulos con descubrimiento inteligente de formas.",
     "tool.duplicate_finder.name": "Buscador de Duplicados",
-    "tool.duplicate_finder.desc": "Encuentra y gestiona archivos idénticos o similares."
+    "tool.duplicate_finder.desc": "Encuentra y gestiona archivos idénticos o similares.",
+    "tool.format_scanner.name": "Escáner de Formatos",
+    "tool.format_scanner.desc": "Analiza la distribución de formatos de imagen para revisión estadística.",
+    "fscanner.btn.select": "📂 Seleccionar Carpeta",
+    "fscanner.dialog.title": "Selecciona Carpeta para Estadísticas",
+    "fscanner.log.start": "Iniciando escaneo en: {path}",
+    "fscanner.results.title": "\n--- RESULTADOS ESTADÍSTICOS ---",
+    "fscanner.results.no_images": "No se encontraron imágenes.",
+    "fscanner.results.total": "\nTotal de imágenes analizadas: {total}"
 }
