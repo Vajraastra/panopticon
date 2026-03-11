@@ -287,5 +287,27 @@
     "fscanner.log.start": "Starting scan in: {path}",
     "fscanner.results.title": "\n--- STATISTICAL RESULTS ---",
     "fscanner.results.no_images": "No images found.",
-    "fscanner.results.total": "\nTotal images analyzed: {total}"
+    "fscanner.results.total": "\nTotal images analyzed: {total}",
+
+    "dup.title": "⚙ SCAN OPTIONS",
+    "dup.mode_label": "Comparison Mode:",
+    "dup.mode_hash": "Hash (Exact Match)",
+    "dup.mode_visual": "Visual (Similarity)",
+    "dup.threshold": "Visual Tolerance (lower = more exact):",
+    "dup.value": "Value: {value}",
+    "dup.select_folder": "📁 Select Folder",
+    "dup.no_folder": "No folder selected",
+    "dup.run_scan": "🚀 START SCAN",
+    "dup.placeholder": "Select a folder and start the scan to find duplicates.",
+    "dup.auto_select": "🧹 Delete all but first",
+    "dup.delete": "🔥 DELETE SELECTED",
+    "dup.no_folder_warn": "Please select a folder first.",
+    "dup.no_results": "No duplicates found.",
+    "dup.group_header": "Group: {id}... ({count} files)",
+    "dup.no_selection": "No files selected.",
+    "dup.confirm_delete": "Are you sure you want to permanently delete {count} files?\n\n",
+    "dup.confirm_all_warn": "⚠ WARNING: You are deleting ALL copies of {count} groups. You will have no originals left in those cases.",
+    "dup.confirm_title": "DELETION CONFIRMATION",
+    "dup.done_title": "Process Complete",
+    "dup.done_msg": "Deleted {count} files successfully."
 }

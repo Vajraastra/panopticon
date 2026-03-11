@@ -287,5 +287,27 @@
     "fscanner.log.start": "Iniciando escaneo en: {path}",
     "fscanner.results.title": "\n--- RESULTADOS ESTADÍSTICOS ---",
     "fscanner.results.no_images": "No se encontraron imágenes.",
-    "fscanner.results.total": "\nTotal de imágenes analizadas: {total}"
+    "fscanner.results.total": "\nTotal de imágenes analizadas: {total}",
+
+    "dup.title": "⚙ OPCIONES DE ESCANEO",
+    "dup.mode_label": "Modo de Comparación:",
+    "dup.mode_hash": "Hash (Coincidencia Exacta)",
+    "dup.mode_visual": "Visual (Similitud)",
+    "dup.threshold": "Tolerancia Visual (menor = más exacto):",
+    "dup.value": "Valor: {value}",
+    "dup.select_folder": "📁 Seleccionar Carpeta",
+    "dup.no_folder": "Ninguna carpeta seleccionada",
+    "dup.run_scan": "🚀 INICIAR ESCANEO",
+    "dup.placeholder": "Selecciona una carpeta e inicia el escaneo para encontrar duplicados.",
+    "dup.auto_select": "🧹 Borrar todo menos el primero",
+    "dup.delete": "🔥 ELIMINAR SELECCIONADOS",
+    "dup.no_folder_warn": "Por favor selecciona una carpeta primero.",
+    "dup.no_results": "No se encontraron duplicados.",
+    "dup.group_header": "Grupo: {id}... ({count} archivos)",
+    "dup.no_selection": "No hay archivos seleccionados.",
+    "dup.confirm_delete": "¿Estás seguro de eliminar {count} archivos permanentemente?\n\n",
+    "dup.confirm_all_warn": "⚠ ADVERTENCIA: Vas a eliminar TODAS las copias de {count} grupos. Te quedarás sin archivos originales en esos casos.",
+    "dup.confirm_title": "CONFIRMACIÓN DE BORRADO",
+    "dup.done_title": "Proceso Completado",
+    "dup.done_msg": "Se eliminaron {count} archivos correctamente."
 }
