@@ -1,34 +1,30 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
-                               QFileDialog, QMessageBox, QProgressBar, QTextEdit, QApplication, QDialog)
+import os
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton,
+                               QFileDialog, QMessageBox, QProgressBar,
+                               QTextEdit, QApplication, QDialog)
 from PySide6.QtCore import Qt, QSettings
 from core.base_module import BaseModule
+from core.components.standard_layout import StandardToolLayout
 from .logic.logic import process_folder, get_folder_stats
-import os
+
 
 class DummyCreatorModule(BaseModule):
-    """
-    Módulo Dummy Creator (Creador de Marcadores).
-    Herramienta diseñada para ahorrar espacio en disco reemplazando imágenes pesadas
-    por archivos "dummy" de 32x32 píxeles, manteniendo los originales en una 
-    carpeta segura para su posterior restauración si es necesario.
-    """
     def __init__(self):
         super().__init__()
         self._name = "Dummy Creator"
-        self._description = "Archivado de colecciones reemplazando imágenes por marcadores ligeros."
+        self._description = "Archive collections by replacing images with lightweight placeholders."
         self._icon = "🎭"
-        
+
         self.view = None
         self.settings = QSettings("Panopticon", "DummyCreator")
         self.last_asset_dir = self.settings.value("last_asset_dir", os.path.expanduser("~"))
 
     def get_view(self) -> QWidget:
-        """Configura la interfaz centrada en la acción de selección de carpeta."""
-        if self.view: return self.view
-        
-        content = self._create_content() # Botón de acción principal
-        
-        from core.components.standard_layout import StandardToolLayout
+        if self.view:
+            return self.view
+
+        content = self._create_content()
+
         self.view = StandardToolLayout(
             content,
             theme_manager=self.context.get('theme_manager'),
@@ -37,33 +33,33 @@ class DummyCreatorModule(BaseModule):
         return self.view
 
     def _create_content(self) -> QWidget:
-        from core.theme import Theme
+        theme = self.context.get('theme_manager') if hasattr(self, 'context') else None
         accent = "#f1fa8c"
-        
+        text_dim = theme.get_color('text_dim') if theme else "#888888"
+
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 50, 0, 50)
         layout.setAlignment(Qt.AlignCenter)
-        
-        # Centering Panel
+
         panel = QWidget()
         panel.setMaximumWidth(800)
         panel_layout = QVBoxLayout(panel)
         panel_layout.setSpacing(20)
-        
+
         lbl_info = QLabel(self.tr("dummy.title", "🎭 Dummy Creator"))
         lbl_info.setAlignment(Qt.AlignCenter)
         lbl_info.setStyleSheet(f"font-size: 28px; font-weight: bold; color: {accent}; margin-bottom: 10px;")
         panel_layout.addWidget(lbl_info)
-        
+
         lbl_desc = QLabel(self.tr("dummy.desc", "Archive collections by replacing images with lightweight placeholders."))
         lbl_desc.setAlignment(Qt.AlignCenter)
         lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet(f"font-size: 14px; color: {Theme.TEXT_DIM}; line-height: 1.6;")
+        lbl_desc.setStyleSheet(f"font-size: 14px; color: {text_dim}; line-height: 1.6;")
         panel_layout.addWidget(lbl_desc)
-        
+
         panel_layout.addSpacing(40)
-        
+
         self.btn_run = QPushButton(self.tr("dummy.btn_select", "📂 Select Folder to Dummify"))
         self.btn_run.setFixedSize(350, 60)
         self.btn_run.setCursor(Qt.PointingHandCursor)
@@ -84,57 +80,78 @@ class DummyCreatorModule(BaseModule):
         """)
         panel_layout.addWidget(self.btn_run, alignment=Qt.AlignCenter)
         panel_layout.addStretch()
-        
+
         layout.addWidget(panel)
         return container
 
     def open_dummy_creator_dialog(self):
-        # Implementation ported and cleaned from Workshop
-        folder = QFileDialog.getExistingDirectory(None, self.tr("common.select_folder", "Select Folder to Dummify"), self.last_asset_dir)
-        if not folder: return
-        
+        folder = QFileDialog.getExistingDirectory(
+            self.view,
+            self.tr("common.select_folder", "Select Folder to Dummify"),
+            self.last_asset_dir
+        )
+        if not folder:
+            return
+
         self.last_asset_dir = folder
         self.settings.setValue("last_asset_dir", self.last_asset_dir)
-        
+
         stats = get_folder_stats(folder)
         if not stats:
-            QMessageBox.warning(None, self.tr("common.error", "Invalid Path"), self.tr("dummy.invalid", "Could not access folder."))
+            QMessageBox.warning(
+                self.view,
+                self.tr("common.error", "Invalid Path"),
+                self.tr("dummy.invalid", "Could not access folder.")
+            )
             return
-            
+
         preview_msg = self.tr("dummy.analysis", "📊 Folder Analysis...").format(
             total=stats['total_files'],
             dummies=stats['dummies'],
             originals=stats['originals']
         )
-        
-        reply = QMessageBox.question(None, self.tr("common.confirm", "Confirm Action"), preview_msg, QMessageBox.Yes | QMessageBox.No)
-        if reply != QMessageBox.Yes: return
 
-        # Progress Dialog
-        dlg = QDialog(None)
+        reply = QMessageBox.question(
+            self.view,
+            self.tr("common.confirm", "Confirm Action"),
+            preview_msg,
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        theme = self.context.get('theme_manager') if hasattr(self, 'context') else None
+        bg = theme.get_color('bg_main') if theme else "#0a0a0a"
+        success_color = theme.get_color('accent_success') if theme else "#00ff66"
+
+        dlg = QDialog(self.view)
         dlg.setWindowTitle(self.tr("dummy.processing", "Dummy Creator - Processing"))
         dlg.setMinimumSize(600, 400)
         dlg_layout = QVBoxLayout(dlg)
-        
+
         log = QTextEdit()
         log.setReadOnly(True)
-        log.setStyleSheet("background: #0a0a0a; color: #00ff00; font-family: Consolas; font-size: 12px;")
+        log.setStyleSheet(
+            f"background: {bg}; color: {success_color}; font-family: Consolas; font-size: 12px;"
+        )
         dlg_layout.addWidget(log)
-        
+
         pbar = QProgressBar()
         dlg_layout.addWidget(pbar)
-        
+
         btn_close = QPushButton(self.tr("dummy.close", "Close"))
         btn_close.setEnabled(False)
         btn_close.clicked.connect(dlg.accept)
         dlg_layout.addWidget(btn_close)
-        
+
         dlg.show()
-        
+
+        progress_tpl = self.tr("dummy.progress", "[{current}/{total}] Processed: {filename}")
+
         def on_progress(current, total, filename):
             pbar.setMaximum(total)
             pbar.setValue(current)
-            log.append(f"[{current}/{total}] Processed: {filename}")
+            log.append(progress_tpl.format(current=current, total=total, filename=filename))
             QApplication.instance().processEvents()
 
         try:
@@ -148,6 +165,6 @@ class DummyCreatorModule(BaseModule):
             log.append(summary)
         except Exception as e:
             log.append(f"\n❌ FATAL ERROR: {str(e)}")
-            
+
         btn_close.setEnabled(True)
         dlg.exec()

@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /run/media/system/Kilaya/githubs/panopticon status --short)",
+      "Bash(wc -l /run/media/system/Kilaya/githubs/panopticon/modules/*/module.py)",
+      "Bash(python3 -c \"import sys; print\\(f''Python {sys.version}''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''modules/character_recognizer/ui/recognition_view.py''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "Bash(source venv/bin/activate)",
+      "Bash(python -c \":*)",
+      "Bash(/run/media/system/Kilaya/githubs/panopticon/TASKS.md:*)",
+      "Bash(\"/run/media/system/Kilaya/githubs/panopticon/bitácora.md\":*)",
+      "Bash(python3 -c \":*)",
+      "Bash(venv/bin/python3 -c \":*)",
+      "Bash(venv/bin/pip show:*)",
+      "Bash(python3 -c \"import json; json.load\\(open\\(''locales/en.json''\\)\\); print\\(''en OK''\\); json.load\\(open\\(''locales/es.json''\\)\\); print\\(''es OK''\\)\")",
+      "Bash(python3 -m py_compile main.py)",
+      "Bash(python3 -m py_compile modules/gallery/ui/viewer_window.py)",
+      "Bash(python3 -m py_compile modules/gallery/module.py)",
+      "Bash(python3 -c \"import json; json.load\\(open\\(''locales/en.json''\\)\\); json.load\\(open\\(''locales/es.json''\\)\\); print\\(''locales OK''\\)\")",
+      "Bash(grep -n \"crop\\\\.\" /run/media/system/Kilaya/githubs/panopticon/locales/*.json)",
+      "Bash(for key:*)",
+      "Bash(do grep:*)",
+      "Bash(echo \"✓ $key found\")",
+      "Bash(echo \"✗ $key NOT found\")",
+      "Bash(done)",
+      "Bash(python3:*)",
+      "Bash(git filter-repo:*)",
+      "Bash(pip install:*)",
+      "Bash(pip3 install:*)",
+      "Bash(/usr/bin/pip3 install:*)",
+      "Bash(/var/data/python/bin/git-filter-repo --version)",
+      "Bash(/var/data/python/bin/git-filter-repo --path models/ --path data/ --path panopticon.db --path debug_gallery_db.py --path debug_imports.py --path requirements.txt.bak --path run.bat --path scanner.bat --path tests/audit_gallery_components.py --path tests/test_character_recognizer.py --path modules/face_scorer/assets/ --invert-paths --force)"
+    ]
+  }
+}

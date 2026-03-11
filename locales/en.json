@@ -196,6 +196,7 @@
     "dummy.processing": "Dummy Creator - Processing",
     "dummy.close": "Close",
     "dummy.summary": "\n--- MISSION COMPLETE ---\nFiles Dummified: {processed}\nDisk Space Reclaimed: {saved} MB\nErrors: {errors}\n",
+    "dummy.progress": "[{current}/{total}] Processed: {filename}",
     "tool.quality_scorer.name": "Quality Scorer",
     "tool.quality_scorer.desc": "Evaluate technical image quality for AI dataset curation.",
     "qs.title": "📊 QUALITY SCORER",

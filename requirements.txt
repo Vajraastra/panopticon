@@ -7,7 +7,7 @@ dwpose
 huggingface_hub>=0.20.0
 onnxruntime
 scikit-image
-numpy<2.0.0
+numpy>=2.0.0
 scikit-learn
 psd-tools
 imagehash

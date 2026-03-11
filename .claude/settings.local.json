@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git rm --cached panopticon.db data/character_profiles.db)",
+      "Bash(chmod +x /run/media/system/Kilaya/githubs/panopticon/run.sh)"
+    ]
+  }
+}
