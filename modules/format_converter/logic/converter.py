@@ -302,21 +302,15 @@ def scan_folder_for_conversion(folder: str | Path,
     """
     folder = Path(folder)
     
-    # Extensions to convert
-    source_extensions = {".png", ".jpg", ".jpeg"}
-    if target_format.upper() != "WEBP":
-        source_extensions.add(".webp")
-    if target_format.upper() != "PNG":
-        source_extensions.add(".png")
-    if target_format.upper() != "JPEG":
+    # All supported source extensions; remove only the target format
+    source_extensions = {".png", ".jpg", ".jpeg", ".webp"}
+    if target_format.upper() == "PNG":
+        source_extensions.discard(".png")
+    elif target_format.upper() == "WEBP":
+        source_extensions.discard(".webp")
+    elif target_format.upper() == "JPEG":
         source_extensions.discard(".jpg")
         source_extensions.discard(".jpeg")
-    
-    # Target extension to skip
-    target_ext = {".webp": "WEBP", ".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG"}
-    skip_ext = f".{target_format.lower()}"
-    if target_format.upper() == "JPEG":
-        skip_ext = ".jpg"
     
     files = []
     pattern = "**/*" if recursive else "*"
