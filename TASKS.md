@@ -16,6 +16,7 @@ Re-audit en progreso (iniciado desde `6fd849a`). Módulos 1-7 completados con co
 - [x] **Quality Scorer** — `os.startfile()→CachePaths.open_folder()`, `critical→warning`, locale `qs.*`, `theme_manager.get_color()`, `run_headless()` añadido
 - [x] **Gallery** — imports top-level, 4 strings → `self.tr()`, `run_headless()` añadido
 - [x] **Locale EN + ES** — 23 keys `dup.*` añadidas; verificar que `crop.*`, `wm.*`, `qs.*`, `gallery.*` están completas
+- [x] **Character Recognizer** — audit completo + nuevas features: modo Illustration/Real Person (ArcFace+YuNet+landmark alignment), locale `cr.*` (~40 keys), logging, `run_headless()`, botones Skip/Return, borrado de tags, Auto Mode con `AutoScanWorker` (sugerencia dominante al 60%)
 
 ---
 
@@ -23,7 +24,6 @@ Re-audit en progreso (iniciado desde `6fd849a`). Módulos 1-7 completados con co
 
 ### Inmediato (próxima sesión) — ORDEN CRÍTICO
 - [ ] **Librarian** — módulo crítico (DB central). Audit: locale, theme dinámico, CachePaths, logging
-- [ ] **Character Recognizer** — `cr.*` locale en `recognition_view.py` (~35 strings hardcodeados), bare except → logging
 - [ ] **Metadata Hub** — el más crítico, SIEMPRE al final. 2 niveles de warning en save_current, no inyectar metadata vacía
 
 ### Post-audit
@@ -33,3 +33,4 @@ Re-audit en progreso (iniciado desde `6fd849a`). Módulos 1-7 completados con co
 
 ### Futuro
 - [ ] Configurar GitHub Actions / CI básico
+- [ ] **Face Embedding Exporter** — exportar perfiles ArcFace de `character_profiles.db` como `.npy` para uso en IP-Adapter FaceID / InstantID (ComfyUI/A1111). Ver nota técnica en BITACORA.
