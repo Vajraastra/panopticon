@@ -1,43 +1,35 @@
 # TASKS — Panopticon
 
 ## Estado general
-Revertido a versión estable `6fd849a`. App operativa. Audit pendiente de re-ejecutar módulo por módulo con commits individuales.
+Re-audit en progreso (iniciado desde `6fd849a`). Módulos 1-7 completados con commits individuales. Faltan 3 módulos críticos.
 
 ---
 
 ## ✅ Completado
 
-### Auditoría de módulos (sesión 2025-03)
-- [x] **Gallery** — revisado en sesión anterior
-- [x] **Librarian** — revisado en sesión anterior
-- [x] **Format Converter** — format_map corregido, imports top-level, padres de diálogos, scan_folder_for_conversion lógica de extensiones
-- [x] **Image Optimizer** — currentIndex() en lugar de string matching, lazy guard en get_view(), imports top-level
-- [x] **Character Recognizer** — cosine_similarity al top-level, bare except → logging, except duplicado eliminado
-- [x] **Duplicate Finder** — módulo nuevo creado (hash MD5 + pHash perceptual, QThread, delete con confirmación)
-- [x] **Metadata Hub** — action_save_current() siempre confirma antes de tocar el original (2 niveles de warning), action_export_copy() no inyecta metadata vacía
-- [x] **Format Scanner** — strings hardcodeados → self.tr("fscanner.*"), guard división por cero, padre de QFileDialog
-- [x] **Dummy Creator** — imports al top-level, padres de diálogos None → self.view
-- [x] **main.py** — traceback al top-level, QSize/QIcon removidos
-- [x] **standard_layout.py** — dead `pass` eliminado
-- [x] **Locale EN + ES** — fc.*, df.*, fscanner.*, meta.warn.*, meta.title/desc/tech_meta/open_images añadidos; meta.export.success {path}→{dest} corregido
-- [x] **Git history limpiado** — git-filter-repo eliminó modelos, DBs, scripts de debug de los 53 commits
-- [x] **Commit** — `16a1a23` refactor(audit): Full module audit
+### Re-Auditoría módulo por módulo (sesión 2026-03)
+- [x] **Image Optimizer** — botones consolidados al sidebar, `DropFrame` con drag & drop (imágenes + carpetas recursivo), eliminado bottom bar
+- [x] **Duplicate Finder** — full rewrite: locale `dup.*` completo, `theme_manager.get_color()`, `QMessageBox.critical→warning`, `logging.warning`, `DuplicateItem(bg_color, border_color)`
+- [x] **Watermarker** — imports top-level, locale `wm.*`, `theme_manager.get_color()`, todos los diálogos con `self.view`, `critical→warning`
+- [x] **Smart Cropper** — lazy guard, locale `crop.*`, proporciones agrupadas (Dataset/Monitors/Phones) con separadores `QStandardItem(disabled)`, comparación por índice AR_FREE/AR_CUSTOM (locale-safe), auto-append extensión en save_crop con regex
+- [x] **Layer Composer** — ELIMINADO completamente (no había referencias externas)
+- [x] **Quality Scorer** — `os.startfile()→CachePaths.open_folder()`, `critical→warning`, locale `qs.*`, `theme_manager.get_color()`, `run_headless()` añadido
+- [x] **Gallery** — imports top-level, 4 strings → `self.tr()`, `run_headless()` añadido
+- [x] **Locale EN + ES** — 23 keys `dup.*` añadidas; verificar que `crop.*`, `wm.*`, `qs.*`, `gallery.*` están completas
 
 ---
 
 ## 🔲 Pendiente
 
-### Inmediato (próxima sesión)
-- [ ] **Test de humo por módulo** — antes de auditar, verificar estado real: `python -c "import modules.X.module"`
-- [ ] **Re-audit módulo por módulo** — un módulo = un commit inmediato; orden: locale/themes → módulos simples → metadata al final
-- [ ] **Push a GitHub** — remote ya configurado (`origin`), hacer push tras primer módulo estable
-- [ ] **Locale + themes cross-cutting** — verificar claves faltantes y coherencia de themes en todos los módulos
+### Inmediato (próxima sesión) — ORDEN CRÍTICO
+- [ ] **Librarian** — módulo crítico (DB central). Audit: locale, theme dinámico, CachePaths, logging
+- [ ] **Character Recognizer** — `cr.*` locale en `recognition_view.py` (~35 strings hardcodeados), bare except → logging
+- [ ] **Metadata Hub** — el más crítico, SIEMPRE al final. 2 niveles de warning en save_current, no inyectar metadata vacía
 
-### Mediano plazo
-- [ ] **Character Recognizer locale** — ~35 strings hardcodeados en recognition_view.py; necesita helper tr() con LocaleManager singleton y claves `cr.*` en locale files
-- [ ] **Quality Scorer** — algoritmo de scoring pendiente de decisión; módulo existe pero lógica incompleta
-- [ ] **PSD Composer** — módulo existe, revisar en auditoría
+### Post-audit
+- [ ] **Verificar locale completo** — keys `crop.*`, `wm.*`, `qs.*`, `gallery.*`, `opt.*` en en.json y es.json
+- [ ] **Push a GitHub** — tras completar los 3 módulos restantes
+- [ ] **Tests automatizados de importación** — `python -c "import modules.X.module"` para todos
 
 ### Futuro
 - [ ] Configurar GitHub Actions / CI básico
-- [ ] Tests automatizados de importación de módulos

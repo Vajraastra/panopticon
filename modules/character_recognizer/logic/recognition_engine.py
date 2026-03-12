@@ -1,8 +1,14 @@
 import os
+import logging
+import requests
 import cv2
 import numpy as np
 import onnxruntime as ort
+from sklearn.preprocessing import normalize
+from sklearn.metrics.pairwise import cosine_similarity
 from core.paths import ProjectPaths
+
+log = logging.getLogger(__name__)
 
 class RecognitionEngine:
     _instance = None
@@ -48,33 +54,26 @@ class RecognitionEngine:
             self.rec_input_name = self.rec_session.get_inputs()[0].name
             
             self.initialized = True
-            print("RecognitionEngine: Hybrid Pipeline loaded (YuNet + AnimeFace + ArcFace).")
-            
+            log.info("RecognitionEngine: Hybrid Pipeline loaded (YuNet + AnimeFace + ArcFace).")
+
         except Exception as e:
-            print(f"RecognitionEngine: Error loading models - {e}")
+            log.error(f"RecognitionEngine: Error loading models - {e}")
             self.initialized = False
             
     def _ensure_models_exist(self):
         """Downloads required models."""
-        import requests 
-        import shutil
-        
-        # 1. YuNet (Official OpenCV Zoo hosted on Hugging Face is more reliable)
         if not os.path.exists(self.yunet_path):
-            print("Downloading YuNet...")
-            # URL Fixed: OpenCV moved models to HF
+            log.info("Downloading YuNet...")
             url = "https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx?download=true"
             self._download_file(url, self.yunet_path)
 
-        # 2. AnimeFace
         if not os.path.exists(self.anime_path):
-            print("Downloading AnimeFace Cascade...")
+            log.info("Downloading AnimeFace Cascade...")
             url = "https://raw.githubusercontent.com/nagadomi/lbpcascade_animeface/master/lbpcascade_animeface.xml"
             self._download_file(url, self.anime_path)
-            
-        # 3. ArcFace (Check previous download)
+
         if not os.path.exists(self.face_model_path):
-            print("Downloading ArcFace (w600k)...")
+            log.info("Downloading ArcFace (w600k)...")
             self._download_buffalo_l()
 
     def _download_file(self, url, path):
@@ -85,88 +84,114 @@ class RecognitionEngine:
             with open(path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
-            print(f"Downloaded: {os.path.basename(path)}")
+            log.info(f"Downloaded: {os.path.basename(path)}")
         except Exception as e:
-            print(f"Failed to download {url}: {e}")
-            # Self-Healing: Remove partial/empty file so it retries next time
+            log.error(f"Failed to download {url}: {e}")
             if os.path.exists(path):
                 os.remove(path)
-                print(f"Removed partial file: {path}")
+                log.warning(f"Removed partial file: {path}")
 
     def _download_buffalo_l(self):
         # ... (Legacy Zip Logic from previous step if needed) ...
         # For brevity, assuming user has it or we re-implement it briefly
         pass 
 
-    def analyze_image(self, cv2_image):
+    # Standard ArcFace destination landmarks for 112x112 aligned output
+    _ARCFACE_DST = np.array([
+        [38.2946, 51.6963],
+        [73.5318, 51.5014],
+        [56.0252, 71.7366],
+        [41.5493, 92.3655],
+        [70.7299, 92.2041],
+    ], dtype=np.float32)
+
+    def _align_face_yunet(self, img, face_row):
+        """Affine alignment using YuNet's 5 landmarks for ArcFace input."""
+        # YuNet row: [x, y, w, h, x_re, y_re, x_le, y_le, x_nose, y_nose, x_rmth, y_rmth, x_lmth, y_lmth, score]
+        src = np.array([
+            [face_row[4], face_row[5]],   # right eye
+            [face_row[6], face_row[7]],   # left eye
+            [face_row[8], face_row[9]],   # nose
+            [face_row[10], face_row[11]], # right mouth
+            [face_row[12], face_row[13]], # left mouth
+        ], dtype=np.float32)
+
+        M, _ = cv2.estimateAffinePartial2D(src, self._ARCFACE_DST, method=cv2.LMEDS)
+        if M is None:
+            return None
+        return cv2.warpAffine(img, M, (112, 112), borderValue=0)
+
+    def analyze_image(self, cv2_image, mode='illustration'):
         """
         Full Pipeline: Detect -> Align -> Embed
+        mode='illustration': AnimeFace cascade primary (original behaviour, untouched)
+        mode='real': YuNet with landmark alignment only, no anime fallback
         Returns: (embedding, bbox, confidence)
         """
         if not self.initialized: return None, None, 0.0
-        
+
         h, w = cv2_image.shape[:2]
-        
-        # --- Stage 1: YuNet ---
-        self.yunet.setInputSize((w, h))
-        _, faces = self.yunet.detect(cv2_image)
-        
         face_img = None
-        bbox = None # (x, y, w, h)
+        bbox = None
         score = 0.0
-        
-        if faces is not None and len(faces) > 0:
-            # Take best face
-            face = faces[0]
-            # YuNet returns [x, y, w, h, x_re, y_re, x_le, y_le, ...]
-            box = face[0:4].astype(int)
-            score = float(face[14])
-            
-            # Align using 5 points? Or just crop?
-            # For simplicity and robust hybrid support, we crop + resize
-            # ArcFace handles minor misalignment well
-            x, y, bw, bh = box
-            bbox = (x, y, bw, bh)
-            
-            # Safe Crop
-            face_img = self._safe_crop(cv2_image, box)
-            
-        # --- Stage 2: AnimeFace Fallback ---
-        if face_img is None:
-            gray = cv2.cvtColor(cv2_image, cv2.COLOR_BGR2GRAY)
-            # Equalize hist for better anime detection?
-            gray = cv2.equalizeHist(gray)
-            
-            faces_anim = self.anime_cascade.detectMultiScale(
-                gray, scaleFactor=1.1, minNeighbors=5, minSize=(24, 24)
-            )
-            
-            if len(faces_anim) > 0:
-                # Take largest
-                faces_anim = sorted(faces_anim, key=lambda f: f[2]*f[3], reverse=True)
-                x, y, bw, bh = faces_anim[0]
+
+        if mode == 'real':
+            # --- Real Person Path: YuNet + landmark alignment ---
+            self.yunet.setInputSize((w, h))
+            _, faces = self.yunet.detect(cv2_image)
+
+            if faces is not None and len(faces) > 0:
+                face = faces[0]
+                box = face[0:4].astype(int)
+                score = float(face[14])
+                x, y, bw, bh = box
                 bbox = (x, y, bw, bh)
-                score = 0.95 # Artificial score for Cascade
-                
-                face_img = self._safe_crop(cv2_image, (x, y, bw, bh))
-                
-        # --- Stage 3: Feature Extraction ---
-        if face_img is None:
-            # Fallback: Center Crop (User manual focus)
-            # We treat the whole image as face
-            return self.get_embedding(cv2_image), (0,0,w,h), 0.1
-            
-        # Resize for ArcFace
-        input_blob = cv2.dnn.blobFromImage(cv2_image, 1.0/127.5, (112, 112), (127.5, 127.5, 127.5), swapRB=True)
-        # Wait, blobFromImage on the CROP
+                face_img = self._align_face_yunet(cv2_image, face)
+                if face_img is None:
+                    face_img = self._safe_crop(cv2_image, box)
+
+            if face_img is None:
+                return self._embed(cv2_image), (0, 0, w, h), 0.1
+
+        else:
+            # --- Illustration Path: original behaviour, untouched ---
+            # Stage 1: YuNet
+            self.yunet.setInputSize((w, h))
+            _, faces = self.yunet.detect(cv2_image)
+
+            if faces is not None and len(faces) > 0:
+                face = faces[0]
+                box = face[0:4].astype(int)
+                score = float(face[14])
+                x, y, bw, bh = box
+                bbox = (x, y, bw, bh)
+                face_img = self._safe_crop(cv2_image, box)
+
+            # Stage 2: AnimeFace Fallback
+            if face_img is None:
+                gray = cv2.cvtColor(cv2_image, cv2.COLOR_BGR2GRAY)
+                gray = cv2.equalizeHist(gray)
+                faces_anim = self.anime_cascade.detectMultiScale(
+                    gray, scaleFactor=1.1, minNeighbors=5, minSize=(24, 24)
+                )
+                if len(faces_anim) > 0:
+                    faces_anim = sorted(faces_anim, key=lambda f: f[2]*f[3], reverse=True)
+                    x, y, bw, bh = faces_anim[0]
+                    bbox = (x, y, bw, bh)
+                    score = 0.95
+                    face_img = self._safe_crop(cv2_image, (x, y, bw, bh))
+
+            if face_img is None:
+                return self._embed(cv2_image), (0, 0, w, h), 0.1
+
+        return self._embed(face_img), bbox, score
+
+    def _embed(self, face_img):
+        """Run ArcFace on a face crop (or full image as fallback)."""
         blob_crop = cv2.resize(face_img, (112, 112))
         input_blob = cv2.dnn.blobFromImage(blob_crop, 1.0/127.5, (112, 112), (127.5, 127.5, 127.5), swapRB=True)
-        
         embedding = self.rec_session.run(None, {self.rec_input_name: input_blob})[0]
-        from sklearn.preprocessing import normalize
-        embedding = normalize(embedding).flatten()
-        
-        return embedding, bbox, score
+        return normalize(embedding).flatten()
 
     def _safe_crop(self, img, box):
         x, y, w, h = box
@@ -184,11 +209,9 @@ class RecognitionEngine:
         if x2 <= x1 or y2 <= y1: return None
         return img[y1:y2, x1:x2]
 
-    def get_embedding(self, cv2_image):
-        # Wrapper for backward compatibility or direct calls
-        emb, _, _ = self.analyze_image(cv2_image)
-        return emb 
+    def get_embedding(self, cv2_image, mode='illustration'):
+        emb, _, _ = self.analyze_image(cv2_image, mode=mode)
+        return emb
 
     def compare(self, emb1, emb2):
-        from sklearn.metrics.pairwise import cosine_similarity
         return cosine_similarity([emb1], [emb2])[0][0]

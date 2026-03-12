@@ -29,7 +29,9 @@
       "Bash(pip3 install:*)",
       "Bash(/usr/bin/pip3 install:*)",
       "Bash(/var/data/python/bin/git-filter-repo --version)",
-      "Bash(/var/data/python/bin/git-filter-repo --path models/ --path data/ --path panopticon.db --path debug_gallery_db.py --path debug_imports.py --path requirements.txt.bak --path run.bat --path scanner.bat --path tests/audit_gallery_components.py --path tests/test_character_recognizer.py --path modules/face_scorer/assets/ --invert-paths --force)"
+      "Bash(/var/data/python/bin/git-filter-repo --path models/ --path data/ --path panopticon.db --path debug_gallery_db.py --path debug_imports.py --path requirements.txt.bak --path run.bat --path scanner.bat --path tests/audit_gallery_components.py --path tests/test_character_recognizer.py --path modules/face_scorer/assets/ --invert-paths --force)",
+      "WebSearch",
+      "Bash(python -c \"from modules.character_recognizer.logic.recognition_engine import RecognitionEngine; from modules.character_recognizer.logic.thread_worker import RecognitionWorker; print\\(''OK''\\)\")"
     ]
   }
 }

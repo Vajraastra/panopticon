@@ -1,8 +1,10 @@
 import sqlite3
+import logging
 import numpy as np
 import os
-import json
 from core.paths import ProjectPaths
+
+log = logging.getLogger(__name__)
 
 class ProfileDB:
     def __init__(self):
@@ -51,7 +53,7 @@ class ProfileDB:
                                
             conn.commit()
         except Exception as e:
-            print(f"ProfileDB Error: {e}")
+            log.error(f"ProfileDB error: {e}")
         finally:
             conn.close()
 

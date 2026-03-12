@@ -36,3 +36,31 @@ class CharacterRecognizerModule(BaseModule):
         """Interfaz estándar para recibir datos masivos."""
         if self.view:
             self.content_view.load_images(paths)
+
+    def run_headless(self, paths: list):
+        """Ejecuta el reconocimiento sin interfaz (para pipelines)."""
+        from .logic.recognition_engine import RecognitionEngine
+        from .logic.profile_db import ProfileDB
+        engine = RecognitionEngine()
+        engine.initialize()
+        db = ProfileDB()
+        results = {}
+        for path in paths:
+            import cv2
+            import numpy as np
+            with open(path, "rb") as f:
+                arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if img is None:
+                continue
+            embedding, _, _ = engine.analyze_image(img)
+            if embedding is None:
+                continue
+            best_name, best_score = None, 0.0
+            for name, ref_emb in db.get_all_profiles():
+                score = engine.compare(embedding, ref_emb)
+                if score > best_score:
+                    best_score = score
+                    best_name = name if score > 0.6 else None
+            results[path] = best_name
+        return results
