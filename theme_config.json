@@ -1,3 +1,16 @@
 {
-    "current_theme": "cyberpunk"
+    "current_theme": "slate",
+    "bg_main": "#0f0f0f",
+    "bg_sidebar": "#141414",
+    "bg_panel": "#1c1c1c",
+    "bg_input": "#0a0a0a",
+    "border": "#2e2e2e",
+    "border_highlight": "#999999",
+    "text_primary": "#ffffff",
+    "text_secondary": "#b0b0b0",
+    "text_dim": "#555555",
+    "accent_main": "#cccccc",
+    "accent_hover": "#aaaaaa",
+    "accent_warning": "#ff4444",
+    "accent_success": "#44cc44"
 }

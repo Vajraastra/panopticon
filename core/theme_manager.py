@@ -17,44 +17,138 @@ class ThemeManager(QObject):
 
     # Colores por defecto (Aestética Cyber/Dark)
     DEFAULTS = {
-        "bg_main": "#050505",       # Fondo principal (casi negro)
-        "bg_sidebar": "#0a0a0a",    # Fondo lateral (ligeramente más claro)
-        "bg_panel": "#111111",      # Fondos de paneles y tarjetas
-        "bg_input": "#000000",      # Negro puro para los inputs
-        "border": "#333333",        # Bordes base
-        "border_highlight": "#00ffcc", # Bordes de acento (Cyan)
+        "bg_main": "#050505",
+        "bg_sidebar": "#0a0a0a",
+        "bg_panel": "#111111",
+        "bg_input": "#000000",
+        "border": "#333333",
+        "border_highlight": "#00ffcc",
         "text_primary": "#ffffff",
         "text_secondary": "#cccccc",
         "text_dim": "#666666",
-        "accent_main": "#00ffcc",   # Acento principal Cyber Cyan
+        "accent_main": "#00ffcc",
         "accent_hover": "#00ccaa",
         "accent_warning": "#ff3333",
         "accent_success": "#00ff66",
     }
 
+    THEME_NAMES = {
+        "cyberpunk": "Cyberpunk",
+        "midnight": "Midnight",
+        "forest": "Forest",
+        "slate": "Slate",
+        "light": "Light",
+        "sepia": "Sepia",
+        "cosmic": "Cosmic",
+        "grape": "Grape",
+        "ocean": "Ocean",
+        "aurora": "Aurora",
+    }
+
+    THEMES = {
+        "cyberpunk": {
+            "bg_main": "#050505", "bg_sidebar": "#0a0a0a", "bg_panel": "#111111", "bg_input": "#000000",
+            "border": "#333333", "border_highlight": "#00ffcc",
+            "text_primary": "#ffffff", "text_secondary": "#cccccc", "text_dim": "#666666",
+            "accent_main": "#00ffcc", "accent_hover": "#00ccaa", "accent_warning": "#ff3333", "accent_success": "#00ff66",
+        },
+        "midnight": {
+            "bg_main": "#0a0e1a", "bg_sidebar": "#0f1525", "bg_panel": "#141d35", "bg_input": "#080c18",
+            "border": "#1e2d4a", "border_highlight": "#4d9fff",
+            "text_primary": "#e8f0ff", "text_secondary": "#a0b4d6", "text_dim": "#4a6080",
+            "accent_main": "#4d9fff", "accent_hover": "#3080dd", "accent_warning": "#ff5555", "accent_success": "#44ff88",
+        },
+        "forest": {
+            "bg_main": "#080d08", "bg_sidebar": "#0e140e", "bg_panel": "#131f13", "bg_input": "#060a06",
+            "border": "#1a2e1a", "border_highlight": "#44ff88",
+            "text_primary": "#dfffdf", "text_secondary": "#a0c8a0", "text_dim": "#4a6a4a",
+            "accent_main": "#44ff88", "accent_hover": "#33cc66", "accent_warning": "#ff5533", "accent_success": "#00ff44",
+        },
+        "slate": {
+            "bg_main": "#0f0f0f", "bg_sidebar": "#141414", "bg_panel": "#1c1c1c", "bg_input": "#0a0a0a",
+            "border": "#2e2e2e", "border_highlight": "#999999",
+            "text_primary": "#ffffff", "text_secondary": "#b0b0b0", "text_dim": "#555555",
+            "accent_main": "#cccccc", "accent_hover": "#aaaaaa", "accent_warning": "#ff4444", "accent_success": "#44cc44",
+        },
+        "light": {
+            "bg_main": "#f0f0f0", "bg_sidebar": "#e8e8e8", "bg_panel": "#ffffff", "bg_input": "#fafafa",
+            "border": "#cccccc", "border_highlight": "#0066cc",
+            "text_primary": "#111111", "text_secondary": "#444444", "text_dim": "#888888",
+            "accent_main": "#0066cc", "accent_hover": "#0055aa", "accent_warning": "#cc2200", "accent_success": "#008833",
+        },
+        "sepia": {
+            "bg_main": "#1a1208", "bg_sidebar": "#221a0e", "bg_panel": "#2a200f", "bg_input": "#120e05",
+            "border": "#3a2a15", "border_highlight": "#c8a04a",
+            "text_primary": "#f5e6c8", "text_secondary": "#c8a878", "text_dim": "#7a6040",
+            "accent_main": "#c8a04a", "accent_hover": "#aa8835", "accent_warning": "#cc3300", "accent_success": "#44aa66",
+        },
+        "cosmic": {
+            "bg_main": "#1f004b", "bg_sidebar": "#2a005f", "bg_panel": "#350078", "bg_input": "#160035",
+            "border": "#4a0090", "border_highlight": "#54efea",
+            "text_primary": "#ffffff", "text_secondary": "#d0b0ff", "text_dim": "#7050a0",
+            "accent_main": "#54efea", "accent_hover": "#3dccc4", "accent_warning": "#ec00f0", "accent_success": "#44ff88",
+        },
+        "grape": {
+            "bg_main": "#1a0030", "bg_sidebar": "#22003e", "bg_panel": "#2e0055", "bg_input": "#110020",
+            "border": "#440090", "border_highlight": "#ec00f0",
+            "text_primary": "#ffffff", "text_secondary": "#e0b0ff", "text_dim": "#8844cc",
+            "accent_main": "#ec00f0", "accent_hover": "#c400cc", "accent_warning": "#ff5555", "accent_success": "#54efea",
+        },
+        "ocean": {
+            "bg_main": "#060810", "bg_sidebar": "#0a1020", "bg_panel": "#0d1a30", "bg_input": "#040610",
+            "border": "#1a3050", "border_highlight": "#00d4ff",
+            "text_primary": "#e0f0ff", "text_secondary": "#88b8d8", "text_dim": "#3a5878",
+            "accent_main": "#00d4ff", "accent_hover": "#00aacc", "accent_warning": "#ff5533", "accent_success": "#41abae",
+        },
+        "aurora": {
+            "bg_main": "#060810", "bg_sidebar": "#0a1210", "bg_panel": "#0d1e18", "bg_input": "#040810",
+            "border": "#1a3028", "border_highlight": "#74f9fe",
+            "text_primary": "#e8fff0", "text_secondary": "#88c8a8", "text_dim": "#3a6050",
+            "accent_main": "#74f9fe", "accent_hover": "#50d8e0", "accent_warning": "#ff5959", "accent_success": "#a7fff3",
+        },
+    }
+
     def __init__(self, config_path="theme_config.json"):
         super().__init__()
         self.config_path = config_path
+        self.current_theme = "cyberpunk"
         self.colors = self.DEFAULTS.copy()
         self.load_config()
 
     def load_config(self):
-        """Carga los colores personalizados desde el archivo de configuración si existe."""
+        """Carga el tema activo y colores personalizados desde el archivo de configuración."""
         if os.path.exists(self.config_path):
             try:
                 with open(self.config_path, 'r') as f:
                     saved = json.load(f)
-                    self.colors.update(saved)
+                    theme_key = saved.get("current_theme", "cyberpunk")
+                    if theme_key in self.THEMES:
+                        self.current_theme = theme_key
+                        self.colors = self.THEMES[theme_key].copy()
+                    # Apply any individual color overrides on top
+                    for k, v in saved.items():
+                        if k != "current_theme" and k in self.DEFAULTS:
+                            self.colors[k] = v
             except Exception as e:
                 log.warning("Error loading theme config: %s", e)
 
     def save_config(self):
-        """Persiste la paleta de colores actual en disco."""
+        """Persiste el tema activo y la paleta de colores en disco."""
         try:
+            data = {"current_theme": self.current_theme}
+            data.update(self.colors)
             with open(self.config_path, 'w') as f:
-                json.dump(self.colors, f, indent=4)
+                json.dump(data, f, indent=4)
         except Exception as e:
             log.warning("Error saving theme config: %s", e)
+
+    def set_theme(self, theme_key):
+        """Aplica un tema predefinido, guarda la configuración y emite theme_changed."""
+        if theme_key in self.THEMES:
+            self.current_theme = theme_key
+            self.colors = self.THEMES[theme_key].copy()
+            self.save_config()
+            self.theme_changed.emit()
 
     def get_color(self, key):
         """Retorna un código de color Hex por su clave."""
@@ -65,7 +159,7 @@ class ThemeManager(QObject):
         return LocaleManager().tr(key, default)
 
     def set_color(self, key, value):
-        """Actualiza un color, guarda y notifica a la aplicación para refrescar estilos."""
+        """Actualiza un color individual, guarda y notifica."""
         self.colors[key] = value
         self.save_config()
         self.theme_changed.emit()

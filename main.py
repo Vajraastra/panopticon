@@ -5,12 +5,12 @@ import logging
 import traceback
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QStackedWidget,
-                             QFrame, QGridLayout, QComboBox, QMessageBox, QScrollArea)
+                             QFrame, QGridLayout, QComboBox, QMessageBox, QScrollArea,
+                             QSizePolicy)
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QIcon, QFont
 
 # Core Imports
-from core.theme import Theme
 from core.mod_loader import ModuleLoader
 from core.theme_manager import ThemeManager
 from core.locale_manager import LocaleManager
@@ -37,6 +37,10 @@ class MainWindow(QMainWindow):
         
         # Suscripción a eventos de navegación global
         self.event_bus.subscribe("navigate", self.on_navigate)
+        # Live theme preview: refresh global QSS whenever the theme changes
+        self.theme_manager.theme_changed.connect(
+            lambda: QApplication.instance().setStyleSheet(self.theme_manager.get_stylesheet())
+        )
         
         # 2. Configuración de la Ventana
         self.setWindowTitle(f"{self.tr('app.title', 'Panopticon')} - {self.tr('app.subtitle')}")
@@ -164,85 +168,203 @@ class MainWindow(QMainWindow):
     def create_settings_page(self):
         self.settings_page = QWidget()
         self.settings_page.setStyleSheet(f"background-color: {self.theme_manager.get_color('bg_main')};")
-        
-        layout = QVBoxLayout(self.settings_page)
-        layout.setAlignment(Qt.AlignCenter)
-        layout.setSpacing(30)
-        
+
+        outer_layout = QVBoxLayout(self.settings_page)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("background: transparent; border: none;")
+
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(content)
+        layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        layout.setSpacing(24)
+        layout.setContentsMargins(60, 40, 60, 40)
+
+        scroll.setWidget(content)
+        outer_layout.addWidget(scroll)
+
         # Title
-        lbl = QLabel(self.tr("settings.title", "Settings / Configuración"))
-        lbl.setStyleSheet("color: white; font-size: 32px; font-weight: bold;")
+        lbl = QLabel(self.tr("settings.title", "Settings"))
+        lbl.setStyleSheet(f"color: {self.theme_manager.get_color('text_primary')}; font-size: 32px; font-weight: bold;")
         lbl.setAlignment(Qt.AlignCenter)
         layout.addWidget(lbl)
-        
-        # Language Selector
+
+        # ── LANGUAGE ────────────────────────────────────────────────────────────
+        lbl_lang_sec = QLabel(self.tr("settings.language_section", "LANGUAGE"))
+        lbl_lang_sec.setStyleSheet(f"color: {self.theme_manager.get_color('text_dim')}; font-size: 11px; font-weight: bold; letter-spacing: 2px;")
+        layout.addWidget(lbl_lang_sec)
+
         lang_box = QFrame()
-        lang_box.setStyleSheet(f"background: {self.theme_manager.get_color('bg_panel')}; border-radius: 10px; padding: 20px;")
+        lang_box.setStyleSheet(f"background: {self.theme_manager.get_color('bg_panel')}; border-radius: 10px;")
         lb_layout = QHBoxLayout(lang_box)
-        
+        lb_layout.setContentsMargins(20, 14, 20, 14)
+
         lbl_lang = QLabel(self.tr("settings.language", "Language:"))
-        lbl_lang.setStyleSheet("color: white; font-size: 18px; border: none;")
+        lbl_lang.setStyleSheet(f"color: {self.theme_manager.get_color('text_primary')}; font-size: 16px; border: none;")
         lb_layout.addWidget(lbl_lang)
-        
+        lb_layout.addStretch()
+
         self.combo_lang = QComboBox()
         self.combo_lang.addItems(["English", "Español"])
         self.combo_lang.setFixedSize(200, 40)
-        
-        # Determine current index
-        current = self.locale_manager.get_locale()
-        self.combo_lang.setCurrentIndex(1 if current == "es" else 0)
-        
-        # Style
+        self.combo_lang.setCurrentIndex(1 if self.locale_manager.get_locale() == "es" else 0)
         self.combo_lang.setStyleSheet(f"""
             QComboBox {{
                 background-color: {self.theme_manager.get_color('bg_input')};
-                color: white;
+                color: {self.theme_manager.get_color('text_primary')};
                 border: 1px solid {self.theme_manager.get_color('border')};
-                border-radius: 5px;
-                padding: 5px;
-                font-size: 16px;
+                border-radius: 5px; padding: 5px; font-size: 16px;
             }}
             QComboBox::drop-down {{ border: none; }}
         """)
         lb_layout.addWidget(self.combo_lang)
-        
-        # Set alignment wrapper for box
-        box_wrapper = QWidget()
-        bw_layout = QHBoxLayout(box_wrapper)
-        bw_layout.setAlignment(Qt.AlignCenter)
-        bw_layout.addWidget(lang_box)
-        layout.addWidget(box_wrapper)
-        
-        # Save Button
+        layout.addWidget(lang_box)
+
+        # ── THEME ────────────────────────────────────────────────────────────────
+        lbl_theme_sec = QLabel(self.tr("settings.theme_section", "THEME"))
+        lbl_theme_sec.setStyleSheet(f"color: {self.theme_manager.get_color('text_dim')}; font-size: 11px; font-weight: bold; letter-spacing: 2px;")
+        layout.addWidget(lbl_theme_sec)
+
+        themes_frame = QFrame()
+        themes_frame.setStyleSheet(f"background: {self.theme_manager.get_color('bg_panel')}; border-radius: 10px;")
+        tf_layout = QVBoxLayout(themes_frame)
+        tf_layout.setContentsMargins(20, 18, 20, 18)
+        tf_layout.setSpacing(12)
+
+        self._theme_cards = {}
+        self._theme_card_dots = {}
+        self._pending_theme = self.theme_manager.current_theme
+
+        all_themes = ["cyberpunk", "midnight", "forest", "slate", "light",
+                      "sepia", "cosmic", "grape", "ocean", "aurora"]
+
+        grid = QGridLayout()
+        grid.setSpacing(12)
+        for i, key in enumerate(all_themes):
+            card = self._make_theme_card(key)
+            grid.addWidget(card, i // 5, i % 5)
+
+        tf_layout.addLayout(grid)
+        layout.addWidget(themes_frame)
+
+        # ── SAVE & BACK ──────────────────────────────────────────────────────────
         btn_save = QPushButton(self.tr("settings.save_restart", "Save & Restart"))
         btn_save.setFixedSize(250, 50)
         btn_save.setCursor(Qt.PointingHandCursor)
         btn_save.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.theme_manager.get_color('accent_main')};
-                color: black;
-                border-radius: 25px;
-                font-weight: bold;
-                font-size: 16px;
+                color: black; border-radius: 25px; font-weight: bold; font-size: 16px;
             }}
             QPushButton:hover {{ background-color: white; }}
         """)
         btn_save.clicked.connect(self.apply_settings)
-        layout.addWidget(btn_save)
-        
-        # Back Button
+        layout.addWidget(btn_save, alignment=Qt.AlignHCenter)
+
         btn_back = QPushButton(self.tr("settings.back", "Back to Dashboard"))
         btn_back.setCursor(Qt.PointingHandCursor)
-        btn_back.setStyleSheet(f"color: {self.theme_manager.get_color('text_dim')}; background: transparent; text-decoration: underline;")
+        btn_back.setStyleSheet(f"color: {self.theme_manager.get_color('text_dim')}; background: transparent; text-decoration: underline; border: none;")
         btn_back.clicked.connect(lambda: self.root_stack.setCurrentIndex(0))
-        layout.addWidget(btn_back)
+        layout.addWidget(btn_back, alignment=Qt.AlignHCenter)
+
+    def _make_theme_card(self, key):
+        """Build a clickable theme preview card."""
+        from core.theme_manager import ThemeManager as TM
+        colors = TM.THEMES[key]
+        name = TM.THEME_NAMES.get(key, key.capitalize())
+        is_selected = (key == self._pending_theme)
+
+        card = QFrame()
+        card.setFixedSize(150, 98)
+        card.setCursor(Qt.PointingHandCursor)
+        self._theme_cards[key] = card
+        self._apply_theme_card_style(card, key, is_selected)
+
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(1, 1, 1, 1)
+        card_layout.setSpacing(0)
+
+        # ── Preview area (top) ──
+        preview = QWidget()
+        preview.setFixedHeight(60)
+        preview.setStyleSheet(f"background: {colors['bg_main']}; border-radius: 6px 6px 0 0; border: none;")
+        prev_layout = QHBoxLayout(preview)
+        prev_layout.setContentsMargins(10, 0, 10, 0)
+        prev_layout.setAlignment(Qt.AlignCenter)
+        prev_layout.setSpacing(8)
+
+        # Three color swatches: bg_panel · accent_main · accent_warning
+        for swatch_key in ('bg_panel', 'accent_main', 'accent_warning'):
+            swatch = QFrame()
+            swatch.setFixedSize(18, 18)
+            swatch.setStyleSheet(f"background: {colors[swatch_key]}; border-radius: 9px; border: none;")
+            prev_layout.addWidget(swatch)
+        card_layout.addWidget(preview, 1)
+
+        # ── Name bar (bottom) ──
+        name_bar = QWidget()
+        name_bar.setFixedHeight(30)
+        name_bar.setStyleSheet(f"background: {colors['bg_panel']}; border-radius: 0 0 6px 6px; border: none;")
+        nb_layout = QHBoxLayout(name_bar)
+        nb_layout.setContentsMargins(8, 0, 8, 0)
+
+        lbl = QLabel(name)
+        lbl.setStyleSheet(f"color: {colors['text_primary']}; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        nb_layout.addWidget(lbl)
+        nb_layout.addStretch()
+
+        dot = QLabel("●")
+        dot.setStyleSheet(f"color: {colors['accent_main']}; font-size: 8px; background: transparent; border: none;")
+        dot.setVisible(is_selected)
+        nb_layout.addWidget(dot)
+        self._theme_card_dots[key] = dot
+
+        card_layout.addWidget(name_bar)
+
+        def on_click(e, k=key):
+            self._select_theme(k)
+        card.mousePressEvent = on_click
+        return card
+
+    def _apply_theme_card_style(self, card, key, is_selected):
+        from core.theme_manager import ThemeManager as TM
+        colors = TM.THEMES[key]
+        border_color = colors['accent_main'] if is_selected else colors['border']
+        border_width = 3 if is_selected else 1
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: {colors['bg_main']};
+                border: {border_width}px solid {border_color};
+                border-radius: 8px;
+            }}
+        """)
+
+    def _select_theme(self, key):
+        # Apply and save theme, then rebuild the settings page in-place so
+        # all inline styles (backgrounds, borders, labels) reflect the new colors.
+        self.theme_manager.set_theme(key)
+        self._rebuild_settings_page()
+
+    def _rebuild_settings_page(self):
+        """Replace the settings page widget in the stack without touching other pages."""
+        old = self.root_stack.widget(1)
+        self.root_stack.removeWidget(old)
+        old.deleteLater()
+        self.create_settings_page()
+        self.root_stack.insertWidget(1, self.settings_page)
+        self.root_stack.setCurrentIndex(1)
 
     def apply_settings(self):
         index = self.combo_lang.currentIndex()
         code = "es" if index == 1 else "en"
         self.locale_manager.set_locale(code)
-        QMessageBox.information(self, self.tr("settings.restart_required", "Restart Required"), 
-                                self.tr("settings.restart_msg", "Please restart Panopticon to apply language changes."))
+        # Theme is already applied and saved via live preview (_select_theme)
+        QMessageBox.information(self, self.tr("settings.restart_required", "Restart Required"),
+                                self.tr("settings.restart_msg", "Please restart Panopticon to apply all changes."))
 
     def load_available_modules(self):
         """
