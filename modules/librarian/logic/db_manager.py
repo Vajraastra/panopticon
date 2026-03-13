@@ -1,6 +1,9 @@
 import sqlite3
 import os
+import logging
 from PySide6.QtCore import QObject
+
+log = logging.getLogger(__name__)
 
 class DatabaseManager(QObject):
     """
@@ -20,7 +23,7 @@ class DatabaseManager(QObject):
             self.create_schema()
             self.run_transformations() # Upgrades
         except sqlite3.Error as e:
-            print(f"[DB FATAL] {e}")
+            log.error("[DB FATAL] %s", e)
 
     def create_schema(self):
         cursor = self.conn.cursor()
@@ -123,7 +126,7 @@ class DatabaseManager(QObject):
             self.conn.commit()
             return True
         except sqlite3.Error as e:
-            print(f"[DB] Bulk Insert Error: {e}")
+            log.warning("[DB] Bulk Insert Error: %s", e)
             self.conn.rollback()
             return False
 
@@ -153,7 +156,7 @@ class DatabaseManager(QObject):
             ))
             self.conn.commit()
         except Exception as e:
-            print(f"[DB] Meta Update Error for {path}: {e}")
+            log.warning("[DB] Meta Update Error for %s: %s", path, e)
 
     # --- Discovery / Existence ---
 
@@ -181,7 +184,8 @@ class DatabaseManager(QObject):
             for p in paths_list:
                 cursor.execute("DELETE FROM files WHERE path = ?", (self._normalize_path(p),))
             self.conn.commit()
-        except:
+        except Exception as e:
+            log.warning("[DB] remove_files error: %s", e)
             self.conn.rollback()
             
     # --- Standard Queries (Gallery/Search) ---
@@ -197,8 +201,10 @@ class DatabaseManager(QObject):
             cursor.execute("INSERT OR IGNORE INTO watched_folders (path) VALUES (?)", (self._normalize_path(path),))
             self.conn.commit()
             return True
-        except: return False
-        
+        except Exception as e:
+            log.warning("[DB] add_watched_folder error: %s", e)
+            return False
+
     def remove_watched_folder(self, path):
         cursor = self.conn.cursor()
         norm = self._normalize_path(path)
@@ -207,7 +213,9 @@ class DatabaseManager(QObject):
             cursor.execute("DELETE FROM files WHERE path LIKE ?", (norm + "%",))
             self.conn.commit()
             return True
-        except: return False
+        except Exception as e:
+            log.warning("[DB] remove_watched_folder error: %s", e)
+            return False
 
     def get_folder_count(self, folder_path):
         cursor = self.conn.cursor()
@@ -301,8 +309,7 @@ class DatabaseManager(QObject):
                 if self.register_files_minimal(file_data):
                      file_id = self.get_file_id(path)
             except Exception as e:
-                print(f"[DB ERROR] Failed to auto-register file {path}: {e}")
-                pass
+                log.warning("[DB] Failed to auto-register file %s: %s", path, e)
                 
         if not file_id: 
             return False
@@ -326,7 +333,7 @@ class DatabaseManager(QObject):
             self.conn.commit()
             return True
         except Exception as e:
-            print(f"Error adding tag: {e}")
+            log.warning("[DB] add_tag_to_file error: %s", e)
             return False
 
     def remove_tag_from_file(self, path, tag_name):
@@ -348,7 +355,7 @@ class DatabaseManager(QObject):
             self.conn.commit()
             return True
         except Exception as e:
-            print(f"Error removing tag: {e}")
+            log.warning("[DB] remove_tag_from_file error: %s", e)
             return False
 
 
@@ -415,8 +422,10 @@ class DatabaseManager(QObject):
         return total, folders
         
     def vacuum_database(self):
-        try: self.conn.execute("VACUUM")
-        except: pass
+        try:
+            self.conn.execute("VACUUM")
+        except Exception as e:
+            log.warning("[DB] VACUUM error: %s", e)
         
     def get_all_tags(self):
         cursor = self.conn.cursor()
@@ -434,4 +443,6 @@ class DatabaseManager(QObject):
             self.conn.execute("UPDATE files SET rating=? WHERE path=?", (rating, self._normalize_path(path)))
             self.conn.commit()
             return True
-        except: return False
+        except Exception as e:
+            log.warning("[DB] update_file_rating error: %s", e)
+            return False

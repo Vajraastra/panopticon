@@ -1,7 +1,12 @@
 import struct
 import json
 import os
+import re
+import datetime
+import logging
 from PIL import Image
+
+log = logging.getLogger(__name__)
 
 class UniversalParser:
     """
@@ -31,14 +36,14 @@ class UniversalParser:
     def _get_file_stats(path):
         try:
             stat = os.stat(path)
-            import datetime
             return {
                 "size": f"{stat.st_size / 1024:.2f} KB",
                 "created": datetime.datetime.fromtimestamp(stat.st_ctime).strftime('%Y-%m-%d %H:%M:%S'),
                 "modified": datetime.datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
                 "format": os.path.splitext(path)[1][1:].upper()
             }
-        except:
+        except Exception as e:
+            log.warning("_get_file_stats failed for %s: %s", path, e)
             return {}
 
     @staticmethod
@@ -132,10 +137,9 @@ class UniversalParser:
         if "parameters" in norm_meta:
             processed["tool"] = "A1111 / Forge"
             params = norm_meta["parameters"]
-            
+
             # Extract Prompts
             if "negative prompt:" in params.lower():
-                import re
                 parts = re.split(r'negative prompt:', params, flags=re.IGNORECASE)
                 processed["positive"] = parts[0].strip()
                 if len(parts) > 1:
@@ -151,7 +155,6 @@ class UniversalParser:
             else:
                 # No negative prompt, check for tech line anyway
                 if "\nsteps:" in params.lower():
-                    import re
                     parts = re.split(r'\nsteps:', params, flags=re.IGNORECASE)
                     processed["positive"] = parts[0].strip()
                     tech_line = "Steps:" + parts[1]
@@ -160,7 +163,6 @@ class UniversalParser:
                     processed["positive"] = params
 
             # Extract LoRAs from Positive Prompt (tags like <lora:name:weight>)
-            import re
             lora_tags = re.findall(r'<lora:([^:]+):([^>]+)>', processed["positive"])
             for name, weight in lora_tags:
                 processed["loras"].append(f"{name} ({weight})")
@@ -212,8 +214,8 @@ class UniversalParser:
                 processed["positive"] = "\n---\n".join(list(dict.fromkeys(pos_list)))
                 processed["negative"] = "\n---\n".join(list(dict.fromkeys(neg_list)))
                 processed["raw_json"] = prompt_json
-            except:
-                pass
+            except Exception as e:
+                log.warning("ComfyUI JSON parse failed: %s", e)
 
         return processed
 

@@ -1,13 +1,16 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
                                QListWidget, QFileDialog, QMessageBox, QProgressBar, QFrame,
                                QLineEdit, QDialog, QCompleter, QScrollArea, QGridLayout, QComboBox)
 from PySide6.QtGui import QPixmap, QIcon, QMouseEvent
-from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtCore import Qt, QSize, Signal, QTimer, QStringListModel
 from core.base_module import BaseModule
 from .logic.db_manager import DatabaseManager
 from .logic.indexer import IndexerWorker
 from .logic.tagging_ui import FlowLayout, TagChip
 import os
+import logging
+
+log = logging.getLogger(__name__)
 
 class ClickableThumbnail(QLabel):
     clicked = Signal(str)
@@ -138,7 +141,6 @@ class LibrarianModule(BaseModule):
 
         # 5. Disparar escaneo inicial inteligente si hay carpetas registradas
         if self.db.get_watched_folders():
-            from PySide6.QtCore import QTimer
             QTimer.singleShot(500, lambda: self.toggle_scan(auto=True))
             
         return self.view
@@ -386,15 +388,15 @@ class LibrarianModule(BaseModule):
         # Controls
         self.btn_sync = QPushButton(self.tr("lib.purge", "Sweep Ghost Files"))
         self.btn_sync.clicked.connect(lambda: self.toggle_scan(sync_only=True))
-        self.btn_sync.setFixedWidth(150)
+        self.btn_sync.setMinimumWidth(120)
         self.btn_sync.setCursor(Qt.PointingHandCursor)
-        self.btn_sync.setStyleSheet("background-color: transparent; color: #aaa; border: 1px solid #444; border-radius: 4px; padding: 6px;")
+        self.btn_sync.setStyleSheet("background-color: transparent; color: #aaa; border: 1px solid #444; border-radius: 4px; padding: 6px 12px;")
 
         self.btn_scan = QPushButton(self.tr("lib.run_indexer", "🚀 Run Indexer"))
         self.btn_scan.clicked.connect(self.toggle_scan)
-        self.btn_scan.setFixedWidth(150)
+        self.btn_scan.setMinimumWidth(120)
         self.btn_scan.setCursor(Qt.PointingHandCursor)
-        self.btn_scan.setStyleSheet("background-color: #00ffcc; color: black; font-weight: bold; border-radius: 4px; padding: 6px;")
+        self.btn_scan.setStyleSheet("background-color: #00ffcc; color: black; font-weight: bold; border-radius: 4px; padding: 6px 12px;")
         
         layout.addWidget(self.btn_sync)
         layout.addWidget(self.btn_scan)
@@ -403,7 +405,6 @@ class LibrarianModule(BaseModule):
 
     def setup_completer(self):
         """Initializes the QCompleter for the tag input."""
-        from PySide6.QtCore import QStringListModel
         all_tags = self.db.get_all_tags()
         self.completer_model = QStringListModel(all_tags)
         self.completer = QCompleter(self.completer_model)
@@ -473,13 +474,13 @@ class LibrarianModule(BaseModule):
                                .format(tags=len(self.active_tags), count=count, total=len(folders)))
 
     def execute_selected_action(self):
-        """Dispatches the current selection to the chosen tool."""
-        action = self.combo_actions.currentText()
-        if "Gallery" in action:
+        """Dispatches the current selection to the chosen tool (index-based, locale-safe)."""
+        idx = self.combo_actions.currentIndex()
+        if idx == 1:
             self.send_to_gallery()
-        elif "Optimizer" in action:
+        elif idx == 2:
             self.send_to_optimizer()
-        elif "Cropper" in action:
+        elif idx == 3:
             self.send_to_cropper()
 
     def prev_page(self):
@@ -673,7 +674,7 @@ class LibrarianModule(BaseModule):
         self.progress_bar.setValue(current)
 
     def scan_finished(self):
-        self.btn_scan.setText("🚀 Run Indexer")
+        self.btn_scan.setText(self.tr("lib.run_indexer", "🚀 Run Indexer"))
         self.btn_scan.setStyleSheet("background-color: #00ffcc; color: black; font-weight: bold; border-radius: 4px; padding: 6px;")
         if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(True)
         self.btn_scan.setEnabled(True)
@@ -711,3 +712,12 @@ class LibrarianModule(BaseModule):
             self.request_open_cropper.emit(paths)
         else:
             QMessageBox.warning(self.view, self.tr("common.error", "No Files"), self.tr("lib.msg.no_files", "No files found to send."))
+
+    def run_headless(self, paths: list = None):
+        """Permite cargar carpetas o rutas en modo programático (sin interacción del usuario)."""
+        if not paths:
+            return
+        self.total_paths = paths
+        self.current_page = 0
+        if self.view:
+            self.refresh_thumbnails_grid()

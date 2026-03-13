@@ -1,8 +1,11 @@
 import json
 import os
+import logging
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QColor
 from core.locale_manager import LocaleManager
+
+log = logging.getLogger(__name__)
 
 class ThemeManager(QObject):
     """
@@ -43,7 +46,7 @@ class ThemeManager(QObject):
                     saved = json.load(f)
                     self.colors.update(saved)
             except Exception as e:
-                print(f"Error loading theme config: {e}")
+                log.warning("Error loading theme config: %s", e)
 
     def save_config(self):
         """Persiste la paleta de colores actual en disco."""
@@ -51,7 +54,7 @@ class ThemeManager(QObject):
             with open(self.config_path, 'w') as f:
                 json.dump(self.colors, f, indent=4)
         except Exception as e:
-            print(f"Error saving theme config: {e}")
+            log.warning("Error saving theme config: %s", e)
 
     def get_color(self, key):
         """Retorna un código de color Hex por su clave."""

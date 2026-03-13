@@ -1,7 +1,9 @@
 
 import sys
 import os
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+import logging
+import traceback
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QStackedWidget,
                              QFrame, QGridLayout, QComboBox, QMessageBox, QScrollArea)
 from PySide6.QtCore import Qt, QSize
@@ -13,6 +15,9 @@ from core.mod_loader import ModuleLoader
 from core.theme_manager import ThemeManager
 from core.locale_manager import LocaleManager
 from core.event_bus import EventBus
+
+log = logging.getLogger(__name__)
+logging.basicConfig(level=logging.WARNING)
 
 class MainWindow(QMainWindow):
     """
@@ -73,7 +78,7 @@ class MainWindow(QMainWindow):
 
     def create_dashboard_page(self):
         self.dashboard_page = QWidget()
-        self.dashboard_page.setStyleSheet(f"background-color: {Theme.BG_MAIN};")
+        self.dashboard_page.setStyleSheet(f"background-color: {self.theme_manager.get_color('bg_main')};")
         
         # Main Vertical Layout
         layout = QVBoxLayout(self.dashboard_page)
@@ -94,7 +99,7 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(lbl_title)
         
         lbl_subtitle = QLabel(self.tr('app.subtitle', 'Modular Image Organizer'))
-        lbl_subtitle.setStyleSheet(f"color: {Theme.ACCENT_MAIN}; font-size: 18px; letter-spacing: 2px;")
+        lbl_subtitle.setStyleSheet(f"color: {self.theme_manager.get_color('accent_main')}; font-size: 18px; letter-spacing: 2px;")
         lbl_subtitle.setAlignment(Qt.AlignCenter)
         header_layout.addWidget(lbl_subtitle)
         
@@ -111,17 +116,17 @@ class MainWindow(QMainWindow):
         btn_settings.setCursor(Qt.PointingHandCursor)
         btn_settings.setStyleSheet(f"""
             QPushButton {{
-                background-color: {Theme.BG_PANEL};
-                color: {Theme.TEXT_DIM};
-                border: 1px solid {Theme.BORDER};
+                background-color: {self.theme_manager.get_color('bg_panel')};
+                color: {self.theme_manager.get_color('text_dim')};
+                border: 1px solid {self.theme_manager.get_color('border')};
                 border-radius: 22px;
                 font-weight: bold;
                 font-size: 14px;
             }}
             QPushButton:hover {{
-                background-color: {Theme.BG_SIDEBAR};
+                background-color: {self.theme_manager.get_color('bg_sidebar')};
                 color: white;
-                border-color: {Theme.ACCENT_MAIN};
+                border-color: {self.theme_manager.get_color('accent_main')};
             }}
         """)
         btn_settings.clicked.connect(lambda: self.root_stack.setCurrentIndex(1))
@@ -135,7 +140,7 @@ class MainWindow(QMainWindow):
         lbl_tools_layout = QVBoxLayout(lbl_tools_container)
         lbl_tools_layout.setContentsMargins(40, 20, 40, 0)
         lbl_tools = QLabel(self.tr('dashboard.tools', 'AVAILABLE TOOLS'))
-        lbl_tools.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 12px; font-weight: bold; letter-spacing: 1px;")
+        lbl_tools.setStyleSheet(f"color: {self.theme_manager.get_color('text_dim')}; font-size: 12px; font-weight: bold; letter-spacing: 1px;")
         lbl_tools_layout.addWidget(lbl_tools)
         layout.addWidget(lbl_tools_container)
 
@@ -158,7 +163,7 @@ class MainWindow(QMainWindow):
 
     def create_settings_page(self):
         self.settings_page = QWidget()
-        self.settings_page.setStyleSheet(f"background-color: {Theme.BG_MAIN};")
+        self.settings_page.setStyleSheet(f"background-color: {self.theme_manager.get_color('bg_main')};")
         
         layout = QVBoxLayout(self.settings_page)
         layout.setAlignment(Qt.AlignCenter)
@@ -172,7 +177,7 @@ class MainWindow(QMainWindow):
         
         # Language Selector
         lang_box = QFrame()
-        lang_box.setStyleSheet(f"background: {Theme.BG_PANEL}; border-radius: 10px; padding: 20px;")
+        lang_box.setStyleSheet(f"background: {self.theme_manager.get_color('bg_panel')}; border-radius: 10px; padding: 20px;")
         lb_layout = QHBoxLayout(lang_box)
         
         lbl_lang = QLabel(self.tr("settings.language", "Language:"))
@@ -190,9 +195,9 @@ class MainWindow(QMainWindow):
         # Style
         self.combo_lang.setStyleSheet(f"""
             QComboBox {{
-                background-color: {Theme.BG_INPUT};
+                background-color: {self.theme_manager.get_color('bg_input')};
                 color: white;
-                border: 1px solid {Theme.BORDER};
+                border: 1px solid {self.theme_manager.get_color('border')};
                 border-radius: 5px;
                 padding: 5px;
                 font-size: 16px;
@@ -214,7 +219,7 @@ class MainWindow(QMainWindow):
         btn_save.setCursor(Qt.PointingHandCursor)
         btn_save.setStyleSheet(f"""
             QPushButton {{
-                background-color: {Theme.ACCENT_MAIN};
+                background-color: {self.theme_manager.get_color('accent_main')};
                 color: black;
                 border-radius: 25px;
                 font-weight: bold;
@@ -228,7 +233,7 @@ class MainWindow(QMainWindow):
         # Back Button
         btn_back = QPushButton(self.tr("settings.back", "Back to Dashboard"))
         btn_back.setCursor(Qt.PointingHandCursor)
-        btn_back.setStyleSheet(f"color: {Theme.TEXT_DIM}; background: transparent; text-decoration: underline;")
+        btn_back.setStyleSheet(f"color: {self.theme_manager.get_color('text_dim')}; background: transparent; text-decoration: underline;")
         btn_back.clicked.connect(lambda: self.root_stack.setCurrentIndex(0))
         layout.addWidget(btn_back)
 
@@ -253,7 +258,7 @@ class MainWindow(QMainWindow):
                     self.add_module_card(module)
                     self.loaded_modules[module.name] = module
             except Exception as e:
-                print(f"Error loading {name}: {e}")
+                log.error("Error loading module %s: %s\n%s", name, e, traceback.format_exc())
                 
         # Configuración de conexiones entre módulos (Inter-module wiring)
         self.setup_integrations()
@@ -263,13 +268,11 @@ class MainWindow(QMainWindow):
         # Initialize view mostly to ensure it's ready, but we don't show it yet
         try:
             view = module.get_view()
-            if not view: 
-                print(f"[WARN] Module {module.name} returned empty view.")
+            if not view:
+                log.warning("[WARN] Module %s returned empty view.", module.name)
                 return
         except Exception as e:
-            print(f"[ERROR] Failed to get view for {module.name}: {e}")
-            import traceback
-            traceback.print_exc()
+            log.error("[ERROR] Failed to get view for %s: %s\n%s", module.name, e, traceback.format_exc())
             return
 
         # 1. Create Card Widget
@@ -278,18 +281,17 @@ class MainWindow(QMainWindow):
         card.setCursor(Qt.PointingHandCursor)
         
         # Accent Color
-        accent = getattr(module, "accent_color", Theme.ACCENT_MAIN)
-        if "Fashion" in module.name: accent = Theme.ACCENT_FASHION
-        
+        accent = getattr(module, "accent_color", self.theme_manager.get_color('accent_main'))
+
         # Styling
         card.setStyleSheet(f"""
             QFrame {{
-                background-color: {Theme.BG_PANEL};
-                border: 2px solid {Theme.BORDER};
+                background-color: {self.theme_manager.get_color('bg_panel')};
+                border: 2px solid {self.theme_manager.get_color('border')};
                 border-radius: 16px;
             }}
             QFrame:hover {{
-                background-color: {Theme.BG_SIDEBAR};
+                background-color: {self.theme_manager.get_color('bg_sidebar')};
                 border-color: {accent};
             }}
         """)
@@ -326,7 +328,7 @@ class MainWindow(QMainWindow):
         lbl_desc = QLabel(desc)
         lbl_desc.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
         lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet(f"font-size: 11px; color: {Theme.TEXT_DIM}; background: transparent; border: none;")
+        lbl_desc.setStyleSheet(f"font-size: 11px; color: {self.theme_manager.get_color('text_dim')}; background: transparent; border: none;")
         layout.addWidget(lbl_desc, 1) # Stretch
         
         # Events

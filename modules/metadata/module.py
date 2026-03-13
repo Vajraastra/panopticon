@@ -1,49 +1,78 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, 
-                               QFileDialog, QMessageBox, QProgressBar, QTextEdit, QApplication, 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
+                               QFileDialog, QMessageBox, QProgressBar, QTextEdit, QApplication,
                                QSplitter, QFrame, QSizePolicy)
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QPixmap, QIcon, QPainter
 from core.base_module import BaseModule
+from core.locale_manager import LocaleManager
 from .logic.reader import UniversalParser
 from .logic.modifier import modify_metadata, get_export_path
 import os
+import logging
+
+log = logging.getLogger(__name__)
+
+_SUPPORTED_EXTS = {'.png', '.jpg', '.jpeg', '.webp'}
 
 class ResponsiveImageLabel(QLabel):
-    """A QLabel that paints its pixmap scaled to fit, avoiding layout loops."""
+    """A QLabel que muestra imágenes escaladas y acepta drag & drop de archivos."""
+    files_dropped = Signal(list)  # emite lista de rutas válidas al soltar
+
     def __init__(self, text="No Image Loaded"):
         super().__init__(text)
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet("background-color: #050505; border: 1px solid #222; border-radius: 8px;")
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self._pixmap = None
+        self.setAcceptDrops(True)
 
     def set_image(self, path):
         if not path or not os.path.exists(path):
             self._pixmap = None
             self.setText(LocaleManager().tr("meta.no_file", "No Image Loaded"))
-            self.update() # Trigger repaint
+            self.update()
             return
-            
+
         self._pixmap = QPixmap(path)
-        self.setText("") # Clear text if image loaded
+        self.setText("")
         self.update()
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            paths = [u.toLocalFile() for u in event.mimeData().urls()]
+            if any(os.path.splitext(p)[1].lower() in _SUPPORTED_EXTS for p in paths):
+                self.setStyleSheet("background-color: #050505; border: 2px solid #00ffcc; border-radius: 8px;")
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.setStyleSheet("background-color: #050505; border: 1px solid #222; border-radius: 8px;")
+
+    def dropEvent(self, event):
+        self.setStyleSheet("background-color: #050505; border: 1px solid #222; border-radius: 8px;")
+        paths = [
+            u.toLocalFile() for u in event.mimeData().urls()
+            if os.path.splitext(u.toLocalFile())[1].lower() in _SUPPORTED_EXTS
+        ]
+        if paths:
+            self.files_dropped.emit(paths)
+        event.acceptProposedAction()
 
     def paintEvent(self, event):
         super().paintEvent(event)
         if not self._pixmap or self._pixmap.isNull():
             return
-            
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        
-        # Calculate scaling to fit while keeping aspect ratio
+
         s = self._pixmap.size()
         s.scale(self.size(), Qt.KeepAspectRatio)
-        
-        # Center the image
+
         x = (self.width() - s.width()) // 2
         y = (self.height() - s.height()) // 2
-        
+
         painter.drawPixmap(x, y, s.width(), s.height(), self._pixmap)
 
 class MetadataModule(BaseModule):
@@ -186,7 +215,10 @@ class MetadataModule(BaseModule):
         top_bar.addWidget(self.lbl_file_name)
         viewer_layout.addLayout(top_bar)
         
-        self.image_label = ResponsiveImageLabel()
+        self.image_label = ResponsiveImageLabel(
+            self.tr("meta.drop_hint", "📂 Drop images here\nor click Open Image(s)")
+        )
+        self.image_label.files_dropped.connect(self.load_image_set)
         viewer_layout.addWidget(self.image_label, 1)
         
         # Carousel Controls
@@ -296,7 +328,7 @@ class MetadataModule(BaseModule):
         if not (0 <= self.current_index < len(self.image_list)):
             self.active_path = None
             self.image_label.set_image(None)
-            self.lbl_file_name.setText("No file selected")
+            self.lbl_file_name.setText(self.tr("meta.no_file", "No file selected"))
             self.clear_fields()
             return
 
@@ -337,7 +369,7 @@ class MetadataModule(BaseModule):
             self.display_current()
 
     def open_files_dialog(self):
-        files, _ = QFileDialog.getOpenFileNames(None, self.tr("opt.load_images", "Select Images"), "", "Images (*.png *.jpg *.jpeg *.webp)")
+        files, _ = QFileDialog.getOpenFileNames(self.view, self.tr("opt.load_images", "Select Images"), "", "Images (*.png *.jpg *.jpeg *.webp)")
         if files:
             self.load_image_set(files)
 
@@ -346,40 +378,57 @@ class MetadataModule(BaseModule):
         if not self.active_path: return
         pos = self.txt_pos.toPlainText().strip()
         neg = self.txt_neg.toPlainText().strip()
-        
-        # Safety Check: If fields are empty, are they sure they want to strip?
+
+        # Level 1: Borrar TODA la metadata — acción irreversible máxima
         if not pos and not neg:
             msg = self.tr("meta.warn.empty", "⚠️ IRREVERSIBLE ACTION DETECTED\n\nYou are about to save this image with ZERO metadata. This will permanently erase the prompts (the 'recipe') and AI generation data from the original file.\n\nThis cannot be undone. Are you absolutely sure?")
-            reply = QMessageBox.critical(
-                None, 
-                self.tr("common.error", "DANGEROUS OPERATION"), 
-                msg, 
-                QMessageBox.Yes | QMessageBox.No, 
+            reply = QMessageBox.warning(
+                self.view,
+                self.tr("meta.warn.title", "⚠️ Dangerous Operation"),
+                msg,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+        else:
+            # Level 2: Sobreescribir el original con contenido editado
+            msg = self.tr("meta.warn.overwrite", "You are about to overwrite the ORIGINAL file with the edited metadata.\n\nIf you want to keep the original safe, use 'Export Copy' instead.\n\nContinue and overwrite?")
+            reply = QMessageBox.warning(
+                self.view,
+                self.tr("meta.warn.overwrite.title", "Overwrite Original?"),
+                msg,
+                QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
             if reply != QMessageBox.Yes:
                 return
 
-        # For simplicity, we merge pos/neg if needed or follow SD standard (parameters)
         combined = f"{pos}\nNegative prompt: {neg}" if (pos or neg) else None
-        
+
         success, msg = modify_metadata(self.active_path, self.active_path, metadata_text=combined)
         if success:
-            QMessageBox.information(None, self.tr("common.success", "Success"), self.tr("meta.save.success", "Metadata updated successfully."))
+            QMessageBox.information(self.view, self.tr("common.success", "Success"), self.tr("meta.save.success", "Metadata updated successfully."))
             self.display_current()
         else:
-            QMessageBox.critical(None, self.tr("common.error", "Error"), msg)
+            QMessageBox.critical(self.view, self.tr("common.error", "Error"), msg)
 
     def action_export_copy(self):
         if not self.active_path: return
-        dest = QFileDialog.getSaveFileName(None, self.tr("meta.export.title", "Export Copy"), self.active_path, "Same as source (*.*)")[0]
+        dest = QFileDialog.getSaveFileName(self.view, self.tr("meta.export.title", "Export Copy"), self.active_path, "Same as source (*.*)")[0]
         if dest:
             pos = self.txt_pos.toPlainText().strip()
             neg = self.txt_neg.toPlainText().strip()
-            combined = f"{pos}\nNegative prompt: {neg}"
-            
+            # Evitar inyectar "\nNegative prompt: " cuando ambos campos están vacíos
+            combined = f"{pos}\nNegative prompt: {neg}" if (pos or neg) else None
+
             success, msg = modify_metadata(self.active_path, dest, metadata_text=combined)
             if success:
-                QMessageBox.information(None, self.tr("common.success", "Success"), self.tr("meta.export.success", "Exported to:\n{dest}").format(dest=dest))
+                QMessageBox.information(self.view, self.tr("common.success", "Success"), self.tr("meta.export.success", "Exported to:\n{dest}").format(dest=dest))
             else:
-                QMessageBox.critical(None, self.tr("common.error", "Error"), msg)
+                QMessageBox.critical(self.view, self.tr("common.error", "Error"), msg)
+
+    def run_headless(self, paths: list = None):
+        """Carga una lista de imágenes en modo programático (desde Librarian u otros módulos)."""
+        if paths:
+            self.load_image_set(paths)
