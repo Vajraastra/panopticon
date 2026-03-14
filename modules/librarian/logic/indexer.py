@@ -55,8 +55,8 @@ class IndexerWorker(QThread):
                                 'created': stat.st_ctime
                             })
                             disk_paths.add(os.path.normpath(full_path).replace('\\', '/'))
-                        except:
-                            pass # Skip file access errors, keep moving
+                        except OSError:
+                            pass  # Skip file access errors, keep moving
             
             total_found += len(disk_files)
             

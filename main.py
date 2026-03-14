@@ -272,14 +272,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(btn_back, alignment=Qt.AlignHCenter)
 
     def _make_theme_card(self, key):
-        """Build a clickable theme preview card."""
+        """Build a clickable theme preview card with icon + swatches."""
         from core.theme_manager import ThemeManager as TM
         colors = TM.THEMES[key]
         name = TM.THEME_NAMES.get(key, key.capitalize())
+        icon = TM.THEME_ICONS.get(key, "🎨")
         is_selected = (key == self._pending_theme)
 
         card = QFrame()
-        card.setFixedSize(150, 98)
+        card.setFixedSize(150, 110)
         card.setCursor(Qt.PointingHandCursor)
         self._theme_cards[key] = card
         self._apply_theme_card_style(card, key, is_selected)
@@ -288,24 +289,37 @@ class MainWindow(QMainWindow):
         card_layout.setContentsMargins(1, 1, 1, 1)
         card_layout.setSpacing(0)
 
-        # ── Preview area (top) ──
+        # ── Preview area ──
         preview = QWidget()
-        preview.setFixedHeight(60)
         preview.setStyleSheet(f"background: {colors['bg_main']}; border-radius: 6px 6px 0 0; border: none;")
-        prev_layout = QHBoxLayout(preview)
-        prev_layout.setContentsMargins(10, 0, 10, 0)
+        prev_layout = QVBoxLayout(preview)
+        prev_layout.setContentsMargins(0, 8, 0, 6)
+        prev_layout.setSpacing(6)
         prev_layout.setAlignment(Qt.AlignCenter)
-        prev_layout.setSpacing(8)
 
-        # Three color swatches: bg_panel · accent_main · accent_warning
+        # Big icon
+        lbl_icon = QLabel(icon)
+        lbl_icon.setAlignment(Qt.AlignCenter)
+        lbl_icon.setStyleSheet("font-size: 28px; background: transparent; border: none;")
+        prev_layout.addWidget(lbl_icon)
+
+        # Three color swatches row: bg_panel · accent_main · accent_warning
+        swatches_row = QWidget()
+        swatches_row.setStyleSheet("background: transparent; border: none;")
+        sw_layout = QHBoxLayout(swatches_row)
+        sw_layout.setContentsMargins(0, 0, 0, 0)
+        sw_layout.setSpacing(6)
+        sw_layout.setAlignment(Qt.AlignCenter)
         for swatch_key in ('bg_panel', 'accent_main', 'accent_warning'):
             swatch = QFrame()
-            swatch.setFixedSize(18, 18)
-            swatch.setStyleSheet(f"background: {colors[swatch_key]}; border-radius: 9px; border: none;")
-            prev_layout.addWidget(swatch)
+            swatch.setFixedSize(14, 14)
+            swatch.setStyleSheet(f"background: {colors[swatch_key]}; border-radius: 7px; border: none;")
+            sw_layout.addWidget(swatch)
+        prev_layout.addWidget(swatches_row)
+
         card_layout.addWidget(preview, 1)
 
-        # ── Name bar (bottom) ──
+        # ── Name bar ──
         name_bar = QWidget()
         name_bar.setFixedHeight(30)
         name_bar.setStyleSheet(f"background: {colors['bg_panel']}; border-radius: 0 0 6px 6px; border: none;")
@@ -514,6 +528,10 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    # Habilitar fallback de fuente emoji en Linux (Noto Color Emoji / Noto Emoji)
+    _f = app.font()
+    _f.setFamilies([_f.family(), "Noto Color Emoji", "Noto Emoji", "Segoe UI Emoji", "Apple Color Emoji"])
+    app.setFont(_f)
     window = MainWindow()
     window.showMaximized() # Forzar maximizado al final para evitar re-dimensiones inesperadas
     sys.exit(app.exec())

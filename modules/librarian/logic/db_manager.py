@@ -394,7 +394,8 @@ class DatabaseManager(QObject):
                     r = int(r_part)
                     conditions.append("rating = ?")
                     params.append(r)
-                except: pass
+                except (ValueError, IndexError):
+                    pass
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
         

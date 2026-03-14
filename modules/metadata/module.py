@@ -1,10 +1,9 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
-                               QFileDialog, QMessageBox, QProgressBar, QTextEdit, QApplication,
+                               QFileDialog, QMessageBox, QTextEdit, QApplication,
                                QSplitter, QFrame, QSizePolicy)
-from PySide6.QtCore import Qt, QSize, Signal
-from PySide6.QtGui import QPixmap, QIcon, QPainter
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QPixmap, QPainter
 from core.base_module import BaseModule
-from core.locale_manager import LocaleManager
 from .logic.reader import UniversalParser
 from .logic.modifier import modify_metadata, get_export_path
 import os
@@ -18,10 +17,13 @@ class ResponsiveImageLabel(QLabel):
     """A QLabel que muestra imágenes escaladas y acepta drag & drop de archivos."""
     files_dropped = Signal(list)  # emite lista de rutas válidas al soltar
 
-    def __init__(self, text="No Image Loaded"):
+    def __init__(self, text="No Image Loaded", bg='#050505', border='#222222', accent='#00ffcc'):
         super().__init__(text)
+        self._bg = bg
+        self._border = border
+        self._accent = accent
         self.setAlignment(Qt.AlignCenter)
-        self.setStyleSheet("background-color: #050505; border: 1px solid #222; border-radius: 8px;")
+        self.setStyleSheet(f"background-color: {bg}; border: 1px solid {border}; border-radius: 8px;")
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self._pixmap = None
         self.setAcceptDrops(True)
@@ -29,7 +31,7 @@ class ResponsiveImageLabel(QLabel):
     def set_image(self, path):
         if not path or not os.path.exists(path):
             self._pixmap = None
-            self.setText(LocaleManager().tr("meta.no_file", "No Image Loaded"))
+            self.setText("No Image Loaded")
             self.update()
             return
 
@@ -41,16 +43,16 @@ class ResponsiveImageLabel(QLabel):
         if event.mimeData().hasUrls():
             paths = [u.toLocalFile() for u in event.mimeData().urls()]
             if any(os.path.splitext(p)[1].lower() in _SUPPORTED_EXTS for p in paths):
-                self.setStyleSheet("background-color: #050505; border: 2px solid #00ffcc; border-radius: 8px;")
+                self.setStyleSheet(f"background-color: {self._bg}; border: 2px solid {self._accent}; border-radius: 8px;")
                 event.acceptProposedAction()
                 return
         event.ignore()
 
     def dragLeaveEvent(self, event):
-        self.setStyleSheet("background-color: #050505; border: 1px solid #222; border-radius: 8px;")
+        self.setStyleSheet(f"background-color: {self._bg}; border: 1px solid {self._border}; border-radius: 8px;")
 
     def dropEvent(self, event):
-        self.setStyleSheet("background-color: #050505; border: 1px solid #222; border-radius: 8px;")
+        self.setStyleSheet(f"background-color: {self._bg}; border: 1px solid {self._border}; border-radius: 8px;")
         paths = [
             u.toLocalFile() for u in event.mimeData().urls()
             if os.path.splitext(u.toLocalFile())[1].lower() in _SUPPORTED_EXTS
@@ -118,28 +120,28 @@ class MetadataModule(BaseModule):
         return self.view
 
     def _create_sidebar(self) -> QWidget:
+        tm = self.context.get('theme_manager')
+        c = tm.get_color if tm else lambda k: '#000000'
+
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(12)
-        
-        from core.theme import Theme
-        accent = "#00ffcc"
 
         # Title
         lbl_title = QLabel(self.tr("meta.title", "🔍 METADATA HUB"))
-        lbl_title.setStyleSheet(f"color: {accent}; font-weight: bold; font-size: 14px;")
+        lbl_title.setStyleSheet(f"color: {c('accent_main')}; font-weight: bold; font-size: 14px;")
         layout.addWidget(lbl_title)
-        
+
         lbl_desc = QLabel(self.tr("meta.desc", "Read, edit and clean image metadata."))
         lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px;")
+        lbl_desc.setStyleSheet(f"color: {c('text_dim')}; font-size: 11px;")
         layout.addWidget(lbl_desc)
-        
+
         layout.addSpacing(10)
 
         lbl = QLabel(self.tr("meta.mode", "🛠️ MODE"))
-        lbl.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 12px;")
+        lbl.setStyleSheet(f"color: {c('text_secondary')}; font-weight: bold; font-size: 12px;")
         layout.addWidget(lbl)
 
         # Mode Selector (Toggle)
@@ -155,161 +157,185 @@ class MetadataModule(BaseModule):
         self.btn_mode_edit.setFixedHeight(38)
         self.btn_mode_edit.clicked.connect(lambda: self.set_mode(self.MODE_EDITOR))
         layout.addWidget(self.btn_mode_edit)
-        
-        # Style for modes
+
+        # Style for modes (called after buttons exist)
         self._update_mode_styles()
 
         layout.addSpacing(10)
         lbl_act = QLabel(self.tr("meta.actions", "⚡ ACTIONS"))
-        lbl_act.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 12px;")
+        lbl_act.setStyleSheet(f"color: {c('text_secondary')}; font-weight: bold; font-size: 12px;")
         layout.addWidget(lbl_act)
 
         self.btn_save = QPushButton(self.tr("meta.save", "💾 Save Changes"))
         self.btn_save.setFixedHeight(40)
         self.btn_save.setCursor(Qt.PointingHandCursor)
         self.btn_save.clicked.connect(self.action_save_current)
-        self.btn_save.setStyleSheet(Theme.get_action_button_style(accent, "#000000"))
+        self.btn_save.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {c('accent_main')}; color: {c('bg_main')};
+                border-radius: 8px; font-size: 14px; font-weight: bold; padding: 10px;
+            }}
+            QPushButton:hover {{ background-color: {c('accent_hover')}; }}
+            QPushButton:disabled {{ background-color: {c('border')}; color: {c('text_dim')}; }}
+        """)
         layout.addWidget(self.btn_save)
 
         self.btn_export = QPushButton(self.tr("meta.export", "📂 Export Copy"))
         self.btn_export.setFixedHeight(36)
         self.btn_export.setCursor(Qt.PointingHandCursor)
         self.btn_export.clicked.connect(self.action_export_copy)
-        self.btn_export.setStyleSheet(Theme.get_button_style("#555"))
+        self.btn_export.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {c('bg_panel')}; color: {c('text_secondary')};
+                border-radius: 6px; font-weight: bold; font-size: 11px;
+                padding: 5px 10px; border: 1px solid transparent;
+            }}
+            QPushButton:hover {{ background-color: {c('border')}; border: 1px solid {c('accent_main')}; }}
+        """)
         layout.addWidget(self.btn_export)
 
         layout.addStretch()
-        
+
         lbl_info = QLabel(self.tr("meta.list", "IMAGE LIST"))
-        lbl_info.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-weight: bold; font-size: 11px;")
+        lbl_info.setStyleSheet(f"color: {c('text_dim')}; font-weight: bold; font-size: 11px;")
         layout.addWidget(lbl_info)
-        
+
         self.lbl_carousel_stats = QLabel(self.tr("meta.stats", "{current} / {total} images").format(current=0, total=0))
-        self.lbl_carousel_stats.setStyleSheet(f"color: {Theme.TEXT_DIM};")
+        self.lbl_carousel_stats.setStyleSheet(f"color: {c('text_dim')};")
         layout.addWidget(self.lbl_carousel_stats)
-        
+
         return container
 
     def _create_content(self) -> QWidget:
+        tm = self.context.get('theme_manager')
+        c = tm.get_color if tm else lambda k: '#000000'
+
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(20, 20, 20, 20)
-        
+
         self.splitter = QSplitter(Qt.Horizontal)
-        
+
         # Left: Viewer
         viewer_container = QWidget()
         viewer_layout = QVBoxLayout(viewer_container)
         viewer_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         # Action Bar (Top)
         top_bar = QHBoxLayout()
         self.btn_open = QPushButton(self.tr("opt.load_images", "📂 Open Image(s)"))
         self.btn_open.clicked.connect(self.open_files_dialog)
-        self.btn_open.setStyleSheet("background: #333; color: white; padding: 8px 15px; border-radius: 5px;")
+        self.btn_open.setStyleSheet(f"background: {c('bg_panel')}; color: {c('text_primary')}; padding: 8px 15px; border-radius: 5px; border: 1px solid {c('border')};")
         top_bar.addWidget(self.btn_open)
         top_bar.addStretch()
-        
+
         self.lbl_file_name = QLabel(self.tr("meta.no_file", "No file selected"))
-        self.lbl_file_name.setStyleSheet("color: #888; font-family: Consolas;")
+        self.lbl_file_name.setStyleSheet(f"color: {c('text_dim')}; font-family: Consolas;")
         top_bar.addWidget(self.lbl_file_name)
         viewer_layout.addLayout(top_bar)
-        
+
         self.image_label = ResponsiveImageLabel(
-            self.tr("meta.drop_hint", "📂 Drop images here\nor click Open Image(s)")
+            self.tr("meta.drop_hint", "📂 Drop images here\nor click Open Image(s)"),
+            bg=c('bg_main'), border=c('border'), accent=c('accent_main')
         )
         self.image_label.files_dropped.connect(self.load_image_set)
         viewer_layout.addWidget(self.image_label, 1)
-        
+
         # Carousel Controls
         carousel_layout = QHBoxLayout()
+        nav_style = f"padding: 10px; background: {c('bg_input')}; color: {c('text_secondary')}; border-radius: 5px; border: 1px solid {c('border')};"
         self.btn_prev = QPushButton(self.tr("meta.prev", "◀ Previous"))
         self.btn_prev.clicked.connect(self.go_prev)
-        self.btn_prev.setStyleSheet("padding: 10px; background: #222; color: #ddd; border-radius: 5px;")
-        
+        self.btn_prev.setStyleSheet(nav_style)
+
         self.btn_next = QPushButton(self.tr("meta.next", "Next ▶"))
         self.btn_next.clicked.connect(self.go_next)
-        self.btn_next.setStyleSheet("padding: 10px; background: #222; color: #ddd; border-radius: 5px;")
-        
+        self.btn_next.setStyleSheet(nav_style)
+
         carousel_layout.addWidget(self.btn_prev)
         carousel_layout.addStretch()
         carousel_layout.addWidget(self.btn_next)
         viewer_layout.addLayout(carousel_layout)
-        
+
         self.splitter.addWidget(viewer_container)
-        
+
         # Right: Editor
         editor_container = QFrame()
-        editor_container.setStyleSheet("background-color: #111; border-radius: 10px;")
+        editor_container.setStyleSheet(f"background-color: {c('bg_panel')}; border-radius: 10px;")
         editor_layout = QVBoxLayout(editor_container)
         editor_layout.setSpacing(10)
-        
+
         lbl_pos = QLabel(self.tr("meta.positive", "✨ Positive Prompt:"))
-        lbl_pos.setStyleSheet("font-weight: bold; color: #aaffaa; font-size: 13px;")
+        lbl_pos.setStyleSheet(f"font-weight: bold; color: {c('accent_success')}; font-size: 13px;")
         editor_layout.addWidget(lbl_pos)
-        
+
         self.txt_pos = QTextEdit()
         self.txt_pos.setPlaceholderText(self.tr("meta.placeholder.pos", "Enter positive prompt..."))
-        self.txt_pos.setStyleSheet("background: #0a0a0a; color: #eee; border: 1px solid #333; border-radius: 5px; font-family: Consolas;")
+        self.txt_pos.setStyleSheet(f"background: {c('bg_main')}; color: {c('text_primary')}; border: 1px solid {c('border')}; border-radius: 5px; font-family: Consolas;")
         editor_layout.addWidget(self.txt_pos, 2)
-        
+
         lbl_neg = QLabel(self.tr("meta.negative", "🚫 Negative Prompt:"))
-        lbl_neg.setStyleSheet("font-weight: bold; color: #ffaaaa; font-size: 13px;")
+        lbl_neg.setStyleSheet(f"font-weight: bold; color: {c('accent_warning')}; font-size: 13px;")
         editor_layout.addWidget(lbl_neg)
-        
+
         self.txt_neg = QTextEdit()
         self.txt_neg.setPlaceholderText(self.tr("meta.placeholder.neg", "Enter negative prompt..."))
-        self.txt_neg.setStyleSheet("background: #0a0a0a; color: #eee; border: 1px solid #333; border-radius: 5px; font-family: Consolas;")
+        self.txt_neg.setStyleSheet(f"background: {c('bg_main')}; color: {c('text_primary')}; border: 1px solid {c('border')}; border-radius: 5px; font-family: Consolas;")
         editor_layout.addWidget(self.txt_neg, 1)
-        
+
         lbl_tech = QLabel(self.tr("meta.tech_meta", "⚙️ Technical Metadata:"))
-        lbl_tech.setStyleSheet("font-weight: bold; color: #888; font-size: 12px;")
+        lbl_tech.setStyleSheet(f"font-weight: bold; color: {c('text_dim')}; font-size: 12px;")
         editor_layout.addWidget(lbl_tech)
-        
+
         self.txt_tech = QTextEdit()
         self.txt_tech.setReadOnly(True)
-        self.txt_tech.setStyleSheet("background: #050505; color: #666; border: none; font-size: 11px; font-family: Consolas;")
+        self.txt_tech.setStyleSheet(f"background: {c('bg_main')}; color: {c('text_dim')}; border: none; font-size: 11px; font-family: Consolas;")
         editor_layout.addWidget(self.txt_tech, 2)
-        
+
         self.splitter.addWidget(editor_container)
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 2)
-        
+
         layout.addWidget(self.splitter)
-        
+
         return container
 
     def set_mode(self, mode):
         self.current_mode = mode
         is_edit = (mode == self.MODE_EDITOR)
-        
+        tm = self.context.get('theme_manager')
+        c = tm.get_color if tm else lambda k: '#000000'
+
         # Toggle read-only
         self.txt_pos.setReadOnly(not is_edit)
         self.txt_neg.setReadOnly(not is_edit)
-        
+
         # Toggle button states
         self.btn_save.setEnabled(is_edit)
-        
+
         # Update UI feedback
         self._update_mode_styles()
-        
+
         # Visual cues on text fields
+        base_style = f"border-radius: 5px; font-family: Consolas; background: {c('bg_main')};"
         if is_edit:
-            self.txt_pos.setStyleSheet("background: #0a0a0a; color: #00ffcc; border: 1px solid #00ffcc; border-radius: 5px; font-family: Consolas;")
-            self.txt_neg.setStyleSheet("background: #0a0a0a; color: #ff8888; border: 1px solid #ff8888; border-radius: 5px; font-family: Consolas;")
+            self.txt_pos.setStyleSheet(f"{base_style} color: {c('accent_main')}; border: 1px solid {c('accent_main')};")
+            self.txt_neg.setStyleSheet(f"{base_style} color: {c('accent_warning')}; border: 1px solid {c('accent_warning')};")
         else:
-            self.txt_pos.setStyleSheet("background: #0a0a0a; color: #eee; border: 1px solid #333; border-radius: 5px; font-family: Consolas;")
-            self.txt_neg.setStyleSheet("background: #0a0a0a; color: #eee; border: 1px solid #333; border-radius: 5px; font-family: Consolas;")
+            self.txt_pos.setStyleSheet(f"{base_style} color: {c('text_primary')}; border: 1px solid {c('border')};")
+            self.txt_neg.setStyleSheet(f"{base_style} color: {c('text_primary')}; border: 1px solid {c('border')};")
 
     def _update_mode_styles(self):
         view_active = (self.current_mode == self.MODE_VIEWER)
-        
+        tm = self.context.get('theme_manager')
+        c = tm.get_color if tm else lambda k: '#000000'
+
         self.btn_mode_view.setChecked(view_active)
         self.btn_mode_edit.setChecked(not view_active)
-        
-        active_style = "background-color: #333; color: #00ffcc; border: 1px solid #00ffcc; font-weight: bold; border-radius: 6px; text-align: left; padding: 5px;"
-        inactive_style = "background-color: #1a1a1a; color: #666; border: 1px solid #222; border-radius: 6px; text-align: left; padding: 5px;"
-        
+
+        active_style = f"background-color: {c('bg_panel')}; color: {c('accent_main')}; border: 1px solid {c('accent_main')}; font-weight: bold; border-radius: 6px; text-align: left; padding: 5px;"
+        inactive_style = f"background-color: {c('bg_main')}; color: {c('text_dim')}; border: 1px solid {c('border')}; border-radius: 6px; text-align: left; padding: 5px;"
+
         self.btn_mode_view.setStyleSheet(active_style if view_active else inactive_style)
         self.btn_mode_edit.setStyleSheet(inactive_style if view_active else active_style)
 
@@ -411,7 +437,7 @@ class MetadataModule(BaseModule):
             QMessageBox.information(self.view, self.tr("common.success", "Success"), self.tr("meta.save.success", "Metadata updated successfully."))
             self.display_current()
         else:
-            QMessageBox.critical(self.view, self.tr("common.error", "Error"), msg)
+            QMessageBox.warning(self.view, self.tr("common.error", "Error"), msg)
 
     def action_export_copy(self):
         if not self.active_path: return
@@ -426,7 +452,7 @@ class MetadataModule(BaseModule):
             if success:
                 QMessageBox.information(self.view, self.tr("common.success", "Success"), self.tr("meta.export.success", "Exported to:\n{dest}").format(dest=dest))
             else:
-                QMessageBox.critical(self.view, self.tr("common.error", "Error"), msg)
+                QMessageBox.warning(self.view, self.tr("common.error", "Error"), msg)
 
     def run_headless(self, paths: list = None):
         """Carga una lista de imágenes en modo programático (desde Librarian u otros módulos)."""

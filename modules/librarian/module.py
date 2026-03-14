@@ -16,15 +16,19 @@ class ClickableThumbnail(QLabel):
     clicked = Signal(str)
     selection_changed = Signal(bool)
     rating_changed = Signal(str, int)
-    
-    def __init__(self, path, parent=None, auto_load=True, rating=0):
+
+    def __init__(self, path, parent=None, auto_load=True, rating=0,
+                 border_accent='#00ffcc', border_default='#555', bg='#000000'):
         super().__init__(parent)
         # Ensure path matches DB/Loader format (forward slashes)
         self.path = os.path.normpath(path).replace('\\', '/')
         self.selected = False
         self.rating = rating
+        self.border_accent = border_accent
+        self.border_default = border_default
+        self.bg = bg
         self.setFixedSize(100, 100)
-        self.setStyleSheet("border: 1px solid #555; border-radius: 5px; background-color: black;")
+        self.setStyleSheet(f"border: 1px solid {border_default}; border-radius: 5px; background-color: {bg};")
         self.setAlignment(Qt.AlignCenter)
         self.setCursor(Qt.PointingHandCursor)
         
@@ -71,9 +75,9 @@ class ClickableThumbnail(QLabel):
     def setSelected(self, selected):
         self.selected = selected
         if self.selected:
-            self.setStyleSheet("border: 3px solid #00ffcc; border-radius: 5px; background-color: #111;")
+            self.setStyleSheet(f"border: 3px solid {self.border_accent}; border-radius: 5px; background-color: {self.bg};")
         else:
-            self.setStyleSheet("border: 1px solid #555; border-radius: 5px; background-color: black;")
+            self.setStyleSheet(f"border: 1px solid {self.border_default}; border-radius: 5px; background-color: {self.bg};")
         self.selection_changed.emit(self.selected)
 
     def mousePressEvent(self, event: QMouseEvent):
@@ -147,150 +151,164 @@ class LibrarianModule(BaseModule):
 
     def _create_sidebar(self) -> QWidget:
         """Sidebar: Watched Folders Management"""
+        tm = self.context.get('theme_manager')
+        c = tm.get_color if tm else lambda k: '#000000'
+
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
-        
+
         # Header
         lbl = QLabel(self.tr("lib.title", "📚 Library Sources"))
-        lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: white;")
+        lbl.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {c('text_primary')};")
         layout.addWidget(lbl)
-        
+
         # List
         self.folder_list = QListWidget()
-        self.folder_list.setStyleSheet("""
-            QListWidget {
-                background-color: #111;
-                border: 1px solid #333;
+        self.folder_list.setStyleSheet(f"""
+            QListWidget {{
+                background-color: {c('bg_panel')};
+                border: 1px solid {c('border')};
                 border-radius: 8px;
-                color: #ddd;
+                color: {c('text_secondary')};
                 font-size: 13px;
                 outline: none;
-            }
-            QListWidget::item { padding: 8px; }
-            QListWidget::item:selected { background-color: #333; color: #00ffcc; border: 1px solid #00ffcc; }
+            }}
+            QListWidget::item {{ padding: 8px; }}
+            QListWidget::item:selected {{
+                background-color: {c('border')};
+                color: {c('accent_main')};
+                border: 1px solid {c('accent_main')};
+            }}
         """)
         self.folder_list.itemClicked.connect(self.on_folder_selected)
         layout.addWidget(self.folder_list)
-        
+
         # Buttons
         btn_layout = QHBoxLayout()
         self.btn_add = QPushButton(self.tr("lib.add", "➕ Add"))
         self.btn_add.clicked.connect(self.add_folder)
-        self.btn_add.setStyleSheet("background-color: #222; color: #00ffcc; border: 1px solid #444; border-radius: 4px; padding: 6px;")
-        
-        self.btn_remove = QPushButton(self.tr("lib.remove", "❌ Remove"))
+        self.btn_add.setStyleSheet(f"background-color: {c('bg_input')}; color: {c('accent_main')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px;")
+
+        self.btn_remove = QPushButton(self.tr("lib.remove", "🗑️ Remove"))
         self.btn_remove.clicked.connect(self.remove_folder)
-        self.btn_remove.setStyleSheet("background-color: #222; color: #ff5555; border: 1px solid #444; border-radius: 4px; padding: 6px;")
-        
+        self.btn_remove.setStyleSheet(f"background-color: {c('bg_input')}; color: {c('accent_warning')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px;")
+
         btn_layout.addWidget(self.btn_add)
         btn_layout.addWidget(self.btn_remove)
         layout.addLayout(btn_layout)
-        
+
         # --- Section 2: Tag Selection ---
         layout.addSpacing(20)
         lbl_tags = QLabel(self.tr("lib.tags_title", "🏷️ Available Tags"))
-        lbl_tags.setStyleSheet("font-size: 14px; font-weight: bold; color: #888;")
+        lbl_tags.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {c('text_dim')};")
         layout.addWidget(lbl_tags)
-        
+
         self.tag_list = QListWidget()
-        self.tag_list.setStyleSheet("""
-            QListWidget {
-                background-color: #0a0a0a;
-                border: 1px solid #222;
+        self.tag_list.setStyleSheet(f"""
+            QListWidget {{
+                background-color: {c('bg_main')};
+                border: 1px solid {c('border')};
                 border-radius: 6px;
-                color: #bbb;
+                color: {c('text_secondary')};
                 font-size: 12px;
                 outline: none;
-            }
-            QListWidget::item { padding: 5px; }
-            QListWidget::item:selected { background-color: #00ffcc; color: black; border-radius: 4px; }
+            }}
+            QListWidget::item {{ padding: 5px; }}
+            QListWidget::item:selected {{
+                background-color: {c('accent_main')};
+                color: {c('bg_main')};
+                border-radius: 4px;
+            }}
         """)
         self.tag_list.itemClicked.connect(self._on_tag_item_clicked)
         layout.addWidget(self.tag_list)
-        
+
         # Stats at bottom of sidebar
         layout.addStretch()
         self.lbl_stats = QLabel(self.tr("common.status.loading", "Loading..."))
         self.lbl_stats.setWordWrap(True)
-        self.lbl_stats.setStyleSheet("color: #888; font-size: 12px; border-top: 1px solid #333; padding-top: 10px;")
+        self.lbl_stats.setStyleSheet(f"color: {c('text_dim')}; font-size: 12px; border-top: 1px solid {c('border')}; padding-top: 10px;")
         layout.addWidget(self.lbl_stats)
-        
+
         return container
 
     def _create_content(self) -> QWidget:
         """Main Content: Tag Explorer and Preview"""
+        tm = self.context.get('theme_manager')
+        c = tm.get_color if tm else lambda k: '#000000'
+
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0) # StandardLayout handles padding
+        layout.setContentsMargins(0, 0, 0, 0)  # StandardLayout handles padding
         layout.setSpacing(15)
-        
+
         # --- Section 1: Tag Explorer ---
         search_frame = QFrame()
         search_frame.setStyleSheet("background-color: transparent;")
         sf_layout = QVBoxLayout(search_frame)
         sf_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         lbl_search = QLabel(self.tr("lib.explorer_title", "🔭 Tag Explorer"))
-        lbl_search.setStyleSheet("font-size: 18px; font-weight: bold; color: white;")
+        lbl_search.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {c('text_primary')};")
         sf_layout.addWidget(lbl_search)
-        
+
         # Input
         input_layout = QHBoxLayout()
         self.input_search = QLineEdit()
         self.input_search.setPlaceholderText(self.tr("lib.search_placeholder", "Type a tag and hit Enter..."))
         self.input_search.returnPressed.connect(self.add_tag_from_input)
-        self.input_search.setStyleSheet("""
-            QLineEdit {
-                background-color: #222;
-                border: 1px solid #444; #555;
+        self.input_search.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {c('bg_input')};
+                border: 1px solid {c('border')};
                 border-radius: 6px;
                 padding: 10px;
-                color: white;
+                color: {c('text_primary')};
                 font-size: 14px;
-            }
-            QLineEdit:focus { border: 1px solid #00ffcc; }
+            }}
+            QLineEdit:focus {{ border: 1px solid {c('accent_main')}; }}
         """)
-        
+
         self.btn_search = QPushButton("🔍")
         self.btn_search.setFixedWidth(50)
         self.btn_search.clicked.connect(self.perform_search)
-        self.btn_search.setStyleSheet("background-color: #333; color: white; border-radius: 6px; border: 1px solid #444;")
-        
+        self.btn_search.setStyleSheet(f"background-color: {c('bg_panel')}; color: {c('text_primary')}; border-radius: 6px; border: 1px solid {c('border')};")
+
         input_layout.addWidget(self.input_search)
         input_layout.addWidget(self.btn_search)
         sf_layout.addLayout(input_layout)
-        
+
         # Active Tags Area
         self.tag_container = QWidget()
         self.tag_flow_layout = FlowLayout(self.tag_container)
         sf_layout.addWidget(self.tag_container)
-        self.active_tags = [] 
-        
+        self.active_tags = []
+
         layout.addWidget(search_frame)
-        
+
         # --- Section 2: Preview (GRID) ---
-        self.lbl_folder_stats = QLabel("") 
+        self.lbl_folder_stats = QLabel("")
         self.lbl_folder_stats.setAlignment(Qt.AlignCenter)
-        self.lbl_folder_stats.setStyleSheet("color: #00ffcc; font-size: 14px; font-weight: bold;")
+        self.lbl_folder_stats.setStyleSheet(f"color: {c('accent_main')}; font-size: 14px; font-weight: bold;")
         layout.addWidget(self.lbl_folder_stats)
-        
+
         # Pagination Header
         self.pagination_layout = QHBoxLayout()
         self.btn_prev = QPushButton(self.tr("common.prev", "◀ Prev"))
         self.btn_next = QPushButton(self.tr("common.next", "Next ▶"))
         self.lbl_page_info = QLabel(self.tr("common.pagination", "Page 1 of 1").format(curr=1, total=1))
-        self.lbl_page_info.setStyleSheet("color: #888; font-weight: bold;")
-        
+        self.lbl_page_info.setStyleSheet(f"color: {c('text_dim')}; font-weight: bold;")
+
         for b in [self.btn_prev, self.btn_next]:
             b.setFixedWidth(80)
             b.setEnabled(False)
             b.setCursor(Qt.PointingHandCursor)
-            
+
         self.btn_prev.clicked.connect(self.prev_page)
         self.btn_next.clicked.connect(self.next_page)
-        
+
         self.pagination_layout.addStretch()
         self.pagination_layout.addWidget(self.btn_prev)
         self.pagination_layout.addWidget(self.lbl_page_info)
@@ -301,25 +319,25 @@ class LibrarianModule(BaseModule):
         # Scrollable Grid Area
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setStyleSheet("background-color: #111; border: 1px solid #333; border-radius: 8px;")
-        
+        self.scroll_area.setStyleSheet(f"background-color: {c('bg_panel')}; border: 1px solid {c('border')}; border-radius: 8px;")
+
         self.grid_widget = QWidget()
         self.grid_layout_images = QGridLayout(self.grid_widget)
         self.grid_layout_images.setSpacing(10)
-        self.grid_layout_images.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        
+        self.grid_layout_images.setAlignment(Qt.AlignTop)
+
         self.scroll_area.setWidget(self.grid_widget)
         layout.addWidget(self.scroll_area)
-        
+
         # --- Section 3: Actions (DROPDOWN) ---
         action_bar = QFrame()
-        action_bar.setStyleSheet("background-color: #151515; border-radius: 10px; padding: 10px;")
+        action_bar.setStyleSheet(f"background-color: {c('bg_panel')}; border-radius: 10px; padding: 10px;")
         ab_layout = QHBoxLayout(action_bar)
-        
+
         lbl_act = QLabel(self.tr("lib.selection_action", "🎯 Selection Action:"))
-        lbl_act.setStyleSheet("color: #888; font-weight: bold;")
+        lbl_act.setStyleSheet(f"color: {c('text_dim')}; font-weight: bold;")
         ab_layout.addWidget(lbl_act)
-        
+
         self.combo_actions = QComboBox()
         self.combo_actions.addItems([
             f"--- {self.tr('lib.selection_action', 'Send Selection to...')} ---",
@@ -327,35 +345,40 @@ class LibrarianModule(BaseModule):
             self.tr("lib.actions.optimizer", "🚀 Send to Optimizer"),
             self.tr("lib.actions.cropper", "✂️ Send to Cropper")
         ])
-        self.combo_actions.setStyleSheet("""
-            QComboBox { 
-                background-color: #222; 
-                color: white; 
-                padding: 8px; 
-                border-radius: 6px; 
+        self.combo_actions.setStyleSheet(f"""
+            QComboBox {{
+                background-color: {c('bg_input')};
+                color: {c('text_primary')};
+                padding: 8px;
+                border-radius: 6px;
                 min-width: 250px;
-                border: 1px solid #444;
+                border: 1px solid {c('border')};
                 font-weight: bold;
-            }
-            QComboBox::drop-down { border: none; width: 30px; }
-            QComboBox QAbstractItemView { background-color: #222; color: white; selection-background-color: #00ffcc; selection-color: black; }
+            }}
+            QComboBox::drop-down {{ border: none; width: 30px; }}
+            QComboBox QAbstractItemView {{
+                background-color: {c('bg_input')};
+                color: {c('text_primary')};
+                selection-background-color: {c('accent_main')};
+                selection-color: {c('bg_main')};
+            }}
         """)
         self.combo_actions.currentIndexChanged.connect(self._on_action_selection_changed)
         ab_layout.addWidget(self.combo_actions)
-        
+
         self.btn_execute = QPushButton(self.tr("lib.execute", "⚡ Execute"))
         self.btn_execute.setCursor(Qt.PointingHandCursor)
         self.btn_execute.setEnabled(False)
         self.btn_execute.clicked.connect(self.execute_selected_action)
-        self.btn_execute.setStyleSheet("""
-            QPushButton { background-color: #00ffcc; color: black; font-weight: bold; padding: 8px 20px; border-radius: 4px; }
-            QPushButton:hover { background-color: white; }
-            QPushButton:disabled { background-color: #333; color: #666; }
+        self.btn_execute.setStyleSheet(f"""
+            QPushButton {{ background-color: {c('accent_main')}; color: {c('bg_main')}; font-weight: bold; padding: 8px 20px; border-radius: 4px; }}
+            QPushButton:hover {{ background-color: {c('text_primary')}; color: {c('bg_main')}; }}
+            QPushButton:disabled {{ background-color: {c('border')}; color: {c('text_dim')}; }}
         """)
         ab_layout.addWidget(self.btn_execute)
-        
+
         layout.addWidget(action_bar)
-        
+
         return container
 
     def _on_action_selection_changed(self, index):
@@ -364,43 +387,46 @@ class LibrarianModule(BaseModule):
 
     def _create_bottom_bar(self) -> QWidget:
         """Bottom: Indexing Controls"""
+        tm = self.context.get('theme_manager')
+        c = tm.get_color if tm else lambda k: '#000000'
+
         container = QWidget()
         layout = QHBoxLayout(container)
         layout.setContentsMargins(10, 5, 10, 5)
         layout.setSpacing(15)
-        
+
         # Scan Status / Progress
         self.lbl_status = QLabel(self.tr("lib.status.ready", "Ready"))
-        self.lbl_status.setStyleSheet("color: #aaa;")
+        self.lbl_status.setStyleSheet(f"color: {c('text_secondary')};")
         layout.addWidget(self.lbl_status)
-        
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedWidth(200)
-        self.progress_bar.setStyleSheet("""
-            QProgressBar { border: 1px solid #444; border-radius: 4px; background: #111; color: transparent; }
-            QProgressBar::chunk { background: #00ffcc; border-radius: 3px; }
+        self.progress_bar.setStyleSheet(f"""
+            QProgressBar {{ border: 1px solid {c('border')}; border-radius: 4px; background: {c('bg_panel')}; color: transparent; }}
+            QProgressBar::chunk {{ background: {c('accent_main')}; border-radius: 3px; }}
         """)
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
-        
+
         layout.addStretch()
-        
+
         # Controls
-        self.btn_sync = QPushButton(self.tr("lib.purge", "Sweep Ghost Files"))
+        self.btn_sync = QPushButton(self.tr("lib.purge", "🧹 Sweep Ghost Files"))
         self.btn_sync.clicked.connect(lambda: self.toggle_scan(sync_only=True))
         self.btn_sync.setMinimumWidth(120)
         self.btn_sync.setCursor(Qt.PointingHandCursor)
-        self.btn_sync.setStyleSheet("background-color: transparent; color: #aaa; border: 1px solid #444; border-radius: 4px; padding: 6px 12px;")
+        self.btn_sync.setStyleSheet(f"background-color: transparent; color: {c('text_secondary')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px 12px;")
 
         self.btn_scan = QPushButton(self.tr("lib.run_indexer", "🚀 Run Indexer"))
         self.btn_scan.clicked.connect(self.toggle_scan)
         self.btn_scan.setMinimumWidth(120)
         self.btn_scan.setCursor(Qt.PointingHandCursor)
-        self.btn_scan.setStyleSheet("background-color: #00ffcc; color: black; font-weight: bold; border-radius: 4px; padding: 6px 12px;")
-        
+        self.btn_scan.setStyleSheet(f"background-color: {c('accent_main')}; color: {c('bg_main')}; font-weight: bold; border-radius: 4px; padding: 6px 12px;")
+
         layout.addWidget(self.btn_sync)
         layout.addWidget(self.btn_scan)
-        
+
         return container
 
     def setup_completer(self):
@@ -495,32 +521,74 @@ class LibrarianModule(BaseModule):
             self.refresh_thumbnails_grid()
 
     def refresh_thumbnails_grid(self):
-        """Redraws the thumbnails for the current page."""
-        # Clear Previous
+        """Redraws the thumbnails for the current page (non-blocking)."""
+        # Cancel any in-progress lazy load before clearing the widget list
+        if hasattr(self, '_lazy_load_timer') and self._lazy_load_timer.isActive():
+            self._lazy_load_timer.stop()
+        self._lazy_load_pending = []
+
+        # Clear previous thumbnails
         while self.grid_layout_images.count():
             item = self.grid_layout_images.takeAt(0)
             if item.widget(): item.widget().deleteLater()
-            
+
         start = self.current_page * self.page_size
         end = start + self.page_size
         page_items = self.total_paths[start:end]
-        
-        cols = 5 # Standard columns for Librarian
+
+        # Dynamic columns based on current viewport width
+        vp_width = self.scroll_area.viewport().width()
+        thumb_total = 110  # 100px thumb + 10px spacing
+        cols = max(3, vp_width // thumb_total) if vp_width > 110 else 5
+
+        tm = self.context.get('theme_manager')
+        accent = tm.get_color('accent_main') if tm else '#00ffcc'
+        border = tm.get_color('border') if tm else '#555555'
+        bg = tm.get_color('bg_main') if tm else '#000000'
+
         for i, path in enumerate(page_items):
-            thumb = ClickableThumbnail(path)
+            thumb = ClickableThumbnail(path, auto_load=False,
+                                       border_accent=accent, border_default=border, bg=bg)
             thumb.clicked.connect(self.on_thumbnail_clicked)
             self.grid_layout_images.addWidget(thumb, i // cols, i % cols)
-            
+            self._lazy_load_pending.append(thumb)
+
+        # Start non-blocking lazy load (batch per idle cycle)
+        if not hasattr(self, '_lazy_load_timer'):
+            self._lazy_load_timer = QTimer()
+            self._lazy_load_timer.setInterval(0)
+            self._lazy_load_timer.timeout.connect(self._load_next_batch)
+        if self._lazy_load_pending:
+            self._lazy_load_timer.start()
+
         # Update Pagination UI
         total = len(self.total_paths)
         num_pages = (total - 1) // self.page_size + 1 if total > 0 else 1
         self.lbl_page_info.setText(self.tr("common.pagination", "Page {curr} of {total}").format(curr=self.current_page + 1, total=num_pages))
-        
+
         self.btn_prev.setEnabled(self.current_page > 0)
         self.btn_next.setEnabled(self.current_page < num_pages - 1)
-        
+
         # Enable Execute if we have results
         self.btn_execute.setEnabled(total > 0 and self.combo_actions.currentIndex() > 0)
+
+    def _load_next_batch(self):
+        """Loads a small batch of thumbnail pixmaps per event-loop cycle to keep UI responsive."""
+        batch_size = 10
+        loaded = 0
+        while self._lazy_load_pending and loaded < batch_size:
+            thumb = self._lazy_load_pending.pop(0)
+            try:
+                pix = QPixmap(thumb.path)
+                if not pix.isNull():
+                    thumb.setPixmap(pix.scaled(100, 100, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                else:
+                    thumb.setText("❌")
+            except RuntimeError:
+                pass  # Widget was deleted between batches (page changed)
+            loaded += 1
+        if not self._lazy_load_pending:
+            self._lazy_load_timer.stop()
 
     def _on_tag_item_clicked(self, item):
         """Adds a tag from the sidebar list to the search input."""
@@ -651,8 +719,10 @@ class LibrarianModule(BaseModule):
             
             # Update UI state
             if not auto:
+                tm = self.context.get('theme_manager')
+                c = tm.get_color if tm else lambda k: '#000000'
                 self.btn_scan.setText(self.tr("lib.stop_indexer", "🛑 Stop Scanning"))
-                self.btn_scan.setStyleSheet("background-color: #ff5555; color: white; border-radius: 4px; padding: 6px; font-weight: bold;")
+                self.btn_scan.setStyleSheet(f"background-color: {c('accent_warning')}; color: {c('text_primary')}; border-radius: 4px; padding: 6px; font-weight: bold;")
                 if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(False)
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setValue(0)
@@ -674,8 +744,10 @@ class LibrarianModule(BaseModule):
         self.progress_bar.setValue(current)
 
     def scan_finished(self):
+        tm = self.context.get('theme_manager')
+        c = tm.get_color if tm else lambda k: '#000000'
         self.btn_scan.setText(self.tr("lib.run_indexer", "🚀 Run Indexer"))
-        self.btn_scan.setStyleSheet("background-color: #00ffcc; color: black; font-weight: bold; border-radius: 4px; padding: 6px;")
+        self.btn_scan.setStyleSheet(f"background-color: {c('accent_main')}; color: {c('bg_main')}; font-weight: bold; border-radius: 4px; padding: 6px;")
         if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(True)
         self.btn_scan.setEnabled(True)
         self.progress_bar.setVisible(False)

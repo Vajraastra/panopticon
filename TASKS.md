@@ -17,14 +17,15 @@ Re-audit en progreso (iniciado desde `6fd849a`). Módulos 1-7 completados con co
 - [x] **Gallery** — imports top-level, 4 strings → `self.tr()`, `run_headless()` añadido
 - [x] **Locale EN + ES** — 23 keys `dup.*` añadidas; verificar que `crop.*`, `wm.*`, `qs.*`, `gallery.*` están completas
 - [x] **Character Recognizer** — audit completo + nuevas features: modo Illustration/Real Person (ArcFace+YuNet+landmark alignment), locale `cr.*` (~40 keys), logging, `run_headless()`, botones Skip/Return, borrado de tags, Auto Mode con `AutoScanWorker` (sugerencia dominante al 60%)
+- [x] **Sistema de temas** — 10 paletas (cyberpunk/midnight/forest/slate/light/sepia/cosmic/grape/ocean/aurora), ThemeManager expandido, settings page rediseñada con grid de tarjetas, live preview via `_rebuild_settings_page()`, emoji icons en tarjetas, fix de rendering de emojis en Linux (`QFont.setFamilies`)
 
 ---
 
 ## 🔲 Pendiente
 
 ### Inmediato (próxima sesión) — ORDEN CRÍTICO
-- [ ] **Librarian** — módulo crítico (DB central). Audit: locale, theme dinámico, CachePaths, logging
-- [ ] **Metadata Hub** — el más crítico, SIEMPRE al final. 2 niveles de warning en save_current, no inyectar metadata vacía
+- [x] **Librarian** — locale ✅ completo, `theme_manager.get_color()` en sidebar/content/bottom/thumbnails/scan buttons, bare excepts corregidos en indexer.py y db_manager.py, bug CSS resuelto
+- [x] **Metadata Hub** — `theme_manager.get_color()` en sidebar/content/set_mode/_update_mode_styles, `ResponsiveImageLabel` recibe colores del tema, eliminado `from core.theme import Theme`, `LocaleManager()` directo eliminado, 2× `QMessageBox.critical→warning`
 
 ### Post-audit
 - [ ] **Verificar locale completo** — keys `crop.*`, `wm.*`, `qs.*`, `gallery.*`, `opt.*` en en.json y es.json

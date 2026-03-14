@@ -45,6 +45,19 @@ class ThemeManager(QObject):
         "aurora": "Aurora",
     }
 
+    THEME_ICONS = {
+        "cyberpunk": "⚡",
+        "midnight": "🌙",
+        "forest": "🌿",
+        "slate": "🪨",
+        "light": "☀️",
+        "sepia": "📜",
+        "cosmic": "🔮",
+        "grape": "🍇",
+        "ocean": "🌊",
+        "aurora": "🌌",
+    }
+
     THEMES = {
         "cyberpunk": {
             "bg_main": "#050505", "bg_sidebar": "#0a0a0a", "bg_panel": "#111111", "bg_input": "#000000",
