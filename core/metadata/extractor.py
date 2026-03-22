@@ -29,7 +29,7 @@ class MetadataExtractor:
             print(bundle.positive_prompt)
     """
     
-    SUPPORTED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp'}
+    SUPPORTED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.avif'}
     
     @classmethod
     def extract(cls, path: str | Path) -> MetadataBundle:
@@ -55,6 +55,8 @@ class MetadataExtractor:
             return cls.extract_jpeg(path)
         elif ext == '.webp':
             return cls.extract_webp(path)
+        elif ext == '.avif':
+            return cls.extract_avif(path)
         else:
             return MetadataBundle()
     
@@ -189,18 +191,49 @@ class MetadataExtractor:
             return MetadataBundle(source_format="WEBP")
     
     @classmethod
+    def extract_avif(cls, path: str | Path) -> 'MetadataBundle':
+        """
+        Extrae metadata de archivos AVIF.
+        Lee XMP embedded (esquema pan:data, idéntico a WebP).
+        """
+        path = Path(path)
+        raw_metadata = {}
+
+        try:
+            with Image.open(path) as img:
+                if hasattr(img, 'info') and 'xmp' in img.info:
+                    xmp_data = img.info['xmp']
+                    if isinstance(xmp_data, bytes):
+                        xmp_data = xmp_data.decode('utf-8', errors='ignore')
+
+                    panopticon_data = cls._parse_xmp_panopticon(xmp_data)
+                    if panopticon_data:
+                        raw_metadata.update(panopticon_data)
+
+                    raw_metadata["xmp_raw"] = xmp_data
+
+            return cls._parse_raw_metadata(raw_metadata, "AVIF")
+
+        except Exception as e:
+            print(f"[MetadataExtractor] Error reading AVIF {path}: {e}")
+            return MetadataBundle(source_format="AVIF")
+
+    @classmethod
     def _parse_xmp_panopticon(cls, xmp: str) -> dict:
         """Extrae datos de Panopticon desde XMP."""
         result = {}
         
-        # Look for pan:data tag
-        match = re.search(r'<pan:data>(.+?)</pan:data>', xmp, re.DOTALL)
+        # Look for pan:data tag — support both CDATA wrapper and raw JSON
+        match = re.search(r'<pan:data><!\[CDATA\[(.*?)\]\]></pan:data>', xmp, re.DOTALL)
+        if not match:
+            match = re.search(r'<pan:data>(.+?)</pan:data>', xmp, re.DOTALL)
         if match:
             try:
+                json_str = match.group(1)
                 # Return raw JSON string so _parse_raw_metadata can extract all fields
-                result['panopticon_data'] = match.group(1)
-                
-                data = json.loads(match.group(1))
+                result['panopticon_data'] = json_str
+
+                data = json.loads(json_str)
                 if 'tags' in data:
                     result['panopticon_tags'] = data['tags']
                 if 'rating' in data:
