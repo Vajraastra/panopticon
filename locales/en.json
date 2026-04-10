@@ -410,5 +410,14 @@
   "qs.delete_slop.done": "/slop/ folder deleted.",
   "qs.status.loaded": "{count} images ready.",
   "qs.msg.no_images": "No images found in the folder.",
-  "qs.msg.fail": "Operation failed: {error}"
+  "qs.msg.fail": "Operation failed: {error}",
+  "qs.phase1.content_type": "Content type:",
+  "qs.ctype.photorealistic": "Photorealistic",
+  "qs.ctype.3d_render": "3D Render",
+  "qs.ctype.illustration": "Illustration / Anime",
+  "qs.calibrate.btn": "🔬 Calibrate with image…",
+  "qs.calibrate.select": "Select calibration image",
+  "qs.calibrate.running": "Calibrating…",
+  "qs.calibrate.title": "Calibration result",
+  "qs.calibrate.done": "Calibration: combined={combined:.3f}"
 }

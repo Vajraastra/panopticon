@@ -410,5 +410,14 @@
   "qs.delete_slop.done": "Carpeta /slop/ eliminada.",
   "qs.status.loaded": "{count} imágenes listas.",
   "qs.msg.no_images": "No se encontraron imágenes en la carpeta.",
-  "qs.msg.fail": "La operación falló: {error}"
+  "qs.msg.fail": "La operación falló: {error}",
+  "qs.phase1.content_type": "Tipo de contenido:",
+  "qs.ctype.photorealistic": "Fotorrealista",
+  "qs.ctype.3d_render": "3D Render",
+  "qs.ctype.illustration": "Ilustración / Anime",
+  "qs.calibrate.btn": "🔬 Calibrar con imagen…",
+  "qs.calibrate.select": "Seleccionar imagen de calibración",
+  "qs.calibrate.running": "Calibrando…",
+  "qs.calibrate.title": "Resultado de calibración",
+  "qs.calibrate.done": "Calibración: combined={combined:.3f}"
 }

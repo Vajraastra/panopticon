@@ -22,12 +22,13 @@ class SlopFilterWorker(QThread):
     finished   = Signal(dict)            # summary {keeper:N, review:N, slop:N}
     error      = Signal(str)
 
-    def __init__(self, paths: list, preset: str,
+    def __init__(self, paths: list, preset: str, content_type: str,
                  use_face: bool, use_body: bool,
                  use_hands: bool, use_aesthetic: bool):
         super().__init__()
         self.paths         = paths
         self.preset        = preset
+        self.content_type  = content_type
         self.use_face      = use_face
         self.use_body      = use_body
         self.use_hands     = use_hands
@@ -44,6 +45,7 @@ class SlopFilterWorker(QThread):
         models_dir = CachePaths.get_models_root()
         analyzer   = SlopAnalyzer(
             models_dir,
+            content_type  = self.content_type,
             use_face      = self.use_face,
             use_body      = self.use_body,
             use_hands     = self.use_hands,
@@ -70,7 +72,7 @@ class SlopFilterWorker(QThread):
                     continue
 
                 scores = analyzer.analyze(img)
-                label  = classify(scores, self.preset)
+                label  = classify(scores, self.preset, self.content_type)
                 counts[label] += 1
 
                 self.image_done.emit(str(path), label, scores)

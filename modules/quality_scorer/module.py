@@ -17,6 +17,7 @@ from core.theme import Theme
 from core.paths import CachePaths
 from core.components.standard_layout import StandardToolLayout
 from modules.quality_scorer.logic.quality_scorer import PROFILES, DEFAULT_PROFILE
+from modules.quality_scorer.logic.slop_filter import CONTENT_TYPES, DEFAULT_CONTENT_TYPE
 
 log = logging.getLogger(__name__)
 
@@ -187,6 +188,21 @@ class QualityScorerModule(BaseModule):
         grp1.setStyleSheet(grp_style)
         lay1 = QVBoxLayout(grp1)
 
+        lbl_ctype = QLabel(self.tr("qs.phase1.content_type", "Tipo de contenido:"))
+        lbl_ctype.setStyleSheet(f"color: {text_sec}; font-size: 11px;")
+        lay1.addWidget(lbl_ctype)
+
+        self.combo_ctype = QComboBox()
+        for key, cfg in CONTENT_TYPES.items():
+            self.combo_ctype.addItem(self.tr(f"qs.ctype.{key}", cfg["label"]), key)
+        # Seleccionar ilustración por defecto (caso de uso más común)
+        idx = self.combo_ctype.findData(DEFAULT_CONTENT_TYPE)
+        if idx >= 0:
+            self.combo_ctype.setCurrentIndex(idx)
+        self.combo_ctype.setStyleSheet(self._combo_style(border))
+        lay1.addWidget(self.combo_ctype)
+
+        lay1.addSpacing(4)
         lbl_preset = QLabel(self.tr("qs.phase1.preset", "Preset de filtrado:"))
         lbl_preset.setStyleSheet(f"color: {text_sec}; font-size: 11px;")
         lay1.addWidget(lbl_preset)
@@ -212,6 +228,13 @@ class QualityScorerModule(BaseModule):
             chk.setChecked(True)
             chk.setStyleSheet(f"color: {text_sec}; font-size: 11px;")
             lay1.addWidget(chk)
+
+        lay1.addSpacing(4)
+        self.btn_calibrate = QPushButton(self.tr("qs.calibrate.btn", "🔬 Calibrar con imagen…"))
+        self.btn_calibrate.setStyleSheet(Theme.get_button_style("#336699"))
+        self.btn_calibrate.setFixedHeight(30)
+        self.btn_calibrate.clicked.connect(self._run_calibration)
+        lay1.addWidget(self.btn_calibrate)
 
         lay1.addSpacing(6)
         self.btn_run1 = QPushButton(self.tr("qs.phase1.run", "▶ Iniciar Fase 1"))
@@ -598,10 +621,12 @@ class QualityScorerModule(BaseModule):
             self._bucket_paths[lbl] = []
             self.lbl_cnt[lbl].setText("0")
 
-        preset = self.combo_preset.currentData() or "balanced"
+        preset       = self.combo_preset.currentData() or "balanced"
+        content_type = self.combo_ctype.currentData()  or DEFAULT_CONTENT_TYPE
         self._slop_worker = SlopFilterWorker(
             paths         = self.image_paths,
             preset        = preset,
+            content_type  = content_type,
             use_face      = self.chk_face.isChecked(),
             use_body      = self.chk_body.isChecked(),
             use_hands     = self.chk_hands.isChecked(),
@@ -731,6 +756,97 @@ class QualityScorerModule(BaseModule):
             f"<b>Combined: {scores.get('combined', '—')}</b>"
         )
         QMessageBox.information(self.view, self.tr("qs.scores_title", "Scores de imagen"), msg)
+
+    # ── Calibración ─────────────────────────────────────────────────── #
+
+    def _run_calibration(self):
+        """
+        Modo calibración: analiza una imagen individual y muestra los
+        scores raw de cada modelo sin clasificar.
+        Útil para ajustar pesos y umbrales según el tipo de colección.
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self.view,
+            self.tr("qs.calibrate.select", "Seleccionar imagen de calibración"),
+            self.last_dir,
+            "Images (*.png *.jpg *.jpeg *.webp *.avif)",
+        )
+        if not path:
+            return
+
+        content_type = self.combo_ctype.currentData() or DEFAULT_CONTENT_TYPE
+        from modules.quality_scorer.logic.slop_filter import (
+            SlopAnalyzer, CONTENT_TYPES
+        )
+
+        self.lbl_status.setText(self.tr("qs.calibrate.running", "Calibrando…"))
+        QApplication.instance().processEvents()
+
+        try:
+            import cv2
+            from core.paths import CachePaths
+            models_dir = CachePaths.get_models_root()
+
+            analyzer = SlopAnalyzer(
+                models_dir,
+                content_type  = content_type,
+                use_face      = self.chk_face.isChecked(),
+                use_body      = self.chk_body.isChecked(),
+                use_hands     = self.chk_hands.isChecked(),
+                use_aesthetic = self.chk_aesthetic.isChecked(),
+            )
+            analyzer.initialize()
+
+            img = cv2.imread(path)
+            if img is None:
+                raise RuntimeError("No se pudo leer la imagen.")
+
+            scores = analyzer.analyze_calibration(img)
+
+        except Exception as e:
+            log.warning(f"[QS] Calibración fallida: {e}")
+            QMessageBox.warning(
+                self.view,
+                self.tr("common.error", "Error"),
+                self.tr("qs.msg.fail", "La operación falló: {error}").format(error=str(e)),
+            )
+            self.lbl_status.setText(self.tr("common.status.ready", "Listo."))
+            return
+
+        cfg    = CONTENT_TYPES.get(content_type, {})
+        w      = scores.get("_weights", {})
+        preset = scores.get("_presets", {}).get("balanced", {})
+
+        lines = [
+            f"<b>Imagen:</b> {Path(path).name}",
+            f"<b>Tipo de contenido:</b> {cfg.get('label', content_type)}",
+            f"<b>Modelo de cara:</b> {scores.get('_face_model', '?')}",
+            "",
+            "<b>─── Scores individuales ───</b>",
+            f"Rostro    [{w.get('face',0):.0%} peso]  →  <b>{scores['face']:.3f}</b>",
+            f"Cuerpo    [{w.get('body',0):.0%} peso]  →  <b>{scores['body']:.3f}</b>",
+            f"Manos     [{w.get('hands',0):.0%} peso]  →  <b>{scores['hands']:.3f}</b>",
+            f"Estética  [{w.get('aesthetic',0):.0%} peso]  →  <b>{scores['aesthetic']:.3f}</b>",
+            "",
+            f"<b>Combined: {scores['combined']:.3f}</b>",
+            "",
+            "<b>─── Umbrales actuales (balanced) ───</b>",
+            f"Keeper  ≥ {preset.get('keeper', '?')}",
+            f"Review  ≥ {preset.get('review', '?')}",
+            f"Slop    &lt; {preset.get('review', '?')}",
+        ]
+
+        msg = QMessageBox(self.view)
+        msg.setWindowTitle(self.tr("qs.calibrate.title", "Resultado de calibración"))
+        msg.setTextFormat(Qt.RichText)
+        msg.setText("<br>".join(lines))
+        msg.setIcon(QMessageBox.Information)
+        msg.exec()
+
+        self.lbl_status.setText(
+            self.tr("qs.calibrate.done",
+                    "Calibración: combined={combined:.3f}").format(**scores)
+        )
 
     # ── Acciones post-Fase1 ─────────────────────────────────────────── #
 
