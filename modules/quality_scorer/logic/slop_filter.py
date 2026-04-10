@@ -46,8 +46,8 @@ CONTENT_TYPES = {
     },
     "3d_render": {
         "label":      "3D Render",
-        # YuNet funciona con renders realistas; umbral de confianza interno relajado
-        "face_model": "yunet_relaxed",
+        # lbpcascade reconoce bien rostros de renders estilizados (confirmado por usuario)
+        "face_model": "anime",
         "weights": {
             "face":      0.30,
             "body":      0.25,
@@ -131,8 +131,8 @@ class SlopAnalyzer:
 
         if self.use_face:
             face_model = self._cfg["face_model"]
-            if face_model in ("yunet", "yunet_relaxed"):
-                self._init_yunet(relaxed=(face_model == "yunet_relaxed"))
+            if face_model == "yunet":
+                self._init_yunet()
             elif face_model == "anime":
                 self._init_anime_cascade()
 
@@ -143,18 +143,17 @@ class SlopAnalyzer:
         if self.use_aesthetic:
             self._init_clip()
 
-    def _init_yunet(self, relaxed: bool = False):
+    def _init_yunet(self):
         yunet_path = self.models_dir / "onnx" / "face_detection_yunet_2023mar.onnx"
         if not yunet_path.exists():
             url = ("https://huggingface.co/opencv/face_detection_yunet"
                    "/resolve/main/face_detection_yunet_2023mar.onnx?download=true")
             self._download(url, yunet_path)
         try:
-            score_thresh = 0.45 if relaxed else 0.60
             self._yunet = cv2.FaceDetectorYN.create(
-                str(yunet_path), "", (320, 320), score_thresh, 0.3, 5000
+                str(yunet_path), "", (320, 320), 0.60, 0.3, 5000
             )
-            log.info(f"[SlopFilter] YuNet cargado (score_thresh={score_thresh}).")
+            log.info("[SlopFilter] YuNet cargado.")
         except Exception as e:
             log.warning(f"[SlopFilter] YuNet no disponible: {e}")
             self.use_face = False
@@ -262,9 +261,9 @@ class SlopAnalyzer:
     # ------------------------------------------------------------------ #
 
     def score_face(self, img_bgr: np.ndarray) -> float:
-        """Dispatcher: elige scorer según tipo de contenido."""
+        """Dispatcher: YuNet para fotorrealista, lbpcascade para ilustración y 3D render."""
         face_model = self._cfg["face_model"]
-        if face_model in ("yunet", "yunet_relaxed"):
+        if face_model == "yunet":
             return self._score_face_yunet(img_bgr)
         if face_model == "anime":
             return self._score_face_anime(img_bgr)
