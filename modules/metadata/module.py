@@ -11,7 +11,7 @@ import logging
 
 log = logging.getLogger(__name__)
 
-_SUPPORTED_EXTS = {'.png', '.jpg', '.jpeg', '.webp'}
+_SUPPORTED_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.avif'}
 
 class ResponsiveImageLabel(QLabel):
     """A QLabel que muestra imágenes escaladas y acepta drag & drop de archivos."""
@@ -36,6 +36,20 @@ class ResponsiveImageLabel(QLabel):
             return
 
         self._pixmap = QPixmap(path)
+
+        # Fallback Pillow para formatos que Qt no soporta nativamente (ej. AVIF)
+        if self._pixmap.isNull():
+            try:
+                from PIL import Image as PILImage
+                from PySide6.QtGui import QImage
+                pil_img = PILImage.open(path).convert("RGBA")
+                data = pil_img.tobytes("raw", "RGBA")
+                qimage = QImage(data, pil_img.width, pil_img.height,
+                                QImage.Format_RGBA8888)
+                self._pixmap = QPixmap.fromImage(qimage)
+            except Exception:
+                pass
+
         self.setText("")
         self.update()
 
@@ -395,7 +409,7 @@ class MetadataModule(BaseModule):
             self.display_current()
 
     def open_files_dialog(self):
-        files, _ = QFileDialog.getOpenFileNames(self.view, self.tr("opt.load_images", "Select Images"), "", "Images (*.png *.jpg *.jpeg *.webp)")
+        files, _ = QFileDialog.getOpenFileNames(self.view, self.tr("opt.load_images", "Select Images"), "", "Images (*.png *.jpg *.jpeg *.webp *.avif)")
         if files:
             self.load_image_set(files)
 

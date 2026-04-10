@@ -13,7 +13,7 @@ from core.theme import Theme
 from core.components.standard_layout import StandardToolLayout
 from .logic.optimizer import optimize_image, analyze_image, get_export_path
 
-IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp'}
+IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.avif'}
 
 # Resize combo: index → max_side px (None = keep original, missing key = custom spinbox)
 RESIZE_SIDES = {0: None, 1: 1024, 2: 2048}
@@ -309,7 +309,7 @@ class ImageOptimizerModule(BaseModule):
             self.view,
             self.tr("common.select_image", "Select Images"),
             "",
-            "Images (*.png *.jpg *.jpeg *.webp)"
+            "Images (*.png *.jpg *.jpeg *.webp *.avif)"
         )
         if files:
             self.queue.extend(files)

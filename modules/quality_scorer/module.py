@@ -326,7 +326,7 @@ class QualityScorerModule(BaseModule):
         if folders:
             self.load_folder(folders[0])
         else:
-            files = [p for p in paths if p.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))]
+            files = [p for p in paths if p.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.avif'))]
             if files:
                 self.load_images(files)
 
@@ -342,7 +342,7 @@ class QualityScorerModule(BaseModule):
             self.view,
             self.tr("common.select_image", "Select Image"),
             self.last_dir,
-            "Images (*.png *.jpg *.jpeg *.webp)"
+            "Images (*.png *.jpg *.jpeg *.webp *.avif)"
         )
         if path:
             self.load_images([path])
@@ -350,7 +350,7 @@ class QualityScorerModule(BaseModule):
     def load_folder(self, folder):
         self.last_dir = folder
         self.base_folder = folder
-        extensions = ('.png', '.jpg', '.jpeg', '.webp')
+        extensions = ('.png', '.jpg', '.jpeg', '.webp', '.avif')
         self.image_paths = []
 
         for root, _, files in os.walk(folder):

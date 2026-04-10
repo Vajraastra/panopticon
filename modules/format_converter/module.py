@@ -18,10 +18,15 @@ from .logic.converter import (
     verify_batch_conversion, BatchConversionReport
 )
 
-IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp'}
-# Combo order: index 0 = PNG, 1 = WebP, 2 = JPEG
-FORMAT_MAP = {0: "PNG", 1: "WEBP", 2: "JPEG"}
-FORMAT_EXTS = {"PNG": {".jpg", ".jpeg", ".webp"}, "WEBP": {".png", ".jpg", ".jpeg"}, "JPEG": {".png", ".webp"}}
+IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.avif'}
+# Combo order: index 0 = PNG, 1 = WebP, 2 = JPEG, 3 = AVIF
+FORMAT_MAP = {0: "PNG", 1: "WEBP", 2: "JPEG", 3: "AVIF"}
+FORMAT_EXTS = {
+    "PNG":  {".jpg", ".jpeg", ".webp", ".avif"},
+    "WEBP": {".png", ".jpg", ".jpeg", ".avif"},
+    "JPEG": {".png", ".webp", ".avif"},
+    "AVIF": {".png", ".jpg", ".jpeg", ".webp"},
+}
 
 
 class DropZoneWidget(QFrame):
@@ -91,12 +96,11 @@ class ConversionWorker(QObject):
     finished = Signal(object)          # BatchConversionReport
     error = Signal(str)
 
-    def __init__(self, files, output_dir, target_format, quality, preserve_metadata):
+    def __init__(self, files, output_dir, target_format, preserve_metadata):
         super().__init__()
         self.files = files
         self.output_dir = output_dir
         self.target_format = target_format
-        self.quality = quality
         self.preserve_metadata = preserve_metadata
 
     def run(self):
@@ -105,7 +109,6 @@ class ConversionWorker(QObject):
                 self.files,
                 output_dir=self.output_dir,
                 target_format=self.target_format,
-                quality=self.quality,
                 preserve_metadata=self.preserve_metadata,
                 progress_callback=lambda c, t, f: self.progress.emit(c, t, f)
             )
@@ -310,50 +313,36 @@ class FormatConverterModule(BaseModule):
 
         layout.addWidget(QLabel(self.tr("fc.target_format", "Target Format:")))
         self.combo_format = QComboBox()
-        self.combo_format.addItems(["PNG (Standard)", "WebP (Legacy)", "JPEG (Lossy)"])
+        self.combo_format.addItems([
+            self.tr("fc.fmt_png",  "PNG (Lossless)"),
+            self.tr("fc.fmt_webp", "WebP (Lossless)"),
+            self.tr("fc.fmt_jpeg", "JPEG (High Quality)"),
+            self.tr("fc.fmt_avif", "AVIF (Compressed)"),
+        ])
         self.combo_format.setStyleSheet(Theme.get_input_style(self.accent_color))
         self.combo_format.currentIndexChanged.connect(self.on_format_changed)
         layout.addWidget(self.combo_format)
 
-        self.quality_container = QWidget()
-        quality_layout = QVBoxLayout(self.quality_container)
-        quality_layout.setContentsMargins(0, 0, 0, 0)
-
-        quality_tpl = self.tr("fc.quality", "Quality: {quality}%")
-        self.lbl_quality = QLabel(quality_tpl.format(quality=90))
-        self.lbl_quality.setStyleSheet(f"color: {text_sec};")
-        quality_layout.addWidget(self.lbl_quality)
-
-        self.slider_quality = QSlider(Qt.Horizontal)
-        self.slider_quality.setRange(50, 100)
-        self.slider_quality.setValue(90)
-        self.slider_quality.setStyleSheet(f"""
-            QSlider::groove:horizontal {{
-                background: {bg_input};
-                height: 8px;
-                border-radius: 4px;
-            }}
-            QSlider::handle:horizontal {{
-                background: {self.accent_color};
-                width: 16px;
-                margin: -4px 0;
-                border-radius: 8px;
-            }}
-        """)
-        self.slider_quality.valueChanged.connect(
-            lambda v: self.lbl_quality.setText(quality_tpl.format(quality=v))
-        )
-        quality_layout.addWidget(self.slider_quality)
+        self.lbl_format_info = QLabel(self.tr("fc.optimized_info", "⚙️ Optimized for dataset training"))
+        self.lbl_format_info.setStyleSheet(f"color: {text_sec}; font-size: 10px; font-style: italic;")
+        self.lbl_format_info.setWordWrap(True)
+        layout.addWidget(self.lbl_format_info)
 
         self.lbl_webp_warning = QLabel(
-            self.tr("fc.webp_warning", "⚠️ WebP metadata is Internal-Only (Not visible to external tools)")
+            self.tr("fc.webp_info", "ℹ️ WebP lossless: zero quality loss, compatible with training frameworks")
         )
-        self.lbl_webp_warning.setStyleSheet("color: #ffaa00; font-size: 10px; font-style: italic;")
+        self.lbl_webp_warning.setStyleSheet(f"color: {text_sec}; font-size: 10px; font-style: italic;")
         self.lbl_webp_warning.setWordWrap(True)
         self.lbl_webp_warning.setVisible(False)
         layout.addWidget(self.lbl_webp_warning)
 
-        layout.addWidget(self.quality_container)
+        self.lbl_avif_warning = QLabel(
+            self.tr("fc.avif_warning", "⚠️ AVIF metadata uses embedded XMP (Panopticon-only schema)")
+        )
+        self.lbl_avif_warning.setStyleSheet("color: #ffaa00; font-size: 10px; font-style: italic;")
+        self.lbl_avif_warning.setWordWrap(True)
+        self.lbl_avif_warning.setVisible(False)
+        layout.addWidget(self.lbl_avif_warning)
 
         layout.addSpacing(10)
 
@@ -424,7 +413,7 @@ class FormatConverterModule(BaseModule):
             self.view,
             self.tr("fc.add_files_dialog", "Select Images to Add"),
             "",
-            "Images (*.png *.jpg *.jpeg *.webp)"
+            "Images (*.png *.jpg *.jpeg *.webp *.avif)"
         )
         if files:
             for f in files:
@@ -482,8 +471,8 @@ class FormatConverterModule(BaseModule):
         ))
 
     def on_format_changed(self, index):
-        self.quality_container.setVisible(index != 0)
         self.lbl_webp_warning.setVisible(index == 1)
+        self.lbl_avif_warning.setVisible(index == 3)
         self._refresh_queue()
 
     def log(self, message: str):
@@ -526,7 +515,6 @@ class FormatConverterModule(BaseModule):
             self.files_to_convert,
             output_dir,
             target_format,
-            self.slider_quality.value(),
             self.chk_preserve_meta.isChecked()
         )
         self.worker_thread = QThread()

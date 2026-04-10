@@ -61,7 +61,7 @@ class CropperModule(BaseModule):
 
     def _drop(self, event):
         files  = [u.toLocalFile() for u in event.mimeData().urls()]
-        images = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.webp', '.tiff'))]
+        images = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.webp', '.tiff', '.avif'))]
         if images:
             self.load_image(images[0])
 
@@ -287,7 +287,7 @@ class CropperModule(BaseModule):
             self.view,
             self.tr("common.load_image", "Open Image"),
             "",
-            "Images (*.png *.jpg *.jpeg *.bmp)"
+            "Images (*.png *.jpg *.jpeg *.bmp *.avif)"
         )
         if path:
             self.load_image(path)

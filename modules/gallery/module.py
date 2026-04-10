@@ -47,7 +47,7 @@ class GalleryModule(BaseModule):
         if not folder:
             return
 
-        valid_ext = {'.jpg', '.jpeg', '.png', '.webp', '.bmp'}
+        valid_ext = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.avif'}
         files = []
         for root, _, filenames in os.walk(folder):
             for f in filenames:

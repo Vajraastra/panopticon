@@ -29,7 +29,10 @@ class UniversalParser:
         elif ext in ('.jpg', '.jpeg', '.webp'):
             jpeg_data = UniversalParser._parse_jpeg(path)
             result.update(jpeg_data)
-        
+        elif ext == '.avif':
+            avif_data = UniversalParser._parse_avif(path)
+            result.update(avif_data)
+
         return result
 
     @staticmethod
@@ -107,6 +110,63 @@ class UniversalParser:
                     metadata["xmp"] = img.info['xmp']
                     
             return UniversalParser._extract_prompts(metadata)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @staticmethod
+    def _parse_avif(path):
+        """
+        Lee XMP embebido en AVIF (esquema pan:data de Panopticon).
+        - 'a1111_parameters' presente: re-ruta por el parser A1111 (fidelidad completa).
+        - 'comfyui_prompt' presente: re-ruta por el parser ComfyUI (grafo JSON).
+        - Fallback: campos normalizados (AVIF nativo o convertido pre-fix).
+        """
+        try:
+            with Image.open(path) as img:
+                if not (hasattr(img, 'info') and 'xmp' in img.info):
+                    return {}
+                xmp = img.info['xmp']
+                if isinstance(xmp, bytes):
+                    xmp = xmp.decode('utf-8', errors='ignore')
+
+            # CDATA (archivos nuevos) con fallback sin CDATA (archivos viejos)
+            match = re.search(
+                r'<pan:data><!\[CDATA\[(.*?)\]\]></pan:data>', xmp, re.DOTALL
+            )
+            if not match:
+                match = re.search(r'<pan:data>(.*?)</pan:data>', xmp, re.DOTALL)
+            if not match:
+                return {}
+
+            pan_data = json.loads(match.group(1))
+
+            # --- Ruta A1111 / Forge: máxima fidelidad via raw ---
+            if "a1111_parameters" in pan_data:
+                return UniversalParser._extract_prompts(
+                    {"parameters": pan_data["a1111_parameters"]}
+                )
+
+            # --- Ruta ComfyUI: grafo JSON original ---
+            if "comfyui_prompt" in pan_data:
+                return UniversalParser._extract_prompts(
+                    {"prompt": pan_data["comfyui_prompt"]}
+                )
+
+            # --- Fallback: campos normalizados ---
+            return {
+                "raw": pan_data,
+                "positive": pan_data.get("positive_prompt", ""),
+                "negative": pan_data.get("negative_prompt", ""),
+                "tool": pan_data.get("tool", "Unknown"),
+                "model": pan_data.get("model", "Unknown"),
+                "seed": pan_data.get("seed", "Unknown"),
+                "steps": pan_data.get("steps", "Unknown"),
+                "cfg": pan_data.get("cfg", "Unknown"),
+                "sampler": pan_data.get("sampler", "Unknown"),
+                "vae": pan_data.get("vae", "Unknown"),
+                "loras": pan_data.get("loras", []),
+            }
+
         except Exception as e:
             return {"error": str(e)}
 

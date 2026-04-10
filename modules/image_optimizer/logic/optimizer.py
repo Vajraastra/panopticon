@@ -162,7 +162,7 @@ def optimize_image(source_path, output_path,
             target_format = "PNG"
         
         # 5. Adjust output path extension
-        ext_map = {"JPEG": ".jpg", "JPG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
+        ext_map = {"JPEG": ".jpg", "JPG": ".jpg", "PNG": ".png", "WEBP": ".webp", "AVIF": ".avif"}
         target_ext = ext_map.get(target_format, ".png")
         output_path = output_path.with_suffix(target_ext)
         
@@ -184,7 +184,13 @@ def optimize_image(source_path, output_path,
         elif target_format == "WEBP":
             save_kwargs["quality"] = quality
             save_kwargs["method"] = 6
-        
+
+        elif target_format == "AVIF":
+            save_kwargs["quality"] = quality
+            save_kwargs.pop("optimize", None)  # AVIF no soporta optimize=True
+            if img.mode == "P":
+                img = img.convert("RGBA")
+
         # 7. Save image (without metadata first)
         img.save(str(output_path), **save_kwargs)
         img.close()

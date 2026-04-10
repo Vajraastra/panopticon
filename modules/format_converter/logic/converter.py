@@ -1,12 +1,20 @@
 """
-Format Converter Logic - Conversión masiva de imágenes a WebP.
-Usa el nuevo sistema de metadata centralizado para preservar prompts.
+Format Converter Logic - Conversión masiva de imágenes preservando metadata.
+Parámetros optimizados para datasets de entrenamiento: lossless o mínima pérdida,
+máxima compresión, preservación completa de color (4:4:4).
 """
 import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Optional, Literal
 from dataclasses import dataclass, field
 from PIL import Image
+
+try:
+    import pyoxipng
+    _PYOXIPNG_AVAILABLE = True
+except ImportError:
+    _PYOXIPNG_AVAILABLE = False
 
 from core.paths import CachePaths
 from core.metadata import (
@@ -107,7 +115,7 @@ def convert_single(source_path: str | Path,
         return result
     
     # Generate output path
-    ext_map = {"WEBP": ".webp", "PNG": ".png", "JPEG": ".jpg"}
+    ext_map = {"WEBP": ".webp", "PNG": ".png", "JPEG": ".jpg", "AVIF": ".avif"}
     target_ext = ext_map.get(target_format.upper(), ".webp")
     
     if output_path is None:
@@ -135,35 +143,56 @@ def convert_single(source_path: str | Path,
             result.success = False
             return result
         
-        # Prepare save arguments
+        # Prepare save arguments — all formats optimized for dataset training:
+        # lossless or minimum perceptible loss, full color fidelity (4:4:4).
         save_kwargs = {}
-        
+
         if target_format.upper() == "WEBP":
-            save_kwargs["quality"] = quality
-            save_kwargs["method"] = 6  # Best compression
+            # Lossless WebP: zero quality loss, ~15-34% smaller than PNG.
+            # method=6 → best compression algorithm (slower but done once).
+            # quality=80 → compression effort level in lossless mode (not quality).
+            # exact=True → preserve RGB values in fully-transparent pixels.
+            save_kwargs["lossless"] = True
+            save_kwargs["quality"] = 80
+            save_kwargs["method"] = 6
+            save_kwargs["exact"] = True
             if img.mode == "P":
                 img = img.convert("RGBA")
-        
+
         elif target_format.upper() == "PNG":
             save_kwargs["optimize"] = True
             save_kwargs["compress_level"] = 9
             if img.mode == "P" and "transparency" in img.info:
                 img = img.convert("RGBA")
-        
+
         elif target_format.upper() == "JPEG":
-            save_kwargs["quality"] = quality
+            # Fixed high quality + 4:4:4 subsampling: no chroma loss.
+            save_kwargs["quality"] = 95
             save_kwargs["optimize"] = True
+            save_kwargs["subsampling"] = 0  # 4:4:4 — full chroma fidelity
             if img.mode in ("RGBA", "P"):
-                # Create white background
                 rgb_img = Image.new("RGB", img.size, (255, 255, 255))
                 if img.mode == "RGBA":
                     rgb_img.paste(img, mask=img.split()[3])
                 else:
                     rgb_img.paste(img)
                 img = rgb_img
-        
+
+        elif target_format.upper() == "AVIF":
+            # Near-lossless: 4:4:4 subsampling preserves full color.
+            # quality=95 + speed=4 → best balance of size and fidelity.
+            save_kwargs["quality"] = 95
+            save_kwargs["subsampling"] = "4:4:4"
+            save_kwargs["speed"] = 4
+            if img.mode == "P":
+                img = img.convert("RGBA")
+
         # Save converted image
         img.save(str(output_path), **save_kwargs)
+
+        # PNG post-processing: pyoxipng lossless optimizer (10-30% smaller).
+        if target_format.upper() == "PNG" and _PYOXIPNG_AVAILABLE:
+            pyoxipng.optimize(str(output_path), level=4)
         img.close()
         
         # Transfer metadata
@@ -185,25 +214,37 @@ def convert_single(source_path: str | Path,
         return result
 
 
+def _worker(args: tuple) -> ConversionResult:
+    """Worker top-level para ProcessPoolExecutor (debe ser serializable).
+    Cada proceso tiene su propio GIL — sin contención entre workers."""
+    source, output_path, target_format, preserve_metadata = args
+    return convert_single(
+        source, output_path,
+        target_format=target_format,
+        preserve_metadata=preserve_metadata
+    )
+
+
 def convert_batch(files: list[str | Path],
                   output_dir: str | Path = None,
                   target_format: Literal["WEBP", "PNG", "JPEG"] = "WEBP",
-                  quality: int = 90,
                   preserve_metadata: bool = True,
                   skip_existing: bool = True,
                   progress_callback: Optional[Callable[[int, int, str], None]] = None) -> BatchConversionReport:
     """
-    Convierte múltiples archivos en batch.
-    
+    Convierte múltiples archivos en batch usando procesos paralelos.
+    ProcessPoolExecutor garantiza que cada worker tenga su propio GIL:
+    una imagen lenta no bloquea a las demás. Los resultados se recogen
+    en orden de finalización (as_completed), no de envío.
+
     Args:
         files: Lista de rutas de archivos
         output_dir: Directorio de salida
         target_format: Formato destino
-        quality: Calidad para formatos lossy
         preserve_metadata: Preservar metadata
         skip_existing: Saltar si ya existe el archivo
         progress_callback: Función callback(current, total, filename)
-    
+
     Returns:
         BatchConversionReport con estadísticas completas
     """
@@ -212,51 +253,49 @@ def convert_batch(files: list[str | Path],
     else:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-    
-    ext_map = {"WEBP": ".webp", "PNG": ".png", "JPEG": ".jpg"}
+
+    ext_map = {"WEBP": ".webp", "PNG": ".png", "JPEG": ".jpg", "AVIF": ".avif"}
     target_ext = ext_map.get(target_format.upper(), ".webp")
-    
+
     report = BatchConversionReport(
         total_files=len(files),
         output_dir=str(output_dir)
     )
-    
-    for i, source in enumerate(files):
+
+    # Separar archivos que se deben procesar de los que se saltan
+    pending = []
+    for source in files:
         source = Path(source)
         output_path = output_dir / (source.stem + target_ext)
-        
-        if progress_callback:
-            progress_callback(i + 1, len(files), source.name)
-        
-        # Skip if exists
         if skip_existing and output_path.exists():
             report.skipped_count += 1
-            continue
-        
-        # Skip if already in target format
-        if source.suffix.lower() == target_ext.lower():
+        elif source.suffix.lower() == target_ext.lower():
             report.skipped_count += 1
-            continue
-        
-        # Convert
-        result = convert_single(
-            source, output_path,
-            target_format=target_format,
-            quality=quality,
-            preserve_metadata=preserve_metadata
-        )
-        
-        if result.success:
-            report.converted_count += 1
-            report.total_original_bytes += result.original_size
-            report.total_new_bytes += result.new_size
-            report.results.append(result)
         else:
-            report.failed_count += 1
-            report.failed_files.append((str(source), result.error))
-    
+            pending.append((str(source), str(output_path), target_format, preserve_metadata))
+
+    total = len(files)
+    completed = report.skipped_count
+
+    workers = min(os.cpu_count() or 4, 8)
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_worker, args): args for args in pending}
+        for future in as_completed(futures):
+            result = future.result()
+            completed += 1
+            if progress_callback:
+                progress_callback(completed, total, Path(result.source_path).name)
+            if result.success:
+                report.converted_count += 1
+                report.total_original_bytes += result.original_size
+                report.total_new_bytes += result.new_size
+                report.results.append(result)
+            else:
+                report.failed_count += 1
+                report.failed_files.append((result.source_path, result.error))
+
     report.total_saved_bytes = report.total_original_bytes - report.total_new_bytes
-    
+
     return report
 
 
@@ -303,7 +342,7 @@ def scan_folder_for_conversion(folder: str | Path,
     folder = Path(folder)
     
     # All supported source extensions; remove only the target format
-    source_extensions = {".png", ".jpg", ".jpeg", ".webp"}
+    source_extensions = {".png", ".jpg", ".jpeg", ".webp", ".avif"}
     if target_format.upper() == "PNG":
         source_extensions.discard(".png")
     elif target_format.upper() == "WEBP":
@@ -311,6 +350,8 @@ def scan_folder_for_conversion(folder: str | Path,
     elif target_format.upper() == "JPEG":
         source_extensions.discard(".jpg")
         source_extensions.discard(".jpeg")
+    elif target_format.upper() == "AVIF":
+        source_extensions.discard(".avif")
     
     files = []
     pattern = "**/*" if recursive else "*"

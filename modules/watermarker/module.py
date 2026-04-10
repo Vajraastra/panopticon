@@ -192,7 +192,7 @@ class WatermarkerModule(BaseModule):
             self.view,
             self.tr("common.select_image", "Select Image"),
             self.last_dir,
-            "Images (*.png *.jpg *.jpeg *.webp)"
+            "Images (*.png *.jpg *.jpeg *.webp *.avif)"
         )
         if path:
             self.source_image = path
@@ -232,7 +232,7 @@ class WatermarkerModule(BaseModule):
 
     def _drop(self, event):
         paths = [url.toLocalFile() for url in event.mimeData().urls()]
-        image_paths = [p for p in paths if p.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))]
+        image_paths = [p for p in paths if p.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.avif'))]
         if image_paths:
             self.source_image = image_paths[0]
             self.lbl_image_status.setText(os.path.basename(self.source_image))
@@ -295,7 +295,7 @@ class WatermarkerModule(BaseModule):
             self.view,
             self.tr("common.save_copy", "Save Watermarked Image"),
             self.last_dir,
-            "Images (*.png *.jpg *.jpeg *.webp)"
+            "Images (*.png *.jpg *.jpeg *.webp *.avif)"
         )
         if not out_path:
             return

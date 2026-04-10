@@ -32,7 +32,7 @@ class ScannerWorker(QThread):
             if not self.is_running:
                 break
             ext = os.path.splitext(path)[1].lower()
-            if ext in ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.gif', '.ico'):
+            if ext in ('.png', '.jpg', '.jpeg', '.webp', '.avif', '.bmp', '.tiff', '.gif', '.ico'):
                 stats[ext] += 1
 
             if i % 100 == 0:

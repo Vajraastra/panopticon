@@ -661,9 +661,9 @@ class CharacterRecognitionView(QWidget):
             if os.path.isdir(p):
                 for root, _, files in os.walk(p):
                     for f in files:
-                        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.avif')):
                             expanded_paths.append(os.path.join(root, f))
-            elif p.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+            elif p.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.avif')):
                 expanded_paths.append(p)
         if expanded_paths:
             log.debug(f"Drop: {len(expanded_paths)} images found.")
@@ -680,7 +680,7 @@ class CharacterRecognitionView(QWidget):
         expanded_paths = []
         for root, _, files in os.walk(folder):
             for f in files:
-                if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.avif')):
                     expanded_paths.append(os.path.join(root, f))
         if expanded_paths:
             self.load_images(expanded_paths)

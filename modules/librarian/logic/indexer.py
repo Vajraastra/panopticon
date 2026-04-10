@@ -25,7 +25,7 @@ class IndexerWorker(QThread):
         """Ejecuta el proceso de escaneo recursivo en segundo plano."""
         self.progress_signal.emit("🚀 Iniciando el indexador...")
         
-        extensions = ('.png', '.jpg', '.jpeg', '.webp')
+        extensions = ('.png', '.jpg', '.jpeg', '.webp', '.avif')
         total_found = 0
         total_new = 0 # Reservado para uso futuro
         

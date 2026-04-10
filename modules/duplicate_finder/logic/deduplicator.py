@@ -11,7 +11,7 @@ class Deduplicator:
     """
     
     ARCHIVE_EXTENSIONS = ('.zip', '.rar')
-    IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
+    IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.avif')
 
     def __init__(self):
         self.stop_requested = False

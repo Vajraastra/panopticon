@@ -172,7 +172,7 @@ class MetadataExtractor:
                     panopticon_data = cls._parse_xmp_panopticon(xmp_data)
                     if panopticon_data:
                         raw_metadata.update(panopticon_data)
-                    
+
                     # Store raw XMP for reference
                     raw_metadata["xmp_raw"] = xmp_data
                 
@@ -310,7 +310,15 @@ class MetadataExtractor:
                     bundle.sampler = pan_data["sampler"]
                 if "tool" in pan_data:
                     bundle.tool = pan_data["tool"]
-                    
+
+                # Restaurar raw original para round-trip fiel (A1111, ComfyUI)
+                if "raw_parameters" in pan_data:
+                    bundle.raw["parameters"] = pan_data["raw_parameters"]
+                if "raw_workflow" in pan_data:
+                    bundle.raw["workflow"] = pan_data["raw_workflow"]
+                if "raw_prompt" in pan_data:
+                    bundle.raw["prompt"] = pan_data["raw_prompt"]
+
             except json.JSONDecodeError:
                 pass
         

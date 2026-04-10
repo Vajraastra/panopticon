@@ -2,6 +2,12 @@
 Core Metadata Package para Panopticon.
 Proporciona herramientas para extracción, escritura y verificación de metadata.
 """
+# Registrar soporte AVIF en Pillow si el plugin está instalado.
+# Con Pillow 10+ y libavif presente, también funciona sin el plugin.
+try:
+    import pillow_avif  # noqa: F401
+except ImportError:
+    pass
 
 from .bundle import MetadataBundle
 from .extractor import MetadataExtractor

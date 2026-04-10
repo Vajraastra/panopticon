@@ -200,6 +200,8 @@ def process_image(source_path, output_path=None, watermark_path=None, logo_path=
             rgb_image = Image.new('RGB', base_image.size, (255, 255, 255))
             rgb_image.paste(base_image, mask=base_image.split()[3])
             rgb_image.save(output_str, quality=95, optimize=True)
+        elif output_str.lower().endswith('.avif'):
+            base_image.save(output_str, "AVIF", quality=90)
         else:
             # Save as PNG with transparency
             base_image.save(output_str, optimize=True)

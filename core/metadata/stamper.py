@@ -1,6 +1,19 @@
 import os
 import json
+from pathlib import Path
 from PIL import Image, PngImagePlugin
+
+
+def _webp_is_lossless(path) -> bool:
+    """Detecta si un WebP es lossless leyendo el chunk RIFF.
+    VP8L = lossless, VP8  = lossy."""
+    try:
+        with open(path, 'rb') as f:
+            f.seek(12)
+            return f.read(4) == b'VP8L'
+    except Exception:
+        return False
+
 
 class StampLib:
     """
@@ -38,6 +51,8 @@ class StampLib:
                 return StampLib._stamp_jpeg(path, json_payload)
             elif ext == '.webp':
                 return StampLib._stamp_webp(path, json_payload)
+            elif ext == '.avif':
+                return StampLib._stamp_avif(path, json_payload)
             return False
         except Exception as e:
             print(f"[StampLib] Error stamping {path}: {e}")
@@ -82,10 +97,34 @@ class StampLib:
 
     @staticmethod
     def _stamp_webp(path, json_payload):
+        lossless = _webp_is_lossless(path)
         img = Image.open(path)
-        # XMP simple wrapper
-        xmp = f'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:pan="http://panopticon/ns/"><pan:data>{json_payload}</pan:data></rdf:Description></rdf:RDF></x:xmpmeta>'
-        img.save(path, "WEBP", xmp=xmp.encode('utf-8'))
+        xmp = (
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+            '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+            '<rdf:Description rdf:about="" xmlns:pan="http://panopticon/ns/">'
+            f'<pan:data><![CDATA[{json_payload}]]></pan:data>'
+            '</rdf:Description></rdf:RDF></x:xmpmeta>'
+        )
+        if lossless:
+            img.save(path, "WEBP", lossless=True, quality=80, method=6,
+                     exact=True, xmp=xmp.encode('utf-8'))
+        else:
+            img.save(path, "WEBP", quality=95, xmp=xmp.encode('utf-8'))
+        img.close()
+        return True
+
+    @staticmethod
+    def _stamp_avif(path, json_payload):
+        img = Image.open(path)
+        xmp = (
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+            '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+            '<rdf:Description rdf:about="" xmlns:pan="http://panopticon/ns/">'
+            f'<pan:data><![CDATA[{json_payload}]]></pan:data>'
+            '</rdf:Description></rdf:RDF></x:xmpmeta>'
+        )
+        img.save(path, "AVIF", xmp=xmp.encode('utf-8'))
         img.close()
         return True
 
@@ -206,6 +245,8 @@ class MetadataStamper:
                 return cls._stamp_jpeg_bundle(path, bundle)
             elif ext == '.webp':
                 return cls._stamp_webp_bundle(path, bundle)
+            elif ext == '.avif':
+                return cls._stamp_avif_bundle(path, bundle)
             else:
                 return False
         except Exception as e:
@@ -244,8 +285,9 @@ class MetadataStamper:
         if "parameters" in bundle.raw:
             new_info.add_text("parameters", bundle.raw["parameters"])
         
-        # Si no, reconstruir desde campos (fallback o info generada nueva)
-        elif bundle.positive_prompt and "parameters" not in existing_info:
+        # Si no, reconstruir desde campos (fallback) — solo si no hay workflow ComfyUI
+        elif (bundle.positive_prompt and "parameters" not in existing_info
+              and "workflow" not in bundle.raw and "prompt" not in bundle.raw):
             params = bundle.positive_prompt
             if bundle.negative_prompt:
                 params += f"\nNegative prompt: {bundle.negative_prompt}"
@@ -331,13 +373,74 @@ class MetadataStamper:
             "software": "Panopticon"
         }
         
+        # Preservar raw original para round-trip fiel (A1111 params, ComfyUI workflow)
+        if bundle.raw.get("parameters"):
+            panopticon_data["raw_parameters"] = bundle.raw["parameters"]
+        if bundle.raw.get("workflow"):
+            panopticon_data["raw_workflow"] = bundle.raw["workflow"]
+        if bundle.raw.get("prompt"):
+            panopticon_data["raw_prompt"] = bundle.raw["prompt"]
+
         json_payload = json.dumps(panopticon_data)
-        xmp = f'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:pan="http://panopticon/ns/"><pan:data>{json_payload}</pan:data></rdf:Description></rdf:RDF></x:xmpmeta>'
-        
-        img.save(str(path), "WEBP", quality=95, xmp=xmp.encode('utf-8'))
+        xmp = (
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+            '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+            '<rdf:Description rdf:about="" xmlns:pan="http://panopticon/ns/">'
+            f'<pan:data><![CDATA[{json_payload}]]></pan:data>'
+            '</rdf:Description></rdf:RDF></x:xmpmeta>'
+        )
+        if _webp_is_lossless(path):
+            img.save(str(path), "WEBP", lossless=True, quality=80, method=6,
+                     exact=True, xmp=xmp.encode('utf-8'))
+        else:
+            img.save(str(path), "WEBP", quality=95, xmp=xmp.encode('utf-8'))
         img.close()
         return True
-    
+
+    @classmethod
+    def _stamp_avif_bundle(cls, path: Path, bundle) -> bool:
+        """Escribe bundle a AVIF usando XMP.
+        Preserva el raw original según el formato fuente para que el reader
+        pueda re-rutar por el parser correcto (A1111 o ComfyUI).
+        """
+        img = Image.open(path)
+
+        panopticon_data = {
+            "tags": bundle.tags,
+            "rating": bundle.rating,
+            "quality_score": bundle.quality_score,
+            "positive_prompt": bundle.positive_prompt,
+            "negative_prompt": bundle.negative_prompt,
+            "model": bundle.model,
+            "seed": bundle.seed,
+            "steps": bundle.steps,
+            "cfg": bundle.cfg,
+            "sampler": bundle.sampler,
+            "tool": bundle.tool,
+            "software": "Panopticon"
+        }
+
+        # Preservar raw del formato fuente para fidelidad de lectura
+        if "ComfyUI" in (bundle.tool or ""):
+            if "prompt" in bundle.raw:
+                panopticon_data["comfyui_prompt"] = bundle.raw["prompt"]
+            if "workflow" in bundle.raw:
+                panopticon_data["comfyui_workflow"] = bundle.raw["workflow"]
+        elif "parameters" in bundle.raw:
+            panopticon_data["a1111_parameters"] = bundle.raw["parameters"]
+
+        json_payload = json.dumps(panopticon_data)
+        xmp = (
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+            '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+            '<rdf:Description rdf:about="" xmlns:pan="http://panopticon/ns/">'
+            f'<pan:data><![CDATA[{json_payload}]]></pan:data>'
+            '</rdf:Description></rdf:RDF></x:xmpmeta>'
+        )
+        img.save(str(path), "AVIF", quality=95, xmp=xmp.encode('utf-8'))
+        img.close()
+        return True
+
     @classmethod
     def strip_metadata(cls, path: str | Path) -> bool:
         """
@@ -366,6 +469,8 @@ class MetadataStamper:
                 clean_img.save(str(path), "JPEG", quality=95, optimize=True)
             elif ext == '.webp':
                 clean_img.save(str(path), "WEBP", quality=95)
+            elif ext == '.avif':
+                clean_img.save(str(path), "AVIF", quality=95)
             else:
                 img.close()
                 return False
