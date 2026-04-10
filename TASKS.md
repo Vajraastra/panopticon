@@ -1,7 +1,9 @@
 # TASKS — Panopticon
 
 ## Estado general
-**Re-audit 2026-03 COMPLETO.** Todos los módulos auditados desde `6fd849a`. Listo para verificación final y push a GitHub.
+**Re-audit 2026-03 COMPLETO.** Soporte AVIF + integración cherry-dl implementados (2026-04).
+**Quality Scorer refactorizado (2026-04)** — Fase 1 Slop Filter + Fase 2 Quality Rank.
+Próxima sesión: prueba con colección real + ajuste de umbrales de preset.
 
 ---
 
@@ -63,3 +65,28 @@ git push origin master
 ### Futuro
 - [ ] Configurar GitHub Actions / CI básico (smoke tests automáticos en push)
 - [ ] **Face Embedding Exporter** — exportar perfiles ArcFace de `character_profiles.db` como `.npy` para uso en IP-Adapter FaceID / InstantID (ComfyUI/A1111). Ver nota técnica en BITACORA.
+- [ ] **Quality Scorer Fase 3** — clasificación de encuadre (full body / half body / closeup) y orientación (frontal / 3/4 / perfil) usando datos de YOLOv8-pose + MediaPipe Face Mesh ya calculados en Fase 1. Ver diseño teórico en sesión 2026-04.
+
+---
+
+## Integración cherry-dl (implementada 2026-04)
+
+**Objetivo:** Panopticon lee `catalog.db` de cherry-dl en modo read-only para
+indexar solo las imágenes que el usuario conservó después del scraping.
+
+### Archivos nuevos/modificados
+- `core/catalog_reader.py` — lector read-only: `is_cherry_catalog()`, `get_image_files()`, `get_artist_info()`
+- `modules/librarian/logic/indexer.py` — modo cherry-dl aware: detecta `catalog.db` y delega a CatalogReader
+
+### Comportamiento
+- Si una carpeta tiene `catalog.db` → modo cherry-dl: filtra por extensión de imagen + existencia en disco
+- Si no → modo estándar con `os.walk` (sin cambios)
+- Panopticon **nunca escribe** en archivos de cherry-dl
+- Los datos de Panopticon (tags, ratings) siguen en metadata de imagen + `panopticon.db`
+
+### Nota en cherry-dl
+- `PANOPTICON_INTEGRATION.md` creado en `/run/media/system/Kilaya/githubs/cherry-dl/`
+
+### Pendiente (mejoras futuras)
+- [ ] Mostrar `url_source` y nombre de artista (vía `index.db`) en el sidebar del Librarian
+- [ ] Deduplicación por `cherry_hash` en Panopticon (cruzar SHA-256 con su propio índice)
