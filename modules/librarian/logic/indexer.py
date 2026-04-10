@@ -1,81 +1,79 @@
 import os
-import time
+import logging
 from PySide6.QtCore import QThread, Signal
-from modules.metadata.logic.reader import UniversalParser
+from core.catalog_reader import is_cherry_catalog, get_image_files
+
+log = logging.getLogger(__name__)
+
 
 class IndexerWorker(QThread):
     """
-    Hilo de trabajo (Worker) para el indexado robusto de archivos.
-    Fase 1: Descubrimiento (Los archivos aparecen instantáneamente en la DB).
-    Fase 2: Limpieza de huérfanos (Elimina registros de archivos borrados en disco).
+    Hilo de trabajo para el indexado robusto de archivos.
+
+    Fase 1: Descubrimiento — los archivos aparecen en la DB lo antes posible.
+    Fase 2: Limpieza de huérfanos — elimina registros de archivos borrados.
+
+    Modo cherry-dl aware:
+      Si la carpeta contiene un catalog.db de cherry-dl, se usa CatalogReader
+      para obtener la lista de archivos. Esto garantiza que:
+        - Solo se indexan imágenes (se ignoran .psd, .zip, .mp4, etc.)
+        - Solo se indexan archivos que realmente existen en disco
+          (las entradas de archivos borrados en catalog.db se saltan)
+      Si no hay catalog.db, el comportamiento es el habitual (os.walk).
     """
-    progress_signal = Signal(str) # Notifica mensajes de estado a la UI
-    count_signal = Signal(int, int) # Notifica el progreso numérico (actual, total)
-    finished_signal = Signal() # Notifica la finalización del hilo
-    
+
+    progress_signal = Signal(str)    # Mensaje de estado para la UI
+    count_signal    = Signal(int, int)  # (actual, total)
+    finished_signal = Signal()
+
     def __init__(self, db_manager, folders, deep_clean=False):
         super().__init__()
-        self.db = db_manager
-        self.folders = folders
+        self.db         = db_manager
+        self.folders    = folders
         self.deep_clean = deep_clean
         self.is_running = True
         self.batch_size = 100
 
+    # ------------------------------------------------------------------
+    # Punto de entrada del hilo
+    # ------------------------------------------------------------------
+
     def run(self):
-        """Ejecuta el proceso de escaneo recursivo en segundo plano."""
         self.progress_signal.emit("🚀 Iniciando el indexador...")
-        
-        extensions = ('.png', '.jpg', '.jpeg', '.webp', '.avif')
+
+        extensions  = ('.png', '.jpg', '.jpeg', '.webp', '.avif')
         total_found = 0
-        total_new = 0 # Reservado para uso futuro
-        
-        # --- FASE 1: DESCUBRIMIENTO ---
-        # Objetivo: Registrar archivos en la DB lo más rápido posible.
-        
+
         for folder in self.folders:
-            if not self.is_running: break
-            
-            self.progress_signal.emit(f"🔍 Scanning: {os.path.basename(folder)}")
-            
-            # 1. Get Disk State
-            disk_files = [] # list of dicts for DB
-            disk_paths = set()
-            
-            for root, _, files in os.walk(folder):
-                for f in files:
-                    if f.lower().endswith(extensions):
-                        full_path = os.path.join(root, f)
-                        try:
-                            # Basic Stats only
-                            stat = os.stat(full_path)
-                            disk_files.append({
-                                'path': full_path,
-                                'filename': f,
-                                'size': stat.st_size,
-                                'created': stat.st_ctime
-                            })
-                            disk_paths.add(os.path.normpath(full_path).replace('\\', '/'))
-                        except OSError:
-                            pass  # Skip file access errors, keep moving
-            
+            if not self.is_running:
+                break
+
+            folder_name = os.path.basename(folder)
+            self.progress_signal.emit(f"🔍 Scanning: {folder_name}")
+
+            # --- FASE 1: DESCUBRIMIENTO ---
+            if is_cherry_catalog(folder):
+                disk_files, disk_paths = self._discover_cherry(folder)
+            else:
+                disk_files, disk_paths = self._discover_walk(folder, extensions)
+
             total_found += len(disk_files)
-            
-            # 2. Sync with DB (Minimal)
-            # Register ALL files found. The DB manager handles UPSERT (Insert or Update).
-            # This ensures even if they exist, we confirm they are still there.
+
             if disk_files:
-                self.progress_signal.emit(f"💾 Registering {len(disk_files)} files in {os.path.basename(folder)}...")
+                self.progress_signal.emit(
+                    f"💾 Registrando {len(disk_files)} archivos en {folder_name}..."
+                )
                 for i in range(0, len(disk_files), self.batch_size):
-                    batch = disk_files[i : i + self.batch_size]
-                    self.db.register_files_minimal(batch)
-            
+                    self.db.register_files_minimal(disk_files[i : i + self.batch_size])
+
             # --- FASE 2: LIMPIEZA DE HUÉRFANOS ---
-            # Borra de la DB los archivos que ya no existen físicamente.
             if self.deep_clean:
                 known_paths = self.db.get_known_files_in_folder(folder)
                 orphans = list(known_paths - disk_paths)
                 if orphans:
-                    self.progress_signal.emit(f"🧹 Eliminando {len(orphans)} archivos inexistentes...")
+                    self.progress_signal.emit(
+                        f"🧹 Eliminando {len(orphans)} archivos inexistentes..."
+                    )
                     self.db.remove_files(orphans)
 
         self.progress_signal.emit(f"✅ Indexado completo. {total_found} archivos activos.")
@@ -83,3 +81,63 @@ class IndexerWorker(QThread):
 
     def stop(self):
         self.is_running = False
+
+    # ------------------------------------------------------------------
+    # Estrategias de descubrimiento
+    # ------------------------------------------------------------------
+
+    def _discover_cherry(self, folder: str) -> tuple[list[dict], set[str]]:
+        """
+        Modo cherry-dl: usa CatalogReader para obtener la lista de imágenes.
+        Devuelve (disk_files, disk_paths).
+        """
+        log.info("[Indexer] Modo cherry-dl detectado en: %s", folder)
+        self.progress_signal.emit(f"🍒 Modo cherry-dl: leyendo catalog.db...")
+
+        entries = get_image_files(folder)
+
+        disk_files = []
+        disk_paths = set()
+
+        for entry in entries:
+            if not self.is_running:
+                break
+            norm = os.path.normpath(entry['path']).replace('\\', '/')
+            disk_files.append({
+                'path':     norm,
+                'filename': entry['filename'],
+                'size':     entry['size'],
+                'created':  entry['created'],
+            })
+            disk_paths.add(norm)
+
+        return disk_files, disk_paths
+
+    def _discover_walk(self, folder: str, extensions: tuple) -> tuple[list[dict], set[str]]:
+        """
+        Modo estándar: escaneo recursivo con os.walk.
+        Devuelve (disk_files, disk_paths).
+        """
+        disk_files = []
+        disk_paths = set()
+
+        for root, _, files in os.walk(folder):
+            for f in files:
+                if not self.is_running:
+                    return disk_files, disk_paths
+                if f.lower().endswith(extensions):
+                    full_path = os.path.join(root, f)
+                    try:
+                        stat = os.stat(full_path)
+                        norm = os.path.normpath(full_path).replace('\\', '/')
+                        disk_files.append({
+                            'path':     norm,
+                            'filename': f,
+                            'size':     stat.st_size,
+                            'created':  stat.st_ctime,
+                        })
+                        disk_paths.add(norm)
+                    except OSError:
+                        pass
+
+        return disk_files, disk_paths
