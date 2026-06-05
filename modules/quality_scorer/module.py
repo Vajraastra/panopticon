@@ -18,6 +18,7 @@ from core.paths import CachePaths
 from core.components.standard_layout import StandardToolLayout
 from modules.quality_scorer.logic.quality_scorer import PROFILES, DEFAULT_PROFILE
 from modules.quality_scorer.logic.slop_filter import CONTENT_TYPES, DEFAULT_CONTENT_TYPE
+from modules.quality_scorer.logic.workers import CalibrationWorker
 
 log = logging.getLogger(__name__)
 
@@ -760,59 +761,36 @@ class QualityScorerModule(BaseModule):
     # ── Calibración ─────────────────────────────────────────────────── #
 
     def _run_calibration(self):
-        """
-        Modo calibración: analiza una imagen individual y muestra los
-        scores raw de cada modelo sin clasificar.
-        Útil para ajustar pesos y umbrales según el tipo de colección.
-        """
+        """Lanza CalibrationWorker en hilo de fondo para analizar una imagen individual."""
         path, _ = QFileDialog.getOpenFileName(
             self.view,
             self.tr("qs.calibrate.select", "Seleccionar imagen de calibración"),
             self.last_dir,
-            "Images (*.png *.jpg *.jpeg *.webp *.avif)",
+            "Images (*.png *.jpg *.jpeg *.webp)",
         )
         if not path:
             return
 
         content_type = self.combo_ctype.currentData() or DEFAULT_CONTENT_TYPE
-        from modules.quality_scorer.logic.slop_filter import (
-            SlopAnalyzer, CONTENT_TYPES
-        )
-
+        self.btn_calibrate.setEnabled(False)
         self.lbl_status.setText(self.tr("qs.calibrate.running", "Calibrando…"))
-        QApplication.instance().processEvents()
 
-        try:
-            import cv2
-            from core.paths import CachePaths
-            models_dir = CachePaths.get_models_root()
+        self._calib_worker = CalibrationWorker(
+            image_path    = path,
+            content_type  = content_type,
+            use_face      = self.chk_face.isChecked(),
+            use_body      = self.chk_body.isChecked(),
+            use_hands     = self.chk_hands.isChecked(),
+            use_aesthetic = self.chk_aesthetic.isChecked(),
+        )
+        self._calib_worker.finished.connect(
+            lambda scores: self._on_calibration_done(scores, path, content_type)
+        )
+        self._calib_worker.error.connect(self._on_calibration_error)
+        self._calib_worker.start()
 
-            analyzer = SlopAnalyzer(
-                models_dir,
-                content_type  = content_type,
-                use_face      = self.chk_face.isChecked(),
-                use_body      = self.chk_body.isChecked(),
-                use_hands     = self.chk_hands.isChecked(),
-                use_aesthetic = self.chk_aesthetic.isChecked(),
-            )
-            analyzer.initialize()
-
-            img = cv2.imread(path)
-            if img is None:
-                raise RuntimeError("No se pudo leer la imagen.")
-
-            scores = analyzer.analyze_calibration(img)
-
-        except Exception as e:
-            log.warning(f"[QS] Calibración fallida: {e}")
-            QMessageBox.warning(
-                self.view,
-                self.tr("common.error", "Error"),
-                self.tr("qs.msg.fail", "La operación falló: {error}").format(error=str(e)),
-            )
-            self.lbl_status.setText(self.tr("common.status.ready", "Listo."))
-            return
-
+    def _on_calibration_done(self, scores: dict, path: str, content_type: str):
+        self.btn_calibrate.setEnabled(True)
         cfg    = CONTENT_TYPES.get(content_type, {})
         w      = scores.get("_weights", {})
         preset = scores.get("_presets", {}).get("balanced", {})
@@ -822,13 +800,13 @@ class QualityScorerModule(BaseModule):
             f"<b>Tipo de contenido:</b> {cfg.get('label', content_type)}",
             f"<b>Modelo de cara:</b> {scores.get('_face_model', '?')}",
             "",
-            "<b>─── Scores individuales ───</b>",
+            "<b>─── Scores individuales (raw) ───</b>",
             f"Rostro    [{w.get('face',0):.0%} peso]  →  <b>{scores['face']:.3f}</b>",
             f"Cuerpo    [{w.get('body',0):.0%} peso]  →  <b>{scores['body']:.3f}</b>",
             f"Manos     [{w.get('hands',0):.0%} peso]  →  <b>{scores['hands']:.3f}</b>",
             f"Estética  [{w.get('aesthetic',0):.0%} peso]  →  <b>{scores['aesthetic']:.3f}</b>",
             "",
-            f"<b>Combined: {scores['combined']:.3f}</b>",
+            f"<b>Combined (ponderado): {scores['combined']:.3f}</b>",
             "",
             "<b>─── Umbrales actuales (balanced) ───</b>",
             f"Keeper  ≥ {preset.get('keeper', '?')}",
@@ -847,6 +825,16 @@ class QualityScorerModule(BaseModule):
             self.tr("qs.calibrate.done",
                     "Calibración: combined={combined:.3f}").format(**scores)
         )
+
+    def _on_calibration_error(self, error_msg: str):
+        self.btn_calibrate.setEnabled(True)
+        log.warning(f"[QS] Calibración fallida: {error_msg}")
+        QMessageBox.warning(
+            self.view,
+            self.tr("common.error", "Error"),
+            self.tr("qs.msg.fail", "La operación falló: {error}").format(error=error_msg),
+        )
+        self.lbl_status.setText(self.tr("common.status.ready", "Listo."))
 
     # ── Acciones post-Fase1 ─────────────────────────────────────────── #
 

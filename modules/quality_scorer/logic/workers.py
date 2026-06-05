@@ -1,8 +1,10 @@
 """
 Workers QThread para el Quality Scorer.
 
-SlopFilterWorker  — Fase 1: clasifica imágenes en keeper / review / slop.
-QualityRankWorker — Fase 2: puntúa calidad técnica y ordena por score.
+SlopFilterWorker   — Fase 1: clasifica imágenes en keeper / review / slop.
+QualityRankWorker  — Fase 2: puntúa calidad técnica y ordena por score.
+CalibrationWorker  — Modo calibración: analiza una imagen individual con
+                     scores raw + pesos + umbrales del preset activo.
 """
 import logging
 import cv2
@@ -82,6 +84,59 @@ class SlopFilterWorker(QThread):
                 log.warning(f"[SlopWorker] Error en {path}: {e}")
 
         self.finished.emit(counts)
+
+
+class CalibrationWorker(QThread):
+    """
+    Analiza una imagen individual en modo calibración.
+    Corre initialize() + analyze_calibration() en hilo de fondo.
+    """
+    status   = Signal(str)   # mensaje de progreso para la barra de estado
+    finished = Signal(dict)  # scores + _weights + _presets + _face_model
+    error    = Signal(str)
+
+    def __init__(self, image_path: str, content_type: str,
+                 use_face: bool, use_body: bool,
+                 use_hands: bool, use_aesthetic: bool):
+        super().__init__()
+        self.image_path    = image_path
+        self.content_type  = content_type
+        self.use_face      = use_face
+        self.use_body      = use_body
+        self.use_hands     = use_hands
+        self.use_aesthetic = use_aesthetic
+
+    def run(self):
+        from .slop_filter import SlopAnalyzer
+        from core.paths import CachePaths
+
+        self.status.emit("init")
+        models_dir = CachePaths.get_models_root()
+        analyzer   = SlopAnalyzer(
+            models_dir,
+            content_type  = self.content_type,
+            use_face      = self.use_face,
+            use_body      = self.use_body,
+            use_hands     = self.use_hands,
+            use_aesthetic = self.use_aesthetic,
+        )
+        try:
+            analyzer.initialize()
+        except Exception as e:
+            self.error.emit(str(e))
+            return
+
+        self.status.emit("scoring")
+        img = cv2.imread(self.image_path)
+        if img is None:
+            self.error.emit(f"No se pudo leer la imagen: {self.image_path}")
+            return
+
+        try:
+            scores = analyzer.analyze_calibration(img)
+            self.finished.emit(scores)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class QualityRankWorker(QThread):
