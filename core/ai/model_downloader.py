@@ -7,16 +7,60 @@ Contratos:
 - Descarga a archivo temporal y mueve al destino solo si completa con éxito.
 - Nunca deja archivos parciales en la ruta de destino.
 - Soporta ZIP con extracción de un miembro específico (e.g., buffalo_l).
+- Distingue errores de red (servidor caído) de errores HTTP (archivo no encontrado).
 - Logging estandarizado con prefijo [ModelDownloader].
 """
 import logging
-import os
 import shutil
 import tempfile
 import zipfile
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+def _classify_request_error(e, url: str, filename: str) -> RuntimeError:
+    """
+    Convierte una excepción de requests en un RuntimeError con mensaje claro
+    que distingue: archivo no encontrado en servidor vs fallo de red/conexión.
+    """
+    import requests
+
+    if isinstance(e, requests.exceptions.HTTPError):
+        code = e.response.status_code if e.response is not None else "?"
+        if code == 404:
+            return RuntimeError(
+                f"[ModelDownloader] Archivo no encontrado en el servidor (HTTP 404).\n"
+                f"  Modelo : {filename}\n"
+                f"  URL    : {url}\n"
+                f"  → La URL puede haber cambiado o el archivo fue eliminado del servidor.\n"
+                f"  → Reportar en el proyecto para actualizar la URL."
+            )
+        return RuntimeError(
+            f"[ModelDownloader] El servidor respondió con error HTTP {code}.\n"
+            f"  Modelo : {filename}\n"
+            f"  URL    : {url}\n"
+            f"  → Puede ser un problema temporal. Intenta de nuevo."
+        )
+
+    if isinstance(e, requests.exceptions.ConnectionError):
+        return RuntimeError(
+            f"[ModelDownloader] No se pudo conectar al servidor.\n"
+            f"  Modelo : {filename}\n"
+            f"  → Verifica tu conexión a internet e intenta de nuevo."
+        )
+
+    if isinstance(e, requests.exceptions.Timeout):
+        return RuntimeError(
+            f"[ModelDownloader] Tiempo de espera agotado descargando {filename}.\n"
+            f"  URL    : {url}\n"
+            f"  → El servidor puede estar caído temporalmente. Intenta de nuevo."
+        )
+
+    return RuntimeError(
+        f"[ModelDownloader] Error descargando {filename}: {e}\n"
+        f"  URL: {url}"
+    )
 
 
 def download_file(url: str, dest: Path, timeout: int = 120) -> None:
@@ -26,7 +70,8 @@ def download_file(url: str, dest: Path, timeout: int = 120) -> None:
     Escribe a un archivo temporal en el mismo directorio y lo mueve
     al destino solo tras una descarga exitosa. Si falla, no deja rastro.
 
-    :raises RuntimeError: si la descarga o el servidor fallan.
+    :raises RuntimeError: con mensaje diferenciado según el tipo de fallo
+                          (404 / error de servidor / error de red / timeout).
     """
     import requests
 
@@ -43,14 +88,18 @@ def download_file(url: str, dest: Path, timeout: int = 120) -> None:
                 f.write(chunk)
         shutil.move(str(tmp_path), str(dest))
         log.info(f"[ModelDownloader] {dest.name} → {dest}")
+    except requests.exceptions.RequestException as e:
+        tmp_path.unlink(missing_ok=True)
+        err = _classify_request_error(e, url, dest.name)
+        log.error(str(err))
+        raise err
     except Exception as e:
-        if tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
-        raise RuntimeError(f"Error descargando {url}: {e}") from e
+        tmp_path.unlink(missing_ok=True)
+        raise RuntimeError(f"[ModelDownloader] Error inesperado descargando {dest.name}: {e}") from e
 
 
 def download_zip_member(url: str, member: str, dest: Path,
-                         timeout: int = 300) -> None:
+                        timeout: int = 300) -> None:
     """
     Descarga un ZIP desde `url` y extrae únicamente `member` a `dest`.
 
@@ -60,7 +109,7 @@ def download_zip_member(url: str, member: str, dest: Path,
     :param url:    URL del archivo ZIP.
     :param member: Ruta interna en el ZIP (e.g. 'buffalo_l/w600k_r50.onnx').
     :param dest:   Ruta de destino del archivo extraído.
-    :raises RuntimeError: si la descarga, extracción o miembro fallan.
+    :raises RuntimeError: con mensaje diferenciado según el tipo de fallo.
     """
     import requests
 
@@ -68,6 +117,7 @@ def download_zip_member(url: str, member: str, dest: Path,
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     tmp_zip = Path(tempfile.mktemp(suffix=".zip"))
+    tmp_dest = None
     log.info(f"[ModelDownloader] Descargando ZIP para {dest.name}…")
     try:
         r = requests.get(url, stream=True, timeout=timeout)
@@ -81,8 +131,9 @@ def download_zip_member(url: str, member: str, dest: Path,
             names = zf.namelist()
             if member not in names:
                 raise FileNotFoundError(
-                    f"'{member}' no encontrado en el ZIP. "
-                    f"Contenido: {names[:10]}"
+                    f"'{member}' no encontrado en el ZIP.\n"
+                    f"  Contenido: {names[:10]}\n"
+                    f"  → El formato del paquete puede haber cambiado. Reportar para actualizar."
                 )
             tmp_dest = Path(tempfile.mktemp(dir=dest.parent, suffix=".tmp"))
             with zf.open(member) as src, open(tmp_dest, "wb") as dst:
@@ -91,9 +142,18 @@ def download_zip_member(url: str, member: str, dest: Path,
         shutil.move(str(tmp_dest), str(dest))
         log.info(f"[ModelDownloader] {dest.name} extraído → {dest}")
 
+    except requests.exceptions.RequestException as e:
+        err = _classify_request_error(e, url, dest.name)
+        log.error(str(err))
+        raise err
+    except FileNotFoundError as e:
+        log.error(f"[ModelDownloader] {e}")
+        raise RuntimeError(str(e)) from e
     except Exception as e:
-        if dest.exists() and dest.stat().st_size == 0:
-            dest.unlink(missing_ok=True)
-        raise RuntimeError(f"Error extrayendo {member} de {url}: {e}") from e
+        raise RuntimeError(
+            f"[ModelDownloader] Error inesperado extrayendo {member}: {e}"
+        ) from e
     finally:
         tmp_zip.unlink(missing_ok=True)
+        if tmp_dest and Path(tmp_dest).exists():
+            Path(tmp_dest).unlink(missing_ok=True)
