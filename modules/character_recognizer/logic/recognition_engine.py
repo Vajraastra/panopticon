@@ -29,7 +29,7 @@ class RecognitionEngine:
         os.makedirs(self.models_dir, exist_ok=True)
         
         # Paths
-        self.yunet_path = os.path.join(self.models_dir, "face_detection_yunet_2023mar.onnx")
+        self.yunet_path = os.path.join(self.models_dir, "face_detection_yunet_2023mar_int8.onnx")
         self.anime_path = os.path.join(self.models_dir, "lbpcascade_animeface.xml")
         self.face_model_path = os.path.join(self.models_dir, "w600k_r50.onnx")
         
@@ -65,7 +65,7 @@ class RecognitionEngine:
         """Downloads required models."""
         if not os.path.exists(self.yunet_path):
             log.info("Downloading YuNet...")
-            url = "https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx?download=true"
+            url = "https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar_int8.onnx"
             self._download_file(url, self.yunet_path)
 
         if not os.path.exists(self.anime_path):

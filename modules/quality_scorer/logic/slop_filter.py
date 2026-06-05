@@ -145,10 +145,10 @@ class SlopAnalyzer:
             self._init_clip()
 
     def _init_yunet(self):
-        yunet_path = self.models_dir / "onnx" / "face_detection_yunet_2023mar.onnx"
+        yunet_path = self.models_dir / "onnx" / "face_detection_yunet_2023mar_int8.onnx"
         if not yunet_path.exists():
             url = ("https://huggingface.co/opencv/face_detection_yunet"
-                   "/resolve/main/face_detection_yunet_2023mar.onnx?download=true")
+                   "/resolve/main/face_detection_yunet_2023mar_int8.onnx")
             download_file(url, yunet_path)
         try:
             self._yunet = cv2.FaceDetectorYN.create(
