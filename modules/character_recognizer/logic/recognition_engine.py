@@ -1,12 +1,13 @@
 import os
 import logging
-import requests
+from pathlib import Path
 import cv2
 import numpy as np
 import onnxruntime as ort
 from sklearn.preprocessing import normalize
 from sklearn.metrics.pairwise import cosine_similarity
 from core.paths import ProjectPaths
+from core.ai.model_downloader import download_file, download_zip_member
 
 log = logging.getLogger(__name__)
 
@@ -77,24 +78,19 @@ class RecognitionEngine:
             self._download_buffalo_l()
 
     def _download_file(self, url, path):
-        import requests
         try:
-            r = requests.get(url, stream=True)
-            r.raise_for_status()
-            with open(path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            log.info(f"Downloaded: {os.path.basename(path)}")
-        except Exception as e:
-            log.error(f"Failed to download {url}: {e}")
-            if os.path.exists(path):
-                os.remove(path)
-                log.warning(f"Removed partial file: {path}")
+            download_file(url, path)
+        except RuntimeError as e:
+            log.error(f"[RecognitionEngine] {e}")
 
     def _download_buffalo_l(self):
-        # ... (Legacy Zip Logic from previous step if needed) ...
-        # For brevity, assuming user has it or we re-implement it briefly
-        pass 
+        url    = "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
+        member = "buffalo_l/w600k_r50.onnx"
+        dest   = Path(self.face_model_path)
+        try:
+            download_zip_member(url, member, dest)
+        except RuntimeError as e:
+            log.error(f"[RecognitionEngine] {e}")
 
     # Standard ArcFace destination landmarks for 112x112 aligned output
     _ARCFACE_DST = np.array([
