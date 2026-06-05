@@ -15,6 +15,7 @@ import logging
 import cv2
 import numpy as np
 from pathlib import Path
+from core.ai.model_downloader import download_file, download_zip_member
 
 log = logging.getLogger(__name__)
 
@@ -148,7 +149,7 @@ class SlopAnalyzer:
         if not yunet_path.exists():
             url = ("https://huggingface.co/opencv/face_detection_yunet"
                    "/resolve/main/face_detection_yunet_2023mar.onnx?download=true")
-            self._download(url, yunet_path)
+            download_file(url, yunet_path)
         try:
             self._yunet = cv2.FaceDetectorYN.create(
                 str(yunet_path), "", (320, 320), 0.60, 0.3, 5000
@@ -163,7 +164,7 @@ class SlopAnalyzer:
         if not cascade_path.exists():
             url = ("https://raw.githubusercontent.com/nagadomi/lbpcascade_animeface"
                    "/master/lbpcascade_animeface.xml")
-            self._download(url, cascade_path)
+            download_file(url, cascade_path)
         try:
             cascade = cv2.CascadeClassifier(str(cascade_path))
             if cascade.empty():
@@ -245,16 +246,6 @@ class SlopAnalyzer:
         )
         shutil.copy(tmp, str(dest))
         log.info(f"[SlopFilter] Aesthetic MLP → {dest}")
-
-    def _download(self, url: str, dest: Path):
-        import requests
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        log.info(f"[SlopFilter] Descargando {dest.name}…")
-        r = requests.get(url, stream=True, timeout=60)
-        r.raise_for_status()
-        with open(dest, "wb") as f:
-            for chunk in r.iter_content(65536):
-                f.write(chunk)
 
     # ------------------------------------------------------------------ #
     # Scorers individuales (0.0 – 1.0)
