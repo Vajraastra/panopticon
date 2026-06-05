@@ -5,7 +5,7 @@ Evalúa calidad anatómica y estética de imágenes generadas por IA.
 Soporta tres tipos de contenido con pesos y umbrales distintos:
 
   photorealistic  — YuNet + YOLOv8-pose + MediaPipe + CLIP
-  3d_render       — YuNet (umbral relajado) + YOLOv8 + MediaPipe + CLIP
+  3d_render       — lbpcascade_animeface + YOLOv8 + MediaPipe + CLIP
   illustration    — lbpcascade_animeface + YOLOv8 (peso bajo) + MediaPipe + CLIP (dominante)
 
 Todos los scorers retornan 0.0–1.0.
@@ -360,14 +360,23 @@ class SlopAnalyzer:
         lm   = landmarks.landmark
         tips = [4,  8, 12, 16, 20]
         pips = [3,  6, 10, 14, 18]
+
+        # Determinar si los dedos apuntan hacia arriba o hacia abajo usando el
+        # vector muñeca (0) → nudillo del dedo medio (9). En coordenadas de
+        # imagen Y crece hacia abajo, así que si la muñeca tiene Y mayor que
+        # el nudillo, los dedos apuntan hacia arriba (caso normal).
+        fingers_up = lm[0].y > lm[9].y
+
         extended = 0
         for tip_i, pip_i in zip(tips, pips):
-            if tip_i == 4:
+            if tip_i == 4:  # Pulgar: comparar en eje X
                 if abs(lm[4].x - lm[2].x) > 0.05:
                     extended += 1
             else:
-                if lm[tip_i].y < lm[pip_i].y:
+                tip_above_pip = lm[tip_i].y < lm[pip_i].y
+                if fingers_up == tip_above_pip:
                     extended += 1
+
         if extended < 1 or extended > 5:
             return 0.1
         if extended == 5:
@@ -432,8 +441,10 @@ class SlopAnalyzer:
 
     def analyze_calibration(self, img_bgr: np.ndarray) -> dict:
         """
-        Modo calibración: retorna scores raw de cada modelo sin ponderar.
-        Útil para ajustar pesos y umbrales con imágenes de ejemplo.
+        Modo calibración: retorna los mismos scores que analyze() más metadatos
+        del preset activo (_weights, _presets, _face_model).
+        Nota: 'combined' sigue siendo la suma ponderada; los scores individuales
+        (face, body, hands, aesthetic) son los valores raw de cada scorer.
         """
         result = self.analyze(img_bgr)
         cfg    = self._cfg
@@ -460,6 +471,8 @@ def classify(scores: dict, preset: str = "balanced",
     """
     cfg       = CONTENT_TYPES.get(content_type, CONTENT_TYPES[DEFAULT_CONTENT_TYPE])
     presets   = cfg["presets"]
+    if preset not in presets:
+        log.warning(f"[SlopFilter] Preset desconocido '{preset}', usando 'balanced'.")
     threshold = presets.get(preset, presets["balanced"])
     combined  = scores.get("combined", 0.0)
 
