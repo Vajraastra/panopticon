@@ -61,8 +61,11 @@ debug_*.py
 # Development tools and test scripts
 tools/
 
-# Development log (private notes)
+# Development logs and session notes (private)
 bitácora.md
+TASKS.md
+CLAUDE.md
+*_FINDINGS.md
 
 # AI assistant / Agent config
 .agent/
