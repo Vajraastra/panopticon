@@ -28,7 +28,7 @@ CAT_COLORS = {
     "review": "#ffaa00",
     "slop":   "#cc3333",
 }
-EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp', '.avif')
+EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp')
 
 
 # ============================================================================
