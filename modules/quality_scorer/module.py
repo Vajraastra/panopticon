@@ -635,7 +635,7 @@ class QualityScorerModule(BaseModule):
         )
         self._slop_worker.progress.connect(self._on_phase1_progress)
         self._slop_worker.image_done.connect(self._on_image_classified)
-        self._slop_worker.finished.connect(self._on_phase1_finished)
+        self._slop_worker.finished_signal.connect(self._on_phase1_finished)
         self._slop_worker.error.connect(self._on_worker_error)
 
         self.proc_bar.setRange(0, len(self.image_paths))
@@ -783,7 +783,7 @@ class QualityScorerModule(BaseModule):
             use_hands     = self.chk_hands.isChecked(),
             use_aesthetic = self.chk_aesthetic.isChecked(),
         )
-        self._calib_worker.finished.connect(
+        self._calib_worker.finished_signal.connect(
             lambda scores: self._on_calibration_done(scores, path, content_type)
         )
         self._calib_worker.error.connect(self._on_calibration_error)
@@ -942,7 +942,7 @@ class QualityScorerModule(BaseModule):
             profile = profile,
         )
         self._rank_worker.progress.connect(self._on_phase2_progress)
-        self._rank_worker.finished.connect(self._on_phase2_finished)
+        self._rank_worker.finished_signal.connect(self._on_phase2_finished)
         self._rank_worker.error.connect(self._on_worker_error)
 
         self.proc_bar.setRange(0, len(self.image_paths))

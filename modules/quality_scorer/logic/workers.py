@@ -21,7 +21,7 @@ class SlopFilterWorker(QThread):
     """
     progress   = Signal(int, int, str)   # current, total, filename
     image_done = Signal(str, str, dict)  # path, label, scores
-    finished   = Signal(dict)            # summary {keeper:N, review:N, slop:N}
+    finished_signal = Signal(dict)       # summary {keeper:N, review:N, slop:N}
     error      = Signal(str)
 
     def __init__(self, paths: list, preset: str, content_type: str,
@@ -83,7 +83,7 @@ class SlopFilterWorker(QThread):
             except Exception as e:
                 log.warning(f"[SlopWorker] Error en {path}: {e}")
 
-        self.finished.emit(counts)
+        self.finished_signal.emit(counts)
 
 
 class CalibrationWorker(QThread):
@@ -92,7 +92,7 @@ class CalibrationWorker(QThread):
     Corre initialize() + analyze_calibration() en hilo de fondo.
     """
     status   = Signal(str)   # mensaje de progreso para la barra de estado
-    finished = Signal(dict)  # scores + _weights + _presets + _face_model
+    finished_signal = Signal(dict)  # scores + _weights + _presets + _face_model
     error    = Signal(str)
 
     def __init__(self, image_path: str, content_type: str,
@@ -134,7 +134,7 @@ class CalibrationWorker(QThread):
 
         try:
             scores = analyzer.analyze_calibration(img)
-            self.finished.emit(scores)
+            self.finished_signal.emit(scores)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -146,7 +146,7 @@ class QualityRankWorker(QThread):
     """
     progress   = Signal(int, int, str)   # current, total, filename
     image_done = Signal(str, dict)       # path, scores
-    finished   = Signal(list)            # lista de dicts ordenada por score desc
+    finished_signal = Signal(list)       # lista de dicts ordenada por score desc
     error      = Signal(str)
 
     def __init__(self, paths: list, profile: str):
@@ -177,4 +177,4 @@ class QualityRankWorker(QThread):
                 log.warning(f"[RankWorker] Error en {path}: {e}")
 
         results.sort(key=lambda x: x.get("composite_score", 0), reverse=True)
-        self.finished.emit(results)
+        self.finished_signal.emit(results)
