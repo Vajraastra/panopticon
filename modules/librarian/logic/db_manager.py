@@ -94,6 +94,14 @@ class DatabaseManager(QObject):
     def _normalize_path(self, path):
         return os.path.normpath(path).replace('\\', '/')
 
+    def _folder_like(self, folder_path):
+        """Patrón LIKE recursivo con separador: '/foo/bar' → '/foo/bar/%'.
+        Sin el '/' final, '/foo/bar' matchearía también '/foo/barbecue/...'.
+        Escapa %/_ del nombre de carpeta; usar junto a ESCAPE '\\' en el SQL."""
+        norm = self._normalize_path(folder_path)
+        escaped = norm.replace('%', r'\%').replace('_', r'\_')
+        return escaped.rstrip('/') + '/%'
+
     # --- Phase 1: Robust Registration ---
 
     def register_files_minimal(self, files_data):
@@ -163,18 +171,18 @@ class DatabaseManager(QObject):
     def get_known_files_in_folder(self, folder_path):
         """Returns set of normalized paths for files known in a specific folder (recursive)."""
         cursor = self.conn.cursor()
-        msg_path = self._normalize_path(folder_path) + "%"
-        cursor.execute("SELECT path FROM files WHERE path LIKE ?", (msg_path,))
+        msg_path = self._folder_like(folder_path)
+        cursor.execute("SELECT path FROM files WHERE path LIKE ? ESCAPE '\\'", (msg_path,))
         return set(row[0] for row in cursor.fetchall())
 
     def get_files_recursive(self, folder_path, limit=None):
         """Returns a list of all files under a folder (recursive)."""
         cursor = self.conn.cursor()
-        msg_path = self._normalize_path(folder_path) + "%"
+        msg_path = self._folder_like(folder_path)
         if limit:
-            cursor.execute("SELECT path FROM files WHERE path LIKE ? LIMIT ?", (msg_path, limit))
+            cursor.execute("SELECT path FROM files WHERE path LIKE ? ESCAPE '\\' LIMIT ?", (msg_path, limit))
         else:
-            cursor.execute("SELECT path FROM files WHERE path LIKE ?", (msg_path,))
+            cursor.execute("SELECT path FROM files WHERE path LIKE ? ESCAPE '\\'", (msg_path,))
         return [row[0] for row in cursor.fetchall()]
 
     def remove_files(self, paths_list):
@@ -210,7 +218,7 @@ class DatabaseManager(QObject):
         norm = self._normalize_path(path)
         try:
             cursor.execute("DELETE FROM watched_folders WHERE path=?", (norm,))
-            cursor.execute("DELETE FROM files WHERE path LIKE ?", (norm + "%",))
+            cursor.execute("DELETE FROM files WHERE path LIKE ? ESCAPE '\\'", (self._folder_like(path),))
             self.conn.commit()
             return True
         except Exception as e:
@@ -219,14 +227,14 @@ class DatabaseManager(QObject):
 
     def get_folder_count(self, folder_path):
         cursor = self.conn.cursor()
-        query = self._normalize_path(folder_path) + "%"
-        cursor.execute("SELECT count(*) FROM files WHERE path LIKE ?", (query,))
+        query = self._folder_like(folder_path)
+        cursor.execute("SELECT count(*) FROM files WHERE path LIKE ? ESCAPE '\\'", (query,))
         return cursor.fetchone()[0]
 
     def get_folder_preview(self, folder_path, limit=5):
         cursor = self.conn.cursor()
-        query = self._normalize_path(folder_path) + "%"
-        cursor.execute("SELECT path FROM files WHERE path LIKE ? LIMIT ?", (query, limit))
+        query = self._folder_like(folder_path)
+        cursor.execute("SELECT path FROM files WHERE path LIKE ? ESCAPE '\\' LIMIT ?", (query, limit))
         return [row[0] for row in cursor.fetchall()]
 
     def search_by_terms(self, terms, limit=5):
@@ -385,8 +393,9 @@ class DatabaseManager(QObject):
             if "path:" in query:
                 # crude parse
                 p = query.split("path:")[1].split(" rating:")[0].strip()
-                conditions.append("path LIKE ?")
-                params.append(self._normalize_path(p) + "%")
+                # Contenido de la carpeta, o el archivo exacto si p es un archivo
+                conditions.append("(path LIKE ? ESCAPE '\\' OR path = ?)")
+                params.extend([self._folder_like(p), self._normalize_path(p)])
             if "rating:" in query:
                 try:
                     # Split and pick the part after rating: then strip and take first word/number
