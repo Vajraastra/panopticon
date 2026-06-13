@@ -28,7 +28,7 @@ class CaptionWorker(QThread):
     def __init__(self, provider, model, source_folder, template_keys,
                  policy=sidecar.SKIP, trigger="", prefix="", suffix="",
                  extra_prefix_tags=None, recursive=False, retries=2,
-                 images=None, parent=None):
+                 images=None, prompt_overrides=None, parent=None):
         super().__init__(parent)
         self.provider = provider
         self.model = model
@@ -42,6 +42,9 @@ class CaptionWorker(QThread):
         self.recursive = recursive
         self.retries = retries
         self._images = [str(p) for p in images] if images else None
+        # Prompts custom por plantilla {key: meta_prompt}. Vacío/ausente => el
+        # default del preset. La UI puede editar el meta-prompt antes de iniciar.
+        self.prompt_overrides = prompt_overrides or {}
         self._cancel = False
 
     def cancel(self):
@@ -65,7 +68,11 @@ class CaptionWorker(QThread):
             for key in self.template_keys:
                 tmpl = CaptionTemplate(key)
                 out = sidecar.prepare_output(self.source_folder, self.model, tmpl.format)
-                prepared.append((tmpl, out))
+                # Prompt efectivo: override del usuario si lo hay (no vacío),
+                # si no el meta-prompt default del preset.
+                ov = (self.prompt_overrides.get(key) or "").strip()
+                prompt = ov or tmpl.meta_prompt()
+                prepared.append((tmpl, out, prompt))
         except Exception as e:  # noqa: BLE001
             self.error.emit("", f"No se pudo preparar la salida: {e}")
             self.finished_all.emit(0, 0)
@@ -80,12 +87,12 @@ class CaptionWorker(QThread):
             self.progress.emit(i, total, img.replace("\\", "/").rsplit("/", 1)[-1])
 
             wrote_any = False
-            for tmpl, out in prepared:
+            for tmpl, out, prompt in prepared:
                 cap_path = sidecar.caption_path(out, img)
                 do, mode = sidecar.should_process(cap_path, self.policy)
                 if not do:
                     continue
-                caption = self._caption_with_retry(img, tmpl.meta_prompt())
+                caption = self._caption_with_retry(img, prompt)
                 if caption is None:
                     continue  # error ya emitido
                 final = tmpl.assemble(
