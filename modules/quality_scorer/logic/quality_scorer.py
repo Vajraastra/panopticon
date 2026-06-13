@@ -87,20 +87,25 @@ def calculate_compression_artifacts(img) -> float:
     if h < block * 2 or w < block * 2:
         return 100.0
 
-    h_diff = v_diff = count = 0
-    for y in range(block, h - block, block):
-        for x in range(block, w - block, block):
-            h_diff += abs(float(gray[y, x]) - float(gray[y, x - 1]))
-            v_diff += abs(float(gray[y, x]) - float(gray[y - 1, x]))
-            count  += 1
+    # Diferencias en las fronteras de bloque 8×8, vectorizado
+    g  = gray.astype(np.float32)
+    ys = np.arange(block, h - block, block)
+    xs = np.arange(block, w - block, block)
+    pts    = g[np.ix_(ys, xs)]
+    h_diff = np.abs(pts - g[np.ix_(ys, xs - 1)]).sum()
+    v_diff = np.abs(pts - g[np.ix_(ys - 1, xs)]).sum()
+    count  = pts.size
 
     avg_diff      = (h_diff + v_diff) / (2 * max(count, 1))
     artifact_score = max(0, 100 - (avg_diff - 5) * 5)
 
     if len(img.shape) == 3:
-        unique = len(np.unique(img.reshape(-1, 3), axis=0))
-        total  = img.shape[0] * img.shape[1]
-        banding = min(unique / min(total, 100000) * 200, 100)
+        # Muestreo estriado: np.unique sobre máx ~100K píxeles
+        pixels = img.reshape(-1, 3)
+        if len(pixels) > 100_000:
+            pixels = pixels[::len(pixels) // 100_000]
+        unique  = len(np.unique(pixels, axis=0))
+        banding = min(unique / len(pixels) * 200, 100)
         artifact_score = artifact_score * 0.7 + banding * 0.3
 
     return min(max(artifact_score, 0), 100)
