@@ -78,7 +78,7 @@ class DropFrame(QFrame):
 
 class OptimizerWorker(QThread):
     progress = Signal(int)
-    finished = Signal(dict)
+    finished_signal = Signal(dict)
 
     def __init__(self, queue, settings):
         super().__init__()
@@ -114,7 +114,7 @@ class OptimizerWorker(QThread):
 
             self.progress.emit(i + 1)
 
-        self.finished.emit(stats)
+        self.finished_signal.emit(stats)
 
 
 class ImageOptimizerModule(BaseModule):
@@ -398,7 +398,7 @@ class ImageOptimizerModule(BaseModule):
 
         self.worker = OptimizerWorker(self.queue, settings)
         self.worker.progress.connect(self.progress.setValue)
-        self.worker.finished.connect(self._on_finished)
+        self.worker.finished_signal.connect(self._on_finished)
         self.worker.start()
 
     def _on_finished(self, stats):
