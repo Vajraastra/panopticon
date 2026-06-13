@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "version": 1,
+    "updated": "2026-06-13",
+    "doc": "Presets de WD taggers (clasificadores ONNX de SmilingWolf). A diferencia de un VLM, NO inventan tags: emiten solo tags reales del vocabulario con que fueron entrenados. El 'csv_file' (selected_tags.csv) esta CASADO al 'model_file' (.onnx): traduce indice de salida -> nombre de tag. NUNCA mezclar un csv con otro modelo (desalinea los indices). Para otra tematica (p.ej. furry/e621) se agrega OTRO tagger entrenado en ese vocabulario, no se cambia el csv. 'general_threshold'/'character_threshold' son los defaults editables por el usuario; el general viene del punto F1 optimo oficial del modelo. 'vocab' indica el dialecto de tags (danbooru|e621).",
+    "sources": [
+      "https://huggingface.co/SmilingWolf/wd-eva02-large-tagger-v3",
+      "https://huggingface.co/SmilingWolf/wd-eva02-large-tagger-v3/blob/main/README.md"
+    ]
+  },
+  "taggers": {
+    "eva02-large-v3": {
+      "label": "WD EVA02-Large v3 (Danbooru · anime/general)",
+      "hf_repo": "SmilingWolf/wd-eva02-large-tagger-v3",
+      "model_file": "model.onnx",
+      "csv_file": "selected_tags.csv",
+      "general_threshold": 0.5296,
+      "character_threshold": 0.85,
+      "vocab": "danbooru",
+      "notes": "Corte de datos Danbooru 2024-02-28 (last id 7220105). ~1.2GB. Threshold general = punto F1 optimo oficial. Preprocesado WD: pad blanco a cuadrado, resize 448, RGB->BGR, float32 0-255 (sin normalizar), NHWC. Salida ya con sigmoid. Categorias CSV: 0=general, 4=character, 9=rating."
+    }
+  }
+}

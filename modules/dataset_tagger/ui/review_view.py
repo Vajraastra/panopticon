@@ -29,11 +29,13 @@ log = logging.getLogger(__name__)
 class ReviewView(QWidget):
     """Editor de sidecars de un dataset. Ventana de nivel superior."""
 
-    def __init__(self, context, folder=None, as_tag=True):
+    def __init__(self, context, folder=None, as_tag=True, select=None):
         super().__init__()
         self.context = context
         self.folder = str(folder) if folder else None
         self._current = None  # Path del .txt en edición
+        # stem a preseleccionar al cargar (p. ej. la imagen abierta desde el grid)
+        self._select_stem = Path(select).stem if select else None
 
         self.setWindowTitle(self._tr("review.title", "Review captions"))
         self.resize(960, 640)
@@ -153,7 +155,14 @@ class ReviewView(QWidget):
         self.lbl_folder.setText(self._tr("review.folder", "Folder: {0} ({1} captions)")
                                 .format(folder, len(files)))
         if files:
-            self.file_list.setCurrentRow(0)
+            row = 0
+            if self._select_stem:
+                for i in range(self.file_list.count()):
+                    if self.file_list.item(i).text() == self._select_stem:
+                        row = i
+                        break
+                self._select_stem = None  # solo en la primera carga
+            self.file_list.setCurrentRow(row)
 
     # -- selección / edición individual ---------------------------------------
     def _on_select(self, current, _previous):

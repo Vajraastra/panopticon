@@ -17,19 +17,21 @@ class StandardToolLayout(QWidget):
                                       | [ Barra de Acciones (Inferior)      ] |
                                       |_______________________________________|
     """
-    def __init__(self, content_widget: QWidget, sidebar_widget: QWidget = None, bottom_widget: QWidget = None, theme_manager=None, event_bus=None):
+    def __init__(self, content_widget: QWidget, sidebar_widget: QWidget = None, bottom_widget: QWidget = None, theme_manager=None, event_bus=None, sidebar_width: int = 320):
         super().__init__()
         self.theme = theme_manager
         self.event_bus = event_bus
-        
+
         # 1. Main Layout (Horizontal)
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(0)
-        
+
         # --- LEFT SIDEBAR CONTAINER ---
+        # Ancho configurable por módulo (default 320). Algunas vistas con campos
+        # largos (p.ej. el Dataset Tagger) piden más para no necesitar scroll.
         self.left_container = QFrame(self)
-        self.left_container.setFixedWidth(320)
+        self.left_container.setFixedWidth(sidebar_width)
         self.left_container.setObjectName("sidebar_container")
         
         # Apply Theme to Left Container

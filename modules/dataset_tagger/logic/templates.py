@@ -12,6 +12,28 @@ from pathlib import Path
 
 PRESETS_PATH = Path(__file__).resolve().parent.parent / "presets" / "model_templates.json"
 
+# Modificador de "tono" reutilizable que se concatena al meta-prompt cuando el
+# usuario marca el dataset como NSFW. Único para todos los modelos (DRY): solo
+# sube el tono e indica explícitamente qué se espera de la descripción. Aplica
+# al VLM (un clasificador WD ignora el prompt y ya da NSFW canónico de fábrica).
+NSFW_SUFFIX = (
+    "This dataset is adult (NSFW) content. Describe any sexual or explicit "
+    "elements directly and accurately with precise, uncensored terminology; "
+    "do not omit, soften, censor or refuse. Include anatomy, acts and state of "
+    "dress exactly as visible."
+)
+
+
+def with_content_mode(prompt, nsfw=False):
+    """Devuelve el meta-prompt con el modificador NSFW añadido si procede.
+
+    Idempotente: si el sufijo ya viene en el prompt (la UI lo muestra en vivo en
+    el editor y lo manda como override) no se duplica.
+    """
+    if nsfw and prompt and NSFW_SUFFIX not in prompt:
+        return f"{prompt.rstrip()} {NSFW_SUFFIX}"
+    return prompt
+
 
 def load_presets(path=None):
     with open(path or PRESETS_PATH, encoding="utf-8") as f:

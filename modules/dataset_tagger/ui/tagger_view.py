@@ -17,24 +17,31 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
-    QLineEdit, QPlainTextEdit, QCheckBox, QListWidget, QListWidgetItem,
+    QLineEdit, QPlainTextEdit, QCheckBox,
     QProgressBar, QFrame, QFileDialog, QSizePolicy,
 )
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QSize
+from PySide6.QtGui import QPainter, QColor
 
 from core.components.standard_layout import StandardToolLayout
 from core.paths import CachePaths
 
-from ..logic.templates import available_models, CaptionTemplate
+from ..logic.templates import available_models, CaptionTemplate, NSFW_SUFFIX
 from ..logic.providers.openai_compat import OpenAICompatProvider
+from ..logic.providers.wd_tagger import WDTaggerProvider
 from ..logic.providers.discovery import discover_local
 from ..logic.caption_worker import CaptionWorker
 from ..logic import sidecar
+from ..logic.wd_presets import available_taggers, TaggerPreset
+from ..logic import wd_download
+from .source_grid import SourceGrid
 
 log = logging.getLogger(__name__)
 
 # --- constantes locale-safe (nunca comparar combos por texto) ----------------
 MODE_TAGS, MODE_NATURAL, MODE_BOTH = 0, 1, 2
+# motor para datasets de TAGS: clasificador WD local vs VLM del endpoint
+ENGINE_WD, ENGINE_VLM = 0, 1
 
 # Política ante captions existentes -> valor de sidecar.*
 POLICIES = [
@@ -116,6 +123,59 @@ class ConnectionWorker(QThread):
         self.result.emit(ok, msg, models)
 
 
+class WDDownloadWorker(QThread):
+    """Descarga el modelo WD (ONNX + CSV) sin bloquear la GUI (Regla #4)."""
+    progress = Signal(str)        # nombre del archivo en curso
+    done = Signal(bool, str)      # ok, mensaje
+
+    def __init__(self, tagger_key, parent=None):
+        super().__init__(parent)
+        self.tagger_key = tagger_key
+
+    def run(self):
+        try:
+            preset = TaggerPreset(self.tagger_key)
+            wd_download.download(preset, progress_cb=self.progress.emit)
+            self.done.emit(True, "")
+        except Exception as e:  # noqa: BLE001 — superficie de error para la UI
+            self.done.emit(False, str(e))
+
+
+class ToggleSwitch(QCheckBox):
+    """Interruptor deslizante on/off (autocontenido, sin imágenes).
+
+    Pinta una pista redondeada + perilla; izquierda = off, derecha = on.
+    El color de la pista activa usa el acento del tema (inyectado), el resto
+    un gris neutro. Se usa para el tono de contenido SFW (off) / NSFW (on)."""
+
+    def __init__(self, accent, off_color, parent=None):
+        super().__init__(parent)
+        self._on = QColor(accent)
+        self._off = QColor(off_color)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedSize(QSize(52, 26))
+
+    def sizeHint(self):
+        return QSize(52, 26)
+
+    def hitButton(self, pos):
+        return self.rect().contains(pos)
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = self.rect().adjusted(1, 1, -1, -1)
+        radius = r.height() / 2.0
+        p.setPen(Qt.NoPen)
+        p.setBrush(self._on if self.isChecked() else self._off)
+        p.drawRoundedRect(r, radius, radius)
+        d = r.height() - 6
+        x = (r.right() - d - 2) if self.isChecked() else (r.left() + 3)
+        p.setBrush(QColor("#ffffff"))
+        p.drawEllipse(int(x), r.top() + 3, d, d)
+        p.end()
+
+
 class DatasetTaggerView(QWidget):
     """Vista del Dataset Tagger: configuración + cola + ejecución."""
 
@@ -132,7 +192,11 @@ class DatasetTaggerView(QWidget):
         self._conn = None
         self._caption = None
         self._review = None
+        self._wd_dl = None         # worker de descarga del modelo WD
         self._last_output = None   # (carpeta, as_tag) del último dataset generado
+
+        # taggers WD disponibles (key, label)
+        self._taggers = available_taggers()
 
         # modelos VLM disponibles en el endpoint actual
         self._endpoint_models = []
@@ -156,6 +220,7 @@ class DatasetTaggerView(QWidget):
             bottom_widget=bottom,
             theme_manager=self.context.get('theme_manager') if self.context else None,
             event_bus=self.context.get('event_bus') if self.context else None,
+            sidebar_width=380,   # campos largos (motor/thresholds) sin scroll horizontal
         )
 
         root = QVBoxLayout(self)
@@ -222,9 +287,13 @@ class DatasetTaggerView(QWidget):
         row.addWidget(btn_browse, 0)
         lay.addLayout(row)
 
-        # cola / lista de imágenes (pre-confirmación; la revisión rica es review_view)
-        self.queue_list = QListWidget()
-        lay.addWidget(self.queue_list, 1)
+        # grid de validación visual del set (miniaturas + marca de .txt previo +
+        # subcarpetas navegables). La revisión/edición rica sigue en review_view.
+        self.grid = SourceGrid(
+            self._tr, self._accent(), self._color('accent_success', "#00ff66"))
+        self.grid.folder_activated.connect(self._set_source_folder)
+        self.grid.caption_requested.connect(self._edit_caption)
+        lay.addWidget(self.grid, 1)
 
         # progreso + estado
         self.progress = QProgressBar()
@@ -258,6 +327,42 @@ class DatasetTaggerView(QWidget):
         self.combo_model_tags.currentIndexChanged.connect(self._refresh_prompts)
         lay.addWidget(self.lbl_model_tags)
         lay.addWidget(self.combo_model_tags)
+
+        # --- motor de TAGS: WD tagger local (booru real) vs VLM del endpoint ---
+        self.lbl_tags_engine = QLabel(self._tr("tagger.engine", "Tags engine"))
+        self.combo_tags_engine = QComboBox()
+        self.combo_tags_engine.addItem(
+            self._tr("tagger.engine.wd", "WD tagger (local · real booru tags)"), ENGINE_WD)
+        self.combo_tags_engine.addItem(
+            self._tr("tagger.engine.vlm", "Vision LLM (endpoint)"), ENGINE_VLM)
+        self.combo_tags_engine.currentIndexChanged.connect(self._on_tags_engine_changed)
+        lay.addWidget(self.lbl_tags_engine)
+        lay.addWidget(self.combo_tags_engine)
+
+        # bloque WD (selector de tagger + thresholds + descarga); visible si WD
+        self.frame_wd = QFrame()
+        wd = QVBoxLayout(self.frame_wd)
+        wd.setContentsMargins(0, 0, 0, 0)
+        wd.setSpacing(4)
+        self.combo_wd_tagger = QComboBox()
+        self.combo_wd_tagger.blockSignals(True)
+        for key, label in self._taggers:
+            self.combo_wd_tagger.addItem(label, key)
+        self.combo_wd_tagger.blockSignals(False)
+        wd.addWidget(self.combo_wd_tagger)
+        # Los umbrales de confianza se fijan desde el preset (calibrados para
+        # priorizar al personaje); no se exponen para no romper el resultado.
+        # descarga del modelo + estado
+        self.btn_wd_download = QPushButton(self._tr("tagger.wd.download", "Download model"))
+        self.btn_wd_download.clicked.connect(self._download_wd)
+        wd.addWidget(self.btn_wd_download)
+        self.lbl_wd_status = QLabel("")
+        self.lbl_wd_status.setWordWrap(True)
+        self.lbl_wd_status.setStyleSheet("font-size: 11px;")
+        wd.addWidget(self.lbl_wd_status)
+        lay.addWidget(self.frame_wd)
+        self.combo_wd_tagger.currentIndexChanged.connect(self._on_wd_tagger_changed)
+        self._refresh_wd_status()
 
         # selector de plantilla NATURAL
         self.lbl_model_nat = QLabel(self._tr("tagger.model.natural", "Natural model"))
@@ -311,12 +416,25 @@ class DatasetTaggerView(QWidget):
 
         # --- prompts custom (uno por formato activo) ---
         lay.addWidget(self._section(self._tr("tagger.sec.prompt", "VLM meta-prompt")))
+        # tono de contenido: switch SFW (izq) / NSFW (der). Sube el tono del
+        # meta-prompt del VLM (el WD lo ignora; ya da NSFW de fábrica).
+        lay.addWidget(QLabel(self._tr("tagger.content", "Content tone (VLM)")))
+        content_row = QHBoxLayout()
+        content_row.addWidget(QLabel(self._tr("tagger.content.sfw", "SFW")))
+        self.switch_content = ToggleSwitch(
+            self._accent(), self._color('border', "#555"))
+        content_row.addWidget(self.switch_content)
+        content_row.addWidget(QLabel(self._tr("tagger.content.nsfw", "NSFW")))
+        content_row.addStretch()
+        lay.addLayout(content_row)
         self.box_prompt_tags = self._prompt_box(
             self._tr("tagger.prompt.tags", "Tags prompt"), is_tags=True)
         self.box_prompt_nat = self._prompt_box(
             self._tr("tagger.prompt.natural", "Natural prompt"), is_tags=False)
         lay.addWidget(self.box_prompt_tags["frame"])
         lay.addWidget(self.box_prompt_nat["frame"])
+        # WYSIWYG: al cambiar el switch, refleja el sufijo NSFW en los editores.
+        self.switch_content.toggled.connect(self._sync_content_tone)
 
         # --- opciones de salida ---
         lay.addWidget(self._section(self._tr("tagger.sec.output", "Output")))
@@ -326,6 +444,7 @@ class DatasetTaggerView(QWidget):
         lay.addWidget(QLabel(self._tr("tagger.policy", "If a caption exists:")))
         lay.addWidget(self.combo_policy)
         self.chk_recursive = QCheckBox(self._tr("tagger.recursive", "Include subfolders"))
+        self.chk_recursive.toggled.connect(self._on_recursive_toggled)
         lay.addWidget(self.chk_recursive)
 
         lay.addStretch()
@@ -386,11 +505,101 @@ class DatasetTaggerView(QWidget):
         show_nat = mode in (MODE_NATURAL, MODE_BOTH)
         self.lbl_model_tags.setVisible(show_tags)
         self.combo_model_tags.setVisible(show_tags)
-        self.box_prompt_tags["frame"].setVisible(show_tags)
+        self.lbl_tags_engine.setVisible(show_tags)
+        self.combo_tags_engine.setVisible(show_tags)
         self.lbl_model_nat.setVisible(show_nat)
         self.combo_model_nat.setVisible(show_nat)
         self.box_prompt_nat["frame"].setVisible(show_nat)
+        self._refresh_engine_ui()
         self._refresh_prompts()
+        self._update_run_enabled()
+
+    # -- motor de tags (WD vs VLM) -------------------------------------------
+    def _tags_engine(self):
+        return self.combo_tags_engine.currentData()
+
+    def _uses_wd(self):
+        """¿La corrida usa el WD tagger para el dataset de tags?"""
+        return (self._mode() in (MODE_TAGS, MODE_BOTH)
+                and self._tags_engine() == ENGINE_WD)
+
+    def _needs_vlm(self):
+        """¿La corrida necesita el endpoint VLM (natural o tags-via-VLM)?"""
+        if self._mode() in (MODE_NATURAL, MODE_BOTH):
+            return True
+        return self._tags_engine() == ENGINE_VLM
+
+    def _model_name_for(self, key):
+        """Nombre de modelo para nombrar la salida y para el provider, según el
+        motor de cada plantilla (tagger WD para tags-WD; VLM del endpoint si no)."""
+        if CaptionTemplate(key).format != "natural" and self._tags_engine() == ENGINE_WD:
+            return self.combo_wd_tagger.currentData()
+        return self.combo_endpoint_model.currentData()
+
+    def _refresh_engine_ui(self):
+        """Visibilidad WD vs meta-prompt de tags según modo + motor."""
+        show_tags = self._mode() in (MODE_TAGS, MODE_BOTH)
+        wd = show_tags and self._tags_engine() == ENGINE_WD
+        self.frame_wd.setVisible(wd)
+        # el meta-prompt de tags solo aplica al VLM (el clasificador no lo usa)
+        self.box_prompt_tags["frame"].setVisible(
+            show_tags and self._tags_engine() == ENGINE_VLM)
+        if wd:
+            self._refresh_wd_status()
+
+    def _on_tags_engine_changed(self):
+        self._refresh_engine_ui()
+        self._update_run_enabled()
+
+    def _on_wd_tagger_changed(self):
+        if not self.combo_wd_tagger.currentData():
+            return
+        self._refresh_wd_status()
+        self._update_run_enabled()
+
+    def _refresh_wd_status(self):
+        key = self.combo_wd_tagger.currentData()
+        if not key:
+            return
+        preset = TaggerPreset(key)
+        if wd_download.is_downloaded(preset):
+            self.lbl_wd_status.setText(self._tr("tagger.wd.ready", "✓ Model ready (offline)"))
+            self.lbl_wd_status.setStyleSheet(
+                f"color: {self._color('accent_success', '#00ff66')}; font-size: 11px;")
+            self.btn_wd_download.setEnabled(False)
+        elif self._wd_dl is not None:
+            self.btn_wd_download.setEnabled(False)
+        else:
+            self.lbl_wd_status.setText(self._tr(
+                "tagger.wd.missing", "Model not downloaded (~1.2 GB)."))
+            self.lbl_wd_status.setStyleSheet(
+                f"color: {self._color('warning', '#ffb86c')}; font-size: 11px;")
+            self.btn_wd_download.setEnabled(True)
+
+    def _download_wd(self):
+        key = self.combo_wd_tagger.currentData()
+        if not key or self._wd_dl is not None:
+            return
+        self.btn_wd_download.setEnabled(False)
+        self.lbl_wd_status.setText(self._tr("tagger.wd.downloading", "Downloading…"))
+        self.lbl_wd_status.setStyleSheet("font-size: 11px;")
+        self._wd_dl = WDDownloadWorker(key)
+        self._wd_dl.progress.connect(
+            lambda f: self.lbl_wd_status.setText(
+                self._tr("tagger.wd.downloading_file", "Downloading {0}…").format(f)))
+        self._wd_dl.done.connect(self._on_wd_downloaded)
+        self._wd_dl.start()
+
+    def _on_wd_downloaded(self, ok, msg):
+        self._wd_dl = None
+        if ok:
+            self._refresh_wd_status()
+        else:
+            self.lbl_wd_status.setText(self._tr(
+                "tagger.wd.dl_error", "Download failed: {0}").format(msg))
+            self.lbl_wd_status.setStyleSheet(
+                f"color: {self._color('error', '#ff5555')}; font-size: 11px;")
+            self.btn_wd_download.setEnabled(True)
         self._update_run_enabled()
 
     def _reset_prompt(self, box):
@@ -398,6 +607,7 @@ class DatasetTaggerView(QWidget):
         key = combo.currentData()
         if key:
             box["editor"].setPlainText(CaptionTemplate(key).meta_prompt())
+            self._sync_content_tone()
 
     def _refresh_prompts(self):
         """Autocompleta cada editor con el meta-prompt default si está vacío."""
@@ -408,6 +618,26 @@ class DatasetTaggerView(QWidget):
             key = combo.currentData()
             if key and not box["editor"].toPlainText().strip():
                 box["editor"].setPlainText(CaptionTemplate(key).meta_prompt())
+        self._sync_content_tone()
+
+    def _sync_content_tone(self):
+        """Refleja en vivo el modificador NSFW en los editores de prompt visibles.
+
+        Lo que se ve en el editor es exactamente lo que se manda al VLM: al
+        encender el switch se concatena `NSFW_SUFFIX`, al apagarlo se quita.
+        El WD tagger ignora el prompt (ya da NSFW de fábrica). Idempotente.
+        """
+        nsfw = self.switch_content.isChecked()
+        for box in (self.box_prompt_tags, self.box_prompt_nat):
+            if not box["frame"].isVisible():
+                continue
+            editor = box["editor"]
+            text = editor.toPlainText()
+            has = NSFW_SUFFIX in text
+            if nsfw and not has and text.strip():
+                editor.setPlainText(f"{text.rstrip()} {NSFW_SUFFIX}")
+            elif not nsfw and has:
+                editor.setPlainText(text.replace(NSFW_SUFFIX, "").rstrip())
 
     # -- origen (drop / browse) ----------------------------------------------
     def _browse_folder(self):
@@ -428,13 +658,10 @@ class DatasetTaggerView(QWidget):
     def _set_source_folder(self, folder):
         self._source_folder = folder
         self._images = None
-        try:
-            imgs = sidecar.list_images(folder, self.chk_recursive.isChecked())
-        except Exception:  # noqa: BLE001
-            imgs = []
         self.lbl_source.setText(self._tr("tagger.source_folder", "Folder: {0} ({1} images)")
-                                .format(folder, len(imgs)))
-        self._populate_queue([str(p) for p in imgs])
+                                .format(folder, self._source_count()))
+        self.grid.show_folder(folder)
+        self._update_run_enabled()
 
     def _set_source_images(self, imgs):
         self._images = list(imgs)
@@ -442,16 +669,23 @@ class DatasetTaggerView(QWidget):
         self._source_folder = str(Path(imgs[0]).parent)
         self.lbl_source.setText(self._tr("tagger.source_images", "{0} images selected")
                                 .format(len(imgs)))
-        self._populate_queue(imgs)
-
-    def _populate_queue(self, imgs):
-        self.queue_list.clear()
-        for p in imgs[:200]:
-            self.queue_list.addItem(QListWidgetItem(Path(p).name))
-        if len(imgs) > 200:
-            self.queue_list.addItem(QListWidgetItem(
-                self._tr("tagger.more", "+ {0} more…").format(len(imgs) - 200)))
+        self.grid.show_images(imgs)
         self._update_run_enabled()
+
+    def _source_count(self):
+        """Conteo de imágenes a procesar (respeta el alcance recursivo)."""
+        if not self._source_folder:
+            return 0
+        try:
+            return len(sidecar.list_images(self._source_folder, self.chk_recursive.isChecked()))
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def _on_recursive_toggled(self):
+        """Refresca el conteo de la etiqueta de origen al cambiar el alcance."""
+        if self._source_folder and self._images is None:
+            self.lbl_source.setText(self._tr("tagger.source_folder", "Folder: {0} ({1} images)")
+                                    .format(self._source_folder, self._source_count()))
 
     # -- descubrimiento / conexión -------------------------------------------
     def _discover(self):
@@ -515,22 +749,35 @@ class DatasetTaggerView(QWidget):
 
     # -- ejecución ------------------------------------------------------------
     def _update_run_enabled(self):
-        ready = bool(self._source_folder
-                     and self.combo_endpoint_model.currentData()
-                     and self._active_template_keys()
-                     and (self._caption is None))
-        self.btn_run.setEnabled(ready)
+        if not (self._source_folder and self._active_template_keys()
+                and self._caption is None):
+            self.btn_run.setEnabled(False)
+            return
+        # el endpoint VLM solo es requisito si la corrida lo usa
+        if self._needs_vlm() and not self.combo_endpoint_model.currentData():
+            self.btn_run.setEnabled(False)
+            return
+        # el modelo WD debe estar descargado si se usa
+        if self._uses_wd():
+            preset = TaggerPreset(self.combo_wd_tagger.currentData())
+            if not wd_download.is_downloaded(preset):
+                self.btn_run.setEnabled(False)
+                return
+        self.btn_run.setEnabled(True)
 
     def _run(self):
         keys = self._active_template_keys()
-        model = self.combo_endpoint_model.currentData()
-        if not (self._source_folder and model and keys):
+        if not (self._source_folder and keys):
             return
+        if self._needs_vlm() and not self.combo_endpoint_model.currentData():
+            return
+        model = self.combo_endpoint_model.currentData()  # None si la corrida es solo WD
 
         # política (locale-safe: por índice -> valor)
         policy = POLICIES[self.combo_policy.currentIndex()][2]
 
-        # prompts custom por plantilla activa (pre-resueltos en el hilo GUI)
+        # prompts custom por plantilla activa (pre-resueltos en el hilo GUI).
+        # box_prompt_tags solo está visible cuando el motor de tags es el VLM.
         overrides = {}
         if self.box_prompt_tags["frame"].isVisible():
             k = self.combo_model_tags.currentData()
@@ -541,10 +788,26 @@ class DatasetTaggerView(QWidget):
             if k:
                 overrides[k] = self.box_prompt_nat["editor"].toPlainText()
 
+        # provider VLM por defecto (natural y/o tags-via-VLM)
         provider = OpenAICompatProvider(
             self.edit_endpoint.text().strip(),
             self.edit_apikey.text().strip() or None,
             model=model, timeout=120)
+
+        # provider + nombre de modelo por plantilla (motor por dataset)
+        providers, model_names = {}, {}
+        for key in keys:
+            model_names[key] = self._model_name_for(key)
+        if self._uses_wd():
+            tkey = self.combo_model_tags.currentData()
+            if tkey in keys:
+                preset = TaggerPreset(self.combo_wd_tagger.currentData())
+                mp, cp = wd_download.local_paths(preset)
+                # umbrales del preset (calibrados para priorizar al personaje)
+                providers[tkey] = WDTaggerProvider(
+                    mp, cp,
+                    general_threshold=preset.general_threshold,
+                    character_threshold=preset.character_threshold)
 
         self._caption = CaptionWorker(
             provider=provider,
@@ -558,6 +821,9 @@ class DatasetTaggerView(QWidget):
             recursive=self.chk_recursive.isChecked(),
             images=self._images,
             prompt_overrides=overrides,
+            providers=providers,
+            model_names=model_names,
+            nsfw=self.switch_content.isChecked(),
         )
         self._caption.progress.connect(self._on_progress)
         self._caption.error.connect(self._on_error)
@@ -589,10 +855,9 @@ class DatasetTaggerView(QWidget):
         # recuerda la última carpeta generada para el botón de revisión y ofrece
         # abrirla (cross-platform, Regla de Oro #1)
         try:
-            model = self.combo_endpoint_model.currentData()
             for key in self._active_template_keys():
                 fmt = CaptionTemplate(key).format
-                out = sidecar.output_dir(self._source_folder, model, fmt)
+                out = sidecar.output_dir(self._source_folder, self._model_name_for(key), fmt)
                 if Path(out).exists():
                     self._last_output = (str(out), fmt == "tags")
                     CachePaths.open_folder(str(out))
@@ -608,10 +873,33 @@ class DatasetTaggerView(QWidget):
         self._review.show()
         self._review.raise_()
 
+    def _edit_caption(self, image_path):
+        """Doble clic en una imagen del grid: abre el editor de captions sobre su
+        carpeta, preseleccionando ese .txt para revisarlo/corregirlo."""
+        from .review_view import ReviewView
+        folder = str(Path(image_path).parent)
+        # si el grid muestra el último dataset generado, respeta su formato
+        as_tag = self._last_output[1] if (
+            self._last_output and self._last_output[0] == folder) else True
+        self._review = ReviewView(self.context, folder=folder,
+                                  as_tag=as_tag, select=image_path)
+        self._review.show()
+        self._review.raise_()
+
     def _cancel(self):
         if self._caption:
             self._caption.cancel()
             self.status.setText(self._tr("tagger.cancelling", "Cancelling…"))
+
+    def closeEvent(self, event):
+        # detiene workers vivos para no destruir un QThread en ejecución
+        try:
+            self.grid.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        if self._wd_dl is not None:
+            self._wd_dl.wait(3000)
+        super().closeEvent(event)
 
     # -- integración con otros módulos (Fase 6) ------------------------------
     def load_images(self, paths):

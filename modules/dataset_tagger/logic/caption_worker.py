@@ -12,7 +12,7 @@ traduce. Las plantillas/meta-prompts ya vienen resueltas desde los presets.
 import logging
 from PySide6.QtCore import QThread, Signal
 
-from .templates import CaptionTemplate
+from .templates import CaptionTemplate, with_content_mode
 from . import sidecar
 from .providers.base_provider import ProviderError
 
@@ -28,10 +28,20 @@ class CaptionWorker(QThread):
     def __init__(self, provider, model, source_folder, template_keys,
                  policy=sidecar.SKIP, trigger="", prefix="", suffix="",
                  extra_prefix_tags=None, recursive=False, retries=2,
-                 images=None, prompt_overrides=None, parent=None):
+                 images=None, prompt_overrides=None, providers=None,
+                 model_names=None, nsfw=False, parent=None):
         super().__init__(parent)
-        self.provider = provider
+        self.provider = provider               # provider por defecto (VLM)
+        # Provider específico por plantilla {key: provider}. Permite que un
+        # dataset de tags use el WD tagger (ONNX local) y el natural el VLM en
+        # la misma corrida (modo "Both"). Si una key no está, usa el default.
+        self.providers = providers or {}
         self.model = model
+        # Nombre de modelo por plantilla {key: name}. Sirve tanto para nombrar la
+        # carpeta de salida (<base>_<name>_<fmt>) como para el parámetro `model`
+        # del provider. Así cada dataset refleja su motor (p.ej. el tagger WD vs
+        # el VLM del endpoint). Si una key no está, usa `model`.
+        self.model_names = model_names or {}
         self.source_folder = source_folder
         self.template_keys = list(template_keys)   # ["pony"] o dual ["pony", "flux"]
         self.policy = policy
@@ -45,6 +55,7 @@ class CaptionWorker(QThread):
         # Prompts custom por plantilla {key: meta_prompt}. Vacío/ausente => el
         # default del preset. La UI puede editar el meta-prompt antes de iniciar.
         self.prompt_overrides = prompt_overrides or {}
+        self.nsfw = nsfw                        # sube el tono del meta-prompt VLM
         self._cancel = False
 
     def cancel(self):
@@ -67,12 +78,14 @@ class CaptionWorker(QThread):
         try:
             for key in self.template_keys:
                 tmpl = CaptionTemplate(key)
-                out = sidecar.prepare_output(self.source_folder, self.model, tmpl.format)
+                mname = self.model_names.get(key, self.model)   # nombre por motor
+                out = sidecar.prepare_output(self.source_folder, mname, tmpl.format)
                 # Prompt efectivo: override del usuario si lo hay (no vacío),
                 # si no el meta-prompt default del preset.
                 ov = (self.prompt_overrides.get(key) or "").strip()
-                prompt = ov or tmpl.meta_prompt()
-                prepared.append((tmpl, out, prompt))
+                prompt = with_content_mode(ov or tmpl.meta_prompt(), self.nsfw)
+                prov = self.providers.get(key, self.provider)  # motor por plantilla
+                prepared.append((tmpl, out, prompt, prov, mname))
         except Exception as e:  # noqa: BLE001
             self.error.emit("", f"No se pudo preparar la salida: {e}")
             self.finished_all.emit(0, 0)
@@ -87,12 +100,12 @@ class CaptionWorker(QThread):
             self.progress.emit(i, total, img.replace("\\", "/").rsplit("/", 1)[-1])
 
             wrote_any = False
-            for tmpl, out, prompt in prepared:
+            for tmpl, out, prompt, prov, mname in prepared:
                 cap_path = sidecar.caption_path(out, img)
                 do, mode = sidecar.should_process(cap_path, self.policy)
                 if not do:
                     continue
-                caption = self._caption_with_retry(img, prompt)
+                caption = self._caption_with_retry(img, prompt, prov, mname)
                 if caption is None:
                     continue  # error ya emitido
                 final = tmpl.assemble(
@@ -111,13 +124,15 @@ class CaptionWorker(QThread):
 
         self.finished_all.emit(processed, skipped)
 
-    def _caption_with_retry(self, img, prompt):
+    def _caption_with_retry(self, img, prompt, provider=None, model=None):
+        provider = provider or self.provider
+        model = model or self.model
         last = None
         for _ in range(self.retries + 1):
             if self._cancel:
                 return None
             try:
-                return self.provider.caption(img, prompt, model=self.model)
+                return provider.caption(img, prompt, model=model)
             except ProviderError as e:
                 last = str(e)
             except Exception as e:  # noqa: BLE001 — robustez razonable

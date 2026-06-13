@@ -53,6 +53,15 @@ def caption_path(out_dir, image_path, ext=".txt"):
     return Path(out_dir) / (Path(image_path).stem + ext)
 
 
+def has_sidecar(image_path, ext=".txt"):
+    """True si ya existe un .txt hermano de la imagen (caption previo en la carpeta).
+
+    Sirve para que la UI marque visualmente qué imágenes del set ya tienen
+    caption (datasets kohya ya etiquetados o salidas previas del tagger).
+    """
+    return Path(image_path).with_suffix(ext).exists()
+
+
 def copy_image(src_image, out_dir):
     """Copia la imagen al dataset de salida si aún no está (preserva metadata)."""
     dest = Path(out_dir) / Path(src_image).name

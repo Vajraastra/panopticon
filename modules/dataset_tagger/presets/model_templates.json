@@ -12,7 +12,8 @@
       "https://www.pelayoarbues.com/literature-notes/Articles/What-Exactly-to-Caption-for-Flux-LoRa-Training",
       "https://docs.ideogram.ai/using-ideogram/prompting-guide/3-prompt-structure",
       "https://stable-learn.com/en/z-image-turbo-tutorial/",
-      "https://lilting.ch/en/articles/z-image-turbo-lora-dedistill-adapter"
+      "https://lilting.ch/en/articles/z-image-turbo-lora-dedistill-adapter",
+      "https://huggingface.co/circlestone-labs/Anima/blob/main/README.md"
     ]
   },
   "models": {
@@ -37,6 +38,17 @@
       "structure": "score_9, score_8_up, score_7_up, score_6_up, score_5_up, score_4_up, [rating], [source], trigger, tags de contenido",
       "meta_prompt": "Describe this image as a comma-separated list of concise Danbooru-style tags in English, most-salient first. Lowercase, no sentences, no articles. Do NOT output score_/rating_/source_ tags (those are added automatically). Describe only what is visible; do not invent details.",
       "notes": "El prefijo de score (3-6 tags) es obligatorio y va al inicio. rating_/source_ son opcionales que inserta el usuario."
+    },
+    "anima": {
+      "label": "Anima (circlestone-labs)",
+      "format": "tags",
+      "separator": ", ",
+      "trigger_position": "after_quality",
+      "quality_prefix": ["masterpiece", "best quality", "score_7"],
+      "rating_options": ["safe", "sensitive", "questionable", "explicit"],
+      "structure": "[quality/meta/year/safety] [1girl/1boy/1other] [character] [series] [@artist] [tags generales]. Tags booru en minusculas con ESPACIOS (no guiones bajos), separados por coma. Los nombres de artista llevan prefijo '@'. Mas-saliente primero.",
+      "meta_prompt": "Describe this image as a comma-separated list of Danbooru-style tags in English, most-salient first: subject count (1girl/1boy/etc), then character, appearance, clothing, pose/action, setting, composition. Use lowercase with SPACES, not underscores. Do NOT output quality tags (masterpiece, best quality, score_x), rating/safety tags, or artist names (those are added separately). Describe only what is visible; do not invent details.",
+      "notes": "Anima (2B, text encoder Qwen-3 0.6B, corte de datos anime sep-2025). Acepta quality tags humanos (masterpiece, best quality, ...) y/o aesthetic score (score_9..score_1); default usa el prefijo positivo recomendado 'masterpiece, best quality, score_7'. rating_/source_ y trigger son opcionales del usuario. Espacios (no '_') salvo en score_*. Artistas con '@'. Dataset tags 'ye-pop'/'deviantart' son solo para data no-anime (no aplican a datasets tipicos)."
     },
     "illustrious": {
       "label": "Illustrious XL",
