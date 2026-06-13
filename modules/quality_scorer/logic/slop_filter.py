@@ -223,7 +223,7 @@ class SlopAnalyzer:
             if not mlp_path.exists():
                 self._download_aesthetic_mlp(mlp_path)
 
-            mlp = nn.Linear(768, 1)
+            mlp = self._build_aesthetic_mlp(nn)
             state = torch.load(str(mlp_path), map_location=self._device, weights_only=True)
             mlp.load_state_dict(state)
             self._aesthetic = mlp.to(self._device).eval()
@@ -235,17 +235,37 @@ class SlopAnalyzer:
             log.warning(f"[SlopFilter] CLIP no disponible: {e}")
             self.use_aesthetic = False
 
+    @staticmethod
+    def _build_aesthetic_mlp(nn):
+        """Arquitectura del improved-aesthetic-predictor v2 (LAION).
+        Espera embeddings CLIP ViT-L/14 L2-normalizados; salida en escala AVA ~1–10.
+        Los pesos del .pth usan el prefijo 'layers.' de esta estructura exacta."""
+        class _AestheticMLP(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = nn.Sequential(
+                    nn.Linear(768, 1024), nn.Dropout(0.2),
+                    nn.Linear(1024, 128), nn.Dropout(0.2),
+                    nn.Linear(128, 64),   nn.Dropout(0.1),
+                    nn.Linear(64, 16),
+                    nn.Linear(16, 1),
+                )
+
+            def forward(self, x):
+                return self.layers(x)
+
+        return _AestheticMLP()
+
     def _download_aesthetic_mlp(self, dest: Path):
-        from huggingface_hub import hf_hub_download
-        import shutil
+        # Repo verificado 2026-06-11: camenduru/improved-aesthetic-predictor
+        # contiene el nn.Linear(768→1) exacto. El repo shunk031/* no existe.
+        from core.ai.model_downloader import download_file
         log.info("[SlopFilter] Descargando pesos del aesthetic predictor…")
-        tmp = hf_hub_download(
-            repo_id="shunk031/aesthetics-predictor",
-            filename="sac+logos+ava1-l14-linearMSE.pth",
-            local_dir=str(dest.parent),
+        download_file(
+            "https://huggingface.co/camenduru/improved-aesthetic-predictor"
+            "/resolve/main/sac%2Blogos%2Bava1-l14-linearMSE.pth",
+            dest,
         )
-        shutil.copy(tmp, str(dest))
-        log.info(f"[SlopFilter] Aesthetic MLP → {dest}")
 
     # ------------------------------------------------------------------ #
     # Scorers individuales (0.0 – 1.0)
