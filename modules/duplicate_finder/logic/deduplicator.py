@@ -45,8 +45,12 @@ class Deduplicator:
             for f in files:
                 if f.lower().endswith(self.IMAGE_EXTENSIONS + self.ARCHIVE_EXTENSIONS):
                     path = os.path.join(root, f).replace('\\', '/')
+                    try:
+                        size = os.path.getsize(path)
+                    except OSError:
+                        # Archivo borrado a media corrida o symlink roto
+                        continue
                     all_files.append(path)
-                    size = os.path.getsize(path)
                     files_by_size.setdefault(size, []).append(path)
 
         # 2. Solo hashear archivos con tamaños idénticos
