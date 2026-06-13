@@ -1,6 +1,11 @@
 {
   "app.title": "PANOPTICON",
   "app.subtitle": "Modular Image Organizer",
+  "tool.dataset_tagger.name": "Dataset Tagger",
+  "tool.dataset_tagger.desc": "Caption image folders with a vision LLM for dataset training.",
+  "tagger.title": "Dataset Tagger",
+  "tagger.subtitle": "Caption image folders with a vision LLM (tags + natural language).",
+  "tagger.sidebar": "Options",
   "dashboard.welcome": "PANOPTICON",
   "dashboard.tools": "AVAILABLE TOOLS",
   "settings.title": "Settings / Configuration",

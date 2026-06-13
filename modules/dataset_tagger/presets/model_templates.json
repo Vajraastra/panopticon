@@ -1,0 +1,85 @@
+{
+  "_meta": {
+    "version": 1,
+    "updated": "2026-06-13",
+    "doc": "Estructura de caption por modelo de generacion. 'format' = tags|natural. 'quality_prefix', 'trigger_position' y 'separator' definen como templates.py ensambla el caption final: quality_prefix + (rating/source opcionales) + trigger + caption-del-VLM + suffix-del-usuario, con dedup. 'meta_prompt' es la instruccion que recibe el VLM (NO el prompt de generacion). Los captions se generan en ingles (estandar de entrenamiento).",
+    "sources": [
+      "https://stable-diffusion-art.com/pony-diffusion-prompt-tags/",
+      "https://civitai.com/articles/4248/what-is-score9-and-how-to-use-it-in-pony-diffusion",
+      "https://civitai.com/articles/8380/tips-for-illustrious-xl-prompting-updates",
+      "https://www.seaart.ai/articleDetail/cvceb6le878c73bckfig",
+      "https://civitai.com/articles/7203",
+      "https://www.pelayoarbues.com/literature-notes/Articles/What-Exactly-to-Caption-for-Flux-LoRa-Training",
+      "https://docs.ideogram.ai/using-ideogram/prompting-guide/3-prompt-structure",
+      "https://stable-learn.com/en/z-image-turbo-tutorial/",
+      "https://lilting.ch/en/articles/z-image-turbo-lora-dedistill-adapter"
+    ]
+  },
+  "models": {
+    "sdxl": {
+      "label": "SDXL (base / anime)",
+      "format": "tags",
+      "separator": ", ",
+      "trigger_position": "start",
+      "quality_prefix": [],
+      "structure": "trigger, sujeto, apariencia, ropa, pose/accion, fondo, composicion. Tags booru separados por coma, mas-saliente primero. Presupuesto ~75 tokens.",
+      "meta_prompt": "Describe this image as a comma-separated list of concise Danbooru-style tags in English, ordered most-salient first: subject, then appearance, clothing, pose/action, setting, composition. Use lowercase. No full sentences, no articles. Describe only what is visible; do not invent text or details.",
+      "notes": "Limite de 77 tokens. Los finetunes anime de SDXL prefieren tags booru; el trigger va primero y con conteo consistente en todo el dataset."
+    },
+    "pony": {
+      "label": "Pony Diffusion V6 XL",
+      "format": "tags",
+      "separator": ", ",
+      "trigger_position": "after_quality",
+      "quality_prefix": ["score_9", "score_8_up", "score_7_up", "score_6_up", "score_5_up", "score_4_up"],
+      "rating_options": ["rating_safe", "rating_questionable", "rating_explicit"],
+      "source_options": ["source_anime", "source_cartoon", "source_furry", "source_pony"],
+      "structure": "score_9, score_8_up, score_7_up, score_6_up, score_5_up, score_4_up, [rating], [source], trigger, tags de contenido",
+      "meta_prompt": "Describe this image as a comma-separated list of concise Danbooru-style tags in English, most-salient first. Lowercase, no sentences, no articles. Do NOT output score_/rating_/source_ tags (those are added automatically). Describe only what is visible; do not invent details.",
+      "notes": "El prefijo de score (3-6 tags) es obligatorio y va al inicio. rating_/source_ son opcionales que inserta el usuario."
+    },
+    "illustrious": {
+      "label": "Illustrious XL",
+      "format": "tags",
+      "separator": ", ",
+      "trigger_position": "after_quality",
+      "quality_prefix": ["masterpiece", "best quality", "amazing quality"],
+      "aesthetic_suffix": ["very aesthetic", "newest"],
+      "structure": "masterpiece, best quality, amazing quality, [very aesthetic, newest], trigger, tags danbooru de contenido",
+      "meta_prompt": "Describe this image as a comma-separated list of Danbooru tags in English, most-salient first: character, then appearance, clothing, pose/action, background. Lowercase, no sentences. Do NOT output quality tags like 'masterpiece' or 'best quality' (added automatically). Describe only what is visible.",
+      "notes": "Entrenado con Danbooru hasta 2024-06. v2.0 tambien acepta lenguaje natural; el default aqui es tags."
+    },
+    "flux": {
+      "label": "FLUX.1 (dev / family)",
+      "format": "natural",
+      "separator": " ",
+      "trigger_position": "start",
+      "quality_prefix": [],
+      "structure": "Prosa de 1-3 frases. Token unico al inicio si es LoRA de concepto. Describe sujeto, apariencia, accion, entorno, estilo, iluminacion y composicion.",
+      "meta_prompt": "Write a clear, natural-language description of this image in English, as flowing prose (1-3 sentences). Lead with the main subject, then describe appearance, action, setting, style, lighting and composition. Be specific and concrete. Do NOT use tag lists or comma-separated tags. Describe only what is visible; do not invent anything not present.",
+      "notes": "Flux usa el text-encoder T5 -> prefiere lenguaje natural. Las tags booru funcionan mal. Datasets de 20-30 imagenes dan prompting mas flexible."
+    },
+    "ideogram": {
+      "label": "Ideogram (v3)",
+      "_deferred": true,
+      "_deferred_reason": "Ideogram v4 (nov 2026) usa una estructura TOTALMENTE distinta: un JSON con high_level_description, style_description (aesthetics/lighting/photo/medium/colour_palette) y compositional_deconstruction (lista de objetos con bbox [x,y,w,h] + desc). Eso requiere un generador de captions estructurado aparte (no encaja en el flujo tags/prosa-plana). Tratar en sesión propia. El bloque de abajo es el de v3 (prosa front-loaded), conservado como referencia/fallback.",
+      "format": "natural",
+      "separator": " ",
+      "trigger_position": "start",
+      "quality_prefix": [],
+      "structure": "Purpose (1 frase: que es la imagen) -> Atmosphere/Lighting (mood, luz) -> Composition (encuadre, angulo, tipo de toma). Front-loaded: lo mas importante primero. Texto visible entre comillas y temprano.",
+      "meta_prompt": "Write a front-loaded natural-language description of this image in English. Begin with one sentence summarizing the whole image (its purpose), then describe atmosphere and lighting (mood), then composition (framing, camera angle, shot type). If the image contains visible text, quote it exactly and place it early. Keep it grounded and realistic; describe only what is visible.",
+      "notes": "v3: lenguaje natural plano, front-loaded, fuerte en render de texto. v4 requiere generador JSON estructurado con bbox (diferido)."
+    },
+    "zimage": {
+      "label": "Z-Image (Turbo / Base)",
+      "format": "natural",
+      "separator": " ",
+      "trigger_position": "start",
+      "quality_prefix": [],
+      "structure": "Prosa 100% positiva (sin negaciones). Cubre sujeto, estilo, sensacion de camara, relaciones entre elementos y texto EN/CN visible. Front-load.",
+      "meta_prompt": "Write a natural-language description of this image in English, phrased entirely as positive statements (never describe what is absent or missing). Cover the subject, the style, the camera feel, how the elements relate to each other, and any visible text (quote it exactly). Front-load the most important elements. Describe only what is visible.",
+      "notes": "S3-DiT bilingue (EN/CN), guidance_scale 0 por defecto -> ignora prompts negativos, todo debe ir en positivo."
+    }
+  }
+}

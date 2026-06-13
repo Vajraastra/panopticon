@@ -1,6 +1,11 @@
 {
   "app.title": "PANOPTICON",
   "app.subtitle": "Organizador de Imágenes Modular",
+  "tool.dataset_tagger.name": "Etiquetador de Datasets",
+  "tool.dataset_tagger.desc": "Genera captions de carpetas con un LLM de visión para entrenar datasets.",
+  "tagger.title": "Etiquetador de Datasets",
+  "tagger.subtitle": "Genera captions de carpetas con un LLM de visión (tags + lenguaje natural).",
+  "tagger.sidebar": "Opciones",
   "dashboard.welcome": "PANOPTICON",
   "dashboard.tools": "HERRAMIENTAS DISPONIBLES",
   "settings.title": "Ajustes / Configuración",

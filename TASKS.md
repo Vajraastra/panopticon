@@ -4,7 +4,46 @@
 **Re-audit 2026-03 COMPLETO.**
 **Quality Scorer refactorizado 2026-04** — Slop Filter + Quality Rank + 3 tipos de contenido.
 **Sesión de fixes 2026-06-05 COMPLETA** — code review, bugs críticos resueltos, limpieza.
-**Próxima sesión:** calibración de umbrales con imágenes reales + sistema de defaults seguros.
+**EN CURSO (2026-06-13):** Módulo nuevo **Dataset Tagger** — ver plan abajo.
+**Pendiente:** calibración de umbrales del Quality Scorer con imágenes reales + sistema de defaults seguros.
+
+---
+
+## 🏷️ MÓDULO NUEVO — Dataset Tagger (plan 2026-06-13)
+
+**Qué es:** toma una carpeta (o set/imágenes individuales de otros módulos) y genera captions automáticos con un VLM (modelo de visión) local u online, para construir datasets de entrenamiento. Salida en sidecars `.txt` estilo kohya. Soporta tags (booru) y lenguaje natural, con plantillas específicas por modelo de generación (SDXL, Pony, Illustrious, Flux, Ideogram, Z-Image). Decisiones completas en memoria: `project_dataset_tagger.md`.
+
+**Reglas que aplican:** salida SIEMPRE en carpeta nueva (nunca junto a los originales, respeta Regla #9 — solo Metadata Hub edita el archivo original); nombre `<carpeta>_<modelo>_tags/` y `<carpeta>_<modelo>_natural/`; acento de color vía `theme.get_color('accent_main')` (patrón de Image Optimizer); sin preprocesamiento de imagen; robustez razonable (datasets ~40 img); NO poblar la DB del Librarian.
+
+### Estructura de archivos propuesta
+```
+modules/dataset_tagger/
+  module.py                      # DatasetTaggerModule(BaseModule), vista lazy, accent desde theme
+  logic/
+    providers/
+      base_provider.py           # iface: caption(img, prompt)->str, list_models(), is_vision(model)
+      openai_compat.py           # cliente OpenAI-compatible (LM Studio/Ollama/vLLM)
+      discovery.py               # escaneo de puertos locales (1234/11434/8000) + autoconfig
+    credentials.py               # almacén Fernet para APIs online (texto plano NUNCA)
+    templates.py                 # carga presets, arma meta-prompt + trigger/prefix/suffix, dedup
+    caption_worker.py            # QThread: itera, llama provider, escribe sidecars + copia carpeta(s)
+    sidecar.py                   # naming de carpeta, política existentes (borrar/saltar/anexar), copia, modo dual
+    tag_tools.py                 # buscar/reemplazar/remover tag en todos los .txt; tags baneadas
+  ui/
+    tagger_view.py               # vista principal (StandardToolLayout) + DropFrame
+    review_view.py               # revisión pre (confirmar set) + edición post (.txt + tag tools)
+  presets/
+    model_templates.json         # resultado de Fase 1 (estructura de caption por modelo)
+```
+
+### Fases (un grupo lógico = un commit; smoke antes/después)
+- [x] **Fase 0 — Esqueleto + registro** (2026-06-13): `module.py` + `ui/tagger_view.py` (BaseModule, `get_view()` lazy, accent vía `theme.get_color('accent_main')`), locales `tool.dataset_tagger.*` + `tagger.*` en/es. Verificado: loader lo descubre, vista se construye con `StandardToolLayout`, `load_image_set` OK. Sin commitear aún.
+- [x] **Fase 1 — INVESTIGACIÓN de estructuras por modelo** (2026-06-13): `presets/model_templates.json` con los 6 modelos. tags booru (SDXL/Pony/Illustrious) vs lenguaje natural (Flux/Ideogram/Z-Image). Cada uno con `format`, `quality_prefix`, `trigger_position`, `separator`, `structure` y `meta_prompt`. Fuentes en `_meta.sources` + BITACORA.
+- [x] **Fase 2 — Capa de providers** (2026-06-13): `logic/providers/base_provider.py` (iface + `encode_image` base64 + heurística `looks_like_vision`), `openai_compat.py` (list_models, caption con `image_url` data-uri, test_connection), `discovery.py` (escaneo 1234/11434/8000/8080). Verificado contra LM Studio real corriendo en :1234.
+- [ ] **Fase 3 — Worker + salida:** `caption_worker` (QThread, reintentos básicos, progreso, cancelación), `sidecar` (copia a carpeta nueva, naming con modelo, política existentes, modo dual = dos carpetas). Strings pre-traducidos antes del worker.
+- [ ] **Fase 4 — UI:** `tagger_view` (selección modelo/formato/dual, trigger/prefix/suffix, prompt custom, política existentes, botón Descubrir) + `review_view` (revisión previa del set + editor de `.txt` post-proceso) + `tag_tools` (buscar/reemplazar/remover, baneadas).
+- [ ] **Fase 5 — Credenciales online (Fernet):** `credentials.py` + provider online opcional. Respaldar `requirements.txt` antes de añadir `cryptography` (Regla #4).
+- [ ] **Fase 6 — Integración + cierre:** `load_image_set()`, drag&drop `files_dropped`, EventBus si aplica; smoke + test funcional; entrada en BITACORA.
 
 ---
 
