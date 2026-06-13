@@ -49,6 +49,7 @@ class FormatScannerModule(BaseModule):
         self._icon = "📊"
         self.accent_color = "#f1fa8c"
         self.view = None
+        self.worker = None
 
     def get_view(self) -> QWidget:
         if self.view:
@@ -99,6 +100,11 @@ class FormatScannerModule(BaseModule):
         return container
 
     def start_scan(self):
+        # Guard anti doble-inicio: reasignar self.worker con el hilo anterior
+        # vivo provoca "QThread destroyed while thread is still running"
+        if self.worker and self.worker.isRunning():
+            return
+
         path = QFileDialog.getExistingDirectory(
             self.view,
             self.tr("fscanner.dialog.title", "Select Folder for Statistics")
