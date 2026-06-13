@@ -42,6 +42,8 @@ models/
 
 # Databases (user-specific data)
 *.db
+*.db-wal
+*.db-shm
 
 # User data
 data/
@@ -63,6 +65,7 @@ tools/
 
 # Development logs and session notes (private)
 bitácora.md
+BITACORA.md
 TASKS.md
 CLAUDE.md
 *_FINDINGS.md
