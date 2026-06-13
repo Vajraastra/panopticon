@@ -439,7 +439,7 @@ class AdvancedViewer(QDialog):
         try:
              size_mb = os.path.getsize(path) / (1024*1024)
              self.lbl_filesize.setText(f"Size: {size_mb:.2f} MB")
-        except:
+        except OSError:
              self.lbl_filesize.setText("Size: Unknown")
 
         # Load Metadata directly from file (Extractor)
