@@ -3,6 +3,8 @@ import os
 import logging
 from PySide6.QtCore import QObject
 
+from core.paths import ProjectPaths
+
 log = logging.getLogger(__name__)
 
 class DatabaseManager(QObject):
@@ -10,10 +12,12 @@ class DatabaseManager(QObject):
     Robust Database Manager for Librarian.
     Focus: Reliability and Safety.
     """
-    
-    def __init__(self, db_path="panopticon.db"):
+
+    def __init__(self, db_path=None):
         super().__init__()
-        self.db_path = db_path
+        # Ruta absoluta a la DB compartida en la raíz del proyecto: todos los
+        # módulos abren el MISMO archivo sin depender del CWD de lanzamiento.
+        self.db_path = str(db_path) if db_path else str(ProjectPaths.root() / "panopticon.db")
         self.conn = None
         self.init_db()
 

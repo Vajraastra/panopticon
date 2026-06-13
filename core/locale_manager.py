@@ -1,7 +1,8 @@
 import json
-import os
 import locale
 import logging
+
+from core.paths import ProjectPaths
 
 log = logging.getLogger(__name__)
 
@@ -30,20 +31,21 @@ class LocaleManager:
             self._save_config()
 
     def _save_config(self):
-        """Guarda la preferencia de idioma en config.json."""
+        """Guarda la preferencia de idioma en config.json (raíz del proyecto)."""
         config = {"locale": self.current_locale}
         try:
-            with open("config.json", "w") as f:
+            with open(ProjectPaths.root() / "config.json", "w") as f:
                 json.dump(config, f)
         except Exception as e:
             log.warning("Error saving locale config: %s", e)
 
     def _detect_locale(self):
         """Detecta el idioma: primero desde config.json, luego del sistema operacional."""
-        # Prioridad 1: Configuración guardada
-        if os.path.exists("config.json"):
+        # Prioridad 1: Configuración guardada (ruta absoluta, independiente del CWD)
+        config_path = ProjectPaths.root() / "config.json"
+        if config_path.exists():
             try:
-                with open("config.json", "r") as f:
+                with open(config_path, "r") as f:
                     config = json.load(f)
                     if "locale" in config:
                         self.current_locale = config["locale"]
@@ -67,10 +69,9 @@ class LocaleManager:
 
     def _load_translations(self):
         """Carga el archivo JSON correspondiente al idioma actual desde la carpeta /locales."""
-        base_path = os.path.join(os.getcwd(), "locales")
-        path = os.path.join(base_path, f"{self.current_locale}.json")
+        path = ProjectPaths.root() / "locales" / f"{self.current_locale}.json"
 
-        if os.path.exists(path):
+        if path.exists():
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     self.translations = json.load(f)
