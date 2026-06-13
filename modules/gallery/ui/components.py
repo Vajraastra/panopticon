@@ -2,8 +2,8 @@ from PySide6.QtWidgets import QFrame, QVBoxLayout, QLabel
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QMouseEvent, QPixmap
 
-# Reuse the robust thumbnail from Librarian
-from modules.librarian.module import ClickableThumbnail
+# Widget compartido en core (no se importa entre módulos — Regla de Oro #3)
+from core.components.thumbnail import ClickableThumbnail
 
 class FolderCard(QFrame):
     """

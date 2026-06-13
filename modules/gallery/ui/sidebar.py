@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton, 
                                QFrame, QComboBox, QHBoxLayout, QCompleter)
 from PySide6.QtCore import Qt, Signal
-from modules.librarian.logic.tagging_ui import FlowLayout, TagChip # Recycle from Librarian
+from core.components.tag_widgets import FlowLayout, TagChip # widget compartido en core (Regla #3)
 
 class GallerySidebar(QWidget):
     """

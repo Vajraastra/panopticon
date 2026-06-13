@@ -1,6 +1,14 @@
-from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QHBoxLayout, QFrame, QLayout, QSizePolicy)
+"""
+Widgets de etiquetado reutilizables: FlowLayout (acomodo con wrap) y TagChip
+(chip de tag con botón de borrado).
+
+Widgets compartidos en `core/` para que cualquier módulo los use sin importar a
+otro módulo (Regla de Oro #3). Originalmente vivían en Librarian; los usan
+Librarian y Gallery.
+"""
+from PySide6.QtWidgets import (QLabel, QPushButton, QHBoxLayout, QFrame, QLayout, QSizePolicy)
 from PySide6.QtCore import Qt, QRect, QPoint, QSize, Signal
-import random
+
 
 class FlowLayout(QLayout):
     """Standard Qt FlowLayout implementation for wrapping widgets."""
@@ -60,42 +68,43 @@ class FlowLayout(QLayout):
     def _do_layout(self, rect, test_only):
         x, y = rect.x(), rect.y()
         line_height = 0
-        
+
         for item in self._item_list:
             wid = item.widget()
             space_x = self._h_spacing
             space_y = self._v_spacing
-            
+
             next_x = x + item.sizeHint().width() + space_x
-            
+
             if next_x - space_x > rect.right() and line_height > 0:
                 x = rect.x()
                 y = y + line_height + space_y
                 next_x = x + item.sizeHint().width() + space_x
                 line_height = 0
-                
+
             if not test_only:
                 item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
-                
+
             x = next_x
             line_height = max(line_height, item.sizeHint().height())
-            
+
         return y + line_height - rect.y()
+
 
 class TagChip(QFrame):
     """A visual chip representing a single tag with a delete button."""
     removed = Signal(str) # Emits label text on remove
-    
+
     def __init__(self, text, color_Index=0):
         super().__init__()
         self.text = text
         self.setFrameShape(QFrame.StyledPanel)
         self.setFrameShadow(QFrame.Raised)
-        
+
         # Generate a distinct color based on index or hash
         colors = ["#FF5555", "#BD93F9", "#FF79C6", "#8BE9FD", "#50FA7B", "#F1FA8C", "#FFB86C"]
         bg_color = colors[color_Index % len(colors)]
-        
+
         self.setStyleSheet(f"""
             TagChip {{
                 background-color: {bg_color};
@@ -103,7 +112,7 @@ class TagChip(QFrame):
                 padding: 2px;
             }}
             QLabel {{
-                color: #282a36; 
+                color: #282a36;
                 font-weight: bold;
                 border: none;
                 background: transparent;
@@ -120,19 +129,19 @@ class TagChip(QFrame):
                 color: #000;
             }}
         """)
-        
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 2, 5, 2)
         layout.setSpacing(5)
-        
+
         lbl = QLabel(text)
         layout.addWidget(lbl)
-        
+
         btn_close = QPushButton("✕")
         btn_close.setFixedSize(16, 16)
         btn_close.clicked.connect(self.on_remove)
         layout.addWidget(btn_close)
-        
+
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def on_remove(self):

@@ -2,7 +2,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxL
                                QDialog, QFrame, QSizePolicy, QSpinBox, QGridLayout, QLineEdit, QScrollArea, QCompleter)
 from PySide6.QtCore import Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import QPixmap, QKeySequence, QAction, QMouseEvent
-from modules.librarian.logic.tagging_ui import FlowLayout, TagChip
+from core.components.tag_widgets import FlowLayout, TagChip
 from modules.librarian.logic.db_manager import DatabaseManager
 from core.metadata.extractor import MetadataExtractor
 from core.metadata.stamper import MetadataStamper
