@@ -14,7 +14,8 @@ from pathlib import Path
 # para sugerir/filtrar en la UI, nunca para bloquear al usuario.
 VISION_HINTS = (
     "llava", "-vl", "vl-", "vl:", "vision", "moondream", "minicpm-v", "minicpm-o",
-    "pixtral", "internvl", "gemma3", "gemma-3", "qwen2-vl", "qwen2.5-vl", "qwen3-vl",
+    "pixtral", "internvl", "gemma3", "gemma-3", "gemma4", "gemma-4",
+    "qwen2-vl", "qwen2.5-vl", "qwen3-vl",
     "llama-3.2-vision", "llama3.2-vision", "cogvlm", "glm-4v", "phi-3-vision",
     "phi-3.5-vision", "smolvlm", "florence", "joycaption", "molmo",
 )
