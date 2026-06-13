@@ -11,6 +11,7 @@ Contratos:
 - Logging estandarizado con prefijo [ModelDownloader].
 """
 import logging
+import os
 import shutil
 import tempfile
 import zipfile
@@ -63,6 +64,14 @@ def _classify_request_error(e, url: str, filename: str) -> RuntimeError:
     )
 
 
+def _mkstemp_path(**kwargs) -> Path:
+    """Crea un archivo temporal seguro y devuelve su Path.
+    Reemplaza tempfile.mktemp (deprecado, con race condition)."""
+    fd, path = tempfile.mkstemp(**kwargs)
+    os.close(fd)
+    return Path(path)
+
+
 def download_file(url: str, dest: Path, timeout: int = 120) -> None:
     """
     Descarga `url` a `dest`.
@@ -78,7 +87,7 @@ def download_file(url: str, dest: Path, timeout: int = 120) -> None:
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    tmp_path = Path(tempfile.mktemp(dir=dest.parent, suffix=".tmp"))
+    tmp_path = _mkstemp_path(dir=dest.parent, suffix=".tmp")
     log.info(f"[ModelDownloader] Descargando {dest.name}…")
     try:
         r = requests.get(url, stream=True, timeout=timeout)
@@ -116,7 +125,7 @@ def download_zip_member(url: str, member: str, dest: Path,
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    tmp_zip = Path(tempfile.mktemp(suffix=".zip"))
+    tmp_zip = _mkstemp_path(suffix=".zip")
     tmp_dest = None
     log.info(f"[ModelDownloader] Descargando ZIP para {dest.name}…")
     try:
@@ -135,7 +144,7 @@ def download_zip_member(url: str, member: str, dest: Path,
                     f"  Contenido: {names[:10]}\n"
                     f"  → El formato del paquete puede haber cambiado. Reportar para actualizar."
                 )
-            tmp_dest = Path(tempfile.mktemp(dir=dest.parent, suffix=".tmp"))
+            tmp_dest = _mkstemp_path(dir=dest.parent, suffix=".tmp")
             with zf.open(member) as src, open(tmp_dest, "wb") as dst:
                 shutil.copyfileobj(src, dst)
 
