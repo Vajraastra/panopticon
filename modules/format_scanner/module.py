@@ -7,7 +7,7 @@ from core.components.standard_layout import StandardToolLayout
 
 class ScannerWorker(QThread):
     progress = Signal(int, int)  # actual, total
-    finished = Signal(dict)
+    finished_signal = Signal(dict)
     log = Signal(str)
 
     def __init__(self, root_path, log_start_msg):
@@ -38,7 +38,7 @@ class ScannerWorker(QThread):
             if i % 100 == 0:
                 self.progress.emit(i, total)
 
-        self.finished.emit(dict(stats))
+        self.finished_signal.emit(dict(stats))
 
 
 class FormatScannerModule(BaseModule):
@@ -122,7 +122,7 @@ class FormatScannerModule(BaseModule):
             lambda a, t: self.progress_bar.setValue(int((a / t) * 100) if t > 0 else 0)
         )
         self.worker.log.connect(lambda m: self.txt_log.append(f"> {m}"))
-        self.worker.finished.connect(self.on_finished)
+        self.worker.finished_signal.connect(self.on_finished)
         self.worker.start()
 
     def on_finished(self, stats):
