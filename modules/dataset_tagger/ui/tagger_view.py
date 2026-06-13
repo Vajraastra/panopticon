@@ -339,7 +339,6 @@ class DatasetTaggerView(QWidget):
         head = QHBoxLayout()
         head.addWidget(QLabel(title))
         btn_reset = QPushButton(self._tr("tagger.reset", "Reset"))
-        btn_reset.setMaximumWidth(70)
         head.addStretch()
         head.addWidget(btn_reset)
         v.addLayout(head)
