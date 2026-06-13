@@ -53,16 +53,16 @@
 7. [x] **`c17ad3e` deduplicator: getsize con try/except OSError** — verificado con symlink roto.
 
 ### Fase 3 — Rendimiento
-8. **Cache de modelos del SlopAnalyzer** — cache módulo-level keyed por `(content_type, flags)`; la calibración 🔬 no debe recargar CLIP. Cerrar MediaPipe (`close()`) solo al invalidar cache.
-9. **Vectorizar `calculate_compression_artifacts`** — numpy slicing en vez de doble loop; muestrear para `np.unique`.
-10. **DB compartida + WAL** — Librarian expone su `DatabaseManager` via `context`; query_engine e image_optimizer la reutilizan. `PRAGMA journal_mode=WAL` + `busy_timeout=5000` en `init_db`.
-11. **Deduplicator: paralelizar hashing** (el ThreadPoolExecutor ya está importado) y reducir O(n²) si hace falta.
+8. [x] **`f1a1e2f` Cache de modelos del SlopAnalyzer** — `get_analyzer()` con cache de un slot keyed por `(models_dir, content_type, flags)`; calibración 🔬 ya no recarga CLIP. MediaPipe `close()` al invalidar (resuelve también el item de Fase 4). Fallo de init no envenena el cache.
+9. [x] **`f45aa59` Vectorizar `calculate_compression_artifacts`** — `np.ix_` con equivalencia numérica exacta + muestreo estriado para `np.unique`. 50x más rápido en 2048×2048.
+10. [x] **`49efc15` WAL + busy_timeout en init_db** — verificado lector+escritor concurrentes. **Parte diferida:** inyectar instancia compartida via context — la auditoría vio 3 sitios pero hay 10 (`cropper:329`, `viewer_window:143`, `recognition_view` ×5…); con WAL las conexiones múltiples ya son seguras, el refactor de inyección es estructural y va mejor como sesión propia.
+11. [x] **`fd3e17a` Deduplicator: hashing paralelo** (MD5 + pHash via ThreadPoolExecutor) + agrupamiento visual hamming vectorizado con numpy (equivalencia verificada).
 
 ### Fase 4 — Mejoras (sin orden estricto)
 12. Independencia del CWD (LocaleManager, `panopticon.db` → `ProjectPaths.root()`).
 13. Widgets compartidos a `core/components/` (`ClickableThumbnail`, `FlowLayout`, `TagChip`).
 14. `print()` → `logging` + FileHandler a `logs/`.
-15. Menores: bare except viewer_window:442, `tr()` con `is not None`, `mktemp`→`mkstemp`, `count_signal` muerto, `color: white` del dashboard, EventBus `unsubscribe`, JPEG stamp sin re-encode (decidir piexif).
+15. Menores: ~~bare except viewer_window~~ `62ba433`, ~~`tr()` con `is not None`~~ `96557f1`, ~~`mktemp`→`mkstemp`~~ `2f70a7d`. Pendientes: `count_signal` muerto, `color: white` del dashboard, EventBus `unsubscribe`, JPEG stamp sin re-encode (decidir piexif).
 
 ---
 
