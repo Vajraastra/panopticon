@@ -163,8 +163,11 @@ class PicklerView(StandardToolLayout):
         self._discarded = 0
         self._last_op: tuple | None = None  # (action, original, current, index)
 
-        dest = self._settings.value("dest_dir", "")
-        self._dest_dir = Path(dest) if dest else None
+        # Carpeta del set actual y override de destino. Por defecto los archivos
+        # van a 'picked/' y 'discarded/' DENTRO del set; "Elegir destino" sustituye
+        # solo el destino de conservar y se reinicia al abrir otro set.
+        self._set_folder: Path | None = None
+        self._custom_dest: Path | None = None
         self._copy_mode = self._settings.value("copy_mode", False, type=bool)
 
         # Construir los 3 paneles y armar el layout estándar
@@ -265,10 +268,9 @@ class PicklerView(StandardToolLayout):
         self._btn_open_dest = QPushButton(self.tr("pickler.open_dest", "Open destination"))
         self._btn_open_dest.clicked.connect(self._open_dest)
         lay.addWidget(self._btn_open_dest)
-        self._btn_open_trash = QPushButton(self.tr("pickler.open_trash", "Open trash"))
-        self._btn_open_trash.clicked.connect(
-            lambda: CachePaths.open_folder(file_ops.rejected_folder()))
-        lay.addWidget(self._btn_open_trash)
+        self._btn_open_disc = QPushButton(self.tr("pickler.open_discarded", "Open discarded"))
+        self._btn_open_disc.clicked.connect(self._open_discarded)
+        lay.addWidget(self._btn_open_disc)
 
         self._update_dest_label()
         self._update_counters()
@@ -353,20 +355,34 @@ class PicklerView(StandardToolLayout):
         self.load_folder(folder)
 
     def _choose_dest(self) -> None:
-        start = str(self._dest_dir) if self._dest_dir else \
-            str(self._settings.value("last_dir", str(Path.home())))
+        start = str(self._custom_dest) if self._custom_dest else \
+            str(self._set_folder or self._settings.value("last_dir", str(Path.home())))
         folder = QFileDialog.getExistingDirectory(
             self, self.tr("pickler.choose_dest", "Choose destination…"), start)
         if folder:
-            self._dest_dir = Path(folder)
-            self._settings.setValue("dest_dir", folder)
+            self._custom_dest = Path(folder)
             self._update_dest_label()
 
+    def _keep_dest(self) -> Path | None:
+        """Destino para conservar: override si existe, si no 'picked/' en el set."""
+        if self._custom_dest:
+            return self._custom_dest
+        base = self._set_folder or (self._images[self._index].parent if self._images else None)
+        return (base / "picked") if base else None
+
+    def _discard_dest(self) -> Path | None:
+        """Destino para descartar: siempre 'discarded/' en el set/carpeta origen."""
+        base = self._set_folder or (self._images[self._index].parent if self._images else None)
+        return (base / "discarded") if base else None
+
     def _update_dest_label(self) -> None:
-        if self._dest_dir:
-            self._lbl_dest.setText(str(self._dest_dir))
+        dest = self._keep_dest()
+        if self._custom_dest:
+            self._lbl_dest.setText(str(self._custom_dest))
+        elif dest:
+            self._lbl_dest.setText(str(dest))
         else:
-            self._lbl_dest.setText(self.tr("pickler.no_dest", "No destination set"))
+            self._lbl_dest.setText(self.tr("pickler.dest_default", "<set>/picked"))
 
     def _on_transfer_toggled(self) -> None:
         self._copy_mode = self._rb_copy.isChecked()
@@ -375,13 +391,17 @@ class PicklerView(StandardToolLayout):
     # ── API pública ───────────────────────────────────────────────────
     def load_folder(self, folder: Path) -> None:
         """Carga las imágenes de folder y muestra la primera."""
+        folder = Path(folder)
         self._images = sorted(
-            [f for f in Path(folder).iterdir()
+            [f for f in folder.iterdir()
              if f.is_file() and f.suffix.lower() in _IMAGE_EXTS],
             key=lambda p: p.name.lower(),
         )
+        self._set_folder = folder
+        self._custom_dest = None  # cada set vuelve al default picked/ del set
         self._index = 0
         self._last_op = None
+        self._update_dest_label()
         self._refresh_view()
         self._canvas.setFocus()
 
@@ -425,22 +445,25 @@ class PicklerView(StandardToolLayout):
 
     def _delete_current(self) -> None:
         path = self._images[self._index]
+        dest = self._discard_dest()
+        if not dest:
+            return
         try:
-            new_path = file_ops.reject(path)
+            new_path = file_ops.discard(path, dest)
         except OSError as exc:
             self._set_status(self.tr("pickler.error_move", "Error: {}").format(exc))
             return
-        self._last_op = ("reject", path, new_path, self._index)
+        self._last_op = ("discard", path, new_path, self._index)
         self._discarded += 1
         self._consume_current()
 
     def _pick_current(self) -> None:
-        if not self._dest_dir:
-            self._set_status(self.tr("pickler.need_dest", "Choose a destination folder first"))
+        dest = self._keep_dest()
+        if not dest:
             return
         path = self._images[self._index]
         try:
-            new_path = file_ops.keep(path, self._dest_dir, self._copy_mode)
+            new_path = file_ops.keep(path, dest, self._copy_mode)
         except OSError as exc:
             self._set_status(self.tr("pickler.error_move", "Error: {}").format(exc))
             return
@@ -478,7 +501,7 @@ class PicklerView(StandardToolLayout):
             self._kept = max(0, self._kept - 1)
             self._images.insert(min(index, len(self._images)), Path(original))
             self._index = index
-        else:  # reject
+        else:  # discard
             self._discarded = max(0, self._discarded - 1)
             self._images.insert(min(index, len(self._images)), Path(original))
             self._index = index
@@ -530,8 +553,14 @@ class PicklerView(StandardToolLayout):
             f"✓ {kept}: {self._kept}    🗑 {disc}: {self._discarded}")
 
     def _open_dest(self) -> None:
-        if self._dest_dir and self._dest_dir.exists():
-            CachePaths.open_folder(self._dest_dir)
+        dest = self._keep_dest()
+        if dest and dest.exists():
+            CachePaths.open_folder(dest)
+
+    def _open_discarded(self) -> None:
+        disc = self._discard_dest()
+        if disc and disc.exists():
+            CachePaths.open_folder(disc)
 
     # ── Interfaz estándar (pipeline — fase 2) ─────────────────────────
     def load_images(self, paths: list) -> None:

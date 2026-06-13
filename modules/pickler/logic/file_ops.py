@@ -4,8 +4,9 @@ Operaciones de archivo del módulo Pickler.
 Lógica pura, sin UI. Dos acciones de curación, ambas NO destructivas sobre el
 original (biblia §9, Regla #2/#3 — copias primero, cleanup con aprobación):
 
-  • reject() → mueve a una papelera RECUPERABLE dentro del cache central.
-  • keep()   → mueve o copia el archivo a una carpeta destino elegida.
+  • discard() → mueve a una subcarpeta 'discarded/' (recuperable).
+  • keep()    → mueve o copia el archivo a una carpeta destino ('picked/' por
+               defecto, o la que elija el usuario).
 
 Ninguna función usa `Path.unlink()` sobre el original. Todas resuelven
 colisiones de nombre añadiendo un sufijo `_1`, `_2`, … para no sobrescribir.
@@ -15,15 +16,6 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-
-from core.paths import CachePaths
-
-
-def rejected_folder() -> Path:
-    """Papelera recuperable del Pickler: cache/pickler/rejected/."""
-    folder = CachePaths.get_tool_cache("pickler") / "rejected"
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
 
 
 def _unique_path(dest_dir: Path, name: str) -> Path:
@@ -40,13 +32,15 @@ def _unique_path(dest_dir: Path, name: str) -> Path:
         i += 1
 
 
-def reject(path: Path) -> Path:
+def discard(path: Path, discard_dir: str | Path) -> Path:
     """
-    Envía la imagen a la papelera recuperable.
+    Envía la imagen a la subcarpeta 'discarded' (recuperable).
     Devuelve la ruta nueva (para poder deshacer).
     """
     path = Path(path)
-    dest = _unique_path(rejected_folder(), path.name)
+    discard_dir = Path(discard_dir)
+    discard_dir.mkdir(parents=True, exist_ok=True)
+    dest = _unique_path(discard_dir, path.name)
     shutil.move(str(path), str(dest))
     return dest
 

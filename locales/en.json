@@ -502,7 +502,6 @@
   "pickler.mode_pick": "✓ Picker",
   "pickler.dest_folder": "Destination folder (keep)",
   "pickler.choose_dest": "Choose destination…",
-  "pickler.no_dest": "No destination set",
   "pickler.transfer_mode": "When keeping:",
   "pickler.move": "Move",
   "pickler.copy": "Copy",
@@ -513,9 +512,9 @@
   "pickler.deleted": "Discarded",
   "pickler.undo": "Undo (Ctrl+Z)",
   "pickler.open_dest": "Open destination",
-  "pickler.open_trash": "Open trash",
   "pickler.no_images": "No images in this folder",
   "pickler.cant_display": "Cannot display:",
-  "pickler.need_dest": "Choose a destination folder first",
-  "pickler.error_move": "Error: {}"
+  "pickler.error_move": "Error: {}",
+  "pickler.open_discarded": "Open discarded",
+  "pickler.dest_default": "(inside set)/picked"
 }

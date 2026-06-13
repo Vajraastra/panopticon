@@ -527,6 +527,10 @@ class MainWindow(QMainWindow):
             self.root_stack.setCurrentIndex(0)
 
 if __name__ == "__main__":
+    # Diálogos nativos del OS (selector de archivos, etc.): enrutar al portal del
+    # escritorio. Sin esto, Qt cae a su propio diálogo (feo y estilizado por la QSS
+    # global). setdefault respeta cualquier override que el usuario ya tenga.
+    os.environ.setdefault("QT_QPA_PLATFORMTHEME", "xdgdesktopportal")
     app = QApplication(sys.argv)
     # Habilitar fallback de fuente emoji en Linux (Noto Color Emoji / Noto Emoji)
     _f = app.font()

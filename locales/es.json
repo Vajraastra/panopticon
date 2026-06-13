@@ -502,7 +502,6 @@
   "pickler.mode_pick": "✓ Picker",
   "pickler.dest_folder": "Carpeta destino (conservar)",
   "pickler.choose_dest": "Elegir destino…",
-  "pickler.no_dest": "Sin destino",
   "pickler.transfer_mode": "Al conservar:",
   "pickler.move": "Mover",
   "pickler.copy": "Copiar",
@@ -513,9 +512,9 @@
   "pickler.deleted": "Descartadas",
   "pickler.undo": "Deshacer (Ctrl+Z)",
   "pickler.open_dest": "Abrir destino",
-  "pickler.open_trash": "Abrir papelera",
   "pickler.no_images": "No hay imágenes en esta carpeta",
   "pickler.cant_display": "No se puede mostrar:",
-  "pickler.need_dest": "Elige una carpeta destino primero",
-  "pickler.error_move": "Error: {}"
+  "pickler.error_move": "Error: {}",
+  "pickler.open_discarded": "Abrir descartados",
+  "pickler.dest_default": "(dentro del set)/picked"
 }
