@@ -14,7 +14,7 @@ from .logic.deduplicator import Deduplicator
 
 class DeduplicationWorker(QThread):
     progress = Signal(int, int, str)
-    finished = Signal(dict)
+    finished_signal = Signal(dict)
 
     def __init__(self, folder, mode, threshold=5):
         super().__init__()
@@ -28,7 +28,7 @@ class DeduplicationWorker(QThread):
             res = self.engine.find_duplicates_by_hash(self.folder, self.progress.emit)
         else:
             res = self.engine.find_duplicates_visual(self.folder, self.threshold, self.progress.emit)
-        self.finished.emit(res)
+        self.finished_signal.emit(res)
 
     def stop(self):
         self.engine.stop()
@@ -265,7 +265,7 @@ class DuplicateFinderModule(BaseModule):
         mode = "hash" if self.combo_mode.currentIndex() == 0 else "visual"
         self.worker = DeduplicationWorker(self.folder_path, mode, self.slider_thr.value())
         self.worker.progress.connect(self.update_progress)
-        self.worker.finished.connect(self.on_scan_finished)
+        self.worker.finished_signal.connect(self.on_scan_finished)
         self.worker.start()
 
     def update_progress(self, curr, total, msg):
