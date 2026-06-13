@@ -1,134 +1,163 @@
 # TASKS — Panopticon
 
 ## Estado general
-**Re-audit 2026-03 COMPLETO.** Soporte AVIF + integración cherry-dl implementados (2026-04).
-**Quality Scorer refactorizado (2026-04)** — Fase 1 Slop Filter + Fase 2 Quality Rank.
+**Re-audit 2026-03 COMPLETO.**
+**Quality Scorer refactorizado 2026-04** — Slop Filter + Quality Rank + 3 tipos de contenido.
+**Sesión de fixes 2026-06-05 COMPLETA** — code review, bugs críticos resueltos, limpieza.
 **Próxima sesión:** calibración de umbrales con imágenes reales + sistema de defaults seguros.
 
 ---
 
 ## ✅ Completado
 
+### Sesión 2026-06-05 — Fixes de estabilidad + limpieza
+
+- [x] **core/ai/model_downloader.py** — helper central de descarga con temp→move, sin parciales, errores diferenciados (404 / red caída / timeout)
+- [x] **_download_buffalo_l()** — implementado (estaba vacío). Character Recognizer ya puede descargarse en instalación nueva
+- [x] **CalibrationWorker** — calibración movida a QThread, elimina GUI freeze
+- [x] **_eval_hand orientación** — vector muñeca→nudillo para detectar si dedos apuntan arriba o abajo
+- [x] **AVIF eliminado de filtros de entrada** — quality_scorer y character_recognizer solo aceptan PNG/JPG/WebP (cv2.imread no soporta AVIF)
+- [x] **YuNet INT8** — URL actualizada en slop_filter y recognition_engine (100KB vs 230KB FP32)
+- [x] **Docstrings corregidos** — 3d_render, analyze_calibration, classify() warning
+- [x] **Limpieza** — dummy_creator eliminado, test obsoleto eliminado, .gitignore actualizado
+- [x] **Smoke tests 21/21 + batería lógica 19/19** — todos los módulos verificados
+
 ### Quality Scorer — Refactor completo (sesión 2026-04)
 - [x] **Fase 1 — Slop Filter**: `SlopFilterWorker` QThread, detección anatómica (YuNet/lbpcascade + YOLOv8-pose + MediaPipe Hands + CLIP aesthetic)
-- [x] **Fase 2 — Quality Rank**: `QualityRankWorker` QThread, métricas técnicas (nitidez, artefactos, resolución, color, composición)
-- [x] **3 tipos de contenido**: fotorrealista (YuNet), 3D render (lbpcascade), ilustración/anime (lbpcascade + CLIP dominante)
-- [x] **Modo calibración individual**: botón 🔬 → scores raw por modelo + umbrales actuales
-- [x] **UI completa**: 3 columnas paginadas (keeper/review/slop), mover SLOP, pasar keepers a Fase 2, carpeta F2 configurable
-- [x] **Deps nuevas**: `mediapipe>=0.10.0`, `open-clip-torch>=2.24.0`
-- [x] **lbpcascade_animeface**: confirmado por usuario para renders 3D y ilustraciones
+- [x] **Fase 2 — Quality Rank**: `QualityRankWorker` QThread, métricas técnicas
+- [x] **3 tipos de contenido**: fotorrealista / 3D render / ilustración con pesos y umbrales distintos
+- [x] **Modo calibración individual**: botón 🔬 → scores raw + pesos + umbrales del preset activo
+- [x] **UI completa**: 3 columnas paginadas, mover slop, pasar keepers a Fase 2
 
 ### Re-Auditoría módulo por módulo (sesión 2026-03)
-- [x] **Image Optimizer** — botones consolidados al sidebar, `DropFrame` con drag & drop (imágenes + carpetas recursivo), eliminado bottom bar
-- [x] **Duplicate Finder** — full rewrite: locale `dup.*` completo, `theme_manager.get_color()`, `QMessageBox.critical→warning`, `logging.warning`, `DuplicateItem(bg_color, border_color)`
-- [x] **Watermarker** — imports top-level, locale `wm.*`, `theme_manager.get_color()`, todos los diálogos con `self.view`, `critical→warning`
-- [x] **Smart Cropper** — lazy guard, locale `crop.*`, proporciones agrupadas (Dataset/Monitors/Phones) con separadores `QStandardItem(disabled)`, comparación por índice AR_FREE/AR_CUSTOM (locale-safe), auto-append extensión en save_crop con regex
-- [x] **Layer Composer** — ELIMINADO completamente (no había referencias externas)
-- [x] **Quality Scorer** — `os.startfile()→CachePaths.open_folder()`, `critical→warning`, locale `qs.*`, `theme_manager.get_color()`, `run_headless()` añadido
-- [x] **Gallery** — imports top-level, 4 strings → `self.tr()`, `run_headless()` añadido
-- [x] **Character Recognizer** — audit completo + nuevas features: modo Illustration/Real Person (ArcFace+YuNet+landmark alignment), locale `cr.*` (~40 keys), logging, `run_headless()`, botones Skip/Return, borrado de tags, Auto Mode con `AutoScanWorker` (sugerencia dominante al 60%)
-- [x] **Librarian** — `theme_manager.get_color()` en sidebar/content/bottom/thumbnails/scan buttons, bare excepts corregidos, bug CSS resuelto; **bugs post-audit**: columnas dinámicas (viewport-aware) + carga lazy de thumbnails por batches (no bloquea UI)
-- [x] **Metadata Hub** — `theme_manager.get_color()` en sidebar/content/set_mode/_update_mode_styles, `ResponsiveImageLabel` recibe colores del tema, eliminado `from core.theme import Theme`, `LocaleManager()` directo eliminado, 2× `QMessageBox.critical→warning`
-- [x] **Sistema de temas** — 10 paletas (cyberpunk/midnight/forest/slate/light/sepia/cosmic/grape/ocean/aurora), ThemeManager expandido, settings page rediseñada con grid de tarjetas, live preview via `_rebuild_settings_page()`, emoji icons en tarjetas, fix de rendering de emojis en Linux (`QFont.setFamilies`)
+- [x] Image Optimizer, Duplicate Finder, Watermarker, Smart Cropper, Layer Composer (eliminado)
+- [x] Quality Scorer, Gallery, Character Recognizer, Librarian, Metadata Hub
+- [x] Sistema de 10 temas, live preview, fix emojis Linux
 
 ---
 
-## 🔲 Pendiente
+## 🎯 PLAN DE ATAQUE — Fixes de auditoría (orden acordado 2026-06-11)
 
-### Próxima sesión — Calibración del Quality Scorer
+> Reglas: un módulo = un commit inmediato. Smoke test antes y después de cada uno:
+> `python -c "import modules.X.module; print('OK')"`. Consultar bitácora ante errores repetidos.
 
-#### 1. Sistema de defaults seguros (implementar primero, ~30 min)
+### Fase 1 — Integridad de datos (PRIMERO)
+1. **Commit 1: stamper temp→replace** — `core/metadata/stamper.py`: en `stamp_file`, `MetadataStamper.stamp`, `strip_metadata` y todas las variantes `_stamp_*`: guardar a archivo temporal en el mismo directorio y `os.replace()` al original solo si el save fue exitoso. NO añadir re-encode-free EXIF todavía (eso es Fase 4, requiere decidir dependencia piexif). Smoke: `modules.metadata.module`.
+2. **Commit 2: db_manager LIKE con separador** — `modules/librarian/logic/db_manager.py`: `norm + '/%'` en `get_known_files_in_folder`, `remove_watched_folder`, `get_folder_count`, `get_folder_preview`, `get_files_recursive`, `search_files_paginated` (rama `path:`). Añadir `ESCAPE '\'` escapando `%`/`_` del nombre de carpeta. Cuidado: los paths guardados NO tienen slash final. Smoke: `modules.librarian.module` + probar deep_clean con carpetas hermanas de prefijo común.
+3. **Commit 3: aesthetic MLP repo** — `modules/quality_scorer/logic/slop_filter.py` `_download_aesthetic_mlp`: `repo_id="camenduru/improved-aesthetic-predictor"` (verificado: contiene `sac+logos+ava1-l14-linearMSE.pth` exacto). Aprovechar para no dejar el archivo duplicado (descargar a temp y mover como `sac_logos_ava_l14_linear.pth`, o usar el nombre original directo). Verificar carga real: correr Fase 1 con aesthetic activo.
+
+### Fase 2 — Estabilidad
+4. **recognition_engine: propagar errores de init** — que `initialize()` re-lance (o devuelva el error) y los workers lo emitan via señal `error` a la UI.
+5. **format_scanner: guard anti doble-inicio** — patrón de librarian.module:706 (`isRunning()`) o deshabilitar botón.
+6. **Renombrar señales `finished` sombreadas** — un commit por módulo (8 workers en 7 módulos). Patrón: `finished_signal` como en indexer.py. Actualizar todos los `.connect()` correspondientes en los module.py.
+7. **deduplicator: `os.path.getsize` con try/except OSError** (línea 49).
+
+### Fase 3 — Rendimiento
+8. **Cache de modelos del SlopAnalyzer** — cache módulo-level keyed por `(content_type, flags)`; la calibración 🔬 no debe recargar CLIP. Cerrar MediaPipe (`close()`) solo al invalidar cache.
+9. **Vectorizar `calculate_compression_artifacts`** — numpy slicing en vez de doble loop; muestrear para `np.unique`.
+10. **DB compartida + WAL** — Librarian expone su `DatabaseManager` via `context`; query_engine e image_optimizer la reutilizan. `PRAGMA journal_mode=WAL` + `busy_timeout=5000` en `init_db`.
+11. **Deduplicator: paralelizar hashing** (el ThreadPoolExecutor ya está importado) y reducir O(n²) si hace falta.
+
+### Fase 4 — Mejoras (sin orden estricto)
+12. Independencia del CWD (LocaleManager, `panopticon.db` → `ProjectPaths.root()`).
+13. Widgets compartidos a `core/components/` (`ClickableThumbnail`, `FlowLayout`, `TagChip`).
+14. `print()` → `logging` + FileHandler a `logs/`.
+15. Menores: bare except viewer_window:442, `tr()` con `is not None`, `mktemp`→`mkstemp`, `count_signal` muerto, `color: white` del dashboard, EventBus `unsubscribe`, JPEG stamp sin re-encode (decidir piexif).
+
+---
+
+## 🔲 Auditoría 2026-06-11 — Hallazgos (pendientes de fix)
+
+### Bugs — prioridad alta
+- [ ] **stamper.py escribe in-place sin temp→replace** — `Image.open(path)` → `img.save(path)` directo sobre el original en `stamp_file`, `MetadataStamper.stamp`, `strip_metadata`. Fallo a media escritura = original corrupto. Usar patrón temp→`os.replace` (ya existe en model_downloader). Además JPEG/WebP/AVIF re-encodean píxeles (quality=95) en cada stamp → pérdida generacional; para JPEG usar inserción de segmento EXIF sin re-encode (piexif).
+- [ ] **db_manager: `LIKE folder + '%'` sin separador** — `/foo/bar` matchea `/foo/barbecue/...`. En deep_clean elimina registros de carpetas hermanas de la DB. Afecta `get_known_files_in_folder`, `remove_watched_folder`, `get_folder_count`, `get_files_recursive`, `search_files_paginated`. Fix: `norm + '/%'` + cláusula `ESCAPE` para `%`/`_` en nombres.
+- [ ] **recognition_engine traga errores de init/descarga** — si falla la descarga del modelo, `initialized=False` y `analyze_image` devuelve None silencioso; el usuario ve "sin rostros" en todo. Propagar error a la UI (señal error del worker).
+- [ ] **Aesthetic MLP: repo HF inexistente** — `_download_aesthetic_mlp` usa `repo_id="shunk031/aesthetics-predictor"` que **no existe** (verificado 2026-06-11, API devuelve 401). En instalación nueva el scorer aesthetic falla silenciosamente (`use_aesthetic=False`) — y en "illustration" pesa 0.40, el dominante. Reemplazo drop-in verificado: `repo_id="camenduru/improved-aesthetic-predictor"`, contiene exactamente `sac+logos+ava1-l14-linearMSE.pth` (nn.Linear 768→1). El repo `shunk031/aesthetics-predictor-v2-sac-logos-ava1-l14-linearMSE` NO sirve (es wrapper transformers con CLIP completo). URLs verificadas OK: YuNet INT8, lbpcascade, buffalo_l.zip.
+
+### Bugs — prioridad media
+- [ ] **format_scanner sin guard anti doble-inicio** — `start_scan` reasigna `self.worker` con el hilo anterior vivo (riesgo "QThread destroyed while running"). Añadir `isRunning()` guard o deshabilitar botón (patrón librarian:706).
+- [ ] **8 workers sombrean `QThread.finished`** — `finished = Signal(...)` oculta la señal nativa (image_optimizer, quality_scorer×3, format_scanner, format_converter, duplicate_finder, character_recognizer×2). Los de `Signal()` sin args (RecognitionWorker/AutoScanWorker) son los más riesgosos (misma firma → posible doble disparo). Renombrar como `finished_signal` (patrón correcto ya usado en indexer.py).
+- [ ] **deduplicator: `os.path.getsize` sin try** (línea 49) — crash del worker si un archivo desaparece o es symlink roto a media corrida.
+
+### Bugs — prioridad baja
+- [ ] `gallery/ui/viewer_window.py:442` — bare `except:` → `except OSError`.
+- [ ] `locale_manager.tr()` — `if val:` descarta traducción vacía legítima → `if val is not None`.
+- [ ] `model_downloader` — `tempfile.mktemp` (deprecado, race) → `tempfile.mkstemp`.
+- [ ] `indexer.py` — `count_signal` definido pero nunca emitido; `st_ctime` no es fecha de creación en Linux.
+
+### Optimizaciones
+- [ ] **SlopAnalyzer recarga CLIP ViT-L-14 (~1.7 GB) en cada corrida** — incluso la calibración 🔬 de UNA imagen. Cachear modelos a nivel módulo (key: content_type+flags) o mantener analyzer vivo entre corridas. La mayor ganancia de rendimiento del proyecto.
+- [ ] **`calculate_compression_artifacts`: doble loop Python por bloques 8×8** — vectorizar con numpy slicing (`gray[b:h-b:b, b:w-b:b]`); también `np.unique` sobre todos los píxeles → muestrear. Cuello de botella de Fase 2.
+- [ ] **DB: habilitar `PRAGMA journal_mode=WAL` + `busy_timeout`** — hay 2 conexiones (DatabaseManager del Librarian + QueryEngine de Gallery) al mismo panopticon.db; riesgo de "database is locked". `search_by_terms` con `LIKE %..%` en 6 columnas no escala a 250K filas → considerar FTS5. `get_folders_paginated` hace N+1 queries.
+- [ ] **Deduplicator visual O(n²)** + hashing secuencial (`ThreadPoolExecutor` importado, nunca usado) — paralelizar hashing; BK-tree o bucketing por prefijo para agrupar.
+- [ ] **Startup: `add_module_card()` llama `get_view()` de todos los módulos al arrancar** — el lazy-init no es lazy. Construir vista en el primer `switch_to_module`.
+
+### Mejoras
+- [ ] Unificar `print()` → `logging` en core (paths, event_bus, mod_loader, metadata/*) y módulos (gallery loader, quality_scorer.py:205, deduplicator); configurar FileHandler hacia `logs/`.
+- [ ] **Eliminar dependencia del CWD** — LocaleManager (`locales/`, `config.json`) y DatabaseManager (`panopticon.db`) usan rutas relativas; usar `ProjectPaths.root()`. Quitaría el requisito "ejecutar desde la raíz".
+- [ ] Imports cruzados — análisis 2026-06-11: la cadena de producción real usa señales (`request_open_*` → wiring en main.py → `load_image_set`), NO imports. Clasificación:
+  - **Legítimos (distribución de datos del hub Librarian):** `gallery/logic/query_engine.py` y `image_optimizer/module.py:389` importan `DatabaseManager` para leer la DB central (tags/ratings). Mantener el acceso, pero inyectar la instancia compartida via `context` en vez de crear conexiones nuevas (hoy hay 3 conexiones a panopticon.db) + habilitar WAL.
+  - **No legítimos (reúso de widgets, nada que ver con la cadena):** `gallery/ui/components.py` importa `ClickableThumbnail` desde `librarian/module.py` completo; `gallery/ui/sidebar.py` importa `FlowLayout`/`TagChip` de `librarian/logic/tagging_ui`. Mover a `core/components/`.
+- [ ] MediaPipe Hands sin `close()` al terminar corrida del SlopFilter.
+- [ ] `_download_aesthetic_mlp` no usa model_downloader y deja el archivo descargado duplicado en disco.
+- [ ] main.py dashboard: `color: white` hardcodeado en títulos/tarjetas — ilegible en temas light/sepia.
+- [ ] EventBus sin `unsubscribe()`.
+- [ ] mod_loader: instancia la primera subclase de BaseModule que devuelve `inspect.getmembers` (orden alfabético) — frágil si un module.py importa otra clase BaseModule.
+
+---
+
+## 🔲 Próxima sesión — Calibración del Quality Scorer
+
+> **Prerequisito:** El usuario trae 30-40 imágenes etiquetadas manualmente
+> (keeper / review / slop) de sus colecciones reales.
+
+### 1. Sistema de defaults seguros (~30 min) — implementar primero
 - Separar `FACTORY_DEFAULTS` de `CONTENT_TYPES` en `slop_filter.py`
 - Función `_load_content_types()` — lee `data/calibration.json` si existe, sino usa factory defaults
 - Botón "Restaurar defaults de fábrica" en UI → borra `calibration.json`
-- Arquitectura: factory defaults (hardcoded) → calibración usuario (JSON) → calibración desde keepers (UI)
+- Arquitectura: `FACTORY_DEFAULTS` (hardcoded) → `calibration.json` (usuario) → UI en vivo
 
-#### 2. Calibración desde keepers del usuario (implementar, ~1h)
+### 2. Calibrador desde keepers (~1h)
 - Botón "📚 Calibrar desde mis keepers…" en sidebar Fase 1
 - `UserCalibrator` en `logic/user_calibration.py`:
-  - Corre los 4 scorers sobre cada imagen keeper
+  - Corre los 4 scorers sobre cada imagen keeper del usuario
   - Calcula distribución por scorer (media, std, percentil 10)
   - Peso sugerido ∝ 1/CV (scorer más consistente = más peso)
-  - Umbral keeper = p10(combined) - margen
-- Diálogo de resultado con tabla de stats + [Aplicar] [Cancelar]
+  - Umbral keeper = p10(combined) - margen de seguridad
+- Diálogo con tabla de stats + botones [Aplicar] [Cancelar]
 - Guardar en `data/calibration.json`
 
-#### 3. Sesión de calibración con imágenes reales (~1-2h)
-El usuario trae ~30-40 imágenes etiquetadas (keeper/review/slop):
+### 3. Sesión de calibración con imágenes reales (~1-2h)
 - **Ilustración/anime**: 5-8 keeper + 3-5 review + 5-8 slop
 - **3D Render**: 5-8 keeper + 3-5 review + 5-8 slop
-- Correr modo 🔬 sobre cada una, anotar scores raw
-- Ajustar `FACTORY_DEFAULTS` con esos datos reales
+- Correr modo 🔬 sobre cada una, registrar scores raw
+- Ajustar `FACTORY_DEFAULTS` con los datos reales
 - Las imágenes keeper también sirven para demostrar el calibrador automático
 
-#### Características clave del calibrador desde keepers
-- Colecciones con fisonomías exageradas (anime estilizado): el módulo aprende que face=0.35 ES correcto para ese estilo
-- Pesos automáticos: si body es muy ruidoso en keepers → peso bajo; si aesthetic es consistente → peso alto
-- No requiere que el usuario entienda de pesos ni umbrales
+---
+
+## 🔲 Pendiente — Decisión de diseño diferida
+
+### "Bonus fantasma" en scorers que fallan al cargar
+**Contexto:** Si un modelo no carga (`use_face = False`), el combined recibe `0.5 × peso_face` fijo.
+Los pesos no se redistribuyen a los scorers activos.
+**Estado actual:** Mantener comportamiento neutro (Opción A). Los umbrales de CONTENT_TYPES fueron calibrados asumiendo 4 scorers activos.
+**Reevaluar:** Después de la sesión de calibración real, si se confirma que los modelos fallan con frecuencia en producción → implementar redistribución de pesos y recalibrar umbrales.
 
 ---
 
-### Pendiente anterior — Verificación y cierre
+## 🔲 Futuro (sin fecha)
 
-#### 1. Tests de importación (smoke tests)
-Ejecutar en orden para detectar errores de import regresivos:
-```bash
-python -c "import modules.gallery.module; print('gallery OK')"
-python -c "import modules.librarian.module; print('librarian OK')"
-python -c "import modules.quality_scorer.module; print('quality_scorer OK')"
-python -c "import modules.smart_cropper.module; print('smart_cropper OK')"
-python -c "import modules.watermarker.module; print('watermarker OK')"
-python -c "import modules.format_converter.module; print('format_converter OK')"
-python -c "import modules.image_optimizer.module; print('image_optimizer OK')"
-python -c "import modules.character_recognizer.module; print('character_recognizer OK')"
-python -c "import modules.metadata.module; print('metadata OK')"
-python -c "import modules.duplicate_finder.module; print('duplicate_finder OK')"
-python -c "import modules.format_scanner.module; print('format_scanner OK')"
-```
-
-#### 2. Verificar locale completo
-Confirmar que todos los namespaces están completos en `en.json` y `es.json`:
-- `crop.*` — Smart Cropper
-- `wm.*` — Watermarker
-- `qs.*` — Quality Scorer
-- `gallery.*` — Gallery
-- `opt.*` — Image Optimizer
-- `fscanner.*` — Format Scanner (ojo: `fs.*` pertenece a Face Scorer, usar `fscanner.*`)
-
-#### 3. Push a GitHub
-```bash
-git add -p   # revisar diff antes de stagging
-git commit -m "..."
-git push origin master
-```
-
----
-
-### Futuro
-- [ ] Configurar GitHub Actions / CI básico (smoke tests automáticos en push)
-- [ ] **Face Embedding Exporter** — exportar perfiles ArcFace de `character_profiles.db` como `.npy` para uso en IP-Adapter FaceID / InstantID (ComfyUI/A1111). Ver nota técnica en BITACORA.
-- [ ] **Quality Scorer Fase 3** — clasificación de encuadre (full body / half body / closeup) y orientación (frontal / 3/4 / perfil) usando datos de YOLOv8-pose + MediaPipe Face Mesh ya calculados en Fase 1. Ver diseño teórico en sesión 2026-04.
+- [ ] **GitHub Actions / CI** — smoke tests automáticos en push (21 módulos)
+- [ ] **Face Embedding Exporter** — exportar perfiles ArcFace de `character_profiles.db` como `.npy` para IP-Adapter FaceID / InstantID (ComfyUI/A1111). Ver nota en bitácora 2026-03-14.
+- [ ] **Quality Scorer Fase 3** — clasificación de encuadre (full body / half body / closeup) y orientación (frontal / 3/4 / perfil) usando datos de YOLOv8-pose ya calculados en Fase 1.
+- [ ] **Librarian mejoras cherry-dl** — mostrar `url_source` y artista en sidebar; deduplicación por `cherry_hash`.
 
 ---
 
 ## Integración cherry-dl (implementada 2026-04)
 
-**Objetivo:** Panopticon lee `catalog.db` de cherry-dl en modo read-only para
-indexar solo las imágenes que el usuario conservó después del scraping.
-
-### Archivos nuevos/modificados
-- `core/catalog_reader.py` — lector read-only: `is_cherry_catalog()`, `get_image_files()`, `get_artist_info()`
-- `modules/librarian/logic/indexer.py` — modo cherry-dl aware: detecta `catalog.db` y delega a CatalogReader
-
-### Comportamiento
-- Si una carpeta tiene `catalog.db` → modo cherry-dl: filtra por extensión de imagen + existencia en disco
-- Si no → modo estándar con `os.walk` (sin cambios)
+- `core/catalog_reader.py` — read-only: `is_cherry_catalog()`, `get_image_files()`, `get_artist_info()`
+- `modules/librarian/logic/indexer.py` — detecta `catalog.db` → modo cherry-dl
 - Panopticon **nunca escribe** en archivos de cherry-dl
-- Los datos de Panopticon (tags, ratings) siguen en metadata de imagen + `panopticon.db`
-
-### Nota en cherry-dl
-- `PANOPTICON_INTEGRATION.md` creado en `/run/media/system/Kilaya/githubs/cherry-dl/`
-
-### Pendiente (mejoras futuras)
-- [ ] Mostrar `url_source` y nombre de artista (vía `index.db`) en el sidebar del Librarian
-- [ ] Deduplicación por `cherry_hash` en Panopticon (cruzar SHA-256 con su propio índice)
+- `cherry-dl/PANOPTICON_INTEGRATION.md` — nota para agentes de cherry-dl
