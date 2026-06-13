@@ -37,3 +37,8 @@ class PicklerModule(BaseModule):
             return self.view
         self.view = PicklerView(self.context)
         return self.view
+
+    def load_image_set(self, paths: list):
+        """Interfaz estándar: recibe un set de imágenes desde Gallery/Librarian."""
+        self.get_view()
+        self.view.load_images(paths)

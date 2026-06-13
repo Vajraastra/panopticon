@@ -501,7 +501,8 @@ class MainWindow(QMainWindow):
         gallery = self.get_module("Gallery")
         optimizer = self.get_module("Image Optimizer")
         cropper = self.get_module("Smart Cropper")
-        
+        pickler = self.get_module("Pickler")
+
         if librarian:
             if gallery:
                 librarian.request_open_gallery.connect(
@@ -515,6 +516,16 @@ class MainWindow(QMainWindow):
                 librarian.request_open_cropper.connect(
                     lambda paths: self.switch_to_module(cropper, paths)
                 )
+            if pickler:
+                librarian.request_open_pickler.connect(
+                    lambda paths: self.switch_to_module(pickler, paths)
+                )
+
+        # Gallery → Pickler (envío desde el menú de Gallery)
+        if gallery and pickler:
+            gallery.request_open_pickler.connect(
+                lambda paths: self.switch_to_module(pickler, paths)
+            )
 
     def get_module(self, partial_name):
         for name, mod in self.loaded_modules.items():

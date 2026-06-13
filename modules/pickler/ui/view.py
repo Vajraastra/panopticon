@@ -153,6 +153,7 @@ class PicklerView(StandardToolLayout):
         self.context = context or {}
         self._theme = self.context.get('theme_manager')
         self._lm = self.context.get('locale_manager')
+        self._event_bus = self.context.get('event_bus')
         self._settings = QSettings("Panopticon", "Pickler")
 
         # Estado
@@ -455,6 +456,7 @@ class PicklerView(StandardToolLayout):
             return
         self._last_op = ("discard", path, new_path, self._index)
         self._discarded += 1
+        self._notify_library_changed(path.parent, new_path.parent)
         self._consume_current()
 
     def _pick_current(self) -> None:
@@ -470,6 +472,7 @@ class PicklerView(StandardToolLayout):
         action = "keep_copy" if self._copy_mode else "keep_move"
         self._last_op = (action, path, new_path, self._index)
         self._kept += 1
+        self._notify_library_changed(path.parent, new_path.parent)
         if self._copy_mode:
             # La copia deja el original; solo avanzamos sin quitarlo de la lista.
             self._next() if self._index < len(self._images) - 1 else self._refresh_view()
@@ -505,9 +508,19 @@ class PicklerView(StandardToolLayout):
             self._discarded = max(0, self._discarded - 1)
             self._images.insert(min(index, len(self._images)), Path(original))
             self._index = index
+        if action != "keep_copy":
+            self._notify_library_changed(Path(original).parent, Path(current).parent)
         self._last_op = None
         self._refresh_view()
         self._update_counters()
+
+    def _notify_library_changed(self, *folders) -> None:
+        """Avisa por EventBus que cambiaron carpetas, para que Librarian re-indexe."""
+        if not self._event_bus:
+            return
+        for f in folders:
+            if f:
+                self._event_bus.publish("library_changed", str(f))
 
     # ── Menú contextual (acción primaria error-proof) ─────────────────
     def _show_context_menu(self, pos) -> None:
@@ -564,10 +577,16 @@ class PicklerView(StandardToolLayout):
 
     # ── Interfaz estándar (pipeline — fase 2) ─────────────────────────
     def load_images(self, paths: list) -> None:
-        """Recibe un set de imágenes desde otros módulos (Gallery/Librarian)."""
+        """
+        Recibe un set de imágenes desde otros módulos (Gallery/Librarian).
+        Sin carpeta de set única: picked/discarded usan la carpeta de cada imagen.
+        """
         self._images = [Path(p) for p in paths
                         if Path(p).suffix.lower() in _IMAGE_EXTS]
+        self._set_folder = None
+        self._custom_dest = None
         self._index = 0
         self._last_op = None
+        self._update_dest_label()
         self._refresh_view()
         self._canvas.setFocus()

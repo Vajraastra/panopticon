@@ -25,6 +25,7 @@ class LibrarianModule(BaseModule):
     request_open_gallery = Signal(list, str)   # (lista_rutas, contexto_titulo)
     request_open_optimizer = Signal(list)     # (lista_rutas)
     request_open_cropper = Signal(list)       # (lista_rutas)
+    request_open_pickler = Signal(list)       # (lista_rutas)
 
     def __init__(self):
         super().__init__()
@@ -36,6 +37,15 @@ class LibrarianModule(BaseModule):
         # Gestor de base de datos SQLite persistente
         self.db = DatabaseManager()
         self.indexer_thread = None
+
+        # Re-index dirigido tras cambios externos (ej. Pickler mueve archivos).
+        # Carpetas marcadas como "sucias" + temporizador para coalescer eventos.
+        self._dirty_folders: set[str] = set()
+        self._reindex_thread = None
+        self._dirty_timer = QTimer()
+        self._dirty_timer.setSingleShot(True)
+        self._dirty_timer.setInterval(1500)
+        self._dirty_timer.timeout.connect(self._flush_dirty_reindex)
         
         # Estado de Paginación del Explorador de Tags
         self.current_page = 0
@@ -73,7 +83,12 @@ class LibrarianModule(BaseModule):
         # 5. Disparar escaneo inicial inteligente si hay carpetas registradas
         if self.db.get_watched_folders():
             QTimer.singleShot(500, lambda: self.toggle_scan(auto=True))
-            
+
+        # 6. Escuchar cambios externos en disco (ej. Pickler movió archivos)
+        eb = self.context.get('event_bus')
+        if eb:
+            eb.subscribe("library_changed", self._on_library_changed)
+
         return self.view
 
     def _create_sidebar(self) -> QWidget:
@@ -270,7 +285,8 @@ class LibrarianModule(BaseModule):
             f"--- {self.tr('lib.selection_action', 'Send Selection to...')} ---",
             self.tr("lib.actions.gallery", "🖼️ Open in Gallery"),
             self.tr("lib.actions.optimizer", "🚀 Send to Optimizer"),
-            self.tr("lib.actions.cropper", "✂️ Send to Cropper")
+            self.tr("lib.actions.cropper", "✂️ Send to Cropper"),
+            self.tr("lib.actions.pickler", "🥒 Send to Pickler")
         ])
         self.combo_actions.setStyleSheet(f"""
             QComboBox {{
@@ -435,6 +451,8 @@ class LibrarianModule(BaseModule):
             self.send_to_optimizer()
         elif idx == 3:
             self.send_to_cropper()
+        elif idx == 4:
+            self.send_to_pickler()
 
     def prev_page(self):
         if self.current_page > 0:
@@ -711,6 +729,52 @@ class LibrarianModule(BaseModule):
             self.request_open_cropper.emit(paths)
         else:
             QMessageBox.warning(self.view, self.tr("common.error", "No Files"), self.tr("lib.msg.no_files", "No files found to send."))
+
+    def send_to_pickler(self):
+        paths = self._get_active_paths()
+        if paths:
+            self.request_open_pickler.emit(paths)
+        else:
+            QMessageBox.warning(self.view, self.tr("common.error", "No Files"), self.tr("lib.msg.no_files", "No files found to send."))
+
+    # ── Re-index dirigido tras cambios externos en disco ──────────────
+    def _on_library_changed(self, folder):
+        """
+        Suscrito a EventBus 'library_changed' (ej. Pickler movió/copió archivos).
+        Coalesce las carpetas afectadas y dispara un re-index dirigido y silencioso
+        tras un breve debounce, en vez de reescanear toda la librería.
+        """
+        if not folder:
+            return
+        self._dirty_folders.add(str(folder))
+        self._dirty_timer.start()  # reinicia el debounce
+
+    def _flush_dirty_reindex(self):
+        """Re-indexa (silenciosamente) solo las carpetas marcadas como sucias."""
+        # No interferir con un escaneo manual ni con otro re-index en curso.
+        busy = (self.indexer_thread and self.indexer_thread.isRunning()) or \
+               (self._reindex_thread and self._reindex_thread.isRunning())
+        if busy:
+            self._dirty_timer.start()  # reintentar más tarde
+            return
+        if not self._dirty_folders:
+            return
+        folders = [f for f in self._dirty_folders if os.path.isdir(f)]
+        self._dirty_folders.clear()
+        if not folders:
+            return
+        # deep_clean=True para reconciliar huérfanos (originales movidos) en esas carpetas.
+        self._reindex_thread = IndexerWorker(self.db, folders, deep_clean=True)
+        self._reindex_thread.finished_signal.connect(self._quiet_reindex_finished)
+        self._reindex_thread.start()
+
+    def _quiet_reindex_finished(self):
+        """Refresca la vista tras el re-index dirigido, sin diálogos."""
+        try:
+            self.refresh_ui()
+            self.populate_tag_sidebar()
+        except Exception as e:
+            log.warning(f"Refresh tras re-index dirigido falló: {e}")
 
     def run_headless(self, paths: list = None):
         """Permite cargar carpetas o rutas en modo programático (sin interacción del usuario)."""

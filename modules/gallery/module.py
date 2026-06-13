@@ -14,6 +14,7 @@ class GalleryModule(BaseModule):
 
     request_open_workshop = Signal(list)
     request_open_optimizer = Signal(list)
+    request_open_pickler = Signal(list)
 
     def __init__(self):
         super().__init__()
@@ -82,6 +83,7 @@ class GalleryModule(BaseModule):
 
         act_opt  = menu.addAction(self.tr("gallery.send.optimizer", "🚀 Send to Optimizer"))
         act_work = menu.addAction(self.tr("gallery.send.workshop",  "🛠️ Send to Workshop"))
+        act_pick = menu.addAction(self.tr("gallery.send.pickler",   "🥒 Send to Pickler"))
 
         selected = menu.exec(QCursor.pos())
 
@@ -93,6 +95,8 @@ class GalleryModule(BaseModule):
             self.request_open_optimizer.emit(paths)
         elif selected == act_work:
             self.request_open_workshop.emit(paths)
+        elif selected == act_pick:
+            self.request_open_pickler.emit(paths)
 
     def run_headless(self, params: dict, input_data) -> None:
         pass

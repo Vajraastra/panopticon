@@ -516,5 +516,7 @@
   "pickler.cant_display": "No se puede mostrar:",
   "pickler.error_move": "Error: {}",
   "pickler.open_discarded": "Abrir descartados",
-  "pickler.dest_default": "(dentro del set)/picked"
+  "pickler.dest_default": "(dentro del set)/picked",
+  "gallery.send.pickler": "🥒 Enviar a Pickler",
+  "lib.actions.pickler": "🥒 Enviar a Pickler"
 }
