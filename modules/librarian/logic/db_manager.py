@@ -20,6 +20,11 @@ class DatabaseManager(QObject):
     def init_db(self):
         try:
             self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            # WAL: lectores no bloquean al escritor. Hay varias conexiones al
+            # mismo panopticon.db (librarian, gallery, image_optimizer, etc.)
+            # → sin esto hay riesgo de "database is locked"
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA busy_timeout=5000")
             self.create_schema()
             self.run_transformations() # Upgrades
         except sqlite3.Error as e:
