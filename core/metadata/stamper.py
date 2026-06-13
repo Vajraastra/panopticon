@@ -1,7 +1,31 @@
 import os
 import json
+import tempfile
 from pathlib import Path
 from PIL import Image, PngImagePlugin
+
+
+def _atomic_save(img, path, format=None, **save_kwargs):
+    """Guarda la imagen en un archivo temporal del mismo directorio y
+    reemplaza el original con os.replace() solo si el save fue exitoso.
+    Evita corromper el original si el proceso muere a media escritura."""
+    path = str(path)
+    fd, tmp_path = tempfile.mkstemp(
+        suffix=os.path.splitext(path)[1],
+        dir=os.path.dirname(path) or '.'
+    )
+    os.close(fd)
+    try:
+        img.save(tmp_path, format, **save_kwargs)
+        # mkstemp crea con permisos 0600; conservar los del original
+        os.chmod(tmp_path, os.stat(path).st_mode & 0o777)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+    os.replace(tmp_path, path)
 
 
 def _webp_is_lossless(path) -> bool:
@@ -71,8 +95,8 @@ class StampLib:
         
         # Añadir nuestro payload
         new_info.add_text("panopticon_data", json_payload)
-        
-        img.save(path, pnginfo=new_info)
+
+        _atomic_save(img, path, pnginfo=new_info)
         img.close()
         return True
 
@@ -90,8 +114,8 @@ class StampLib:
         payload_bytes = prefix + json_payload.encode('utf-8')
         
         exif[0x9286] = payload_bytes
-        
-        img.save(path, exif=exif, quality=95, optimize=True)
+
+        _atomic_save(img, path, exif=exif, quality=95, optimize=True)
         img.close()
         return True
 
@@ -107,10 +131,10 @@ class StampLib:
             '</rdf:Description></rdf:RDF></x:xmpmeta>'
         )
         if lossless:
-            img.save(path, "WEBP", lossless=True, quality=80, method=6,
-                     exact=True, xmp=xmp.encode('utf-8'))
+            _atomic_save(img, path, "WEBP", lossless=True, quality=80, method=6,
+                         exact=True, xmp=xmp.encode('utf-8'))
         else:
-            img.save(path, "WEBP", quality=95, xmp=xmp.encode('utf-8'))
+            _atomic_save(img, path, "WEBP", quality=95, xmp=xmp.encode('utf-8'))
         img.close()
         return True
 
@@ -124,7 +148,7 @@ class StampLib:
             f'<pan:data><![CDATA[{json_payload}]]></pan:data>'
             '</rdf:Description></rdf:RDF></x:xmpmeta>'
         )
-        img.save(path, "AVIF", xmp=xmp.encode('utf-8'))
+        _atomic_save(img, path, "AVIF", xmp=xmp.encode('utf-8'))
         img.close()
         return True
 
@@ -303,7 +327,7 @@ class MetadataStamper:
                     params += f", Model: {bundle.model}"
             new_info.add_text("parameters", params)
         
-        img.save(str(path), pnginfo=new_info)
+        _atomic_save(img, path, pnginfo=new_info)
         img.close()
         return True
     
@@ -348,7 +372,7 @@ class MetadataStamper:
              
              exif[0x9286] = prefix + params.encode('utf-8')
         
-        img.save(str(path), exif=exif, quality=95, optimize=True)
+        _atomic_save(img, path, exif=exif, quality=95, optimize=True)
         img.close()
         return True
     
@@ -390,10 +414,10 @@ class MetadataStamper:
             '</rdf:Description></rdf:RDF></x:xmpmeta>'
         )
         if _webp_is_lossless(path):
-            img.save(str(path), "WEBP", lossless=True, quality=80, method=6,
-                     exact=True, xmp=xmp.encode('utf-8'))
+            _atomic_save(img, path, "WEBP", lossless=True, quality=80, method=6,
+                         exact=True, xmp=xmp.encode('utf-8'))
         else:
-            img.save(str(path), "WEBP", quality=95, xmp=xmp.encode('utf-8'))
+            _atomic_save(img, path, "WEBP", quality=95, xmp=xmp.encode('utf-8'))
         img.close()
         return True
 
@@ -437,7 +461,7 @@ class MetadataStamper:
             f'<pan:data><![CDATA[{json_payload}]]></pan:data>'
             '</rdf:Description></rdf:RDF></x:xmpmeta>'
         )
-        img.save(str(path), "AVIF", quality=95, xmp=xmp.encode('utf-8'))
+        _atomic_save(img, path, "AVIF", quality=95, xmp=xmp.encode('utf-8'))
         img.close()
         return True
 
@@ -464,13 +488,13 @@ class MetadataStamper:
             clean_img.putdata(list(img.getdata()))
             
             if ext == '.png':
-                clean_img.save(str(path), "PNG", optimize=True)
+                _atomic_save(clean_img, path, "PNG", optimize=True)
             elif ext in ('.jpg', '.jpeg'):
-                clean_img.save(str(path), "JPEG", quality=95, optimize=True)
+                _atomic_save(clean_img, path, "JPEG", quality=95, optimize=True)
             elif ext == '.webp':
-                clean_img.save(str(path), "WEBP", quality=95)
+                _atomic_save(clean_img, path, "WEBP", quality=95)
             elif ext == '.avif':
-                clean_img.save(str(path), "AVIF", quality=95)
+                _atomic_save(clean_img, path, "AVIF", quality=95)
             else:
                 img.close()
                 return False
