@@ -60,7 +60,9 @@ class RecognitionEngine:
         except Exception as e:
             log.error(f"RecognitionEngine: Error loading models - {e}")
             self.initialized = False
-            
+            # Propagar: sin esto el usuario solo ve "sin rostros" en todo
+            raise RuntimeError(f"Error cargando modelos de reconocimiento: {e}") from e
+
     def _ensure_models_exist(self):
         """Downloads required models."""
         if not os.path.exists(self.yunet_path):
@@ -78,19 +80,13 @@ class RecognitionEngine:
             self._download_buffalo_l()
 
     def _download_file(self, url, path):
-        try:
-            download_file(url, path)
-        except RuntimeError as e:
-            log.error(f"[RecognitionEngine] {e}")
+        # Los RuntimeError del downloader suben hasta initialize(), que los propaga a la UI
+        download_file(url, path)
 
     def _download_buffalo_l(self):
         url    = "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
         member = "buffalo_l/w600k_r50.onnx"
-        dest   = Path(self.face_model_path)
-        try:
-            download_zip_member(url, member, dest)
-        except RuntimeError as e:
-            log.error(f"[RecognitionEngine] {e}")
+        download_zip_member(url, member, Path(self.face_model_path))
 
     # Standard ArcFace destination landmarks for 112x112 aligned output
     _ARCFACE_DST = np.array([

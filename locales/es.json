@@ -311,6 +311,7 @@
   "cr.mode.real.tooltip": "Modo fotografía real — usa alineamiento por puntos clave",
   "cr.status_header": "ESTADO",
   "cr.status.idle": "Inactivo",
+  "cr.error.engine": "Error del motor de IA: {msg}",
   "cr.status.init": "Inicializando motor de IA...",
   "cr.status.done": "Completado.",
   "cr.tagged": "Etiquetado: {name}",

@@ -311,6 +311,7 @@
   "cr.mode.real.tooltip": "Real photograph mode — uses landmark alignment",
   "cr.status_header": "STATUS",
   "cr.status.idle": "Idle",
+  "cr.error.engine": "AI Engine error: {msg}",
   "cr.status.init": "Initializing AI Engine...",
   "cr.status.done": "Done.",
   "cr.tagged": "Tagged: {name}",

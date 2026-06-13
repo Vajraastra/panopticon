@@ -12,6 +12,7 @@ class RecognitionWorker(QThread):
     image_processed = Signal(str, object, object, str, object, float)
     finished = Signal()
     progress = Signal(int, int)
+    error = Signal(str)
 
     def __init__(self, paths, mode='illustration'):
         super().__init__()
@@ -26,7 +27,12 @@ class RecognitionWorker(QThread):
 
     def run(self):
         log.debug(f"Worker started with {len(self.paths)} items.")
-        self.engine.initialize()
+        try:
+            self.engine.initialize()
+        except Exception as e:
+            self.error.emit(str(e))
+            self.finished.emit()
+            return
         log.debug("Engine initialized. Starting loop.")
 
         while self.is_running and self.current_idx < len(self.paths):
@@ -107,6 +113,7 @@ class AutoScanWorker(QThread):
     suggestion = Signal(str, float, int)         # name, pct (0-1), count
     no_match = Signal()
     finished = Signal()
+    error = Signal(str)
 
     DOMINANCE_THRESHOLD = 0.60  # 60% de las imágenes deben coincidir
 
@@ -119,7 +126,12 @@ class AutoScanWorker(QThread):
         self.is_running = True
 
     def run(self):
-        self.engine.initialize()
+        try:
+            self.engine.initialize()
+        except Exception as e:
+            self.error.emit(str(e))
+            self.finished.emit()
+            return
         profiles = self.db.get_all_profiles()
         total = len(self.paths)
         tally = {}  # name -> count

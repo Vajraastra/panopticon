@@ -698,12 +698,26 @@ class CharacterRecognitionView(QWidget):
         self.worker.image_processed.connect(self.on_image_processed)
         self.worker.finished.connect(self.on_finished)
         self.worker.progress.connect(self.update_progress)
+        self.worker.error.connect(self.on_engine_error)
         self.worker.paused = True
         self.worker.request_next()
         self.worker.start()
 
     def update_progress(self, current, total):
         pass
+
+    @Slot(str)
+    def on_engine_error(self, msg):
+        self.lbl_status.setText(
+            self._tr("cr.error.engine", "AI Engine error: {msg}").format(msg=msg)
+        )
+
+    @Slot(str)
+    def on_auto_error(self, msg):
+        self.lbl_auto_status.setText(
+            self._tr("cr.error.engine", "AI Engine error: {msg}").format(msg=msg)
+        )
+        self.lbl_auto_status.show()
 
     def on_skip(self):
         self.lbl_status.setText(self._tr("cr.skip.done", "Skipped."))
@@ -752,6 +766,7 @@ class CharacterRecognitionView(QWidget):
         self.auto_worker.progress.connect(self.on_auto_progress)
         self.auto_worker.suggestion.connect(self.on_auto_suggestion)
         self.auto_worker.no_match.connect(self.on_auto_no_match)
+        self.auto_worker.error.connect(self.on_auto_error)
         self.auto_worker.start()
 
     @Slot(int, int)
