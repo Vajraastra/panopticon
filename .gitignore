@@ -72,6 +72,9 @@ CLAUDE.md
 *_HANDOFF.md
 MODULE_DEVELOPMENT_BIBLE.md
 
+# Local Claude Code config (never committed — regla global 6b)
+.claude/
+
 # AI assistant / Agent config
 .agent/
 .gemini/
