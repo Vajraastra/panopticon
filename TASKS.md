@@ -41,16 +41,16 @@
 > Reglas: un módulo = un commit inmediato. Smoke test antes y después de cada uno:
 > `python -c "import modules.X.module; print('OK')"`. Consultar bitácora ante errores repetidos.
 
-### Fase 1 — Integridad de datos (PRIMERO)
-1. **Commit 1: stamper temp→replace** — `core/metadata/stamper.py`: en `stamp_file`, `MetadataStamper.stamp`, `strip_metadata` y todas las variantes `_stamp_*`: guardar a archivo temporal en el mismo directorio y `os.replace()` al original solo si el save fue exitoso. NO añadir re-encode-free EXIF todavía (eso es Fase 4, requiere decidir dependencia piexif). Smoke: `modules.metadata.module`.
-2. **Commit 2: db_manager LIKE con separador** — `modules/librarian/logic/db_manager.py`: `norm + '/%'` en `get_known_files_in_folder`, `remove_watched_folder`, `get_folder_count`, `get_folder_preview`, `get_files_recursive`, `search_files_paginated` (rama `path:`). Añadir `ESCAPE '\'` escapando `%`/`_` del nombre de carpeta. Cuidado: los paths guardados NO tienen slash final. Smoke: `modules.librarian.module` + probar deep_clean con carpetas hermanas de prefijo común.
-3. **Commit 3: aesthetic MLP repo** — `modules/quality_scorer/logic/slop_filter.py` `_download_aesthetic_mlp`: `repo_id="camenduru/improved-aesthetic-predictor"` (verificado: contiene `sac+logos+ava1-l14-linearMSE.pth` exacto). Aprovechar para no dejar el archivo duplicado (descargar a temp y mover como `sac_logos_ava_l14_linear.pth`, o usar el nombre original directo). Verificar carga real: correr Fase 1 con aesthetic activo.
+### Fase 1 — Integridad de datos ✅ COMPLETA (2026-06-12)
+1. [x] **Commit 1 `9f80999`: stamper temp→replace** — `_atomic_save()` aplicado a los 9 puntos de escritura in-place. Verificado con stamp/strip reales.
+2. [x] **Commit 2 `51b838c`: db_manager LIKE con separador** — `_folder_like()` con `/%` + ESCAPE. Verificado con DB temporal y carpetas hermanas. Bonus: rama `path:` acepta archivo exacto.
+3. [x] **Commit 3 `c12969e`: aesthetic MLP repo** — `camenduru/improved-aesthetic-predictor` via model_downloader. DESCUBRIMIENTO: el .pth es el MLP v2 completo (768→1024→…→1), no nn.Linear; nueva `_build_aesthetic_mlp()`. Verificada descarga + carga + forward. Pendiente: corrida end-to-end con CLIP (sesión de calibración).
 
-### Fase 2 — Estabilidad
-4. **recognition_engine: propagar errores de init** — que `initialize()` re-lance (o devuelva el error) y los workers lo emitan via señal `error` a la UI.
-5. **format_scanner: guard anti doble-inicio** — patrón de librarian.module:706 (`isRunning()`) o deshabilitar botón.
-6. **Renombrar señales `finished` sombreadas** — un commit por módulo (8 workers en 7 módulos). Patrón: `finished_signal` como en indexer.py. Actualizar todos los `.connect()` correspondientes en los module.py.
-7. **deduplicator: `os.path.getsize` con try/except OSError** (línea 49).
+### Fase 2 — Estabilidad ✅ COMPLETA (2026-06-12)
+4. [x] **`3aac3b8` recognition_engine propaga errores de init** — initialize() re-lanza; workers emiten señal `error(str)`; UI la muestra (key `cr.error.engine`).
+5. [x] **`44122d0` format_scanner: guard anti doble-inicio** — `isRunning()`.
+6. [x] **Señales `finished` → `finished_signal`** — 6 commits (`de4256f`…`b68d967`): image_optimizer, format_converter, duplicate_finder, format_scanner, quality_scorer (×3 workers), character_recognizer (×2). Verificado: cero `finished = Signal` y cero `.finished.connect` restantes.
+7. [x] **`c17ad3e` deduplicator: getsize con try/except OSError** — verificado con symlink roto.
 
 ### Fase 3 — Rendimiento
 8. **Cache de modelos del SlopAnalyzer** — cache módulo-level keyed por `(content_type, flags)`; la calibración 🔬 no debe recargar CLIP. Cerrar MediaPipe (`close()`) solo al invalidar cache.
