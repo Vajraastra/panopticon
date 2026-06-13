@@ -41,21 +41,19 @@ class SlopFilterWorker(QThread):
         self._running = False
 
     def run(self):
-        from .slop_filter import SlopAnalyzer, classify
+        from .slop_filter import get_analyzer, classify
         from core.paths import CachePaths
 
-        models_dir = CachePaths.get_models_root()
-        analyzer   = SlopAnalyzer(
-            models_dir,
-            content_type  = self.content_type,
-            use_face      = self.use_face,
-            use_body      = self.use_body,
-            use_hands     = self.use_hands,
-            use_aesthetic = self.use_aesthetic,
-        )
-
         try:
-            analyzer.initialize()
+            # Cacheado a nivel módulo: corridas repetidas no recargan CLIP
+            analyzer = get_analyzer(
+                CachePaths.get_models_root(),
+                self.content_type,
+                use_face      = self.use_face,
+                use_body      = self.use_body,
+                use_hands     = self.use_hands,
+                use_aesthetic = self.use_aesthetic,
+            )
         except Exception as e:
             log.error(f"[SlopWorker] Error inicializando modelos: {e}")
             self.error.emit(str(e))
@@ -107,21 +105,20 @@ class CalibrationWorker(QThread):
         self.use_aesthetic = use_aesthetic
 
     def run(self):
-        from .slop_filter import SlopAnalyzer
+        from .slop_filter import get_analyzer
         from core.paths import CachePaths
 
         self.status.emit("init")
-        models_dir = CachePaths.get_models_root()
-        analyzer   = SlopAnalyzer(
-            models_dir,
-            content_type  = self.content_type,
-            use_face      = self.use_face,
-            use_body      = self.use_body,
-            use_hands     = self.use_hands,
-            use_aesthetic = self.use_aesthetic,
-        )
         try:
-            analyzer.initialize()
+            # Reutiliza el analyzer de la corrida anterior si la config coincide
+            analyzer = get_analyzer(
+                CachePaths.get_models_root(),
+                self.content_type,
+                use_face      = self.use_face,
+                use_body      = self.use_body,
+                use_hands     = self.use_hands,
+                use_aesthetic = self.use_aesthetic,
+            )
         except Exception as e:
             self.error.emit(str(e))
             return

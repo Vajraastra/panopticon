@@ -12,6 +12,7 @@ Todos los scorers retornan 0.0–1.0.
 Clasificación final ternaria: keeper / review / slop.
 """
 import logging
+import threading
 import cv2
 import numpy as np
 from pathlib import Path
@@ -472,6 +473,63 @@ class SlopAnalyzer:
         result["_presets"]  = cfg["presets"]
         result["_face_model"] = cfg["face_model"]
         return result
+
+    def close(self):
+        """Libera los modelos. MediaPipe necesita close() explícito;
+        el resto se suelta para que el GC recupere la memoria (CLIP ~1.7GB)."""
+        if self._mp_hands is not None:
+            try:
+                self._mp_hands.close()
+            except Exception:
+                pass
+            self._mp_hands = None
+        self._yunet         = None
+        self._anime_cascade = None
+        self._yolo          = None
+        self._clip_model    = None
+        self._clip_prep     = None
+        self._aesthetic     = None
+
+
+# ============================================================================
+# CACHE DEL ANALYZER
+# Un solo slot: reutiliza el último analyzer si la configuración no cambió
+# (evita recargar CLIP ViT-L-14 ~1.7GB en cada corrida o calibración 🔬).
+# Cambiar de configuración cierra el anterior y carga el nuevo.
+# ============================================================================
+
+_analyzer_lock  = threading.Lock()
+_analyzer_cache = None   # tupla (key, SlopAnalyzer) o None
+
+
+def get_analyzer(models_dir, content_type: str = DEFAULT_CONTENT_TYPE, *,
+                 use_face: bool = True, use_body: bool = True,
+                 use_hands: bool = True, use_aesthetic: bool = True) -> "SlopAnalyzer":
+    """
+    Devuelve un SlopAnalyzer ya inicializado, reutilizando el de la corrida
+    anterior si la configuración es idéntica. Llamar desde el hilo worker
+    (initialize() puede descargar modelos). Puede lanzar RuntimeError.
+    """
+    global _analyzer_cache
+    key = (str(models_dir), content_type,
+           use_face, use_body, use_hands, use_aesthetic)
+    with _analyzer_lock:
+        if _analyzer_cache is not None and _analyzer_cache[0] == key:
+            return _analyzer_cache[1]
+        if _analyzer_cache is not None:
+            _analyzer_cache[1].close()
+            _analyzer_cache = None
+        analyzer = SlopAnalyzer(
+            models_dir,
+            content_type  = content_type,
+            use_face      = use_face,
+            use_body      = use_body,
+            use_hands     = use_hands,
+            use_aesthetic = use_aesthetic,
+        )
+        analyzer.initialize()
+        _analyzer_cache = (key, analyzer)
+        return analyzer
 
 
 # ============================================================================
