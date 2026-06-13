@@ -89,6 +89,7 @@ class LocaleManager:
         :return: El texto traducido o el valor por defecto.
         """
         val = self.translations.get(key)
-        if val:
+        if val is not None:
+            # 'is not None': una traducción vacía ("") es legítima
             return val
         return default if default is not None else key
