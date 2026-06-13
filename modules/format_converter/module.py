@@ -93,7 +93,7 @@ class DropZoneWidget(QFrame):
 class ConversionWorker(QObject):
     """Worker thread para conversión batch."""
     progress = Signal(int, int, str)  # current, total, filename
-    finished = Signal(object)          # BatchConversionReport
+    finished_signal = Signal(object)   # BatchConversionReport
     error = Signal(str)
 
     def __init__(self, files, output_dir, target_format, preserve_metadata):
@@ -112,7 +112,7 @@ class ConversionWorker(QObject):
                 preserve_metadata=self.preserve_metadata,
                 progress_callback=lambda c, t, f: self.progress.emit(c, t, f)
             )
-            self.finished.emit(report)
+            self.finished_signal.emit(report)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -522,7 +522,7 @@ class FormatConverterModule(BaseModule):
 
         self.worker_thread.started.connect(self.worker.run)
         self.worker.progress.connect(self.on_progress)
-        self.worker.finished.connect(self.on_conversion_finished)
+        self.worker.finished_signal.connect(self.on_conversion_finished)
         self.worker.error.connect(self.on_conversion_error)
 
         self.worker_thread.start()
