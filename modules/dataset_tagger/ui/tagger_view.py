@@ -127,10 +127,12 @@ class DatasetTaggerView(QWidget):
         self._source_folder = None   # str | None
         self._images = None          # list[str] | None (modo imágenes sueltas)
 
-        # workers (referencias para evitar GC)
+        # workers / ventanas (referencias para evitar GC)
         self._discovery = None
         self._conn = None
         self._caption = None
+        self._review = None
+        self._last_output = None   # (carpeta, as_tag) del último dataset generado
 
         # modelos VLM disponibles en el endpoint actual
         self._endpoint_models = []
@@ -352,11 +354,14 @@ class DatasetTaggerView(QWidget):
         w = QWidget()
         lay = QHBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
+        self.btn_review = QPushButton(self._tr("tagger.review", "Review / edit captions"))
+        self.btn_review.clicked.connect(self._open_review)
         self.btn_run = QPushButton(self._tr("tagger.run", "Start captioning"))
         self.btn_run.clicked.connect(self._run)
         self.btn_cancel = QPushButton(self._tr("tagger.cancel", "Cancel"))
         self.btn_cancel.clicked.connect(self._cancel)
         self.btn_cancel.setEnabled(False)
+        lay.addWidget(self.btn_review)
         lay.addStretch()
         lay.addWidget(self.btn_cancel)
         lay.addWidget(self.btn_run)
@@ -582,16 +587,27 @@ class DatasetTaggerView(QWidget):
         self.status.setText(self._tr(
             "tagger.done", "Done — {0} processed, {1} skipped.").format(processed, skipped))
         self._update_run_enabled()
-        # ofrece abrir la(s) carpeta(s) de salida (cross-platform, Regla de Oro #1)
+        # recuerda la última carpeta generada para el botón de revisión y ofrece
+        # abrirla (cross-platform, Regla de Oro #1)
         try:
             model = self.combo_endpoint_model.currentData()
             for key in self._active_template_keys():
-                out = sidecar.output_dir(self._source_folder, model, CaptionTemplate(key).format)
+                fmt = CaptionTemplate(key).format
+                out = sidecar.output_dir(self._source_folder, model, fmt)
                 if Path(out).exists():
+                    self._last_output = (str(out), fmt == "tags")
                     CachePaths.open_folder(str(out))
                     break
         except Exception as e:  # noqa: BLE001
             log.debug("No se pudo abrir la carpeta de salida: %s", e)
+
+    def _open_review(self):
+        """Abre el editor de captions sobre el último dataset o una carpeta a elegir."""
+        from .review_view import ReviewView
+        folder, as_tag = (self._last_output or (None, True))
+        self._review = ReviewView(self.context, folder=folder, as_tag=as_tag)
+        self._review.show()
+        self._review.raise_()
 
     def _cancel(self):
         if self._caption:
