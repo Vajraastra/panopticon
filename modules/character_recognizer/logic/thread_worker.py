@@ -10,7 +10,7 @@ log = logging.getLogger(__name__)
 
 class RecognitionWorker(QThread):
     image_processed = Signal(str, object, object, str, object, float)
-    finished = Signal()
+    finished_signal = Signal()
     progress = Signal(int, int)
     error = Signal(str)
 
@@ -31,7 +31,7 @@ class RecognitionWorker(QThread):
             self.engine.initialize()
         except Exception as e:
             self.error.emit(str(e))
-            self.finished.emit()
+            self.finished_signal.emit()
             return
         log.debug("Engine initialized. Starting loop.")
 
@@ -82,7 +82,7 @@ class RecognitionWorker(QThread):
                 log.error(f"Worker error on {path}: {e}")
                 self._advance()
 
-        self.finished.emit()
+        self.finished_signal.emit()
 
     def _advance(self):
         """Avanza al siguiente índice, respetando go_back si fue solicitado."""
@@ -112,7 +112,7 @@ class AutoScanWorker(QThread):
     progress = Signal(int, int)                  # current, total
     suggestion = Signal(str, float, int)         # name, pct (0-1), count
     no_match = Signal()
-    finished = Signal()
+    finished_signal = Signal()
     error = Signal(str)
 
     DOMINANCE_THRESHOLD = 0.60  # 60% de las imágenes deben coincidir
@@ -130,7 +130,7 @@ class AutoScanWorker(QThread):
             self.engine.initialize()
         except Exception as e:
             self.error.emit(str(e))
-            self.finished.emit()
+            self.finished_signal.emit()
             return
         profiles = self.db.get_all_profiles()
         total = len(self.paths)
@@ -171,8 +171,8 @@ class AutoScanWorker(QThread):
             pct = top_count / total
             if pct >= self.DOMINANCE_THRESHOLD:
                 self.suggestion.emit(top_name, pct, top_count)
-                self.finished.emit()
+                self.finished_signal.emit()
                 return
 
         self.no_match.emit()
-        self.finished.emit()
+        self.finished_signal.emit()

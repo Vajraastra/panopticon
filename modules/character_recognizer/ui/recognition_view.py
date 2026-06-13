@@ -696,7 +696,7 @@ class CharacterRecognitionView(QWidget):
 
         self.worker = RecognitionWorker(paths, mode=self._detection_mode)
         self.worker.image_processed.connect(self.on_image_processed)
-        self.worker.finished.connect(self.on_finished)
+        self.worker.finished_signal.connect(self.on_finished)
         self.worker.progress.connect(self.update_progress)
         self.worker.error.connect(self.on_engine_error)
         self.worker.paused = True
