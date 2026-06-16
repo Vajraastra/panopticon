@@ -17,7 +17,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
-    QLineEdit, QPlainTextEdit, QCheckBox,
+    QLineEdit, QPlainTextEdit, QCheckBox, QSpinBox,
     QProgressBar, QFrame, QFileDialog, QSizePolicy,
 )
 from PySide6.QtCore import Qt, QThread, Signal, QSize
@@ -39,9 +39,20 @@ from .source_grid import SourceGrid
 log = logging.getLogger(__name__)
 
 # --- constantes locale-safe (nunca comparar combos por texto) ----------------
-MODE_TAGS, MODE_NATURAL, MODE_BOTH = 0, 1, 2
+MODE_TAGS, MODE_NATURAL, MODE_BOTH, MODE_IDEOGRAM4 = 0, 1, 2, 3
 # motor para datasets de TAGS: clasificador WD local vs VLM del endpoint
 ENGINE_WD, ENGINE_VLM = 0, 1
+
+# Carpeta de salida del captioner Ideogram 4: <set>_ideogram4_json
+IG4_OUTPUT_TAG = "ideogram4"
+# Prompts VLM por defecto del captioner Ideogram 4 (editables en la UI).
+IG4_PROMPT_HLD = ("Describe this image in one or two sentences: the overall "
+                  "scene and composition.")
+IG4_PROMPT_BG = ("Describe ONLY the background of this image in one sentence, "
+                 "ignoring any subjects or text.")
+IG4_PROMPT_OBJ = ("Describe this cropped subject for a dataset caption: "
+                  "appearance, clothing or material, and pose, in one concise "
+                  "sentence.")
 
 # Política ante captions existentes -> valor de sidecar.*
 POLICIES = [
@@ -191,6 +202,8 @@ class DatasetTaggerView(QWidget):
         self._discovery = None
         self._conn = None
         self._caption = None
+        self._ig4 = None           # worker del captioner Ideogram 4
+        self._bbox_editor = None   # ventana del editor de cajas (modal)
         self._review = None
         self._wd_dl = None         # worker de descarga del modelo WD
         self._last_output = None   # (carpeta, as_tag) del último dataset generado
@@ -292,7 +305,7 @@ class DatasetTaggerView(QWidget):
         self.grid = SourceGrid(
             self._tr, self._accent(), self._color('accent_success', "#00ff66"))
         self.grid.folder_activated.connect(self._set_source_folder)
-        self.grid.caption_requested.connect(self._edit_caption)
+        self.grid.caption_requested.connect(self._on_grid_image_activated)
         lay.addWidget(self.grid, 1)
 
         # progreso + estado
@@ -316,6 +329,8 @@ class DatasetTaggerView(QWidget):
         self.combo_mode.addItem(self._tr("tagger.mode.tags", "Tags (booru)"), MODE_TAGS)
         self.combo_mode.addItem(self._tr("tagger.mode.natural", "Natural language"), MODE_NATURAL)
         self.combo_mode.addItem(self._tr("tagger.mode.both", "Both (two datasets)"), MODE_BOTH)
+        self.combo_mode.addItem(
+            self._tr("tagger.mode.ideogram4", "Ideogram v4 (structured JSON)"), MODE_IDEOGRAM4)
         self.combo_mode.currentIndexChanged.connect(self._on_mode_changed)
         lay.addWidget(self.combo_mode)
 
@@ -404,7 +419,8 @@ class DatasetTaggerView(QWidget):
         lay.addWidget(self.lbl_vision_warn)
 
         # --- trigger / prefix / suffix ---
-        lay.addWidget(self._section(self._tr("tagger.sec.tokens", "Trigger & affixes")))
+        self._sec_tokens = self._section(self._tr("tagger.sec.tokens", "Trigger & affixes"))
+        lay.addWidget(self._sec_tokens)
         self.edit_trigger = QLineEdit()
         self.edit_trigger.setPlaceholderText(self._tr("tagger.trigger", "Trigger word (optional)"))
         self.edit_prefix = QLineEdit()
@@ -435,6 +451,9 @@ class DatasetTaggerView(QWidget):
         lay.addWidget(self.box_prompt_nat["frame"])
         # WYSIWYG: al cambiar el switch, refleja el sufijo NSFW en los editores.
         self.switch_content.toggled.connect(self._sync_content_tone)
+
+        # --- panel del modo Ideogram v4 (JSON estructurado) ---
+        lay.addWidget(self._build_ig4_panel())
 
         # --- opciones de salida ---
         lay.addWidget(self._section(self._tr("tagger.sec.output", "Output")))
@@ -467,6 +486,69 @@ class DatasetTaggerView(QWidget):
         box = {"frame": frame, "editor": editor, "is_tags": is_tags}
         btn_reset.clicked.connect(lambda: self._reset_prompt(box))
         return box
+
+    def _build_ig4_panel(self):
+        """Panel del captioner Ideogram 4: estilo del set, padding, prompts VLM.
+
+        El estilo (art_style/aesthetics/lighting) es compartido por el set y se
+        usa como DEFAULT al crear el .pano.json de una imagen nueva; cada imagen
+        puede ajustarlo en el editor de cajas. Las cajas se dibujan por imagen
+        (doble clic en el grid).
+        """
+        self.frame_ig4 = QFrame()
+        v = QVBoxLayout(self.frame_ig4)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(4)
+        v.addWidget(self._section(self._tr("ig4.sec.style", "Ideogram v4 — set style")))
+
+        self.ig4_artstyle = QLineEdit()
+        self.ig4_artstyle.setPlaceholderText(
+            self._tr("ig4.artstyle_ph", "art_style (e.g. stylized 3D character render)"))
+        self.ig4_aesthetics = QLineEdit()
+        self.ig4_aesthetics.setPlaceholderText(self._tr("ig4.aesthetics_ph", "aesthetics (optional)"))
+        self.ig4_lighting = QLineEdit()
+        self.ig4_lighting.setPlaceholderText(self._tr("ig4.lighting_ph", "lighting (optional)"))
+        for e in (self.ig4_artstyle, self.ig4_aesthetics, self.ig4_lighting):
+            v.addWidget(e)
+
+        pad_row = QHBoxLayout()
+        pad_row.addWidget(QLabel(self._tr("ig4.padding", "Crop padding %")))
+        self.ig4_padding = QSpinBox()
+        self.ig4_padding.setRange(0, 50)
+        self.ig4_padding.setValue(8)
+        pad_row.addWidget(self.ig4_padding)
+        pad_row.addStretch()
+        v.addLayout(pad_row)
+
+        # Prompts VLM (high_level / background / object)
+        self.ig4_prompt_hld = self._ig4_prompt_editor(
+            self._tr("ig4.prompt.hld", "High-level prompt"), IG4_PROMPT_HLD)
+        self.ig4_prompt_bg = self._ig4_prompt_editor(
+            self._tr("ig4.prompt.bg", "Background prompt"), IG4_PROMPT_BG)
+        self.ig4_prompt_obj = self._ig4_prompt_editor(
+            self._tr("ig4.prompt.obj", "Object prompt"), IG4_PROMPT_OBJ)
+        for ed in (self.ig4_prompt_hld, self.ig4_prompt_bg, self.ig4_prompt_obj):
+            v.addWidget(ed["frame"])
+
+        self.ig4_recapture = QCheckBox(
+            self._tr("ig4.recapture", "Re-capture (overwrite existing fields)"))
+        v.addWidget(self.ig4_recapture)
+
+        hint = QLabel(self._tr("ig4.hint", "Double-click an image to draw boxes, then Start."))
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {self._color('text_dim', '#888')}; font-size: 11px;")
+        v.addWidget(hint)
+        return self.frame_ig4
+
+    def _ig4_prompt_editor(self, title, default_text):
+        frame = QFrame()
+        vv = QVBoxLayout(frame)
+        vv.setContentsMargins(0, 0, 0, 0)
+        vv.addWidget(QLabel(title))
+        editor = QPlainTextEdit(default_text)
+        editor.setMaximumHeight(64)
+        vv.addWidget(editor)
+        return {"frame": frame, "editor": editor}
 
     def _create_bottom(self):
         w = QWidget()
@@ -501,6 +583,7 @@ class DatasetTaggerView(QWidget):
 
     def _on_mode_changed(self):
         mode = self._mode()
+        is_ig4 = mode == MODE_IDEOGRAM4
         show_tags = mode in (MODE_TAGS, MODE_BOTH)
         show_nat = mode in (MODE_NATURAL, MODE_BOTH)
         self.lbl_model_tags.setVisible(show_tags)
@@ -510,6 +593,12 @@ class DatasetTaggerView(QWidget):
         self.lbl_model_nat.setVisible(show_nat)
         self.combo_model_nat.setVisible(show_nat)
         self.box_prompt_nat["frame"].setVisible(show_nat)
+        # Trigger/affixes solo aplican a tags/natural; el panel ig4 sustituye los
+        # controles propios del flujo de captioning de texto plano.
+        self._sec_tokens.setVisible(not is_ig4)
+        for e in (self.edit_trigger, self.edit_prefix, self.edit_suffix):
+            e.setVisible(not is_ig4)
+        self.frame_ig4.setVisible(is_ig4)
         self._refresh_engine_ui()
         self._refresh_prompts()
         self._update_run_enabled()
@@ -748,9 +837,34 @@ class DatasetTaggerView(QWidget):
         self._update_run_enabled()
 
     # -- ejecución ------------------------------------------------------------
+    def _ig4_jobs(self):
+        """Lista (image_path, pano_path) de las imágenes del set que ya tienen
+        un .pano.json (cajas dibujadas) en la carpeta de salida ig4."""
+        if not self._source_folder:
+            return []
+        out_dir = Path(sidecar.output_dir(self._source_folder, IG4_OUTPUT_TAG, "json"))
+        if self._images is not None:
+            imgs = [Path(p) for p in self._images]
+        else:
+            try:
+                imgs = sidecar.list_images(self._source_folder, self.chk_recursive.isChecked())
+            except OSError:
+                return []
+        jobs = []
+        for img in imgs:
+            pano = out_dir / (Path(img).stem + ".pano.json")
+            if pano.exists():
+                jobs.append((str(img), str(pano)))
+        return jobs
+
     def _update_run_enabled(self):
-        if not (self._source_folder and self._active_template_keys()
-                and self._caption is None):
+        busy = self._caption is not None or self._ig4 is not None
+        if self._mode() == MODE_IDEOGRAM4:
+            self.btn_run.setEnabled(bool(
+                self._source_folder and not busy
+                and self.combo_endpoint_model.currentData() and self._ig4_jobs()))
+            return
+        if not (self._source_folder and self._active_template_keys() and not busy):
             self.btn_run.setEnabled(False)
             return
         # el endpoint VLM solo es requisito si la corrida lo usa
@@ -766,6 +880,9 @@ class DatasetTaggerView(QWidget):
         self.btn_run.setEnabled(True)
 
     def _run(self):
+        if self._mode() == MODE_IDEOGRAM4:
+            self._run_ideogram()
+            return
         keys = self._active_template_keys()
         if not (self._source_folder and keys):
             return
@@ -865,6 +982,57 @@ class DatasetTaggerView(QWidget):
         except Exception as e:  # noqa: BLE001
             log.debug("No se pudo abrir la carpeta de salida: %s", e)
 
+    # -- ejecución del captioner Ideogram 4 ----------------------------------
+    def _run_ideogram(self):
+        jobs = self._ig4_jobs()
+        model = self.combo_endpoint_model.currentData()
+        if not (jobs and model):
+            self.status.setText(self._tr(
+                "ig4.no_jobs", "Draw boxes on at least one image first (double-click)."))
+            return
+        from ..logic.templates import with_content_mode
+        from ..logic.ideogram.ig4_worker import Ig4Worker
+        provider = OpenAICompatProvider(
+            self.edit_endpoint.text().strip(),
+            self.edit_apikey.text().strip() or None, model=model, timeout=180)
+        nsfw = self.switch_content.isChecked()
+        self._ig4 = Ig4Worker(
+            provider, model, jobs,
+            prompt_hld=with_content_mode(self.ig4_prompt_hld["editor"].toPlainText().strip(), nsfw),
+            prompt_background=self.ig4_prompt_bg["editor"].toPlainText().strip(),
+            prompt_obj=with_content_mode(self.ig4_prompt_obj["editor"].toPlainText().strip(), nsfw),
+            default_padding=self.ig4_padding.value() / 100.0,
+            recapture=self.ig4_recapture.isChecked())
+        self._ig4.progress.connect(self._on_progress)
+        self._ig4.error.connect(self._on_error)
+        self._ig4.warnings.connect(self._on_ig4_warnings)
+        self._ig4.finished_all.connect(self._on_ig4_finished)
+        self._ig4.start()
+        self.progress.setVisible(True)
+        self.progress.setValue(0)
+        self.btn_run.setEnabled(False)
+        self.btn_cancel.setEnabled(True)
+        self.status.setText(self._tr("ig4.capturing", "Capturing Ideogram 4 captions…"))
+
+    def _on_ig4_warnings(self, path, warns):
+        log.warning("ig4 schema warnings en %s: %s", Path(path).name, warns)
+        self.status.setText(self._tr("ig4.warn", "{0}: {1} schema warning(s)")
+                            .format(Path(path).name, len(warns)))
+
+    def _on_ig4_finished(self, exported, skipped):
+        self.btn_cancel.setEnabled(False)
+        self._ig4 = None
+        self.status.setText(self._tr("ig4.done", "Done — {0} exported, {1} skipped.")
+                            .format(exported, skipped))
+        self._update_run_enabled()
+        try:
+            out = sidecar.output_dir(self._source_folder, IG4_OUTPUT_TAG, "json")
+            if Path(out).exists():
+                self._last_output = (str(out), False)
+                CachePaths.open_folder(str(out))
+        except Exception as e:  # noqa: BLE001
+            log.debug("No se pudo abrir la salida ig4: %s", e)
+
     def _open_review(self):
         """Abre el editor de captions sobre el último dataset o una carpeta a elegir."""
         from .review_view import ReviewView
@@ -872,6 +1040,37 @@ class DatasetTaggerView(QWidget):
         self._review = ReviewView(self.context, folder=folder, as_tag=as_tag)
         self._review.show()
         self._review.raise_()
+
+    def _on_grid_image_activated(self, image_path):
+        """Doble clic en una imagen: editor de cajas (Ideogram v4) o de captions."""
+        if self._mode() == MODE_IDEOGRAM4:
+            self._open_bbox_editor(image_path)
+        else:
+            self._edit_caption(image_path)
+
+    def _open_bbox_editor(self, image_path):
+        """Abre el editor de bboxes para una imagen, creando/cargando su
+        .pano.json en la carpeta de salida hermana <set>_ideogram4_json."""
+        if not self._source_folder:
+            return
+        from .bbox_editor import BBoxEditor
+        out_dir = Path(sidecar.output_dir(self._source_folder, IG4_OUTPUT_TAG, "json"))
+        pano_path = out_dir / (Path(image_path).stem + ".pano.json")
+        style_defaults = {
+            "art_style": self.ig4_artstyle.text().strip(),
+            "aesthetics": self.ig4_aesthetics.text().strip(),
+            "lighting": self.ig4_lighting.text().strip(),
+        }
+        lm = self.context.get('locale_manager') if self.context else None
+        try:
+            self._bbox_editor = BBoxEditor(
+                image_path, pano_path, locale_manager=lm,
+                style_defaults=style_defaults, parent=self)
+        except ValueError as e:
+            self.status.setText(str(e))
+            return
+        self._bbox_editor.exec()           # modal; al cerrar, el .pano.json quedó guardado
+        self._update_run_enabled()         # pudo aparecer un nuevo .pano.json
 
     def _edit_caption(self, image_path):
         """Doble clic en una imagen del grid: abre el editor de captions sobre su
@@ -890,6 +1089,9 @@ class DatasetTaggerView(QWidget):
         if self._caption:
             self._caption.cancel()
             self.status.setText(self._tr("tagger.cancelling", "Cancelling…"))
+        if self._ig4:
+            self._ig4.cancel()
+            self.status.setText(self._tr("tagger.cancelling", "Cancelling…"))
 
     def closeEvent(self, event):
         # detiene workers vivos para no destruir un QThread en ejecución
@@ -899,6 +1101,9 @@ class DatasetTaggerView(QWidget):
             pass
         if self._wd_dl is not None:
             self._wd_dl.wait(3000)
+        if self._ig4 is not None:
+            self._ig4.cancel()
+            self._ig4.wait(3000)
         super().closeEvent(event)
 
     # -- integración con otros módulos (Fase 6) ------------------------------

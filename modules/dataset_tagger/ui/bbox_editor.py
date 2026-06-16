@@ -227,9 +227,11 @@ class BBoxScene(QGraphicsScene):
 class BBoxEditor(QDialog):
     """Ventana de edición de un .pano.json para una imagen."""
 
-    def __init__(self, image_path, pano_path, locale_manager=None, parent=None):
+    def __init__(self, image_path, pano_path, locale_manager=None,
+                 style_defaults=None, parent=None):
         super().__init__(parent)
         self._lm = locale_manager
+        self._style_defaults = style_defaults or {}
         self.image_path = Path(image_path)
         self.pano_path = Path(pano_path)
         self._draw_type = DRAW_OBJ
@@ -263,9 +265,15 @@ class BBoxEditor(QDialog):
                 return WorkDoc.load(self.pano_path)
             except (ValueError, OSError, KeyError) as exc:
                 log.warning("pano.json ilegible (%s); se crea uno nuevo", exc)
-        return WorkDoc(image=self.image_path.name,
-                       image_w=self._pixmap.width(), image_h=self._pixmap.height(),
-                       status=STATUS_DRAFT)
+        doc = WorkDoc(image=self.image_path.name,
+                      image_w=self._pixmap.width(), image_h=self._pixmap.height(),
+                      status=STATUS_DRAFT)
+        # Hereda el estilo compartido del set (solo en docs nuevos).
+        sd = self._style_defaults
+        doc.style.art_style = sd.get("art_style", "") or doc.style.art_style
+        doc.style.aesthetics = sd.get("aesthetics", "") or doc.style.aesthetics
+        doc.style.lighting = sd.get("lighting", "") or doc.style.lighting
+        return doc
 
     # ── construcción de UI ──────────────────────────────────────────────
     def _build_ui(self):
