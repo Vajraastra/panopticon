@@ -27,8 +27,11 @@ from PySide6.QtWidgets import (
     QRadioButton, QButtonGroup, QFormLayout, QSplitter, QMessageBox,
 )
 
+from PIL import Image
+
 from core.theme import Theme
 from ..logic.ideogram.datamodel import WorkDoc, Element, STATUS_DRAFT
+from .text_panel import TextComposerDialog, pil_to_qpixmap
 
 log = logging.getLogger(__name__)
 
@@ -182,6 +185,10 @@ class BBoxScene(QGraphicsScene):
         self._draft = None
         self._origin = None
 
+    def set_background(self, pixmap):
+        """Reemplaza el pixmap de fondo (tras componer texto sobre la imagen)."""
+        self._bg.setPixmap(pixmap)
+
     def mousePressEvent(self, event):
         item = self.itemAt(event.scenePos(), self.views()[0].transform())
         if isinstance(item, BBoxItem):
@@ -236,6 +243,10 @@ class BBoxEditor(QDialog):
         self._pixmap = QPixmap(str(self.image_path))
         if self._pixmap.isNull():
             raise ValueError(f"No se pudo abrir la imagen: {self.image_path}")
+        # Imagen de trabajo (PIL): se modifica al componer texto (Caso A). La
+        # copia de salida con el texto se escribe junto al .pano.json al guardar.
+        self._work_image = Image.open(self.image_path).convert("RGB")
+        self._composited = False
 
         self._doc = self._load_or_create_doc()
         self._build_ui()
@@ -328,6 +339,13 @@ class BBoxEditor(QDialog):
         form.addRow(QLabel(self.tr("ig4.desc_field", "desc")), self._ed_desc)
         lay.addLayout(form)
 
+        # Compositing de texto (Caso A: texto nuevo en flyers). Solo para 'text'.
+        self._btn_compose = QPushButton(self.tr("ig4.compose_text", "Compose text…"))
+        self._btn_compose.setStyleSheet(Theme.get_button_style(Theme.ACCENT_FASHION))
+        self._btn_compose.clicked.connect(self._compose_text)
+        self._btn_compose.setEnabled(False)
+        lay.addWidget(self._btn_compose)
+
         # Campos globales
         lay.addWidget(self._section(self.tr("ig4.global", "GLOBAL")))
         gform = QFormLayout()
@@ -419,6 +437,7 @@ class BBoxEditor(QDialog):
             self._load_elem_fields(self._selected.element)
         else:
             self._selected = None
+            self._btn_compose.setEnabled(False)
 
     def _on_rows_moved(self, *args):
         """Reordena _items y doc.elements para igualar el orden visual de la lista.
@@ -450,6 +469,7 @@ class BBoxEditor(QDialog):
         is_text = element.type == "text"
         self._ed_text.setEnabled(is_text)
         self._lbl_text.setEnabled(is_text)
+        self._btn_compose.setEnabled(is_text)
         self._ed_text.blockSignals(True)
         self._ed_desc.blockSignals(True)
         self._ed_text.setText(element.text if is_text else "")
@@ -464,6 +484,37 @@ class BBoxEditor(QDialog):
         if elem.type == "text":
             elem.text = self._ed_text.text()
         elem.desc = self._ed_desc.toPlainText()
+        row = self._items.index(self._selected)
+        self._list.item(row).setText(self._list_label(elem))
+
+    def _compose_text(self):
+        """Abre el mini-editor de texto y compone sobre la imagen de trabajo.
+
+        Al aplicar: actualiza la imagen de fondo, fija en el elemento el string,
+        color, bbox AUTOMÁTICA y los parámetros de render, y mueve la caja a esa
+        bbox. La copia con texto se escribe al guardar.
+        """
+        if not self._selected or self._selected.element.type != "text":
+            return
+        elem = self._selected.element
+        x0, y0 = elem.bbox_px[0], elem.bbox_px[1]
+        dlg = TextComposerDialog(self._work_image, (x0, y0), elem.text, self._lm, self)
+        if dlg.exec() != QDialog.Accepted or dlg.result_image is None:
+            return
+
+        self._work_image = dlg.result_image
+        self.scene.set_background(pil_to_qpixmap(self._work_image))
+        self._composited = True
+
+        data = dlg.result_data
+        elem.text = data["text"]
+        elem.color_palette = [data["color"]]
+        elem.bbox_px = data["bbox_px"]
+        elem.render = data["render"]
+        bx0, by0, bx1, by1 = elem.bbox_px
+        self._selected.prepareGeometryChange()
+        self._selected.setRect(QRectF(QPointF(bx0, by0), QPointF(bx1, by1)))
+        self._load_elem_fields(elem)
         row = self._items.index(self._selected)
         self._list.item(row).setText(self._list_label(elem))
 
@@ -492,6 +543,11 @@ class BBoxEditor(QDialog):
         try:
             self.pano_path.parent.mkdir(parents=True, exist_ok=True)
             self._doc.save(self.pano_path)
+            # Si se compuso texto, la copia de salida (con el texto) acompaña al
+            # sidecar en la misma carpeta; el original nunca se toca (Regla #9).
+            if self._composited:
+                out_img = self.pano_path.parent / self.image_path.name
+                self._work_image.save(out_img)
         except OSError as exc:
             QMessageBox.warning(self, self.tr("ig4.save_err_title", "Save error"), str(exc))
             return
