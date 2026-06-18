@@ -88,7 +88,19 @@ class DatabaseManager(QObject):
                 added_date DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
+
+        # Índice de búsqueda FTS5 (full-text). rowid = files.id; columnas =
+        # exactamente los campos buscables (filename + metadata + tags). El
+        # tokenizer 'trigram' permite búsqueda por SUBCADENA indexada (como el
+        # viejo LIKE %term%) para términos de ≥3 caracteres, sin full-scan.
+        # Sincronizado vía _fts_sync_file() en cada escritura de files/tags.
+        cursor.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+                filename, meta_positive, meta_negative, meta_model, meta_tool, tags,
+                tokenize='trigram'
+            )
+        """)
+
         self.conn.commit()
 
     def run_transformations(self):
@@ -99,6 +111,56 @@ class DatabaseManager(QObject):
         if 'rating' not in cols:
             cursor.execute("ALTER TABLE files ADD COLUMN rating INTEGER DEFAULT 0")
             self.conn.commit()
+
+        # Migración FTS: si el índice está vacío pero ya hay archivos (DB previa
+        # a FTS5), reconstruirlo una vez para no dejar la búsqueda sin resultados.
+        try:
+            n_fts = cursor.execute("SELECT count(*) FROM files_fts").fetchone()[0]
+            n_files = cursor.execute("SELECT count(*) FROM files").fetchone()[0]
+            if n_files > 0 and n_fts == 0:
+                self.rebuild_fts()
+        except sqlite3.Error as e:
+            log.warning("[DB] Chequeo de migración FTS falló: %s", e)
+
+    # --- Sincronización del índice FTS5 ---
+
+    def _fts_sync_file(self, file_id, cursor=None):
+        """Recalcula la fila FTS de un archivo desde files + sus tags (delete +
+        insert, idempotente). NO hace commit: el llamador controla la
+        transacción. file_id debe existir en `files`."""
+        cur = cursor or self.conn.cursor()
+        row = cur.execute(
+            "SELECT filename, meta_positive, meta_negative, meta_model, meta_tool "
+            "FROM files WHERE id=?", (file_id,)
+        ).fetchone()
+        if not row:
+            return
+        tags = " ".join(
+            r[0] for r in cur.execute(
+                "SELECT t.name FROM tags t JOIN file_tags ft ON t.id=ft.tag_id "
+                "WHERE ft.file_id=?", (file_id,)
+            ).fetchall()
+        )
+        cur.execute("DELETE FROM files_fts WHERE rowid=?", (file_id,))
+        cur.execute(
+            "INSERT INTO files_fts(rowid, filename, meta_positive, meta_negative, "
+            "meta_model, meta_tool, tags) VALUES (?,?,?,?,?,?,?)",
+            (file_id, row[0] or '', row[1] or '', row[2] or '', row[3] or '', row[4] or '', tags)
+        )
+
+    def rebuild_fts(self):
+        """Reconstruye el índice FTS completo desde cero (migración / reparación).
+        Costoso (recorre todos los files) pero solo se llama una vez."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("DELETE FROM files_fts")
+            for (file_id,) in cursor.execute("SELECT id FROM files").fetchall():
+                self._fts_sync_file(file_id, cursor)
+            self.conn.commit()
+            log.info("[DB] Índice FTS reconstruido.")
+        except sqlite3.Error as e:
+            log.error("[DB] rebuild_fts falló: %s", e)
+            self.conn.rollback()
 
     def _normalize_path(self, path):
         return os.path.normpath(path).replace('\\', '/')
@@ -130,16 +192,22 @@ class DatabaseManager(QObject):
         """
         
         params = []
+        norm_paths = []
         for f in files_data:
-            params.append((
-                self._normalize_path(f['path']),
-                f['filename'],
-                f['size'],
-                f['created']
-            ))
-            
+            np = self._normalize_path(f['path'])
+            norm_paths.append(np)
+            params.append((np, f['filename'], f['size'], f['created']))
+
         try:
             cursor.executemany(sql, params)
+            # Sincronizar el índice FTS del lote (filename; metas/tags llegan
+            # luego vía update_file_metadata/add_tag y se re-sincronizan ahí).
+            placeholders = ",".join("?" * len(norm_paths))
+            ids = cursor.execute(
+                f"SELECT id FROM files WHERE path IN ({placeholders})", norm_paths
+            ).fetchall()
+            for (fid,) in ids:
+                self._fts_sync_file(fid, cursor)
             self.conn.commit()
             return True
         except sqlite3.Error as e:
@@ -171,6 +239,9 @@ class DatabaseManager(QObject):
                 str(meta.get('seed', '')),
                 norm_path
             ))
+            row = cursor.execute("SELECT id FROM files WHERE path=?", (norm_path,)).fetchone()
+            if row:
+                self._fts_sync_file(row[0], cursor)
             self.conn.commit()
         except Exception as e:
             log.warning("[DB] Meta Update Error for %s: %s", path, e)
@@ -199,7 +270,11 @@ class DatabaseManager(QObject):
         cursor = self.conn.cursor()
         try:
             for p in paths_list:
-                cursor.execute("DELETE FROM files WHERE path = ?", (self._normalize_path(p),))
+                norm = self._normalize_path(p)
+                row = cursor.execute("SELECT id FROM files WHERE path = ?", (norm,)).fetchone()
+                cursor.execute("DELETE FROM files WHERE path = ?", (norm,))
+                if row:
+                    cursor.execute("DELETE FROM files_fts WHERE rowid=?", (row[0],))
             self.conn.commit()
         except Exception as e:
             log.warning("[DB] remove_files error: %s", e)
@@ -226,8 +301,15 @@ class DatabaseManager(QObject):
         cursor = self.conn.cursor()
         norm = self._normalize_path(path)
         try:
+            like = self._folder_like(path)
             cursor.execute("DELETE FROM watched_folders WHERE path=?", (norm,))
-            cursor.execute("DELETE FROM files WHERE path LIKE ? ESCAPE '\\'", (self._folder_like(path),))
+            # Limpiar el índice FTS de los archivos que se van a borrar.
+            ids = cursor.execute(
+                "SELECT id FROM files WHERE path LIKE ? ESCAPE '\\'", (like,)
+            ).fetchall()
+            cursor.execute("DELETE FROM files WHERE path LIKE ? ESCAPE '\\'", (like,))
+            for (fid,) in ids:
+                cursor.execute("DELETE FROM files_fts WHERE rowid=?", (fid,))
             self.conn.commit()
             return True
         except Exception as e:
@@ -347,6 +429,7 @@ class DatabaseManager(QObject):
                 
             # 3. Link Tag
             cursor.execute("INSERT OR IGNORE INTO file_tags (file_id, tag_id, source) VALUES (?, ?, 'manual')", (file_id, tag_id))
+            self._fts_sync_file(file_id, cursor)
             self.conn.commit()
             return True
         except Exception as e:
@@ -369,6 +452,7 @@ class DatabaseManager(QObject):
             
             # Remove Link
             cursor.execute("DELETE FROM file_tags WHERE file_id = ? AND tag_id = ?", (file_id, tag_id))
+            self._fts_sync_file(file_id, cursor)
             self.conn.commit()
             return True
         except Exception as e:
