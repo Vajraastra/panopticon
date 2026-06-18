@@ -60,11 +60,14 @@ class IndexerWorker(QThread):
             total_found += len(disk_files)
 
             if disk_files:
+                total = len(disk_files)
                 self.progress_signal.emit(
-                    f"💾 Registrando {len(disk_files)} archivos en {folder_name}..."
+                    f"💾 Registrando {total} archivos en {folder_name}..."
                 )
-                for i in range(0, len(disk_files), self.batch_size):
+                for i in range(0, total, self.batch_size):
                     self.db.register_files_minimal(disk_files[i : i + self.batch_size])
+                    # Alimenta la barra de progreso de la UI (current, total).
+                    self.count_signal.emit(min(i + self.batch_size, total), total)
 
             # --- FASE 2: LIMPIEZA DE HUÉRFANOS ---
             if self.deep_clean:
