@@ -24,6 +24,7 @@ from PySide6.QtGui import (
 )
 
 from ..logic import sidecar
+from ..logic.ideogram import layout
 
 log = logging.getLogger(__name__)
 
@@ -263,13 +264,12 @@ class SourceGrid(QWidget):
     def _disk_state(self, img):
         """Estado de una imagen ig4 según los archivos en la carpeta de salida:
         ST_EXPORTED si existe el <stem>.json final; ST_DRAFT si solo existe el
-        <stem>.pano.json; None si no hay nada (sin empezar)."""
+        borrador drafts/<stem>.pano.json; None si no hay nada (sin empezar)."""
         if self._ig4_out_dir is None:
             return None
-        stem = Path(img).stem
-        if (self._ig4_out_dir / (stem + ".json")).exists():
+        if layout.json_path(self._ig4_out_dir, img).exists():
             return ST_EXPORTED
-        if (self._ig4_out_dir / (stem + ".pano.json")).exists():
+        if layout.pano_path(self._ig4_out_dir, img).exists():
             return ST_DRAFT
         return None
 

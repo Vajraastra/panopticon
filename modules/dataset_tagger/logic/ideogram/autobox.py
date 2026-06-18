@@ -21,6 +21,8 @@ from PySide6.QtCore import QThread, Signal
 
 from core.paths import CachePaths
 
+from . import layout
+
 log = logging.getLogger(__name__)
 
 # Clases COCO consideradas animales → categoría "animal".
@@ -142,7 +144,8 @@ class AutoBoxBatchWorker(QThread):
             from PIL import Image
             from .datamodel import WorkDoc, Element, STATUS_DRAFT
             boxer = AutoBoxer(conf=self.conf)
-            self.out_dir.mkdir(parents=True, exist_ok=True)
+            # Los borradores van a la subcarpeta visible <out_dir>/drafts/.
+            layout.drafts_dir(self.out_dir).mkdir(parents=True, exist_ok=True)
             total = len(self.images)
             created = skipped = 0
             for i, img in enumerate(self.images, 1):
@@ -150,7 +153,7 @@ class AutoBoxBatchWorker(QThread):
                     break
                 img = Path(img)
                 self.progress.emit(i, total, img.name)
-                pano = self.out_dir / (img.stem + ".pano.json")
+                pano = layout.pano_path(self.out_dir, img)
                 if self.skip_existing and pano.exists():
                     skipped += 1
                     continue

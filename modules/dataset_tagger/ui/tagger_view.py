@@ -3,7 +3,7 @@ Vista principal del Dataset Tagger (Fase 4).
 
 Configura el captioning de una carpeta (o set de imágenes) con un VLM local
 compatible con la API de OpenAI y lanza el CaptionWorker. La salida SIEMPRE va
-a carpeta(s) nueva(s) hermana(s) del origen (sidecars .txt estilo kohya).
+a carpeta(s) nueva(s) ANIDADA(s) dentro del origen (sidecars .txt estilo kohya).
 
 Reglas obligatorias respetadas aquí:
 - Acento SIEMPRE vía theme_manager (sin colores nuevos hardcodeados).
@@ -32,6 +32,7 @@ from ..logic.providers.wd_tagger import WDTaggerProvider
 from ..logic.providers.discovery import discover_local
 from ..logic.caption_worker import CaptionWorker
 from ..logic import sidecar
+from ..logic.ideogram import layout
 from ..logic.wd_presets import available_taggers, TaggerPreset
 from ..logic import wd_download
 from .source_grid import SourceGrid
@@ -47,12 +48,15 @@ ENGINE_WD, ENGINE_VLM = 0, 1
 IG4_OUTPUT_TAG = "ideogram4"
 # Prompts VLM por defecto del captioner Ideogram 4 (editables en la UI).
 IG4_PROMPT_HLD = ("Describe this image in one or two sentences: the overall "
-                  "scene and composition.")
+                  "scene, composition, and main colors.")
 IG4_PROMPT_BG = ("Describe ONLY the background of this image in one sentence, "
                  "ignoring any subjects or text.")
-IG4_PROMPT_OBJ = ("Describe this cropped subject for a dataset caption: "
-                  "appearance, clothing or material, and pose, in one concise "
-                  "sentence.")
+IG4_PROMPT_OBJ = ("Describe only what is actually visible in this cropped "
+                  "region for a dataset caption, in one concise sentence. The "
+                  "subject may be a person, an object, or a material: describe "
+                  "exactly what you see and do NOT invent a person, clothing, or "
+                  "details that are not present. Name the main colors of the "
+                  "visible subject and its salient parts.")
 IG4_PROMPT_STYLE = ("Identify the visual style of this image for a dataset. "
                     "Answer in exactly this format, short phrases: "
                     "art_style: <phrase>; aesthetics: <phrase>; lighting: <phrase>.")
@@ -1006,7 +1010,7 @@ class DatasetTaggerView(QWidget):
                 return []
         jobs = []
         for img in imgs:
-            pano = out_dir / (Path(img).stem + ".pano.json")
+            pano = layout.pano_path(out_dir, img)
             if pano.exists():
                 jobs.append((str(img), str(pano)))
         return jobs
@@ -1319,12 +1323,12 @@ class DatasetTaggerView(QWidget):
 
     def _open_bbox_editor(self, image_path):
         """Abre el editor de bboxes para una imagen, creando/cargando su
-        .pano.json en la carpeta de salida hermana <set>_ideogram4_json."""
+        .pano.json en <set>_ideogram4_json/drafts/ (subcarpeta de borradores)."""
         if not self._source_folder:
             return
         from .bbox_editor import BBoxEditor
         out_dir = Path(sidecar.output_dir(self._source_folder, IG4_OUTPUT_TAG, "json"))
-        pano_path = out_dir / (Path(image_path).stem + ".pano.json")
+        pano_path = layout.pano_path(out_dir, image_path)
         # Si el VLM va a inferir el estilo (personaje o estilo+inferir), no se
         # hereda nada manual: el worker lo rellenará. Solo en estilo+manual se
         # propaga lo escrito en el panel.

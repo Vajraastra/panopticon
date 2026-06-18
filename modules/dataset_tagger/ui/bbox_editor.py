@@ -35,6 +35,7 @@ from PIL import Image
 
 from core.theme import Theme
 from ..logic.ideogram.datamodel import WorkDoc, Element, STATUS_DRAFT
+from ..logic.ideogram import layout
 from .text_panel import TextComposerDialog, pil_to_qpixmap
 
 log = logging.getLogger(__name__)
@@ -640,8 +641,8 @@ class BBoxEditor(QDialog):
             return
         self._index = new
         self.image_path = Path(self._images[new])
-        out = self._out_dir or self.pano_path.parent
-        self.pano_path = out / (self.image_path.stem + ".pano.json")
+        out = self._out_dir or layout.out_dir_from_pano(self.pano_path)
+        self.pano_path = layout.pano_path(out, self.image_path)
         try:
             self._load_image_data()
         except ValueError as exc:
@@ -1219,10 +1220,12 @@ class BBoxEditor(QDialog):
         try:
             self.pano_path.parent.mkdir(parents=True, exist_ok=True)
             self._doc.save(self.pano_path)
-            # Si se compuso texto, la copia de salida (con el texto) acompaña al
-            # sidecar en la misma carpeta; el original nunca se toca (Regla #9).
+            # Si se compuso texto, la copia de salida (con el texto) va a la raíz
+            # de la carpeta de salida (NO a drafts/), junto al .json final; el
+            # original nunca se toca (Regla #9).
             if self._composited:
-                out_img = self.pano_path.parent / self.image_path.name
+                out_dir = self._out_dir or layout.out_dir_from_pano(self.pano_path)
+                out_img = Path(out_dir) / self.image_path.name
                 self._work_image.save(out_img)
         except OSError as exc:
             QMessageBox.warning(self, self.tr("ig4.save_err_title", "Save error"), str(exc))

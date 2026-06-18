@@ -34,7 +34,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 from PIL import Image
 
-from . import schema, palette
+from . import schema, palette, layout
 from .datamodel import WorkDoc, STATUS_EXPORTED
 from .. import sidecar
 from ..providers.base_provider import ProviderError
@@ -59,9 +59,10 @@ class Ig4Worker(QThread):
         super().__init__(parent)
         self.provider = provider
         self.model = model
-        # jobs: lista de (image_path_original, pano_path). El out_dir es
-        # pano_path.parent; la imagen de referencia es la copia de salida si
-        # existe (texto compuesto), si no el original.
+        # jobs: lista de (image_path_original, pano_path). El .pano.json vive en
+        # <out_dir>/drafts/, así que el out_dir real = layout.out_dir_from_pano;
+        # la imagen de referencia es la copia de salida si existe (texto
+        # compuesto), si no el original.
         self.jobs = list(jobs)
         self.prompt_hld = prompt_hld
         self.prompt_background = prompt_background
@@ -112,7 +113,9 @@ class Ig4Worker(QThread):
             self.error.emit(str(image_path), "falta el .pano.json")
             return False
         doc = WorkDoc.load(pano_path)
-        out_dir = pano_path.parent
+        # El .pano.json vive en <out_dir>/drafts/; el producto final (json +
+        # copia de la imagen) va a la raíz <out_dir>.
+        out_dir = layout.out_dir_from_pano(pano_path)
 
         # Imagen de referencia: la copia de salida (con texto si se compuso),
         # si no el original. De ella salen crops y paletas.
@@ -193,7 +196,7 @@ class Ig4Worker(QThread):
         """Infiere UN estilo del set (modo estilo+VLM) desde la primera imagen y
         lo devuelve como dict; luego se propaga idéntico a todas las imágenes."""
         image_path, pano_path = self.jobs[0]
-        out_dir = Path(pano_path).parent
+        out_dir = layout.out_dir_from_pano(pano_path)
         out_img = out_dir / Path(image_path).name
         ref_path = out_img if out_img.exists() else Path(image_path)
         resp = self._caption_with_retry(str(ref_path), self.prompt_style)
