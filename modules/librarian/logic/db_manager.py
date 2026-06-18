@@ -330,43 +330,53 @@ class DatabaseManager(QObject):
 
     def search_by_terms(self, terms, limit=5):
         """
-        Searches for files containing ALL terms in their metadata or tags.
+        Searches for files containing ALL terms in their metadata or tags
+        (substring match, igual que antes). Usa el índice FTS5 (trigram) para
+        los términos de ≥3 chars — escalable a ~250K imágenes — y cae a LIKE
+        solo para los términos más cortos, que trigram no indexa.
         Returns a tuple: (total_count, list_of_preview_paths)
         """
         if not terms:
             return 0, []
-            
+
         cursor = self.conn.cursor()
-        conditions = []
-        params = []
-        
-        for term in terms:
-            like_term = f"%{term}%"
-            sub_query = """(
-                meta_positive LIKE ? OR 
-                meta_negative LIKE ? OR 
-                meta_model LIKE ? OR 
-                meta_tool LIKE ? OR 
-                filename LIKE ? OR
-                EXISTS (
-                    SELECT 1 FROM file_tags ft 
-                    JOIN tags t ON ft.tag_id = t.id 
-                    WHERE ft.file_id = files.id AND t.name LIKE ?
+        conditions, params = [], []
+
+        long_terms = [t.strip() for t in terms if len(t.strip()) >= 3]
+        short_terms = [t.strip() for t in terms if 0 < len(t.strip()) < 3]
+
+        # Términos ≥3 chars → UNA búsqueda FTS5 con AND implícito entre términos.
+        # Cada término entrecomillado (y "" escapado) → subcadena vía trigram en
+        # cualquier columna indexada (filename/meta*/tags) = el viejo OR de 6.
+        if long_terms:
+            match_expr = " ".join('"' + t.replace('"', '""') + '"' for t in long_terms)
+            conditions.append("files.id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH ?)")
+            params.append(match_expr)
+
+        # Términos <3 chars → LIKE de respaldo (mismo OR de 6 campos de antes).
+        for t in short_terms:
+            like = f"%{t}%"
+            conditions.append("""(
+                meta_positive LIKE ? OR meta_negative LIKE ? OR meta_model LIKE ?
+                OR meta_tool LIKE ? OR filename LIKE ?
+                OR EXISTS (
+                    SELECT 1 FROM file_tags ft JOIN tags tg ON ft.tag_id = tg.id
+                    WHERE ft.file_id = files.id AND tg.name LIKE ?
                 )
-            )"""
-            conditions.append(sub_query)
-            params.extend([like_term] * 6)
-            
+            )""")
+            params.extend([like] * 6)
+
+        if not conditions:  # todos los términos quedaron vacíos tras strip
+            return 0, []
+
         where = "WHERE " + " AND ".join(conditions)
-        
-        # Count
-        cursor.execute(f"SELECT count(*) FROM files {where}", params)
-        total_count = cursor.fetchone()[0]
-        
-        # Paths
-        cursor.execute(f"SELECT path FROM files {where} LIMIT ?", params + [limit])
-        preview_paths = [row[0] for row in cursor.fetchall()]
-        
+
+        total_count = cursor.execute(f"SELECT count(*) FROM files {where}", params).fetchone()[0]
+        preview_paths = [
+            row[0] for row in cursor.execute(
+                f"SELECT path FROM files {where} LIMIT ?", params + [limit]
+            ).fetchall()
+        ]
         return total_count, preview_paths
 
     def get_file_id(self, path):
