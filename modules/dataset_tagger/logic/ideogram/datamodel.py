@@ -50,6 +50,8 @@ class Element:
         if self.type == "obj":
             d["padding"] = self.padding
             d["captured"] = self.captured
+            if self.render:        # marco/forma compuesto (shape_render)
+                d["render"] = self.render
         else:
             d["text"] = self.text
             if self.render:

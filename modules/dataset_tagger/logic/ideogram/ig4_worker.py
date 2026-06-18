@@ -13,9 +13,11 @@ lo que es PER-IMAGEN y ensambla el caption canónico:
                                 NUNCA pasa por VLM ni k-means.
   f) ensambla en orden canónico → valida → escribe <imagen>.json
 
-Decisión: aesthetics / lighting / art_style son MANUALES (estilo 3D compartido
-del set, no se infieren por imagen). El worker no los toca; solo exige que
-art_style exista al exportar (si no, reporta error para esa imagen).
+Estilo (art_style / aesthetics / lighting), tres modos según la UI:
+  - MANUAL: escrito en el panel y heredado al .pano.json; el worker no lo toca.
+  - ESTILO + VLM: se infiere UNA vez (1ª imagen) y se propaga idéntico al set.
+  - PERSONAJE: se infiere por imagen (cada imagen su propio estilo).
+En cualquier caso art_style debe existir al exportar; si no, reporta error.
 
 Aislamiento del VLM = CROP (+padding), no máscara: la relación entre objetos
 vive en high_level_description / background, no en el desc del elemento.
@@ -25,6 +27,7 @@ capturados; así no se re-gasta el VLM en lotes grandes.
 """
 import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -51,6 +54,7 @@ class Ig4Worker(QThread):
 
     def __init__(self, provider, model, jobs, *, prompt_hld, prompt_background,
                  prompt_obj, default_padding=0.08, recapture=False, retries=2,
+                 infer_style=False, style_per_image=False, prompt_style="",
                  parent=None):
         super().__init__(parent)
         self.provider = provider
@@ -65,6 +69,16 @@ class Ig4Worker(QThread):
         self.default_padding = default_padding
         self.recapture = recapture
         self.retries = retries
+        # Inferencia opcional del estilo con el VLM (art_style/aesthetics/lighting):
+        #   infer_style=False                 → estilo MANUAL (escrito en el panel).
+        #   infer_style=True, style_per_image=False (dataset de ESTILO)
+        #       → se infiere UNA vez de una imagen y se propaga idéntico a todas.
+        #   infer_style=True, style_per_image=True  (dataset de PERSONAJE)
+        #       → se infiere por imagen (cada imagen su propio estilo).
+        self.infer_style = infer_style
+        self.style_per_image = style_per_image
+        self.prompt_style = prompt_style
+        self._shared_style = None   # estilo inferido una vez (modo estilo+VLM)
         self._cancel = False
 
     def cancel(self):
@@ -74,6 +88,10 @@ class Ig4Worker(QThread):
     def run(self):
         total = len(self.jobs)
         exported = skipped = 0
+        # Dataset de ESTILO con inferencia VLM: un solo estilo para todo el set.
+        # Se infiere una vez (de la primera imagen) y se propaga a cada doc.
+        if self.infer_style and not self.style_per_image and self.jobs:
+            self._shared_style = self._infer_shared_style()
         for i, (image_path, pano_path) in enumerate(self.jobs, 1):
             if self._cancel:
                 break
@@ -109,6 +127,14 @@ class Ig4Worker(QThread):
             cap = self._caption_with_retry(str(ref_path), self.prompt_hld)
             if cap is not None:
                 doc.high_level_description = cap.strip()
+
+        # a') estilo (opcional, VLM). Off = manual. Personaje = por imagen;
+        # estilo = un único estilo compartido inferido una vez.
+        if self.infer_style:
+            if self.style_per_image:
+                self._capture_style(str(ref_path), doc)
+            else:
+                self._apply_shared_style(doc)
 
         # b) paleta global
         if self.recapture or not doc.style.color_palette:
@@ -161,6 +187,64 @@ class Ig4Worker(QThread):
         doc.save(pano_path)
         self.image_done.emit(str(image_path), str(json_path))
         return True
+
+    # ── inferencia de estilo (opcional) ───────────────────────────────────
+    def _infer_shared_style(self):
+        """Infiere UN estilo del set (modo estilo+VLM) desde la primera imagen y
+        lo devuelve como dict; luego se propaga idéntico a todas las imágenes."""
+        image_path, pano_path = self.jobs[0]
+        out_dir = Path(pano_path).parent
+        out_img = out_dir / Path(image_path).name
+        ref_path = out_img if out_img.exists() else Path(image_path)
+        resp = self._caption_with_retry(str(ref_path), self.prompt_style)
+        if not resp:
+            return {}
+        fields = self._parse_style(resp)
+        # Fallback: si no se parseó art_style (formato libre), usa la 1ª línea.
+        if not fields.get("art_style"):
+            fields["art_style"] = resp.strip().splitlines()[0][:120]
+        return fields
+
+    def _apply_shared_style(self, doc):
+        """Propaga el estilo compartido (inferido una vez) a un doc: solo rellena
+        campos vacíos, salvo recapture. Garantiza un estilo idéntico en el set."""
+        sh = self._shared_style or {}
+        s = doc.style
+        if self.recapture or not s.art_style:
+            s.art_style = sh.get("art_style") or s.art_style
+        if self.recapture or not s.aesthetics:
+            s.aesthetics = sh.get("aesthetics") or s.aesthetics
+        if self.recapture or not s.lighting:
+            s.lighting = sh.get("lighting") or s.lighting
+
+    def _capture_style(self, ref_path, doc):
+        """Rellena art_style/aesthetics/lighting desde el VLM (solo vacíos, salvo
+        recapture). El estilo sigue siendo del SET; aquí el VLM solo propone."""
+        s = doc.style
+        if not self.recapture and s.art_style and s.aesthetics and s.lighting:
+            return
+        resp = self._caption_with_retry(ref_path, self.prompt_style)
+        if not resp:
+            return
+        fields = self._parse_style(resp)
+        if self.recapture or not s.art_style:
+            s.art_style = fields.get("art_style") or s.art_style
+        if self.recapture or not s.aesthetics:
+            s.aesthetics = fields.get("aesthetics") or s.aesthetics
+        if self.recapture or not s.lighting:
+            s.lighting = fields.get("lighting") or s.lighting
+        # Fallback: si no se parseó art_style (formato libre), usa la 1ª línea.
+        if not s.art_style:
+            s.art_style = resp.strip().splitlines()[0][:120]
+
+    @staticmethod
+    def _parse_style(text):
+        out = {}
+        for key in ("art_style", "aesthetics", "lighting"):
+            m = re.search(key + r"\s*[:=]\s*(.+?)(?:;|\n|$)", text, re.IGNORECASE)
+            if m:
+                out[key] = m.group(1).strip().strip(".").strip()
+        return out
 
     # ── helpers ──────────────────────────────────────────────────────────
     def _crop(self, ref, bbox_px, padding):
