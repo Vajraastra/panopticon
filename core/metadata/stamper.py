@@ -1,8 +1,11 @@
 import os
 import json
+import logging
 import tempfile
 from pathlib import Path
 from PIL import Image, PngImagePlugin
+
+log = logging.getLogger(__name__)
 
 
 def _atomic_save(img, path, format=None, **save_kwargs):
@@ -79,7 +82,7 @@ class StampLib:
                 return StampLib._stamp_avif(path, json_payload)
             return False
         except Exception as e:
-            print(f"[StampLib] Error stamping {path}: {e}")
+            log.error("Error estampando %s: %s", path, e)
             return False
 
     @staticmethod
@@ -274,7 +277,7 @@ class MetadataStamper:
             else:
                 return False
         except Exception as e:
-            print(f"[MetadataStamper] Error stamping {path}: {e}")
+            log.error("Error estampando %s: %s", path, e)
             return False
     
     @classmethod
@@ -503,5 +506,5 @@ class MetadataStamper:
             return True
         
         except Exception as e:
-            print(f"[MetadataStamper] Error stripping {path}: {e}")
+            log.error("Error eliminando metadata de %s: %s", path, e)
             return False

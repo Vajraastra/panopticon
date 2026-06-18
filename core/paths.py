@@ -5,9 +5,12 @@ depositan sus outputs.
 """
 import os
 import sys
+import logging
 import subprocess
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 
 class ProjectPaths:
@@ -154,7 +157,7 @@ class CachePaths:
                 subprocess.run(["xdg-open", str(path)], check=True)
             return True
         except Exception as e:
-            print(f"[CachePaths] Error opening folder: {e}")
+            log.error("Error abriendo carpeta %s: %s", path, e)
             return False
     
     @classmethod

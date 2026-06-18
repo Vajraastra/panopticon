@@ -1,8 +1,11 @@
 
 import os
+import logging
 import importlib
 import inspect
 from core.base_module import BaseModule
+
+log = logging.getLogger(__name__)
 
 class ModuleLoader:
     """
@@ -52,7 +55,7 @@ class ModuleLoader:
                     self.loaded_modules[module_name] = instance
                     return instance
         except Exception as e:
-            print(f"Error loading module {module_name}: {e}")
+            log.error("Error cargando módulo %s: %s", module_name, e)
             return None
         
         return None

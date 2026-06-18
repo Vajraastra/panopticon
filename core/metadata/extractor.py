@@ -6,12 +6,15 @@ import os
 import struct
 import json
 import re
+import logging
 from pathlib import Path
 from typing import Optional
 
 from PIL import Image
 
 from .bundle import MetadataBundle
+
+log = logging.getLogger(__name__)
 
 
 class MetadataExtractor:
@@ -102,7 +105,7 @@ class MetadataExtractor:
             return cls._parse_raw_metadata(raw_metadata, "PNG")
         
         except Exception as e:
-            print(f"[MetadataExtractor] Error reading PNG {path}: {e}")
+            log.error("Error leyendo PNG %s: %s", path, e)
             return MetadataBundle(source_format="PNG")
     
     @classmethod
@@ -148,7 +151,7 @@ class MetadataExtractor:
             return cls._parse_raw_metadata(raw_metadata, "JPEG")
         
         except Exception as e:
-            print(f"[MetadataExtractor] Error reading JPEG {path}: {e}")
+            log.error("Error leyendo JPEG %s: %s", path, e)
             return MetadataBundle(source_format="JPEG")
     
     @classmethod
@@ -187,7 +190,7 @@ class MetadataExtractor:
             return cls._parse_raw_metadata(raw_metadata, "WEBP")
         
         except Exception as e:
-            print(f"[MetadataExtractor] Error reading WebP {path}: {e}")
+            log.error("Error leyendo WebP %s: %s", path, e)
             return MetadataBundle(source_format="WEBP")
     
     @classmethod
@@ -215,7 +218,7 @@ class MetadataExtractor:
             return cls._parse_raw_metadata(raw_metadata, "AVIF")
 
         except Exception as e:
-            print(f"[MetadataExtractor] Error reading AVIF {path}: {e}")
+            log.error("Error leyendo AVIF %s: %s", path, e)
             return MetadataBundle(source_format="AVIF")
 
     @classmethod

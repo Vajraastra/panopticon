@@ -2,6 +2,10 @@ from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QScrollArea,
                                QFrame, QPushButton, QSplitter, QSizePolicy)
 from PySide6.QtCore import Qt
 from core.locale_manager import LocaleManager
+import logging
+
+log = logging.getLogger(__name__)
+
 
 class StandardToolLayout(QWidget):
     """
@@ -130,7 +134,7 @@ class StandardToolLayout(QWidget):
         if self.event_bus:
             self.event_bus.publish("navigate", "dashboard")
         else:
-            print("[WARN] Back button clicked but no EventBus connected.")
+            log.warning("Botón Atrás pulsado pero no hay EventBus conectado.")
 
     def update_theme(self):
         # TODO: Implement dynamic theme updates if needed

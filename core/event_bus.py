@@ -1,4 +1,9 @@
+import logging
+
 from PySide6.QtCore import QObject, Signal
+
+log = logging.getLogger(__name__)
+
 
 class EventBus(QObject):
     """
@@ -38,4 +43,4 @@ class EventBus(QObject):
                 try:
                     callback(data)
                 except Exception as e:
-                    print(f"Error in subscriber for {topic}: {e}")
+                    log.error("Error en suscriptor de '%s': %s", topic, e)

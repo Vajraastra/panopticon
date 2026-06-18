@@ -4,6 +4,7 @@ Diseñado para manejar 100K+ imágenes con auto-reparación.
 """
 import os
 import csv
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,8 @@ from .bundle import MetadataBundle
 from .extractor import MetadataExtractor
 from .stamper import MetadataStamper
 from .verifier import MetadataVerifier, VerificationResult
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -147,7 +150,7 @@ class BatchVerificationReport:
             return True
         
         except Exception as e:
-            print(f"[BatchVerifier] Error exporting log: {e}")
+            log.error("Error exportando log: %s", e)
             return False
     
     def export_csv(self, path: str | Path) -> bool:
@@ -184,7 +187,7 @@ class BatchVerificationReport:
             return True
         
         except Exception as e:
-            print(f"[BatchVerifier] Error exporting CSV: {e}")
+            log.error("Error exportando CSV: %s", e)
             return False
 
 
