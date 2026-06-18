@@ -701,5 +701,10 @@
   "ig4.tip.batch_detect": "Corre YOLO sobre todas las imágenes del set y guarda un borrador .pano.json con los objetos detectados (sin descripción: el VLM la captura al Iniciar). Las imágenes que ya tienen cajas no se tocan. Luego haz doble clic en cada imagen para repasar y ajustar.",
   "ig4.eyedropper": "Cuentagotas",
   "ig4.tip.text_color": "Color actual del texto (ground truth). Clic para elegirlo a mano.",
-  "ig4.tip.eyedropper": "Muestrea el color EXACTO de un texto existente: pulsa aquí y luego haz clic en el glifo de la imagen. El hex muestreado pasa a ser el color de este texto."
+  "ig4.tip.eyedropper": "Muestrea el color EXACTO de un texto existente: pulsa aquí y luego haz clic en el glifo de la imagen. El hex muestreado pasa a ser el color de este texto.",
+  "ig4.prev": "◀ Anterior",
+  "ig4.next": "Siguiente ▶",
+  "ig4.nav_pos": "{0}/{1}  ·  {2}",
+  "ig4.tip.prev": "Guarda y va a la imagen anterior (Alt+←).",
+  "ig4.tip.next": "Guarda y va a la imagen siguiente (Alt+→)."
 }

@@ -391,7 +391,7 @@ class BBoxEditor(QDialog):
     """Ventana de edición de un .pano.json para una imagen."""
 
     def __init__(self, image_path, pano_path, locale_manager=None,
-                 style_defaults=None, parent=None):
+                 style_defaults=None, images=None, out_dir=None, parent=None):
         super().__init__(parent)
         self._lm = locale_manager
         self._style_defaults = style_defaults or {}
@@ -403,10 +403,28 @@ class BBoxEditor(QDialog):
         self._autodet = None      # _AutoDetectWorker en curso (auto-bbox)
         self._eyedropper_active = False  # modo cuentagotas (color de texto)
 
+        # Navegación por el set: lista de imágenes + carpeta de salida (para
+        # derivar el .pano.json de cada una). Permite ◀/▶ sin cerrar la ventana.
+        self._images = [str(p) for p in images] if images else None
+        self._out_dir = Path(out_dir) if out_dir else None
+        self._index = 0
+        if self._images:
+            try:
+                self._index = self._images.index(str(self.image_path))
+            except ValueError:
+                self._images = None   # la imagen actual no está en la lista
+
         self.setWindowTitle(self.tr("ig4.editor_title", "Ideogram 4 — bbox editor"))
         self.resize(1180, 800)
         self.setStyleSheet(f"background-color: {Theme.BG_MAIN}; color: {Theme.TEXT_PRIMARY};")
 
+        self._load_image_data()   # fija _pixmap, _work_image, _composited, _doc
+        self._build_ui()
+        self._populate_from_doc()
+        self._update_nav()
+
+    def _load_image_data(self):
+        """Carga pixmap, imagen de trabajo PIL y documento de la imagen actual."""
         self._pixmap = QPixmap(str(self.image_path))
         if self._pixmap.isNull():
             raise ValueError(f"No se pudo abrir la imagen: {self.image_path}")
@@ -414,10 +432,7 @@ class BBoxEditor(QDialog):
         # copia de salida con el texto se escribe junto al .pano.json al guardar.
         self._work_image = Image.open(self.image_path).convert("RGB")
         self._composited = False
-
         self._doc = self._load_or_create_doc()
-        self._build_ui()
-        self._populate_from_doc()
 
     # ── i18n ────────────────────────────────────────────────────────────
     def tr(self, key, default):
@@ -453,6 +468,10 @@ class BBoxEditor(QDialog):
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 0, 0)
         lv.setSpacing(0)
+
+        # Barra de navegación del set (◀ N/Total nombre ▶). Solo si hay lista.
+        lv.addWidget(self._build_nav_bar())
+
         instr = QLabel(self.tr(
             "ig4.canvas_help",
             "Drag on the image to draw a box. Click a box to select it; drag its "
@@ -513,6 +532,13 @@ class BBoxEditor(QDialog):
         dup_sc = QShortcut(QKeySequence("Ctrl+D"), self)
         dup_sc.setContext(Qt.WindowShortcut)
         dup_sc.activated.connect(self._duplicate_selected)
+        # Navegación por el set: Alt+←/→ (no choca con mover cajas ni editar texto).
+        prev_sc = QShortcut(QKeySequence("Alt+Left"), self)
+        prev_sc.setContext(Qt.WindowShortcut)
+        prev_sc.activated.connect(lambda: self._go(-1))
+        next_sc = QShortcut(QKeySequence("Alt+Right"), self)
+        next_sc.setContext(Qt.WindowShortcut)
+        next_sc.activated.connect(lambda: self._go(1))
         save_sc = QShortcut(QKeySequence.Save, self)  # Ctrl+S
         save_sc.setContext(Qt.WindowShortcut)
         save_sc.activated.connect(self._save_and_close)
@@ -556,6 +582,87 @@ class BBoxEditor(QDialog):
 
     def _zoom_100(self):
         self.view.resetTransform()
+
+    # ── navegación por el set (◀/▶) ─────────────────────────────────────
+    def _build_nav_bar(self):
+        """Barra ◀/▶ para pasar de imagen sin cerrar la ventana (solo si hay set)."""
+        bar = QWidget()
+        bar.setStyleSheet(f"background-color: {Theme.BG_PANEL};")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(8, 4, 8, 4)
+        row.setSpacing(6)
+        self._btn_prev = QPushButton(self.tr("ig4.prev", "◀ Prev"))
+        self._btn_prev.setToolTip(self.tr(
+            "ig4.tip.prev", "Save and go to the previous image (Alt+←)."))
+        self._btn_prev.clicked.connect(lambda: self._go(-1))
+        self._btn_next = QPushButton(self.tr("ig4.next", "Next ▶"))
+        self._btn_next.setToolTip(self.tr(
+            "ig4.tip.next", "Save and go to the next image (Alt+→)."))
+        self._btn_next.clicked.connect(lambda: self._go(1))
+        self._lbl_nav = QLabel("")
+        self._lbl_nav.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: 11px;")
+        row.addWidget(self._btn_prev)
+        row.addWidget(self._btn_next)
+        row.addWidget(self._lbl_nav)
+        row.addStretch()
+        bar.setVisible(bool(self._images))
+        return bar
+
+    def _update_nav(self):
+        if not self._images:
+            return
+        n = len(self._images)
+        self._btn_prev.setEnabled(self._index > 0)
+        self._btn_next.setEnabled(self._index < n - 1)
+        self._lbl_nav.setText(self.tr("ig4.nav_pos", "{0}/{1}  ·  {2}").format(
+            self._index + 1, n, self.image_path.name))
+
+    def _has_content(self):
+        """¿El doc tiene trabajo real que guardar? (evita borradores vacíos al solo
+        hojear). NO cuenta el estilo (art_style/aesthetics/lighting) porque se
+        hereda del panel en cada doc nuevo y no refleja trabajo sobre esta imagen."""
+        d = self._doc
+        return bool(d.elements or d.high_level_description.strip()
+                    or d.background.strip())
+
+    def _go(self, delta):
+        """Guarda la imagen actual (si tiene contenido) y salta `delta` posiciones."""
+        if not self._images:
+            return
+        new = self._index + delta
+        if new < 0 or new >= len(self._images):
+            return
+        if self._autodet is not None and self._autodet.isRunning():
+            return  # no cambiar de imagen con una detección en curso
+        # Guarda solo si hay algo (o ya había un .pano.json): no crea vacíos al hojear.
+        self._collect_globals()
+        if (self._has_content() or self.pano_path.exists()) and not self._save():
+            return
+        self._index = new
+        self.image_path = Path(self._images[new])
+        out = self._out_dir or self.pano_path.parent
+        self.pano_path = out / (self.image_path.stem + ".pano.json")
+        try:
+            self._load_image_data()
+        except ValueError as exc:
+            QMessageBox.warning(self, self.tr("ig4.save_err_title", "Save error"), str(exc))
+            return
+        self._reset_scene_for_new_image()
+        self._populate_from_doc()
+        self._update_nav()
+
+    def _reset_scene_for_new_image(self):
+        """Limpia la escena y la lista para cargar otra imagen en la misma ventana."""
+        self._set_eyedropper(False)
+        for it in self._items:
+            self.scene.removeItem(it)
+        self._items = []
+        self._selected = None
+        self._list.clear()
+        self.scene.set_background(self._pixmap)
+        self.scene.setSceneRect(QRectF(self._pixmap.rect()))
+        self.view.resetTransform()
+        self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
 
     def _build_sidebar(self):
         panel = QWidget()
