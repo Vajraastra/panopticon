@@ -71,6 +71,9 @@ class StandardToolLayout(QWidget):
         
         self.settings_scroll = QScrollArea()
         self.settings_scroll.setWidgetResizable(True)
+        # La barra lateral nunca debe desplazarse en horizontal: el contenido se
+        # ajusta al ancho fijo y los textos largos hacen wrap (no scroll lateral).
+        self.settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         if sidebar_widget:
             self.settings_scroll.setWidget(sidebar_widget)
         else:
