@@ -15,9 +15,11 @@ from core.mod_loader import ModuleLoader
 from core.theme_manager import ThemeManager
 from core.locale_manager import LocaleManager
 from core.event_bus import EventBus
+from core.logging_config import setup_logging
 
+# Configuración central de logging (consola + logs/panopticon.log rotativo).
+setup_logging()
 log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.WARNING)
 
 class MainWindow(QMainWindow):
     """
