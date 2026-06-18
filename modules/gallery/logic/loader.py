@@ -2,6 +2,9 @@ from PySide6.QtCore import QObject, Signal, QRunnable, QThreadPool, QSize, Qt
 from PySide6.QtGui import QImage
 import os
 import sys
+import logging
+
+log = logging.getLogger(__name__)
 
 class WorkerSignals(QObject):
     """Signals for background results."""
@@ -25,7 +28,7 @@ class ThumbnailWorker(QRunnable):
             else:
                 self.signals.result.emit(self.path, None)
         except Exception as e:
-            print(f"[Loader ERR] Critical load error for {self.path}: {e}")
+            log.error("Error crítico cargando %s: %s", self.path, e)
             self.signals.result.emit(self.path, None)
 
 class ThumbnailLoader(QObject):
