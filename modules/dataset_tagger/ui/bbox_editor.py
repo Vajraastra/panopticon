@@ -19,7 +19,10 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QRectF, QPointF, Signal
-from PySide6.QtGui import QPixmap, QPen, QBrush, QColor, QFont, QPainter
+from PySide6.QtGui import (
+    QPixmap, QPen, QBrush, QColor, QFont, QPainter, QPainterPath,
+    QShortcut, QKeySequence,
+)
 from PySide6.QtWidgets import (
     QDialog, QGraphicsScene, QGraphicsView, QGraphicsRectItem,
     QGraphicsPixmapItem, QVBoxLayout, QHBoxLayout, QWidget, QLabel,
@@ -39,14 +42,26 @@ log = logging.getLogger(__name__)
 DRAW_OBJ = 0
 DRAW_TEXT = 1
 
-OBJ_COLOR = Theme.ACCENT_MAIN       # cyan
-TEXT_COLOR = Theme.ACCENT_FASHION   # rosa
+OBJ_COLOR = Theme.ACCENT_MAIN       # cyan (fallback)
+TEXT_COLOR = Theme.ACCENT_FASHION   # rosa (fallback)
 MIN_BOX = 6                         # lado mínimo (px de escena) para crear una caja
-HANDLE_SCREEN = 9                   # lado del handle de resize, en px de PANTALLA
+HANDLE_SCREEN = 11                  # lado VISUAL del handle de resize, en px de PANTALLA
+GRAB_SCREEN = 20                    # zona de AGARRE de la esquina, en px de PANTALLA;
+                                    # mayor que el handle visual para atrapar las
+                                    # esquinas sin acabar arrastrando la caja entera
+
+# Paleta de cajas: 12 tonos saturados y bien separados en el círculo cromático
+# para que cada bbox se distinga de las demás (el tipo obj/text se indica con el
+# badge O/T, no con el color). El color lo asigna el editor por orden de saliencia.
+BOX_PALETTE = [
+    "#FF3B30", "#FF9500", "#FFCC00", "#A2E300", "#34C759", "#00C7BE",
+    "#32ADE6", "#007AFF", "#5856D6", "#AF52DE", "#FF2D92", "#FF6482",
+]
 
 
-def _elem_color(etype):
-    return OBJ_COLOR if etype == "obj" else TEXT_COLOR
+def order_color(order):
+    """Color de la caja en posición `order` (1-based), cíclico sobre la paleta."""
+    return BOX_PALETTE[(max(order, 1) - 1) % len(BOX_PALETTE)]
 
 
 class BBoxItem(QGraphicsRectItem):
@@ -65,6 +80,7 @@ class BBoxItem(QGraphicsRectItem):
         self.on_changed = on_changed      # callback() al cambiar geometría
         self.on_selected = on_selected    # callback(item) al hacer clic
         self.order = 0                    # posición 1-based; la fija el editor
+        self.draw_color = OBJ_COLOR       # color por saliencia; lo fija el editor
         x0, y0, x1, y1 = element.bbox_px
         self.setRect(QRectF(QPointF(x0, y0), QPointF(x1, y1)).normalized())
         self.setFlag(QGraphicsRectItem.ItemIsSelectable, True)
@@ -83,6 +99,10 @@ class BBoxItem(QGraphicsRectItem):
     def _handle_size(self):
         return HANDLE_SCREEN / max(self._scale(), 1e-6)
 
+    def _grab_size(self):
+        """Tolerancia de agarre de la esquina, en px de escena (constante en pantalla)."""
+        return GRAB_SCREEN / max(self._scale(), 1e-6)
+
     def _corner_points(self):
         r = self.rect()
         return {"tl": r.topLeft(), "tr": r.topRight(),
@@ -90,7 +110,7 @@ class BBoxItem(QGraphicsRectItem):
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing, False)
-        color = QColor(_elem_color(self.element.type))
+        color = QColor(self.draw_color)
         selected = self.isSelected()
         pen = QPen(color, (2.5 if selected else 1.5) / max(self._scale(), 1e-6))
         painter.setPen(pen)
@@ -118,21 +138,41 @@ class BBoxItem(QGraphicsRectItem):
                 painter.drawRect(QRectF(p.x() - hs / 2, p.y() - hs / 2, hs, hs))
 
     def boundingRect(self):
-        hs = self._handle_size()
-        return self.rect().adjusted(-hs, -hs * 2, hs, hs)
+        g = self._grab_size()
+        return self.rect().adjusted(-g, -g, g, g)
+
+    def shape(self):
+        """Área interactiva: el rect, más cuadrados de agarre en las esquinas
+        cuando está seleccionada. Así las esquinas se atrapan aunque queden
+        ligeramente fuera del rect, y solo la caja activa reclama esa zona."""
+        path = QPainterPath()
+        path.addRect(self.rect())
+        if self.isSelected():
+            g = self._grab_size()
+            for p in self._corner_points().values():
+                path.addRect(QRectF(p.x() - g, p.y() - g, 2 * g, 2 * g))
+        return path
 
     # -- interacción ----------------------------------------------------------
     def _corner_at(self, pos):
-        hs = self._handle_size()
+        g = self._grab_size()
         for name, p in self._corner_points().items():
-            if abs(pos.x() - p.x()) <= hs and abs(pos.y() - p.y()) <= hs:
+            if abs(pos.x() - p.x()) <= g and abs(pos.y() - p.y()) <= g:
                 return name
         return None
 
     def mousePressEvent(self, event):
+        was_selected = self.isSelected()
         self.setSelected(True)
         if self.on_selected:
             self.on_selected(self)
+        # Solo la caja YA seleccionada se mueve/redimensiona en este mismo gesto.
+        # Una caja recién tocada únicamente se selecciona: así, al editar una caja,
+        # rozar otra no la arrastra por accidente (hay que seleccionarla primero).
+        if not was_selected:
+            self._drag_mode = None
+            event.accept()
+            return
         self._start_rect = QRectF(self.rect())
         self._start_scene = event.scenePos()
         self._drag_mode = self._corner_at(event.pos()) or "move"
@@ -282,19 +322,55 @@ class BBoxEditor(QDialog):
         splitter = QSplitter(Qt.Horizontal)
         root.addWidget(splitter)
 
-        # Lienzo
+        # Lienzo, con una instrucción siempre visible encima (a prueba de fallos:
+        # el usuario no tiene que adivinar cómo se dibuja).
+        left = QWidget()
+        lv = QVBoxLayout(left)
+        lv.setContentsMargins(0, 0, 0, 0)
+        lv.setSpacing(0)
+        instr = QLabel(self.tr(
+            "ig4.canvas_help",
+            "Drag on the image to draw a box. Click a box to select it; drag its "
+            "corners to resize, or drag its center to move it."))
+        instr.setWordWrap(True)
+        instr.setStyleSheet(
+            f"background-color: {Theme.BG_PANEL}; color: {Theme.TEXT_SECONDARY}; "
+            f"padding: 6px 10px; font-size: 11px;")
+        lv.addWidget(instr)
+
         self.scene = BBoxScene(self._pixmap)
         self.scene.box_created.connect(self._on_box_created)
         self.view = QGraphicsView(self.scene)
         self.view.setRenderHint(QPainter.SmoothPixmapTransform, True)
         self.view.setDragMode(QGraphicsView.NoDrag)
         self.view.setBackgroundBrush(QBrush(QColor(Theme.BG_PANEL)))
-        splitter.addWidget(self.view)
+        self.view.setToolTip(self.tr(
+            "ig4.tip.canvas",
+            "Drawing area. Empty space = draw a new box; on a box = select/move/resize."))
+        lv.addWidget(self.view)
+        splitter.addWidget(left)
 
         splitter.addWidget(self._build_sidebar())
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         splitter.setSizes([840, 340])
+
+        self._install_shortcuts()
+
+    def _install_shortcuts(self):
+        """Atajos para agilizar el flujo de ×N imágenes:
+          Supr/Backspace = borrar la caja seleccionada (solo sobre el lienzo o la
+                           lista, para no chocar con la edición de texto en campos),
+          Ctrl+S         = guardar y cerrar,
+          Esc            = cerrar sin guardar (default de QDialog → reject)."""
+        for seq in (QKeySequence.Delete, QKeySequence(Qt.Key_Backspace)):
+            for widget in (self.view, self._list):
+                sc = QShortcut(seq, widget)
+                sc.setContext(Qt.WidgetWithChildrenShortcut)
+                sc.activated.connect(self._delete_selected)
+        save_sc = QShortcut(QKeySequence.Save, self)  # Ctrl+S
+        save_sc.setContext(Qt.WindowShortcut)
+        save_sc.activated.connect(self._save_and_close)
 
     def _build_sidebar(self):
         panel = QWidget()
@@ -308,6 +384,14 @@ class BBoxEditor(QDialog):
         row = QHBoxLayout()
         self._rb_obj = QRadioButton(self.tr("ig4.type_obj", "Object"))
         self._rb_text = QRadioButton(self.tr("ig4.type_text", "Text"))
+        self._rb_obj.setToolTip(self.tr(
+            "ig4.tip.type_obj",
+            "Object: a visual element (character, prop, panel, frame). On Start the "
+            "VLM describes it and k-means extracts its colors."))
+        self._rb_text.setToolTip(self.tr(
+            "ig4.tip.type_text",
+            "Text: literal words in the image (titles, dialog). You type the exact "
+            "string; it is ground truth and never sent to the VLM."))
         self._rb_obj.setChecked(True)
         grp = QButtonGroup(panel)
         grp.addButton(self._rb_obj)
@@ -323,12 +407,19 @@ class BBoxEditor(QDialog):
         lay.addWidget(self._section(self.tr("ig4.elements", "ELEMENTS (drag to reorder)")))
         self._list = QListWidget()
         self._list.setDragDropMode(QListWidget.InternalMove)
+        self._list.setToolTip(self.tr(
+            "ig4.tip.list",
+            "Every box you draw. Order = prominence: #1 is the most salient. Drag "
+            "rows to reorder — it matters for the caption. Text boxes are moved to "
+            "the end automatically on export."))
         self._list.currentRowChanged.connect(self._on_list_row_changed)
         self._list.model().rowsMoved.connect(self._on_rows_moved)
         lay.addWidget(self._list, stretch=1)
 
         del_btn = QPushButton(self.tr("ig4.delete_elem", "Delete selected"))
         del_btn.setStyleSheet(Theme.get_button_style(Theme.ACCENT_WARNING))
+        del_btn.setToolTip(self.tr(
+            "ig4.tip.delete", "Remove the selected box from the list and the image."))
         del_btn.clicked.connect(self._delete_selected)
         lay.addWidget(del_btn)
 
@@ -337,10 +428,18 @@ class BBoxEditor(QDialog):
         form = QFormLayout()
         self._ed_text = QLineEdit()
         self._ed_text.setPlaceholderText(self.tr("ig4.text_literal", "literal text (text type)"))
+        self._ed_text.setToolTip(self.tr(
+            "ig4.tip.elem_text",
+            "The exact words shown in this text box (ground truth). Enabled only for "
+            "'text' elements."))
         self._ed_text.textEdited.connect(self._on_elem_field_changed)
         self._ed_desc = QPlainTextEdit()
         self._ed_desc.setFixedHeight(60)
         self._ed_desc.setPlaceholderText(self.tr("ig4.desc_ph", "description"))
+        self._ed_desc.setToolTip(self.tr(
+            "ig4.tip.elem_desc",
+            "Short description of this element. For objects the VLM fills it on Start "
+            "if empty; anything you write here is kept (not overwritten)."))
         self._ed_desc.textChanged.connect(self._on_elem_field_changed)
         self._lbl_text = QLabel(self.tr("ig4.text_field", "text"))
         form.addRow(self._lbl_text, self._ed_text)
@@ -350,9 +449,25 @@ class BBoxEditor(QDialog):
         # Compositing de texto (Caso A: texto nuevo en flyers). Solo para 'text'.
         self._btn_compose = QPushButton(self.tr("ig4.compose_text", "Compose text…"))
         self._btn_compose.setStyleSheet(Theme.get_button_style(Theme.ACCENT_FASHION))
+        self._btn_compose.setToolTip(self.tr(
+            "ig4.tip.compose_text",
+            "Render NEW text onto the image (titles, flyers), optionally inside a "
+            "speech bubble. The box and color become ground truth. Select a 'text' "
+            "element first."))
         self._btn_compose.clicked.connect(self._compose_text)
         self._btn_compose.setEnabled(False)
         lay.addWidget(self._btn_compose)
+
+        # Compositing de marco/forma. Solo para 'obj' (enmarcar imagen, paneles).
+        self._btn_shape = QPushButton(self.tr("ig4.compose_shape", "Compose frame…"))
+        self._btn_shape.setStyleSheet(Theme.get_button_style(Theme.ACCENT_MAIN))
+        self._btn_shape.setToolTip(self.tr(
+            "ig4.tip.compose_shape",
+            "Draw a frame, panel or speech-bubble shape onto the image. Select an "
+            "'object' element first."))
+        self._btn_shape.clicked.connect(self._compose_shape)
+        self._btn_shape.setEnabled(False)
+        lay.addWidget(self._btn_shape)
 
         # Campos globales
         lay.addWidget(self._section(self.tr("ig4.global", "GLOBAL")))
@@ -364,21 +479,44 @@ class BBoxEditor(QDialog):
         self._ed_aes = QLineEdit()
         self._ed_light = QLineEdit()
         self._ed_artstyle = QLineEdit()
+        self._ed_artstyle.setPlaceholderText(self.tr(
+            "ig4.art_style_req_ph", "required, e.g. stylized 3D character render"))
+        self._ed_hld.setToolTip(self.tr(
+            "ig4.tip.hld",
+            "One or two sentences describing the whole scene. The VLM fills this on "
+            "Start if you leave it empty."))
+        self._ed_bg.setToolTip(self.tr(
+            "ig4.tip.background",
+            "Describes ONLY the background. The VLM fills this on Start if empty."))
+        self._ed_aes.setToolTip(self.tr(
+            "ig4.tip.aesthetics", "Optional. Mood/aesthetics of the set's style (e.g. 'clean studio')."))
+        self._ed_light.setToolTip(self.tr(
+            "ig4.tip.lighting", "Optional. Lighting of the set's style (e.g. 'soft key light')."))
+        self._ed_artstyle.setToolTip(self.tr(
+            "ig4.tip.art_style",
+            "REQUIRED to export. The set's art style (e.g. 'stylized 3D character "
+            "render'). Inherited from the panel — keep it identical across the set."))
         gform.addRow(QLabel(self.tr("ig4.hld", "high level")), self._ed_hld)
         gform.addRow(QLabel(self.tr("ig4.background", "background")), self._ed_bg)
         gform.addRow(QLabel(self.tr("ig4.aesthetics", "aesthetics")), self._ed_aes)
         gform.addRow(QLabel(self.tr("ig4.lighting", "lighting")), self._ed_light)
-        gform.addRow(QLabel(self.tr("ig4.art_style", "art_style")), self._ed_artstyle)
+        gform.addRow(QLabel(self.tr("ig4.art_style_req", "art_style *")), self._ed_artstyle)
         lay.addLayout(gform)
 
         # Acciones
-        save_btn = QPushButton(self.tr("ig4.save", "Save (.pano.json)"))
+        save_btn = QPushButton(self.tr("ig4.save_close", "Save & close"))
         save_btn.setStyleSheet(Theme.get_button_style(Theme.ACCENT_SUCCESS))
-        save_btn.clicked.connect(self._save)
+        save_btn.setToolTip(self.tr(
+            "ig4.tip.save",
+            "Save boxes and fields to the work file (.pano.json) and close the editor. "
+            "You can reopen and continue later; capture (Start) reads these files."))
+        save_btn.clicked.connect(self._save_and_close)
         lay.addWidget(save_btn)
-        close_btn = QPushButton(self.tr("ig4.close", "Close"))
+        close_btn = QPushButton(self.tr("ig4.close_nosave", "Close without saving"))
         close_btn.setStyleSheet(Theme.get_button_style())
-        close_btn.clicked.connect(self.accept)
+        close_btn.setToolTip(self.tr(
+            "ig4.tip.close", "Close the editor discarding unsaved changes since the last save."))
+        close_btn.clicked.connect(self.reject)
         lay.addWidget(close_btn)
         return panel
 
@@ -399,21 +537,29 @@ class BBoxEditor(QDialog):
         for elem in self._doc.elements:
             self._add_item(elem)
         self._refresh_orders()
+        # Estado inicial del panel: selecciona la primera caja (si la hay) para que
+        # se vean solo sus controles; si la imagen está vacía, ocúltalos todos.
+        if self._items:
+            self._list.setCurrentRow(0)
+        else:
+            self._update_elem_panel_visibility(None)
 
     def _add_item(self, element):
         item = BBoxItem(element, on_changed=self._on_box_geometry_changed,
                         on_selected=self._select_item)
         self.scene.addItem(item)
         self._items.append(item)
-        li = QListWidgetItem(self._list_label(element))
+        order = self._list.count() + 1
+        li = QListWidgetItem(self._list_label(element, order))
         li.setData(Qt.UserRole, element.id)  # ancla estable para reordenar
         self._list.addItem(li)
 
-    def _list_label(self, element):
+    def _list_label(self, element, order):
         kind = "T" if element.type == "text" else "O"
         text = element.text if element.type == "text" else element.desc
         text = (text or "").strip().replace("\n", " ")
-        return f"[{kind}] {text[:34]}" if text else f"[{kind}] (empty)"
+        body = text[:34] if text else self.tr("ig4.empty", "(empty)")
+        return f"{order} · [{kind}] {body}"
 
     # ── eventos de caja ─────────────────────────────────────────────────
     def _on_box_created(self, rect):
@@ -438,14 +584,16 @@ class BBoxEditor(QDialog):
     def _on_list_row_changed(self, row):
         for it in self._items:
             it.setSelected(False)
+            it.setZValue(10)
         if 0 <= row < len(self._items):
             self._selected = self._items[row]
             self._selected.setSelected(True)
+            self._selected.setZValue(11)   # encima de las demás → su esquina gana el clic
             self._selected.ensureVisible()
             self._load_elem_fields(self._selected.element)
         else:
             self._selected = None
-            self._btn_compose.setEnabled(False)
+            self._update_elem_panel_visibility(None)
 
     def _on_rows_moved(self, *args):
         """Reordena _items y doc.elements para igualar el orden visual de la lista.
@@ -470,14 +618,34 @@ class BBoxEditor(QDialog):
     def _refresh_orders(self):
         for i, it in enumerate(self._items, start=1):
             it.order = i
+            it.draw_color = order_color(i)
             it.update()
+            li = self._list.item(i - 1)
+            if li is not None:
+                li.setText(self._list_label(it.element, i))
+                li.setForeground(QColor(order_color(i)))
 
     # ── edición de campos ───────────────────────────────────────────────
+    def _update_elem_panel_visibility(self, element):
+        """Muestra solo los controles del tipo activo, sin mezclar texto y objeto.
+
+        - 'text'  → campo de texto literal + "Componer texto…".
+        - 'obj'   → "Componer forma…".
+        - nada    → se ocultan todos (al deseleccionar / imagen vacía).
+        El campo `desc` aplica a ambos tipos y permanece siempre visible.
+        """
+        is_text = element is not None and element.type == "text"
+        is_obj = element is not None and element.type == "obj"
+        self._ed_text.setVisible(is_text)
+        self._lbl_text.setVisible(is_text)
+        self._btn_compose.setVisible(is_text)
+        self._btn_shape.setVisible(is_obj)
+        self._btn_compose.setEnabled(is_text)
+        self._btn_shape.setEnabled(is_obj)
+
     def _load_elem_fields(self, element):
         is_text = element.type == "text"
-        self._ed_text.setEnabled(is_text)
-        self._lbl_text.setEnabled(is_text)
-        self._btn_compose.setEnabled(is_text)
+        self._update_elem_panel_visibility(element)
         self._ed_text.blockSignals(True)
         self._ed_desc.blockSignals(True)
         self._ed_text.setText(element.text if is_text else "")
@@ -493,7 +661,7 @@ class BBoxEditor(QDialog):
             elem.text = self._ed_text.text()
         elem.desc = self._ed_desc.toPlainText()
         row = self._items.index(self._selected)
-        self._list.item(row).setText(self._list_label(elem))
+        self._list.item(row).setText(self._list_label(elem, row + 1))
 
     def _compose_text(self):
         """Abre el mini-editor de texto y compone sobre la imagen de trabajo.
@@ -524,7 +692,35 @@ class BBoxEditor(QDialog):
         self._selected.setRect(QRectF(QPointF(bx0, by0), QPointF(bx1, by1)))
         self._load_elem_fields(elem)
         row = self._items.index(self._selected)
-        self._list.item(row).setText(self._list_label(elem))
+        self._list.item(row).setText(self._list_label(elem, row + 1))
+
+    def _compose_shape(self):
+        """Abre el mini-editor de formas y compone un marco/globo sobre la imagen.
+
+        Solo para elementos 'obj'. Fija en el elemento la bbox AUTOMÁTICA y los
+        parámetros de render; mueve la caja a esa bbox. La copia con la forma se
+        escribe al guardar (igual que el texto compuesto).
+        """
+        if not self._selected or self._selected.element.type != "obj":
+            return
+        from .shape_panel import ShapeComposerDialog
+        elem = self._selected.element
+        dlg = ShapeComposerDialog(self._work_image, tuple(elem.bbox_px), self._lm, self)
+        if dlg.exec() != QDialog.Accepted or dlg.result_image is None:
+            return
+
+        self._work_image = dlg.result_image
+        self.scene.set_background(pil_to_qpixmap(self._work_image))
+        self._composited = True
+
+        data = dlg.result_data
+        elem.bbox_px = data["bbox_px"]
+        elem.render = data["render"]
+        bx0, by0, bx1, by1 = elem.bbox_px
+        self._selected.prepareGeometryChange()
+        self._selected.setRect(QRectF(QPointF(bx0, by0), QPointF(bx1, by1)))
+        row = self._items.index(self._selected)
+        self._list.item(row).setText(self._list_label(elem, row + 1))
 
     def _delete_selected(self):
         if not self._selected:
@@ -547,6 +743,12 @@ class BBoxEditor(QDialog):
         self._doc.style.art_style = self._ed_artstyle.text().strip()
 
     def _save(self):
+        """Persiste el .pano.json. Devuelve True si guardó sin error.
+
+        No muestra diálogo de confirmación: en una sesión de 40+ imágenes ese
+        aviso por imagen era tedioso. El éxito se refleja cerrando el editor
+        (ver `_save_and_close`); solo los errores interrumpen con un aviso.
+        """
         self._collect_globals()
         try:
             self.pano_path.parent.mkdir(parents=True, exist_ok=True)
@@ -558,11 +760,14 @@ class BBoxEditor(QDialog):
                 self._work_image.save(out_img)
         except OSError as exc:
             QMessageBox.warning(self, self.tr("ig4.save_err_title", "Save error"), str(exc))
-            return
+            return False
         log.info("pano.json guardado: %s", self.pano_path)
-        QMessageBox.information(
-            self, self.tr("ig4.saved_title", "Saved"),
-            self.tr("ig4.saved_msg", "Work saved to:") + f"\n{self.pano_path}")
+        return True
+
+    def _save_and_close(self):
+        """Guarda y, si todo fue bien, cierra el editor (flujo de captura masiva)."""
+        if self._save():
+            self.accept()
 
     def showEvent(self, event):
         super().showEvent(event)

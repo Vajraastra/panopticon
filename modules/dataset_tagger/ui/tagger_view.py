@@ -53,6 +53,9 @@ IG4_PROMPT_BG = ("Describe ONLY the background of this image in one sentence, "
 IG4_PROMPT_OBJ = ("Describe this cropped subject for a dataset caption: "
                   "appearance, clothing or material, and pose, in one concise "
                   "sentence.")
+IG4_PROMPT_STYLE = ("Identify the visual style of this image for a dataset. "
+                    "Answer in exactly this format, short phrases: "
+                    "art_style: <phrase>; aesthetics: <phrase>; lighting: <phrase>.")
 
 # Política ante captions existentes -> valor de sidecar.*
 POLICIES = [
@@ -501,54 +504,167 @@ class DatasetTaggerView(QWidget):
         v.setSpacing(4)
         v.addWidget(self._section(self._tr("ig4.sec.style", "Ideogram v4 — set style")))
 
+        # Tipo de dataset. ESTILO (off): un único estilo global para todo el set
+        # (coherencia del LoRA), escrito a mano o inferido por el VLM de una imagen.
+        # PERSONAJE (on): cada imagen tiene su propio estilo, que el VLM infiere
+        # por imagen. Este switch gobierna qué controles de estilo se muestran.
+        # Switch deslizante (mismo patrón que el tono SFW/NSFW) para que sea
+        # obvio y visible: izquierda = Estilo, derecha = Personaje.
+        type_tip = self._tr(
+            "ig4.tip.is_character",
+            "Style = one global art_style for the whole set (best for a consistent "
+            "style LoRA). Character = the subject appears in many styles, so the VLM "
+            "infers the style of each image individually.")
+        v.addWidget(QLabel(self._tr("ig4.dataset_type", "Dataset type")))
+        type_row = QHBoxLayout()
+        self.lbl_type_style = QLabel(self._tr("ig4.type.style", "Style"))
+        self.lbl_type_char = QLabel(self._tr("ig4.type.character", "Character"))
+        self.ig4_is_character = ToggleSwitch(
+            self._accent(), self._color('border', "#555"))
+        self.ig4_is_character.toggled.connect(self._refresh_ig4_style_ui)
+        for wgt in (self.lbl_type_style, self.ig4_is_character, self.lbl_type_char):
+            wgt.setToolTip(type_tip)
+            type_row.addWidget(wgt)
+        type_row.addStretch()
+        v.addLayout(type_row)
+
+        # Grupo de estilo GLOBAL — visible solo en modo ESTILO. Se rellena a mano
+        # o, si 'inferir' está activo, lo deduce el VLM (campos deshabilitados).
+        self.ig4_style_group = QFrame()
+        sg = QVBoxLayout(self.ig4_style_group)
+        sg.setContentsMargins(0, 0, 0, 0)
+        sg.setSpacing(4)
         self.ig4_artstyle = QLineEdit()
         self.ig4_artstyle.setPlaceholderText(
-            self._tr("ig4.artstyle_ph", "art_style (e.g. stylized 3D character render)"))
+            self._tr("ig4.artstyle_ph", "art_style * — e.g. stylized 3D character render"))
+        self.ig4_artstyle.setToolTip(self._tr(
+            "ig4.tip.set_artstyle",
+            "REQUIRED in Style mode. The art style shared by the whole set. Write it "
+            "once; it is inherited by every image. Keep it identical so the LoRA learns "
+            "a single consistent style. (Leave to the VLM with 'Infer global style'.)"))
         self.ig4_aesthetics = QLineEdit()
         self.ig4_aesthetics.setPlaceholderText(self._tr("ig4.aesthetics_ph", "aesthetics (optional)"))
+        self.ig4_aesthetics.setToolTip(self._tr(
+            "ig4.tip.set_aesthetics", "Optional. Shared mood/aesthetics (e.g. 'clean studio, soft palette')."))
         self.ig4_lighting = QLineEdit()
         self.ig4_lighting.setPlaceholderText(self._tr("ig4.lighting_ph", "lighting (optional)"))
+        self.ig4_lighting.setToolTip(self._tr(
+            "ig4.tip.set_lighting", "Optional. Shared lighting (e.g. 'soft three-point key light')."))
         for e in (self.ig4_artstyle, self.ig4_aesthetics, self.ig4_lighting):
-            v.addWidget(e)
+            sg.addWidget(e)
+
+        # Inferir el estilo GLOBAL con el VLM (modo estilo): se deduce de UNA imagen
+        # y se reusa idéntico en todas. Alternativa a escribir art_style a mano.
+        self.ig4_infer_style = QCheckBox(self._tr(
+            "ig4.infer_style", "Infer the global style with the VLM (from one image, for all)"))
+        self.ig4_infer_style.setToolTip(self._tr(
+            "ig4.tip.infer_style",
+            "Style mode only. OFF: you type art_style by hand. ON: the VLM reads one "
+            "image, derives art_style/aesthetics/lighting and reuses the SAME style for "
+            "the whole set — still consistent, just automatic."))
+        self.ig4_infer_style.toggled.connect(self._refresh_ig4_style_ui)
+        sg.addWidget(self.ig4_infer_style)
+        v.addWidget(self.ig4_style_group)
 
         pad_row = QHBoxLayout()
-        pad_row.addWidget(QLabel(self._tr("ig4.padding", "Crop padding %")))
+        pad_lbl = QLabel(self._tr("ig4.padding", "Crop padding %"))
+        pad_row.addWidget(pad_lbl)
         self.ig4_padding = QSpinBox()
         self.ig4_padding.setRange(0, 50)
         self.ig4_padding.setValue(8)
+        pad_tip = self._tr(
+            "ig4.tip.padding",
+            "Extra margin added around each object box before it is cropped and sent "
+            "to the VLM. More padding = more surrounding context, but less isolation.")
+        pad_lbl.setToolTip(pad_tip)
+        self.ig4_padding.setToolTip(pad_tip)
         pad_row.addWidget(self.ig4_padding)
         pad_row.addStretch()
         v.addLayout(pad_row)
 
-        # Prompts VLM (high_level / background / object)
+        # Prompts VLM (high_level / background / object / style)
         self.ig4_prompt_hld = self._ig4_prompt_editor(
-            self._tr("ig4.prompt.hld", "High-level prompt"), IG4_PROMPT_HLD)
+            self._tr("ig4.prompt.hld", "High-level prompt"), IG4_PROMPT_HLD,
+            self._tr("ig4.tip.prompt_hld",
+                     "Instruction sent to the VLM to describe the whole image "
+                     "(high_level_description). Edit only if you know what you want."))
         self.ig4_prompt_bg = self._ig4_prompt_editor(
-            self._tr("ig4.prompt.bg", "Background prompt"), IG4_PROMPT_BG)
+            self._tr("ig4.prompt.bg", "Background prompt"), IG4_PROMPT_BG,
+            self._tr("ig4.tip.prompt_bg",
+                     "Instruction sent to the VLM to describe only the background."))
         self.ig4_prompt_obj = self._ig4_prompt_editor(
-            self._tr("ig4.prompt.obj", "Object prompt"), IG4_PROMPT_OBJ)
-        for ed in (self.ig4_prompt_hld, self.ig4_prompt_bg, self.ig4_prompt_obj):
+            self._tr("ig4.prompt.obj", "Object prompt"), IG4_PROMPT_OBJ,
+            self._tr("ig4.tip.prompt_obj",
+                     "Instruction sent to the VLM for each object crop "
+                     "(its 'desc'). Applied per object box."))
+        self.ig4_prompt_style = self._ig4_prompt_editor(
+            self._tr("ig4.prompt.style", "Style prompt (VLM inference)"), IG4_PROMPT_STYLE,
+            self._tr("ig4.tip.prompt_style",
+                     "Only used when 'Infer set style' is on. Asks the VLM for "
+                     "art_style/aesthetics/lighting; the reply is parsed into those fields."))
+        for ed in (self.ig4_prompt_hld, self.ig4_prompt_bg, self.ig4_prompt_obj,
+                   self.ig4_prompt_style):
             v.addWidget(ed["frame"])
+
+        self.ig4_prompt_style["frame"].setVisible(False)
 
         self.ig4_recapture = QCheckBox(
             self._tr("ig4.recapture", "Re-capture (overwrite existing fields)"))
+        self.ig4_recapture.setToolTip(self._tr(
+            "ig4.tip.recapture",
+            "OFF (resume): only empty fields are captured, so re-running is cheap and "
+            "won't re-spend the VLM. ON: re-asks the VLM and overwrites everything "
+            "already captured."))
         v.addWidget(self.ig4_recapture)
 
-        hint = QLabel(self._tr("ig4.hint", "Double-click an image to draw boxes, then Start."))
+        hint = QLabel(self._tr(
+            "ig4.hint",
+            "Steps: 1) fill art_style above  2) double-click an image to draw boxes  "
+            "3) press Start to capture and export."))
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {self._color('text_dim', '#888')}; font-size: 11px;")
         v.addWidget(hint)
         return self.frame_ig4
 
-    def _ig4_prompt_editor(self, title, default_text):
+    def _ig4_prompt_editor(self, title, default_text, tooltip=None):
         frame = QFrame()
         vv = QVBoxLayout(frame)
         vv.setContentsMargins(0, 0, 0, 0)
-        vv.addWidget(QLabel(title))
+        lbl = QLabel(title)
+        vv.addWidget(lbl)
         editor = QPlainTextEdit(default_text)
         editor.setMaximumHeight(64)
         vv.addWidget(editor)
+        if tooltip:
+            lbl.setToolTip(tooltip)
+            editor.setToolTip(tooltip)
         return {"frame": frame, "editor": editor}
+
+    # -- estilo Ideogram v4: tipo de dataset (estilo vs personaje) -----------
+    def _ig4_is_character(self):
+        return self.ig4_is_character.isChecked()
+
+    def _ig4_infer_active(self):
+        """¿El VLM va a inferir el estilo? Personaje (siempre) o estilo+inferir."""
+        if self._ig4_is_character():
+            return True
+        return self.ig4_infer_style.isChecked()
+
+    def _refresh_ig4_style_ui(self):
+        """Muestra/oculta los controles de estilo según el tipo de dataset.
+
+        Personaje: sin estilo global (el VLM infiere por imagen). Estilo: grupo
+        de estilo global visible; manual, o inferido por el VLM de una imagen
+        (en cuyo caso los campos quedan deshabilitados, los rellena el VLM)."""
+        is_char = self._ig4_is_character()
+        # el estilo global solo aplica al dataset de estilo
+        self.ig4_style_group.setVisible(not is_char)
+        # en modo estilo+inferir, el VLM rellena los campos: deshabilitados
+        infer_global = (not is_char) and self.ig4_infer_style.isChecked()
+        for e in (self.ig4_artstyle, self.ig4_aesthetics, self.ig4_lighting):
+            e.setEnabled(not infer_global)
+        # el style-prompt solo se usa cuando el VLM infiere (personaje o estilo+inferir)
+        self.ig4_prompt_style["frame"].setVisible(self._ig4_infer_active())
 
     def _create_bottom(self):
         w = QWidget()
@@ -599,8 +715,12 @@ class DatasetTaggerView(QWidget):
         for e in (self.edit_trigger, self.edit_prefix, self.edit_suffix):
             e.setVisible(not is_ig4)
         self.frame_ig4.setVisible(is_ig4)
+        self._refresh_ig4_style_ui()
         self._refresh_engine_ui()
         self._refresh_prompts()
+        # el grid marca .pano.json (ig4) o .txt (resto); re-dibujar al cambiar de modo
+        self._sync_grid_ig4()
+        self._reload_grid()
         self._update_run_enabled()
 
     # -- motor de tags (WD vs VLM) -------------------------------------------
@@ -749,6 +869,7 @@ class DatasetTaggerView(QWidget):
         self._images = None
         self.lbl_source.setText(self._tr("tagger.source_folder", "Folder: {0} ({1} images)")
                                 .format(folder, self._source_count()))
+        self._sync_grid_ig4()
         self.grid.show_folder(folder)
         self._update_run_enabled()
 
@@ -758,8 +879,27 @@ class DatasetTaggerView(QWidget):
         self._source_folder = str(Path(imgs[0]).parent)
         self.lbl_source.setText(self._tr("tagger.source_images", "{0} images selected")
                                 .format(len(imgs)))
+        self._sync_grid_ig4()
         self.grid.show_images(imgs)
         self._update_run_enabled()
+
+    def _sync_grid_ig4(self):
+        """Indica al grid si debe marcar las imágenes ya preprocesadas (con
+        .pano.json). Solo en modo Ideogram v4; en los demás el grid marca el
+        .txt previo como siempre."""
+        is_ig4 = self._mode() == MODE_IDEOGRAM4
+        out_dir = None
+        if is_ig4 and self._source_folder:
+            out_dir = Path(sidecar.output_dir(self._source_folder, IG4_OUTPUT_TAG, "json"))
+        self.grid.set_ig4_output_dir(out_dir)
+
+    def _reload_grid(self):
+        """Re-dibuja el grid del set actual (p. ej. al cambiar de modo, para
+        que aparezcan/desaparezcan las marcas de preproceso)."""
+        if self._images is not None:
+            self.grid.show_images(self._images)
+        elif self._source_folder:
+            self.grid.show_folder(self._source_folder)
 
     def _source_count(self):
         """Conteo de imágenes a procesar (respeta el alcance recursivo)."""
@@ -856,6 +996,19 @@ class DatasetTaggerView(QWidget):
             if pano.exists():
                 jobs.append((str(img), str(pano)))
         return jobs
+
+    def _ig4_missing_artstyle(self, jobs):
+        """Cuenta cuántos .pano.json de `jobs` no tienen art_style (no exportables)."""
+        from ..logic.ideogram.datamodel import WorkDoc
+        missing = 0
+        for _img, pano in jobs:
+            try:
+                doc = WorkDoc.load(pano)
+            except (ValueError, OSError, KeyError):
+                continue
+            if not (doc.style.art_style or "").strip():
+                missing += 1
+        return missing
 
     def _update_run_enabled(self):
         busy = self._caption is not None or self._ig4 is not None
@@ -990,6 +1143,23 @@ class DatasetTaggerView(QWidget):
             self.status.setText(self._tr(
                 "ig4.no_jobs", "Draw boxes on at least one image first (double-click)."))
             return
+        # Fail-safe: art_style es obligatorio para exportar. Avisa ANTES de gastar
+        # el VLM si falta (en vez de fallar imagen por imagen), salvo que el VLM lo
+        # vaya a inferir (modo personaje o estilo+inferir).
+        if not self._ig4_infer_active():
+            missing = self._ig4_missing_artstyle(jobs)
+            if missing:
+                from PySide6.QtWidgets import QMessageBox
+                ret = QMessageBox.warning(
+                    self, self._tr("ig4.artstyle_missing_title", "Missing art_style"),
+                    self._tr("ig4.artstyle_missing_msg",
+                             "{0} image(s) have no art_style and cannot be exported "
+                             "(it is required). Fill art_style in the panel before "
+                             "drawing, or in each box editor, or enable 'Infer set "
+                             "style'. Continue and skip them?").format(missing),
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if ret != QMessageBox.Yes:
+                    return
         from ..logic.templates import with_content_mode
         from ..logic.ideogram.ig4_worker import Ig4Worker
         provider = OpenAICompatProvider(
@@ -1002,9 +1172,18 @@ class DatasetTaggerView(QWidget):
             prompt_background=self.ig4_prompt_bg["editor"].toPlainText().strip(),
             prompt_obj=with_content_mode(self.ig4_prompt_obj["editor"].toPlainText().strip(), nsfw),
             default_padding=self.ig4_padding.value() / 100.0,
-            recapture=self.ig4_recapture.isChecked())
+            recapture=self.ig4_recapture.isChecked(),
+            infer_style=self._ig4_infer_active(),
+            style_per_image=self._ig4_is_character(),
+            prompt_style=self.ig4_prompt_style["editor"].toPlainText().strip())
+        # set de imágenes de la corrida: el worker también emite error() para
+        # crops temporales fallidos; solo marcamos en rojo las imágenes reales.
+        self._ig4_job_imgs = {str(Path(img)) for img, _ in jobs}
+        self.grid.refresh_preprocess()      # limpia marcas de error de corridas previas
         self._ig4.progress.connect(self._on_progress)
         self._ig4.error.connect(self._on_error)
+        self._ig4.error.connect(self._on_ig4_error)
+        self._ig4.image_done.connect(self._on_ig4_image_done)
         self._ig4.warnings.connect(self._on_ig4_warnings)
         self._ig4.finished_all.connect(self._on_ig4_finished)
         self._ig4.start()
@@ -1013,6 +1192,17 @@ class DatasetTaggerView(QWidget):
         self.btn_run.setEnabled(False)
         self.btn_cancel.setEnabled(True)
         self.status.setText(self._tr("ig4.capturing", "Capturing Ideogram 4 captions…"))
+
+    def _on_ig4_image_done(self, image_path, _json_path):
+        """Una imagen se exportó OK: el grid pasa a 'exportada' (verde ✓) y se
+        descarta cualquier marca de error transitoria que hubiera recibido."""
+        self.grid.mark_path(image_path)
+
+    def _on_ig4_error(self, path, _msg):
+        """Marca en rojo solo si el fallo es de una imagen real del lote (no de
+        un crop temporal). Si luego se exporta, image_done la pasa a verde."""
+        if path in getattr(self, "_ig4_job_imgs", ()):
+            self.grid.mark_error(path)
 
     def _on_ig4_warnings(self, path, warns):
         log.warning("ig4 schema warnings en %s: %s", Path(path).name, warns)
@@ -1056,11 +1246,17 @@ class DatasetTaggerView(QWidget):
         from .bbox_editor import BBoxEditor
         out_dir = Path(sidecar.output_dir(self._source_folder, IG4_OUTPUT_TAG, "json"))
         pano_path = out_dir / (Path(image_path).stem + ".pano.json")
-        style_defaults = {
-            "art_style": self.ig4_artstyle.text().strip(),
-            "aesthetics": self.ig4_aesthetics.text().strip(),
-            "lighting": self.ig4_lighting.text().strip(),
-        }
+        # Si el VLM va a inferir el estilo (personaje o estilo+inferir), no se
+        # hereda nada manual: el worker lo rellenará. Solo en estilo+manual se
+        # propaga lo escrito en el panel.
+        if self._ig4_infer_active():
+            style_defaults = {"art_style": "", "aesthetics": "", "lighting": ""}
+        else:
+            style_defaults = {
+                "art_style": self.ig4_artstyle.text().strip(),
+                "aesthetics": self.ig4_aesthetics.text().strip(),
+                "lighting": self.ig4_lighting.text().strip(),
+            }
         lm = self.context.get('locale_manager') if self.context else None
         try:
             self._bbox_editor = BBoxEditor(
@@ -1070,6 +1266,7 @@ class DatasetTaggerView(QWidget):
             self.status.setText(str(e))
             return
         self._bbox_editor.exec()           # modal; al cerrar, el .pano.json quedó guardado
+        self.grid.refresh_preprocess()     # marca la imagen recién preprocesada
         self._update_run_enabled()         # pudo aparecer un nuevo .pano.json
 
     def _edit_caption(self, image_path):
