@@ -64,6 +64,34 @@ def order_color(order):
     return BOX_PALETTE[(max(order, 1) - 1) % len(BOX_PALETTE)]
 
 
+def clip_to(rect, bounds):
+    """Recorta `rect` para que no se salga de `bounds` (área de la imagen).
+
+    Pensado para REDIMENSIONAR: ajusta los bordes que se pasen al límite. Una
+    bbox fuera de la imagen rompería las coordenadas normalizadas del JSON, así
+    que ninguna operación debe permitir que la caja exceda el lienzo."""
+    r = QRectF(rect)
+    r.setLeft(max(r.left(), bounds.left()))
+    r.setTop(max(r.top(), bounds.top()))
+    r.setRight(min(r.right(), bounds.right()))
+    r.setBottom(min(r.bottom(), bounds.bottom()))
+    return r
+
+
+def shift_into(rect, bounds):
+    """Empuja `rect` dentro de `bounds` sin cambiar su tamaño (para MOVER)."""
+    r = QRectF(rect)
+    if r.left() < bounds.left():
+        r.translate(bounds.left() - r.left(), 0)
+    if r.top() < bounds.top():
+        r.translate(0, bounds.top() - r.top())
+    if r.right() > bounds.right():
+        r.translate(bounds.right() - r.right(), 0)
+    if r.bottom() > bounds.bottom():
+        r.translate(0, bounds.bottom() - r.bottom())
+    return r
+
+
 class BBoxItem(QGraphicsRectItem):
     """Caja editable asociada a un `Element`.
 
@@ -183,8 +211,11 @@ class BBoxItem(QGraphicsRectItem):
             return
         delta = event.scenePos() - self._start_scene
         r = QRectF(self._start_rect)
+        bounds = self.scene().sceneRect() if self.scene() else None
         if self._drag_mode == "move":
             r.translate(delta)
+            if bounds is not None:
+                r = shift_into(r, bounds)   # mover: conserva tamaño, no se sale
         else:
             if "l" in self._drag_mode:
                 r.setLeft(r.left() + delta.x())
@@ -194,6 +225,9 @@ class BBoxItem(QGraphicsRectItem):
                 r.setTop(r.top() + delta.y())
             if "b" in self._drag_mode:
                 r.setBottom(r.bottom() + delta.y())
+            r = r.normalized()
+            if bounds is not None:
+                r = clip_to(r, bounds)      # redimensionar: borde tope en el límite
         self.prepareGeometryChange()
         self.setRect(r.normalized())
 
@@ -802,7 +836,7 @@ class BBoxEditor(QDialog):
         data = dlg.result_data
         elem.text = data["text"]
         elem.color_palette = [data["color"]]
-        elem.bbox_px = data["bbox_px"]
+        elem.bbox_px = self._clamp_bbox(data["bbox_px"])
         elem.render = data["render"]
         bx0, by0, bx1, by1 = elem.bbox_px
         self._selected.prepareGeometryChange()
@@ -831,7 +865,7 @@ class BBoxEditor(QDialog):
         self._composited = True
 
         data = dlg.result_data
-        elem.bbox_px = data["bbox_px"]
+        elem.bbox_px = self._clamp_bbox(data["bbox_px"])
         elem.render = data["render"]
         bx0, by0, bx1, by1 = elem.bbox_px
         self._selected.prepareGeometryChange()
@@ -839,22 +873,19 @@ class BBoxEditor(QDialog):
         row = self._items.index(self._selected)
         self._list.item(row).setText(self._list_label(elem, row + 1))
 
+    def _clamp_bbox(self, bbox):
+        """Recorta una bbox [x0,y0,x1,y1] al área de la imagen (lista de ints)."""
+        x0, y0, x1, y1 = bbox
+        r = clip_to(QRectF(QPointF(x0, y0), QPointF(x1, y1)).normalized(),
+                    self.scene.sceneRect())
+        return [round(r.left()), round(r.top()), round(r.right()), round(r.bottom())]
+
     def _nudge_selected(self, dx, dy):
         """Mueve la caja seleccionada `dx,dy` px de escena, con clamp a la imagen."""
         if not self._selected:
             return
         item = self._selected
-        r = item.rect().translated(dx, dy)
-        bounds = self.scene.sceneRect()
-        # Clamp: no dejar que la caja se salga del área de la imagen.
-        if r.left() < bounds.left():
-            r.translate(bounds.left() - r.left(), 0)
-        if r.top() < bounds.top():
-            r.translate(0, bounds.top() - r.top())
-        if r.right() > bounds.right():
-            r.translate(bounds.right() - r.right(), 0)
-        if r.bottom() > bounds.bottom():
-            r.translate(0, bounds.bottom() - r.bottom())
+        r = shift_into(item.rect().translated(dx, dy), self.scene.sceneRect())
         item.prepareGeometryChange()
         item.setRect(r)
         item._sync_to_element()
