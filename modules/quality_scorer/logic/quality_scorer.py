@@ -6,7 +6,10 @@ consistencia de color y composición. Retorna score 0–100 por imagen.
 """
 import os
 import cv2
+import logging
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -207,6 +210,6 @@ def score_image(image_path: str, profile: str = DEFAULT_PROFILE) -> dict:
         result["composite_score"] = int(max(0, min(100, composite)))
 
     except Exception as e:
-        print(f"[QualityScorer] Error en {image_path}: {e}")
+        log.error("Error evaluando %s: %s", image_path, e)
 
     return result
