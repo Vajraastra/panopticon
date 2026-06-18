@@ -8,10 +8,15 @@ lo que la imagen realmente muestra).
 Por qué manual y no VLM/k-means: el VLM alucinaría el string y el k-means
 capturaría el fondo en vez del glifo. Aquí el texto es ground truth.
 
-Tres efectos autoaplicables (deliberadamente pocos):
+Efectos autoaplicables:
 - STRAIGHT     : texto recto.
 - ARC          : arco ascendente (glifos sobre una parábola, rotados tangentes).
+- ARC_DOWN     : arco descendente (sonrisa invertida).
 - PERSPECTIVE  : trapecio tipo Star Wars crawl (borde superior más angosto).
+- WAVE         : onda senoidal (desplazamiento vertical por glifo).
+- CIRCLE       : glifos sobre un arco circular (tipo arcoíris).
+- ROTATE       : bloque entero inclinado (0..45°).
+- VERTICAL     : glifos apilados verticalmente.
 
 La bbox automática se obtiene de `text_layer.getbbox()` (envolvente axis-aligned
 del contenido no transparente) — válido para los tres efectos por igual.
@@ -31,17 +36,27 @@ FONTS_DIR = Path(__file__).resolve().parent.parent.parent / "presets" / "fonts"
 STRAIGHT = 0
 ARC = 1
 PERSPECTIVE = 2
+ARC_DOWN = 3      # arco descendente (sonrisa invertida)
+WAVE = 4          # onda senoidal
+CIRCLE = 5        # texto sobre un arco circular (tipo arcoíris)
+ROTATE = 6        # bloque entero inclinado
+VERTICAL = 7      # glifos apilados verticalmente
 
 
 def list_fonts():
-    """Lista [(familia, ruta_str)] de las fuentes incluidas en presets/fonts/."""
+    """Lista [(etiqueta, ruta_str)] de las fuentes incluidas en presets/fonts/.
+
+    La etiqueta combina familia y subfamilia ("Poppins Bold") para que dos
+    cortes de la misma familia no se vean idénticos en el selector.
+    """
     out = []
     for f in sorted(FONTS_DIR.glob("*.ttf")):
         try:
-            family = ImageFont.truetype(str(f), 16).getname()[0]
+            family, style = ImageFont.truetype(str(f), 16).getname()[:2]
         except OSError:
-            family = f.stem
-        out.append((family, str(f)))
+            family, style = f.stem, ""
+        label = family if not style or style.lower() == "regular" else f"{family} {style}"
+        out.append((label, str(f)))
     return out
 
 
@@ -106,6 +121,85 @@ def _draw_arc(layer, text, font, xy, fill, align, stroke_w, stroke_fill, bend=0.
         cursor += w
 
 
+def _draw_wave(layer, text, font, xy, fill, align, stroke_w, stroke_fill, amp=0.4):
+    """Desplaza cada glifo verticalmente sobre una senoidal (sin rotar). `amp`
+    (0..1) escala la amplitud respecto a la altura del glifo; ~2 ciclos."""
+    x0, y0 = xy
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    widths = [max(probe.textlength(ch, font=font), 1) for ch in text]
+    total = sum(widths) or 1
+    ascent, descent = font.getmetrics()
+    half_glyph = (ascent + descent) / 2.0
+    amplitude = amp * (ascent + descent) * 0.6
+    cycles = 2.0
+
+    cursor = 0.0
+    for ch, w in zip(text, widths):
+        t = (cursor + w / 2) / total
+        dy = amplitude * math.sin(2 * math.pi * cycles * t)
+        if ch.strip():
+            tile = _char_tile(ch, font, fill, stroke_w, stroke_fill)
+            cx = x0 + cursor + w / 2.0
+            cy = y0 + half_glyph + dy
+            layer.alpha_composite(tile, (int(cx - tile.width / 2), int(cy - tile.height / 2)))
+        cursor += w
+
+
+def _draw_circle(layer, text, font, xy, fill, align, stroke_w, stroke_fill, span=0.5):
+    """Coloca los glifos sobre un arco CIRCULAR (tipo arcoíris), cada uno rotado
+    radialmente. `span` (0..1) crece el ángulo abarcado (más curvatura)."""
+    x0, y0 = xy
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    widths = [max(probe.textlength(ch, font=font), 1) for ch in text]
+    total = sum(widths) or 1
+    arc_angle = math.pi * (0.25 + span)        # ángulo total abarcado
+    radius = total / arc_angle
+    cx_center = x0 + total / 2.0
+    cy_center = y0 + radius                     # centro del círculo, debajo
+
+    cursor = 0.0
+    for ch, w in zip(text, widths):
+        frac = (cursor + w / 2) / total
+        theta = (frac - 0.5) * arc_angle        # 0 en la cima del arco
+        if ch.strip():
+            tile = _char_tile(ch, font, fill, stroke_w, stroke_fill)
+            rot = tile.rotate(-math.degrees(theta), expand=True, resample=Image.BICUBIC)
+            gx = cx_center + radius * math.sin(theta)
+            gy = cy_center - radius * math.cos(theta)
+            layer.alpha_composite(rot, (int(gx - rot.width / 2), int(gy - rot.height / 2)))
+        cursor += w
+
+
+def _draw_rotate(layer, text, font, xy, fill, align, stroke_w, stroke_fill, amount=0.4):
+    """Renderiza el texto recto en un tile y lo inclina como bloque. `amount`
+    (0..1) → ángulo 0..45° (antihorario)."""
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    box = probe.textbbox((0, 0), text, font=font, stroke_width=stroke_w, align=align)
+    tw = max(box[2] - box[0], 1) + 2 * stroke_w + 2
+    th = max(box[3] - box[1], 1) + 2 * stroke_w + 2
+    tile = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+    ImageDraw.Draw(tile).text(
+        (-box[0] + stroke_w + 1, -box[1] + stroke_w + 1), text, font=font,
+        fill=fill, align=align, stroke_width=stroke_w, stroke_fill=stroke_fill)
+    rot = tile.rotate(amount * 45.0, expand=True, resample=Image.BICUBIC)
+    layer.alpha_composite(rot, (int(xy[0]), int(xy[1])))
+
+
+def _draw_vertical(layer, text, font, xy, fill, align, stroke_w, stroke_fill):
+    """Apila los glifos verticalmente, centrados sobre un eje común."""
+    x0, y0 = xy
+    ascent, descent = font.getmetrics()
+    line_h = int((ascent + descent) * 0.92)
+    tiles = [_char_tile(ch, font, fill, stroke_w, stroke_fill) if ch.strip() else None
+             for ch in text]
+    axis = x0 + max((t.width for t in tiles if t), default=line_h) / 2.0
+    cy = y0
+    for tile in tiles:
+        if tile is not None:
+            layer.alpha_composite(tile, (int(axis - tile.width / 2), int(cy)))
+        cy += line_h
+
+
 def _find_coeffs(target, source):
     """Coeficientes PERSPECTIVE: mapea cada punto de `target` (en la salida) al
     correspondiente de `source` (en la entrada)."""
@@ -165,8 +259,18 @@ def render_text(base_image, *, text, font_path, size, color="#FFFFFF",
 
     if effect == ARC:
         _draw_arc(layer, text, font, position, fill, align, stroke_width, stroke_fill, strength)
+    elif effect == ARC_DOWN:
+        _draw_arc(layer, text, font, position, fill, align, stroke_width, stroke_fill, -strength)
     elif effect == PERSPECTIVE:
         _draw_perspective(layer, text, font, position, fill, align, stroke_width, stroke_fill, strength)
+    elif effect == WAVE:
+        _draw_wave(layer, text, font, position, fill, align, stroke_width, stroke_fill, strength)
+    elif effect == CIRCLE:
+        _draw_circle(layer, text, font, position, fill, align, stroke_width, stroke_fill, strength)
+    elif effect == ROTATE:
+        _draw_rotate(layer, text, font, position, fill, align, stroke_width, stroke_fill, strength)
+    elif effect == VERTICAL:
+        _draw_vertical(layer, text, font, position, fill, align, stroke_width, stroke_fill)
     else:
         _draw_straight(layer, text, font, position, fill, align, stroke_width, stroke_fill)
 

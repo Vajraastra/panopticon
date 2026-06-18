@@ -19,11 +19,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap, QColor
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit,
-    QComboBox, QSpinBox, QSlider, QPushButton, QColorDialog, QWidget,
+    QComboBox, QSpinBox, QSlider, QPushButton, QColorDialog, QCheckBox, QWidget,
 )
 
 from core.theme import Theme
 from ..logic.ideogram import text_render as tr
+from ..logic.ideogram import shape_render as sh
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +49,8 @@ class TextComposerDialog(QDialog):
         self._base = base_image.convert("RGB")
         self._color = "#FFFFFF"
         self._stroke_color = "#000000"
+        self._frame_color = "#000000"
+        self._frame_fill_color = "#FFFFFF"
         self.result_image = None
         self.result_data = None
 
@@ -97,8 +100,13 @@ class TextComposerDialog(QDialog):
 
         self._cb_effect = QComboBox()
         self._cb_effect.addItem(self.tr("ig4.fx_straight", "Straight"), tr.STRAIGHT)
-        self._cb_effect.addItem(self.tr("ig4.fx_arc", "Arc"), tr.ARC)
+        self._cb_effect.addItem(self.tr("ig4.fx_arc", "Arc (up)"), tr.ARC)
+        self._cb_effect.addItem(self.tr("ig4.fx_arc_down", "Arc (down)"), tr.ARC_DOWN)
         self._cb_effect.addItem(self.tr("ig4.fx_persp", "Perspective"), tr.PERSPECTIVE)
+        self._cb_effect.addItem(self.tr("ig4.fx_wave", "Wave"), tr.WAVE)
+        self._cb_effect.addItem(self.tr("ig4.fx_circle", "Circle"), tr.CIRCLE)
+        self._cb_effect.addItem(self.tr("ig4.fx_rotate", "Rotate / tilt"), tr.ROTATE)
+        self._cb_effect.addItem(self.tr("ig4.fx_vertical", "Vertical"), tr.VERTICAL)
         self._cb_effect.currentIndexChanged.connect(self._on_effect_changed)
         form.addRow(self.tr("ig4.effect", "effect"), self._cb_effect)
 
@@ -127,6 +135,23 @@ class TextComposerDialog(QDialog):
 
         lay.addLayout(form)
 
+        # Alineación rápida: mueve el bloque de texto a una posición canónica del
+        # lienzo (izq/centro/der · arriba/medio/abajo) midiendo lo realmente
+        # pintado. Los spinboxes x/y siguen disponibles para ajuste fino.
+        lay.addWidget(self._align_label(self.tr("ig4.align", "align on canvas")))
+        hrow = QHBoxLayout()
+        for key, default, where in (("ig4.align_left", "◀ Left", "left"),
+                                    ("ig4.align_hcenter", "● Center", "center"),
+                                    ("ig4.align_right", "Right ▶", "right")):
+            hrow.addWidget(self._align_btn(key, default, self._anchor_h, where))
+        lay.addLayout(hrow)
+        vrow = QHBoxLayout()
+        for key, default, where in (("ig4.align_top", "▲ Top", "top"),
+                                    ("ig4.align_vcenter", "● Middle", "middle"),
+                                    ("ig4.align_bottom", "Bottom ▼", "bottom")):
+            vrow.addWidget(self._align_btn(key, default, self._anchor_v, where))
+        lay.addLayout(vrow)
+
         # Colores
         self._btn_color = QPushButton(self.tr("ig4.text_color", "Text color…"))
         self._btn_color.clicked.connect(self._pick_color)
@@ -135,6 +160,36 @@ class TextComposerDialog(QDialog):
         lay.addWidget(self._btn_color)
         lay.addWidget(self._btn_stroke_color)
         self._sync_color_buttons()
+
+        # Marco / globo detrás del texto (diálogos). Auto-envuelve el texto: la
+        # geometría sale de la bbox del texto + padding, el usuario solo elige
+        # forma, borde y relleno.
+        fform = QFormLayout()
+        self._cb_frame = QComboBox()
+        self._cb_frame.addItem(self.tr("ig4.frame_none", "No frame"), None)
+        self._cb_frame.addItem(self.tr("ig4.shape_rect", "Rectangle"), sh.RECT)
+        self._cb_frame.addItem(self.tr("ig4.shape_rounded", "Rounded rectangle"), sh.ROUNDED)
+        self._cb_frame.addItem(self.tr("ig4.shape_ellipse", "Ellipse / circle"), sh.ELLIPSE)
+        self._cb_frame.addItem(self.tr("ig4.shape_bubble", "Speech bubble"), sh.BUBBLE)
+        self._cb_frame.currentIndexChanged.connect(self._update_preview)
+        fform.addRow(self.tr("ig4.frame", "frame"), self._cb_frame)
+        self._sp_frame_stroke = QSpinBox()
+        self._sp_frame_stroke.setRange(0, 60)
+        self._sp_frame_stroke.setValue(4)
+        self._sp_frame_stroke.valueChanged.connect(self._update_preview)
+        fform.addRow(self.tr("ig4.frame_stroke", "frame border"), self._sp_frame_stroke)
+        lay.addLayout(fform)
+        self._chk_frame_fill = QCheckBox(self.tr("ig4.frame_fill", "Fill frame"))
+        self._chk_frame_fill.setChecked(True)
+        self._chk_frame_fill.toggled.connect(self._update_preview)
+        lay.addWidget(self._chk_frame_fill)
+        self._btn_frame_color = QPushButton(self.tr("ig4.frame_color", "Frame border color…"))
+        self._btn_frame_color.clicked.connect(self._pick_frame_color)
+        self._btn_frame_fill_color = QPushButton(self.tr("ig4.frame_fill_color", "Frame fill color…"))
+        self._btn_frame_fill_color.clicked.connect(self._pick_frame_fill_color)
+        lay.addWidget(self._btn_frame_color)
+        lay.addWidget(self._btn_frame_fill_color)
+        self._sync_frame_buttons()
 
         lay.addStretch()
 
@@ -149,12 +204,100 @@ class TextComposerDialog(QDialog):
         lay.addWidget(cancel)
 
         root.addWidget(panel)
+        self._set_tooltips()
         self._on_effect_changed()
 
+    def _set_tooltips(self):
+        tips = {
+            self._ed_text: self.tr("ig4.tip.tx_text",
+                "The exact words to render (this becomes the element's ground-truth text)."),
+            self._cb_font: self.tr("ig4.tip.tx_font",
+                "Typeface. Bundled OFL/Apache fonts — same look on any machine."),
+            self._sp_size: self.tr("ig4.tip.tx_size", "Text size in pixels."),
+            self._cb_effect: self.tr("ig4.tip.tx_effect",
+                "Layout style: straight, arc, wave, circle, perspective, tilt or vertical."),
+            self._sl_strength: self.tr("ig4.tip.tx_strength",
+                "Intensity of the chosen effect (curvature/amplitude/angle). Disabled for Straight and Vertical."),
+            self._sp_stroke: self.tr("ig4.tip.tx_stroke",
+                "Outline thickness around the glyphs (0 = none). Helps readability over busy images."),
+            self._sp_x: self.tr("ig4.tip.tx_pos", "Top-left X position of the text block, in pixels."),
+            self._sp_y: self.tr("ig4.tip.tx_pos_y", "Top-left Y position of the text block, in pixels."),
+            self._btn_color: self.tr("ig4.tip.tx_color",
+                "Glyph color. Saved as the element's ground-truth color (#RRGGBB)."),
+            self._btn_stroke_color: self.tr("ig4.tip.tx_stroke_color", "Outline color."),
+            self._cb_frame: self.tr("ig4.tip.tx_frame",
+                "Optional shape drawn BEHIND the text (speech bubble for dialog). It auto-wraps the text."),
+            self._sp_frame_stroke: self.tr("ig4.tip.tx_frame_stroke", "Border thickness of the frame/bubble."),
+            self._chk_frame_fill: self.tr("ig4.tip.tx_frame_fill",
+                "Fill the frame with a solid color so the text reads on top (on by default for bubbles)."),
+            self._btn_frame_color: self.tr("ig4.tip.tx_frame_color", "Frame/bubble border color."),
+            self._btn_frame_fill_color: self.tr("ig4.tip.tx_frame_fill_color", "Frame/bubble fill color."),
+            self._btn_apply: self.tr("ig4.tip.tx_apply",
+                "Bake the text (and frame) onto the output copy and return. The box is computed automatically."),
+        }
+        for w, t in tips.items():
+            w.setToolTip(t)
+
+    # ── alineación / posición ───────────────────────────────────────────
+    def _align_label(self, text):
+        lbl = QLabel(text)
+        lbl.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: 11px;")
+        return lbl
+
+    def _align_btn(self, key, default, slot, where):
+        b = QPushButton(self.tr(key, default))
+        b.setToolTip(self.tr("ig4.tip.align",
+            "Snap the text block to this position on the image (fine-tune with x/y)."))
+        b.clicked.connect(lambda: slot(where))
+        return b
+
+    def _measure_box(self):
+        """bbox real [x0,y0,x1,y1] del texto pintado con los ajustes actuales, o None.
+
+        Mide lo realmente compuesto (incluye efectos y marco), de modo que el
+        anclaje cuadra con lo que el usuario ve, no con métricas teóricas."""
+        try:
+            _, bbox = self._compose()
+        except (OSError, ValueError) as exc:
+            log.warning("medición de texto falló: %s", exc)
+            return None
+        return bbox
+
+    def _anchor_h(self, where):
+        bbox = self._measure_box()
+        if not bbox:
+            return
+        w = bbox[2] - bbox[0]
+        off = bbox[0] - self._sp_x.value()       # desfase render↔x pedido (efectos)
+        margin = max(int(self._base.width * 0.02), 8)
+        if where == "left":
+            target = margin
+        elif where == "center":
+            target = max((self._base.width - w) // 2, 0)
+        else:  # right
+            target = max(self._base.width - w - margin, 0)
+        self._sp_x.setValue(max(int(target - off), 0))
+
+    def _anchor_v(self, where):
+        bbox = self._measure_box()
+        if not bbox:
+            return
+        h = bbox[3] - bbox[1]
+        off = bbox[1] - self._sp_y.value()
+        margin = max(int(self._base.height * 0.02), 8)
+        if where == "top":
+            target = margin
+        elif where == "middle":
+            target = max((self._base.height - h) // 2, 0)
+        else:  # bottom
+            target = max(self._base.height - h - margin, 0)
+        self._sp_y.setValue(max(int(target - off), 0))
+
     def _on_effect_changed(self):
-        is_fx = self._cb_effect.currentData() != tr.STRAIGHT
-        self._sl_strength.setEnabled(is_fx)
-        self._lbl_strength.setEnabled(is_fx)
+        # La intensidad solo aplica a efectos con parámetro continuo.
+        has_strength = self._cb_effect.currentData() not in (tr.STRAIGHT, tr.VERTICAL)
+        self._sl_strength.setEnabled(has_strength)
+        self._lbl_strength.setEnabled(has_strength)
         self._update_preview()
 
     def _pick_color(self):
@@ -179,17 +322,66 @@ class TextComposerDialog(QDialog):
                 f"background-color: {col}; color: #000; border-radius: 6px; "
                 f"padding: 6px; font-weight: bold;")
 
+    def _pick_frame_color(self):
+        c = QColorDialog.getColor(QColor(self._frame_color), self,
+                                  self.tr("ig4.frame_color", "Frame border color"))
+        if c.isValid():
+            self._frame_color = c.name().upper()
+            self._sync_frame_buttons()
+            self._update_preview()
+
+    def _pick_frame_fill_color(self):
+        c = QColorDialog.getColor(QColor(self._frame_fill_color), self,
+                                  self.tr("ig4.frame_fill_color", "Frame fill color"))
+        if c.isValid():
+            self._frame_fill_color = c.name().upper()
+            self._chk_frame_fill.setChecked(True)
+            self._sync_frame_buttons()
+            self._update_preview()
+
+    def _sync_frame_buttons(self):
+        for btn, col in ((self._btn_frame_color, self._frame_color),
+                         (self._btn_frame_fill_color, self._frame_fill_color)):
+            btn.setStyleSheet(
+                f"background-color: {col}; color: #000; border-radius: 6px; "
+                f"padding: 6px; font-weight: bold;")
+
     # ── render ──────────────────────────────────────────────────────────
-    def _compose(self):
-        """Devuelve (imagen_compuesta, bbox_px) con los parámetros actuales."""
-        return tr.render_text(
-            self._base, text=self._ed_text.text(),
+    def _text_kwargs(self):
+        return dict(
+            text=self._ed_text.text(),
             font_path=self._cb_font.currentData(), size=self._sp_size.value(),
             color=self._color, position=(self._sp_x.value(), self._sp_y.value()),
             effect=self._cb_effect.currentData(),
             stroke_width=self._sp_stroke.value(), stroke_color=self._stroke_color,
             strength=self._sl_strength.value() / 100.0,
         )
+
+    def _compose(self):
+        """Devuelve (imagen_compuesta, bbox_px) con los parámetros actuales.
+
+        Sin marco: bbox = caja del texto. Con marco (globo de diálogo): el marco
+        se dibuja DETRÁS auto-envolviendo el texto (bbox del texto + padding) y la
+        bbox del elemento pasa a ser la envolvente del marco.
+        """
+        kw = self._text_kwargs()
+        frame = self._cb_frame.currentData()
+        if frame is None:
+            return tr.render_text(self._base, **kw)
+
+        _, tbox = tr.render_text(self._base, **kw)  # bbox del texto para envolver
+        if tbox is None:
+            return tr.render_text(self._base, **kw)
+        pad = max(int(self._sp_size.value() * 0.45), 16)
+        rect = (max(tbox[0] - pad, 0), max(tbox[1] - pad, 0),
+                min(tbox[2] + pad, self._base.width), min(tbox[3] + pad, self._base.height))
+        framed, fbbox = sh.render_shape(
+            self._base, shape=frame, rect=rect,
+            stroke_width=self._sp_frame_stroke.value(), stroke_color=self._frame_color,
+            fill_color=self._frame_fill_color if self._chk_frame_fill.isChecked() else None,
+            radius=pad)
+        out, _ = tr.render_text(framed, **kw)
+        return out, (fbbox if fbbox else tbox)
 
     def _update_preview(self):
         try:
@@ -211,19 +403,28 @@ class TextComposerDialog(QDialog):
         if bbox is None:
             self.reject()
             return
+        frame = self._cb_frame.currentData()
+        render = {
+            "font": Path(self._cb_font.currentData()).name,
+            "size": self._sp_size.value(),
+            "effect": self._cb_effect.currentData(),
+            "strength": self._sl_strength.value() / 100.0,
+            "stroke_width": self._sp_stroke.value(),
+            "stroke_color": self._stroke_color,
+            "composited": True,
+        }
+        if frame is not None:
+            render["frame"] = {
+                "shape": frame,
+                "stroke_width": self._sp_frame_stroke.value(),
+                "stroke_color": self._frame_color,
+                "fill_color": self._frame_fill_color if self._chk_frame_fill.isChecked() else None,
+            }
         self.result_image = img
         self.result_data = {
             "text": self._ed_text.text(),
             "color": self._color,
             "bbox_px": [int(v) for v in bbox],
-            "render": {
-                "font": Path(self._cb_font.currentData()).name,
-                "size": self._sp_size.value(),
-                "effect": self._cb_effect.currentData(),
-                "strength": self._sl_strength.value() / 100.0,
-                "stroke_width": self._sp_stroke.value(),
-                "stroke_color": self._stroke_color,
-                "composited": True,
-            },
+            "render": render,
         }
         self.accept()
