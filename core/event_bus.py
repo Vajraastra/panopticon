@@ -28,6 +28,24 @@ class EventBus(QObject):
             self._subscribers[topic] = []
         self._subscribers[topic].append(callback)
 
+    def unsubscribe(self, topic, callback):
+        """
+        Cancela la suscripción de un callback a un tópico. Seguro de llamar
+        aunque el callback no esté registrado (no lanza). Evita fugas de
+        memoria y callbacks colgando sobre widgets destruidos.
+        :param topic: String identificador del evento.
+        :param callback: La misma función/método que se pasó a subscribe().
+        """
+        callbacks = self._subscribers.get(topic)
+        if not callbacks:
+            return
+        try:
+            callbacks.remove(callback)
+        except ValueError:
+            pass  # no estaba suscrito; nada que hacer
+        if not callbacks:
+            del self._subscribers[topic]
+
     def publish(self, topic, data=None):
         """
         Emite un evento a todos los suscriptores interesados.
