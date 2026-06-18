@@ -1,9 +1,12 @@
 import os
 import hashlib
+import logging
 import numpy as np
 from PIL import Image
 import imagehash
 from concurrent.futures import ThreadPoolExecutor
+
+log = logging.getLogger(__name__)
 
 class Deduplicator:
     """
@@ -40,7 +43,7 @@ class Deduplicator:
             with Image.open(path) as img:
                 return str(imagehash.phash(img))
         except Exception as e:
-            print(f"Error hashing visual {path}: {e}")
+            log.error("Error en hash perceptual de %s: %s", path, e)
             return None
 
     def find_duplicates_by_hash(self, folder_path, callback=None):
