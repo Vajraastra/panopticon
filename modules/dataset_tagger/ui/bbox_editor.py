@@ -18,7 +18,7 @@ La normalización a 0–1000 ocurre solo al exportar (datamodel.to_canonical).
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QRectF, QPointF, Signal
+from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QThread
 from PySide6.QtGui import (
     QPixmap, QPen, QBrush, QColor, QFont, QPainter, QPainterPath,
     QShortcut, QKeySequence,
@@ -356,6 +356,24 @@ class ZoomView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
 
+class _AutoDetectWorker(QThread):
+    """Corre YOLO sobre UNA imagen fuera del hilo GUI (regla #4)."""
+
+    done = Signal(list)      # lista de dets (ver autobox.AutoBoxer.detect)
+    failed = Signal(str)
+
+    def __init__(self, image_path, parent=None):
+        super().__init__(parent)
+        self.image_path = image_path
+
+    def run(self):
+        try:
+            from ..logic.ideogram.autobox import get_shared_boxer
+            self.done.emit(get_shared_boxer().detect(self.image_path))
+        except Exception as exc:  # noqa: BLE001 — se reporta a la UI
+            self.failed.emit(str(exc))
+
+
 class BBoxEditor(QDialog):
     """Ventana de edición de un .pano.json para una imagen."""
 
@@ -369,6 +387,7 @@ class BBoxEditor(QDialog):
         self._draw_type = DRAW_OBJ
         self._items = []          # BBoxItem en orden de la lista
         self._selected = None
+        self._autodet = None      # _AutoDetectWorker en curso (auto-bbox)
 
         self.setWindowTitle(self.tr("ig4.editor_title", "Ideogram 4 — bbox editor"))
         self.resize(1180, 800)
@@ -553,6 +572,18 @@ class BBoxEditor(QDialog):
         row.addWidget(self._rb_text)
         row.addStretch()
         lay.addLayout(row)
+
+        # Auto-detección de cajas (YOLO): pre-crea objetos/personajes/animales que
+        # el usuario repasa. Acelera el grueso; el texto se sigue marcando a mano.
+        self._btn_autodet = QPushButton(self.tr("ig4.auto_detect", "Auto-detect boxes"))
+        self._btn_autodet.setStyleSheet(Theme.get_button_style(Theme.ACCENT_MAIN))
+        self._btn_autodet.setToolTip(self.tr(
+            "ig4.tip.auto_detect",
+            "Detect characters, animals and objects with YOLO and add them as boxes "
+            "(type 'object', category pre-filled in desc). Review and adjust them: "
+            "resize, add missing ones, or delete extras. Text is still drawn by hand."))
+        self._btn_autodet.clicked.connect(self._auto_detect)
+        lay.addWidget(self._btn_autodet)
 
         # Lista de elementos (reordenable)
         lay.addWidget(self._section(self.tr("ig4.elements", "ELEMENTS (drag to reorder)")))
@@ -873,6 +904,48 @@ class BBoxEditor(QDialog):
         row = self._items.index(self._selected)
         self._list.item(row).setText(self._list_label(elem, row + 1))
 
+    # ── auto-detección de cajas (YOLO) ──────────────────────────────────
+    def _auto_detect(self):
+        """Lanza la detección YOLO de la imagen actual en un hilo aparte."""
+        if self._autodet is not None and self._autodet.isRunning():
+            return
+        self._btn_autodet.setEnabled(False)
+        self._btn_autodet.setText(self.tr("ig4.auto_detecting", "Detecting…"))
+        self.setCursor(Qt.WaitCursor)
+        self._autodet = _AutoDetectWorker(str(self.image_path), self)
+        self._autodet.done.connect(self._on_auto_detected)
+        self._autodet.failed.connect(self._on_auto_failed)
+        self._autodet.start()
+
+    def _restore_autodet_button(self):
+        self.unsetCursor()
+        self._btn_autodet.setEnabled(True)
+        self._btn_autodet.setText(self.tr("ig4.auto_detect", "Auto-detect boxes"))
+
+    def _on_auto_detected(self, dets):
+        self._restore_autodet_button()
+        from ..logic.ideogram.autobox import desc_for
+        added = 0
+        for d in dets:
+            elem = Element(id=self._doc.next_element_id(), type="obj",
+                           bbox_px=self._clamp_bbox(d["bbox_px"]),
+                           desc=desc_for(d["class"]))
+            self._doc.elements.append(elem)
+            self._add_item(elem)
+            added += 1
+        self._refresh_orders()
+        if added:
+            self._list.setCurrentRow(len(self._items) - 1)
+        else:
+            QMessageBox.information(
+                self, self.tr("ig4.auto_detect", "Auto-detect boxes"),
+                self.tr("ig4.auto_none", "No objects detected. Draw the boxes by hand."))
+
+    def _on_auto_failed(self, msg):
+        self._restore_autodet_button()
+        QMessageBox.warning(
+            self, self.tr("ig4.auto_err_title", "Detection error"), msg)
+
     def _clamp_bbox(self, bbox):
         """Recorta una bbox [x0,y0,x1,y1] al área de la imagen (lista de ints)."""
         x0, y0, x1, y1 = bbox
@@ -964,3 +1037,10 @@ class BBoxEditor(QDialog):
         super().showEvent(event)
         # Ajustar la imagen al viewport la primera vez que se muestra.
         self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+
+    def closeEvent(self, event):
+        # Espera a que termine la detección en curso (si la hay) para no destruir
+        # el QThread mientras corre.
+        if self._autodet is not None and self._autodet.isRunning():
+            self._autodet.wait()
+        super().closeEvent(event)

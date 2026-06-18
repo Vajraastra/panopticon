@@ -687,5 +687,10 @@
   "ig4.tip.zoom_out": "Alejar",
   "ig4.tip.zoom_in": "Acercar",
   "ig4.tip.zoom_fit": "Ajustar toda la imagen a la vista",
-  "ig4.tip.zoom_100": "Tamaño real (píxeles 1:1)"
+  "ig4.tip.zoom_100": "Tamaño real (píxeles 1:1)",
+  "ig4.auto_detect": "Auto-detectar cajas",
+  "ig4.auto_detecting": "Detectando…",
+  "ig4.auto_none": "No se detectaron objetos. Dibuja las cajas a mano.",
+  "ig4.auto_err_title": "Error de detección",
+  "ig4.tip.auto_detect": "Detecta personajes, animales y objetos con YOLO y los agrega como cajas (tipo 'objeto', categoría precargada en desc). Repásalas y ajústalas: redimensiona, añade las que falten o borra las de más. El texto se sigue dibujando a mano."
 }

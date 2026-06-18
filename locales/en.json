@@ -687,5 +687,10 @@
   "ig4.tip.zoom_out": "Zoom out",
   "ig4.tip.zoom_in": "Zoom in",
   "ig4.tip.zoom_fit": "Fit the whole image in the view",
-  "ig4.tip.zoom_100": "Actual size (1:1 pixels)"
+  "ig4.tip.zoom_100": "Actual size (1:1 pixels)",
+  "ig4.auto_detect": "Auto-detect boxes",
+  "ig4.auto_detecting": "Detecting…",
+  "ig4.auto_none": "No objects detected. Draw the boxes by hand.",
+  "ig4.auto_err_title": "Detection error",
+  "ig4.tip.auto_detect": "Detect characters, animals and objects with YOLO and add them as boxes (type 'object', category pre-filled in desc). Review and adjust them: resize, add missing ones, or delete extras. Text is still drawn by hand."
 }
