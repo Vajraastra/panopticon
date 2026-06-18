@@ -100,7 +100,7 @@ class MainWindow(QMainWindow):
         header_layout.setSpacing(5)
         
         lbl_title = QLabel(self.tr('dashboard.welcome', 'PANOPTICON'))
-        lbl_title.setStyleSheet("color: white; font-size: 56px; font-weight: bold; letter-spacing: 4px;")
+        lbl_title.setStyleSheet(f"color: {self.theme_manager.get_color('text_primary')}; font-size: 56px; font-weight: bold; letter-spacing: 4px;")
         lbl_title.setAlignment(Qt.AlignCenter)
         header_layout.addWidget(lbl_title)
         
@@ -131,7 +131,7 @@ class MainWindow(QMainWindow):
             }}
             QPushButton:hover {{
                 background-color: {self.theme_manager.get_color('bg_sidebar')};
-                color: white;
+                color: {self.theme_manager.get_color('text_primary')};
                 border-color: {self.theme_manager.get_color('accent_main')};
             }}
         """)
@@ -260,9 +260,9 @@ class MainWindow(QMainWindow):
         btn_save.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.theme_manager.get_color('accent_main')};
-                color: black; border-radius: 25px; font-weight: bold; font-size: 16px;
+                color: {self.theme_manager.get_color('bg_main')}; border-radius: 25px; font-weight: bold; font-size: 16px;
             }}
-            QPushButton:hover {{ background-color: white; }}
+            QPushButton:hover {{ background-color: {self.theme_manager.get_color('text_primary')}; }}
         """)
         btn_save.clicked.connect(self.apply_settings)
         layout.addWidget(btn_save, alignment=Qt.AlignHCenter)
@@ -446,7 +446,7 @@ class MainWindow(QMainWindow):
         lbl_icon = QLabel(icon_txt)
         lbl_icon.setAlignment(Qt.AlignCenter)
         lbl_icon.setFixedHeight(50)
-        lbl_icon.setStyleSheet("font-size: 40px; color: white; background: transparent; border: none;")
+        lbl_icon.setStyleSheet(f"font-size: 40px; color: {self.theme_manager.get_color('text_primary')}; background: transparent; border: none;")
         layout.addWidget(lbl_icon)
         
         # Title
@@ -454,7 +454,7 @@ class MainWindow(QMainWindow):
         lbl_title = QLabel(self.tr(title_key, module.name))
         lbl_title.setAlignment(Qt.AlignCenter)
         lbl_title.setWordWrap(True)
-        lbl_title.setStyleSheet("font-size: 15px; font-weight: bold; color: white; background: transparent; border: none;")
+        lbl_title.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {self.theme_manager.get_color('text_primary')}; background: transparent; border: none;")
         layout.addWidget(lbl_title)
         
         # Description
