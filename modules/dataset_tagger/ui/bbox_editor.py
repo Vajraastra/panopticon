@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem, QVBoxLayout, QHBoxLayout, QWidget, QLabel,
     QPushButton, QListWidget, QListWidgetItem, QLineEdit, QPlainTextEdit,
     QRadioButton, QButtonGroup, QFormLayout, QSplitter, QMessageBox,
+    QColorDialog,
 )
 
 from PIL import Image
@@ -248,7 +249,8 @@ class BBoxItem(QGraphicsRectItem):
 class BBoxScene(QGraphicsScene):
     """Escena con el pixmap de fondo y creación de cajas por arrastre."""
 
-    box_created = Signal(object)  # emite el QRectF de la caja nueva
+    box_created = Signal(object)   # emite el QRectF de la caja nueva
+    color_picked = Signal(int, int)  # x,y de escena del clic en modo eyedropper
 
     def __init__(self, pixmap, parent=None):
         super().__init__(parent)
@@ -258,12 +260,23 @@ class BBoxScene(QGraphicsScene):
         self.setSceneRect(QRectF(pixmap.rect()))
         self._draft = None
         self._origin = None
+        self._eyedropper = False
 
     def set_background(self, pixmap):
         """Reemplaza el pixmap de fondo (tras componer texto sobre la imagen)."""
         self._bg.setPixmap(pixmap)
 
+    def set_eyedropper(self, on):
+        """Activa el cuentagotas: el próximo clic muestrea un píxel en vez de
+        dibujar/seleccionar una caja."""
+        self._eyedropper = bool(on)
+
     def mousePressEvent(self, event):
+        if self._eyedropper:
+            p = event.scenePos()
+            self.color_picked.emit(int(p.x()), int(p.y()))
+            event.accept()
+            return
         item = self.itemAt(event.scenePos(), self.views()[0].transform())
         if isinstance(item, BBoxItem):
             super().mousePressEvent(event)  # editar caja existente
@@ -388,6 +401,7 @@ class BBoxEditor(QDialog):
         self._items = []          # BBoxItem en orden de la lista
         self._selected = None
         self._autodet = None      # _AutoDetectWorker en curso (auto-bbox)
+        self._eyedropper_active = False  # modo cuentagotas (color de texto)
 
         self.setWindowTitle(self.tr("ig4.editor_title", "Ideogram 4 — bbox editor"))
         self.resize(1180, 800)
@@ -454,6 +468,7 @@ class BBoxEditor(QDialog):
 
         self.scene = BBoxScene(self._pixmap)
         self.scene.box_created.connect(self._on_box_created)
+        self.scene.color_picked.connect(self._on_color_picked)
         self.view = ZoomView(self.scene)
         self.view.setRenderHint(QPainter.SmoothPixmapTransform, True)
         self.view.setDragMode(QGraphicsView.NoDrag)
@@ -627,6 +642,31 @@ class BBoxEditor(QDialog):
         form.addRow(self._lbl_text, self._ed_text)
         form.addRow(QLabel(self.tr("ig4.desc_field", "desc")), self._ed_desc)
         lay.addLayout(form)
+
+        # Color del texto (Caso B: texto YA presente en la imagen). El cuentagotas
+        # muestrea el hex exacto del glifo; el swatch permite ponerlo a mano. Es
+        # el color ground-truth del texto (el VLM nunca lo ve). Solo para 'text'.
+        color_row = QHBoxLayout()
+        self._lbl_color = QLabel(self.tr("ig4.text_color", "color"))
+        self._swatch = QPushButton()
+        self._swatch.setFixedSize(30, 22)
+        self._swatch.setToolTip(self.tr(
+            "ig4.tip.text_color",
+            "Current text color (ground truth). Click to pick it by hand."))
+        self._swatch.clicked.connect(self._pick_color_manual)
+        self._btn_eyedrop = QPushButton(self.tr("ig4.eyedropper", "Eyedropper"))
+        self._btn_eyedrop.setCheckable(True)
+        self._btn_eyedrop.setToolTip(self.tr(
+            "ig4.tip.eyedropper",
+            "Sample the EXACT color of existing text: click here, then click the "
+            "glyph on the image. The sampled hex becomes this text's color."))
+        self._btn_eyedrop.clicked.connect(self._toggle_eyedropper)
+        color_row.addWidget(self._lbl_color)
+        color_row.addWidget(self._swatch)
+        color_row.addWidget(self._btn_eyedrop)
+        color_row.addStretch()
+        lay.addLayout(color_row)
+        self._color_widgets = (self._lbl_color, self._swatch, self._btn_eyedrop)
 
         # Compositing de texto (Caso A: texto nuevo en flyers). Solo para 'text'.
         self._btn_compose = QPushButton(self.tr("ig4.compose_text", "Compose text…"))
@@ -811,7 +851,7 @@ class BBoxEditor(QDialog):
     def _update_elem_panel_visibility(self, element):
         """Muestra solo los controles del tipo activo, sin mezclar texto y objeto.
 
-        - 'text'  → campo de texto literal + "Componer texto…".
+        - 'text'  → texto literal + color (swatch/cuentagotas) + "Componer texto…".
         - 'obj'   → "Componer forma…".
         - nada    → se ocultan todos (al deseleccionar / imagen vacía).
         El campo `desc` aplica a ambos tipos y permanece siempre visible.
@@ -824,6 +864,10 @@ class BBoxEditor(QDialog):
         self._btn_shape.setVisible(is_obj)
         self._btn_compose.setEnabled(is_text)
         self._btn_shape.setEnabled(is_obj)
+        for w in self._color_widgets:
+            w.setVisible(is_text)
+        if not is_text:                 # salir del cuentagotas al cambiar de tipo
+            self._set_eyedropper(False)
 
     def _load_elem_fields(self, element):
         is_text = element.type == "text"
@@ -834,6 +878,9 @@ class BBoxEditor(QDialog):
         self._ed_desc.setPlainText(element.desc)
         self._ed_text.blockSignals(False)
         self._ed_desc.blockSignals(False)
+        if is_text:
+            self._set_swatch_color(element.color_palette[0]
+                                   if element.color_palette else None)
 
     def _on_elem_field_changed(self):
         if not self._selected:
@@ -844,6 +891,55 @@ class BBoxEditor(QDialog):
         elem.desc = self._ed_desc.toPlainText()
         row = self._items.index(self._selected)
         self._list.item(row).setText(self._list_label(elem, row + 1))
+
+    # ── color del texto (Caso B) ────────────────────────────────────────
+    def _set_swatch_color(self, hexv):
+        """Pinta el swatch con `hexv` (o un estado 'sin color' si es None)."""
+        if hexv:
+            self._swatch.setStyleSheet(
+                f"background-color: {hexv}; border: 1px solid {Theme.TEXT_DIM};")
+            self._swatch.setText("")
+        else:
+            self._swatch.setStyleSheet(
+                f"border: 1px dashed {Theme.TEXT_DIM}; color: {Theme.TEXT_DIM};")
+            self._swatch.setText("—")
+
+    def _apply_text_color(self, hexv):
+        """Fija el color en el elemento text seleccionado y refresca el swatch."""
+        if not self._selected or self._selected.element.type != "text":
+            return
+        self._selected.element.color_palette = [hexv]
+        self._set_swatch_color(hexv)
+
+    def _pick_color_manual(self):
+        """Selector de color manual para el texto (alternativa al cuentagotas)."""
+        if not self._selected or self._selected.element.type != "text":
+            return
+        cur = self._selected.element.color_palette
+        initial = QColor(cur[0]) if cur else QColor("#FFFFFF")
+        color = QColorDialog.getColor(initial, self, self.tr("ig4.text_color", "color"))
+        if color.isValid():
+            self._apply_text_color(color.name().upper())
+
+    def _toggle_eyedropper(self):
+        self._set_eyedropper(not self._eyedropper_active)
+
+    def _set_eyedropper(self, on):
+        """Activa/desactiva el cuentagotas (muestreo de un píxel de la imagen)."""
+        self._eyedropper_active = bool(on)
+        self.scene.set_eyedropper(self._eyedropper_active)
+        self._btn_eyedrop.setChecked(self._eyedropper_active)
+        self.view.viewport().setCursor(
+            Qt.CrossCursor if self._eyedropper_active else Qt.ArrowCursor)
+
+    def _on_color_picked(self, x, y):
+        """Muestrea el píxel (x,y) de la imagen de trabajo y lo aplica al texto."""
+        w, h = self._work_image.width, self._work_image.height
+        x = max(0, min(x, w - 1))
+        y = max(0, min(y, h - 1))
+        rgb = self._work_image.getpixel((x, y))[:3]
+        self._apply_text_color("#%02X%02X%02X" % rgb)
+        self._set_eyedropper(False)   # cuentagotas de un solo uso
 
     def _compose_text(self):
         """Abre el mini-editor de texto y compone sobre la imagen de trabajo.

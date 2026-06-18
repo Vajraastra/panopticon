@@ -698,5 +698,8 @@
   "ig4.batch_progress": "Detectando cajas… {0}/{1}: {2}",
   "ig4.batch_done": "Pre-detección lista — {0} borradores creados, {1} omitidos.",
   "ig4.batch_err": "Error de detección: {0}",
-  "ig4.tip.batch_detect": "Corre YOLO sobre todas las imágenes del set y guarda un borrador .pano.json con los objetos detectados (sin descripción: el VLM la captura al Iniciar). Las imágenes que ya tienen cajas no se tocan. Luego haz doble clic en cada imagen para repasar y ajustar."
+  "ig4.tip.batch_detect": "Corre YOLO sobre todas las imágenes del set y guarda un borrador .pano.json con los objetos detectados (sin descripción: el VLM la captura al Iniciar). Las imágenes que ya tienen cajas no se tocan. Luego haz doble clic en cada imagen para repasar y ajustar.",
+  "ig4.eyedropper": "Cuentagotas",
+  "ig4.tip.text_color": "Color actual del texto (ground truth). Clic para elegirlo a mano.",
+  "ig4.tip.eyedropper": "Muestrea el color EXACTO de un texto existente: pulsa aquí y luego haz clic en el glifo de la imagen. El hex muestreado pasa a ser el color de este texto."
 }

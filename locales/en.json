@@ -698,5 +698,8 @@
   "ig4.batch_progress": "Detecting boxes… {0}/{1}: {2}",
   "ig4.batch_done": "Pre-detection done — {0} drafts created, {1} skipped.",
   "ig4.batch_err": "Detection error: {0}",
-  "ig4.tip.batch_detect": "Run YOLO over every image in the set and save a draft .pano.json with detected objects (no description: the VLM captures it on Start). Images that already have boxes are left untouched. Then double-click each image to review and adjust."
+  "ig4.tip.batch_detect": "Run YOLO over every image in the set and save a draft .pano.json with detected objects (no description: the VLM captures it on Start). Images that already have boxes are left untouched. Then double-click each image to review and adjust.",
+  "ig4.eyedropper": "Eyedropper",
+  "ig4.tip.text_color": "Current text color (ground truth). Click to pick it by hand.",
+  "ig4.tip.eyedropper": "Sample the EXACT color of existing text: click here, then click the glyph on the image. The sampled hex becomes this text's color."
 }
