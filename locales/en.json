@@ -692,5 +692,11 @@
   "ig4.auto_detecting": "Detecting…",
   "ig4.auto_none": "No objects detected. Draw the boxes by hand.",
   "ig4.auto_err_title": "Detection error",
-  "ig4.tip.auto_detect": "Detect characters, animals and objects with YOLO and add them as boxes (type 'object', category pre-filled in desc). Review and adjust them: resize, add missing ones, or delete extras. Text is still drawn by hand."
+  "ig4.tip.auto_detect": "Detect characters, animals and objects with YOLO and add them as boxes (type 'object', category pre-filled in desc). Review and adjust them: resize, add missing ones, or delete extras. Text is still drawn by hand.",
+  "ig4.batch_detect": "Pre-detect boxes (whole set)",
+  "ig4.batch_no_images": "No images in the set.",
+  "ig4.batch_progress": "Detecting boxes… {0}/{1}: {2}",
+  "ig4.batch_done": "Pre-detection done — {0} drafts created, {1} skipped.",
+  "ig4.batch_err": "Detection error: {0}",
+  "ig4.tip.batch_detect": "Run YOLO over every image in the set and save a draft .pano.json with detected characters/animals/objects. Images that already have boxes are left untouched. Then double-click each image to review and adjust."
 }

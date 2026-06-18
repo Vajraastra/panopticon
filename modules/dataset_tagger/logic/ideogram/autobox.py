@@ -13,6 +13,9 @@ el texto se sigue marcando a mano.
 El peso de YOLO se descarga solo (ultralytics) a models/yolo/ la primera vez.
 """
 import logging
+from pathlib import Path
+
+from PySide6.QtCore import QThread, Signal
 
 from core.paths import CachePaths
 
@@ -110,3 +113,70 @@ def get_shared_boxer():
     if _SHARED is None:
         _SHARED = AutoBoxer()
     return _SHARED
+
+
+class AutoBoxBatchWorker(QThread):
+    """Pre-detecta cajas para TODO un set y guarda un borrador .pano.json por
+    imagen, para que el usuario luego repase imagen por imagen.
+
+    Por defecto NO toca imágenes que ya tienen .pano.json (protege el trabajo
+    manual previo). Hereda el estilo del panel del set en cada borrador nuevo.
+    """
+
+    progress = Signal(int, int, str)   # hechas, total, nombre actual
+    finished_ok = Signal(int, int)     # creadas, omitidas
+    failed = Signal(str)
+
+    def __init__(self, images, out_dir, style_defaults, skip_existing=True,
+                 conf=DEFAULT_CONF, parent=None):
+        super().__init__(parent)
+        self.images = list(images)
+        self.out_dir = Path(out_dir)
+        self.style_defaults = dict(style_defaults or {})
+        self.skip_existing = skip_existing
+        self.conf = conf
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        try:
+            from PIL import Image
+            from .datamodel import WorkDoc, Element, STATUS_DRAFT
+            boxer = AutoBoxer(conf=self.conf)
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            total = len(self.images)
+            created = skipped = 0
+            for i, img in enumerate(self.images, 1):
+                if self._cancel:
+                    break
+                img = Path(img)
+                self.progress.emit(i, total, img.name)
+                pano = self.out_dir / (img.stem + ".pano.json")
+                if self.skip_existing and pano.exists():
+                    skipped += 1
+                    continue
+                try:
+                    with Image.open(img) as im:
+                        w, h = im.size
+                except (OSError, ValueError):
+                    skipped += 1
+                    continue
+                doc = WorkDoc(image=img.name, image_w=w, image_h=h, status=STATUS_DRAFT)
+                sd = self.style_defaults
+                doc.style.art_style = sd.get("art_style", "")
+                doc.style.aesthetics = sd.get("aesthetics", "")
+                doc.style.lighting = sd.get("lighting", "")
+                for d in boxer.detect(str(img)):
+                    x0, y0, x1, y1 = d["bbox_px"]
+                    x0, x1 = max(0, min(x0, w)), max(0, min(x1, w))
+                    y0, y1 = max(0, min(y0, h)), max(0, min(y1, h))
+                    doc.elements.append(Element(
+                        id=doc.next_element_id(), type="obj",
+                        bbox_px=[x0, y0, x1, y1], desc=desc_for(d["class"])))
+                doc.save(pano)
+                created += 1
+            self.finished_ok.emit(created, skipped)
+        except Exception as exc:  # noqa: BLE001 — se reporta a la UI
+            self.failed.emit(str(exc))

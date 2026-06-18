@@ -206,6 +206,7 @@ class DatasetTaggerView(QWidget):
         self._conn = None
         self._caption = None
         self._ig4 = None           # worker del captioner Ideogram 4
+        self._autobatch = None     # worker de pre-detección de cajas por lote
         self._bbox_editor = None   # ventana del editor de cajas (modal)
         self._review = None
         self._wd_dl = None         # worker de descarga del modelo WD
@@ -617,6 +618,19 @@ class DatasetTaggerView(QWidget):
             "already captured."))
         v.addWidget(self.ig4_recapture)
 
+        # Pre-detección por lote: corre YOLO sobre todo el set y deja un borrador
+        # .pano.json por imagen (sin tocar las que ya tienen uno). El usuario luego
+        # repasa imagen por imagen ajustando/añadiendo/borrando.
+        self.ig4_batch_detect = QPushButton(
+            self._tr("ig4.batch_detect", "Pre-detect boxes (whole set)"))
+        self.ig4_batch_detect.setToolTip(self._tr(
+            "ig4.tip.batch_detect",
+            "Run YOLO over every image in the set and save a draft .pano.json with "
+            "detected characters/animals/objects. Images that already have boxes are "
+            "left untouched. Then double-click each image to review and adjust."))
+        self.ig4_batch_detect.clicked.connect(self._run_ig4_autobatch)
+        v.addWidget(self.ig4_batch_detect)
+
         hint = QLabel(self._tr(
             "ig4.hint",
             "Steps: 1) fill art_style above  2) double-click an image to draw boxes  "
@@ -997,6 +1011,68 @@ class DatasetTaggerView(QWidget):
                 jobs.append((str(img), str(pano)))
         return jobs
 
+    def _ig4_all_images(self):
+        """Todas las imágenes del set (con o sin .pano.json). Para el pre-pase."""
+        if self._images is not None:
+            return [str(p) for p in self._images]
+        if not self._source_folder:
+            return []
+        try:
+            return [str(p) for p in
+                    sidecar.list_images(self._source_folder, self.chk_recursive.isChecked())]
+        except OSError:
+            return []
+
+    # -- pre-detección de cajas por lote (YOLO) ------------------------------
+    def _run_ig4_autobatch(self):
+        """Lanza la pre-detección YOLO sobre todo el set en un hilo aparte."""
+        if self._autobatch is not None and self._autobatch.isRunning():
+            return
+        images = self._ig4_all_images()
+        if not images:
+            self.status.setText(self._tr("ig4.batch_no_images", "No images in the set."))
+            return
+        out_dir = Path(sidecar.output_dir(self._source_folder, IG4_OUTPUT_TAG, "json"))
+        # Mismo criterio de herencia de estilo que el editor de cajas.
+        if self._ig4_infer_active():
+            style_defaults = {"art_style": "", "aesthetics": "", "lighting": ""}
+        else:
+            style_defaults = {
+                "art_style": self.ig4_artstyle.text().strip(),
+                "aesthetics": self.ig4_aesthetics.text().strip(),
+                "lighting": self.ig4_lighting.text().strip(),
+            }
+        from ..logic.ideogram.autobox import AutoBoxBatchWorker
+        self._autobatch = AutoBoxBatchWorker(images, out_dir, style_defaults)
+        self._autobatch.progress.connect(self._on_autobatch_progress)
+        self._autobatch.finished_ok.connect(self._on_autobatch_done)
+        self._autobatch.failed.connect(self._on_autobatch_failed)
+        self.ig4_batch_detect.setEnabled(False)
+        self.btn_cancel.setEnabled(True)
+        self._update_run_enabled()
+        self._autobatch.start()
+
+    def _on_autobatch_progress(self, done, total, name):
+        self.status.setText(self._tr(
+            "ig4.batch_progress", "Detecting boxes… {0}/{1}: {2}").format(done, total, name))
+
+    def _on_autobatch_done(self, created, skipped):
+        self._autobatch = None
+        self.ig4_batch_detect.setEnabled(True)
+        self.btn_cancel.setEnabled(False)
+        self.status.setText(self._tr(
+            "ig4.batch_done", "Pre-detection done — {0} drafts created, {1} skipped.")
+            .format(created, skipped))
+        self.grid.refresh_preprocess()   # aparecen las insignias de borrador
+        self._update_run_enabled()
+
+    def _on_autobatch_failed(self, msg):
+        self._autobatch = None
+        self.ig4_batch_detect.setEnabled(True)
+        self.btn_cancel.setEnabled(False)
+        self.status.setText(self._tr("ig4.batch_err", "Detection error: {0}").format(msg))
+        self._update_run_enabled()
+
     def _ig4_missing_artstyle(self, jobs):
         """Cuenta cuántos .pano.json de `jobs` no tienen art_style (no exportables)."""
         from ..logic.ideogram.datamodel import WorkDoc
@@ -1011,11 +1087,14 @@ class DatasetTaggerView(QWidget):
         return missing
 
     def _update_run_enabled(self):
-        busy = self._caption is not None or self._ig4 is not None
+        busy = (self._caption is not None or self._ig4 is not None
+                or self._autobatch is not None)
         if self._mode() == MODE_IDEOGRAM4:
             self.btn_run.setEnabled(bool(
                 self._source_folder and not busy
                 and self.combo_endpoint_model.currentData() and self._ig4_jobs()))
+            # El pre-pase por lote solo necesita un set cargado (no usa el VLM).
+            self.ig4_batch_detect.setEnabled(bool(self._source_folder and not busy))
             return
         if not (self._source_folder and self._active_template_keys() and not busy):
             self.btn_run.setEnabled(False)
@@ -1289,6 +1368,9 @@ class DatasetTaggerView(QWidget):
         if self._ig4:
             self._ig4.cancel()
             self.status.setText(self._tr("tagger.cancelling", "Cancelling…"))
+        if self._autobatch:
+            self._autobatch.cancel()
+            self.status.setText(self._tr("tagger.cancelling", "Cancelling…"))
 
     def closeEvent(self, event):
         # detiene workers vivos para no destruir un QThread en ejecución
@@ -1301,6 +1383,9 @@ class DatasetTaggerView(QWidget):
         if self._ig4 is not None:
             self._ig4.cancel()
             self._ig4.wait(3000)
+        if self._autobatch is not None:
+            self._autobatch.cancel()
+            self._autobatch.wait(3000)
         super().closeEvent(event)
 
     # -- integración con otros módulos (Fase 6) ------------------------------
