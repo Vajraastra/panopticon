@@ -264,6 +264,64 @@ class BBoxScene(QGraphicsScene):
         super().mouseReleaseEvent(event)
 
 
+class ZoomView(QGraphicsView):
+    """Vista con zoom (rueda, centrado en el cursor) y paneo (botón central).
+
+    El zoom con rueda permite dibujar cajas con precisión en imágenes grandes;
+    el paneo con el botón central (o arrastre con la rueda pulsada) desplaza sin
+    interferir con el dibujo (botón izquierdo) ni con la selección de cajas."""
+
+    MIN_SCALE = 0.05
+    MAX_SCALE = 16.0
+
+    def __init__(self, scene, parent=None):
+        super().__init__(scene, parent)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self._panning = False
+        self._pan_anchor = None
+
+    def zoom_by(self, factor):
+        """Escala relativa con tope, conservando el ratio 1:1 de la escena."""
+        cur = self.transform().m11()
+        new = cur * factor
+        if new < self.MIN_SCALE or new > self.MAX_SCALE:
+            return
+        self.scale(factor, factor)
+
+    def wheelEvent(self, event):
+        self.zoom_by(1.25 if event.angleDelta().y() > 0 else 1 / 1.25)
+        event.accept()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MiddleButton:
+            self._panning = True
+            self._pan_anchor = event.position().toPoint()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._panning:
+            pos = event.position().toPoint()
+            delta = pos - self._pan_anchor
+            self._pan_anchor = pos
+            h, v = self.horizontalScrollBar(), self.verticalScrollBar()
+            h.setValue(h.value() - delta.x())
+            v.setValue(v.value() - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MiddleButton and self._panning:
+            self._panning = False
+            self.unsetCursor()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class BBoxEditor(QDialog):
     """Ventana de edición de un .pano.json para una imagen."""
 
@@ -338,15 +396,19 @@ class BBoxEditor(QDialog):
             f"padding: 6px 10px; font-size: 11px;")
         lv.addWidget(instr)
 
+        # Barra de zoom (rueda = zoom; botón central = paneo).
+        lv.addWidget(self._build_zoom_bar())
+
         self.scene = BBoxScene(self._pixmap)
         self.scene.box_created.connect(self._on_box_created)
-        self.view = QGraphicsView(self.scene)
+        self.view = ZoomView(self.scene)
         self.view.setRenderHint(QPainter.SmoothPixmapTransform, True)
         self.view.setDragMode(QGraphicsView.NoDrag)
         self.view.setBackgroundBrush(QBrush(QColor(Theme.BG_PANEL)))
         self.view.setToolTip(self.tr(
             "ig4.tip.canvas",
-            "Drawing area. Empty space = draw a new box; on a box = select/move/resize."))
+            "Drawing area. Empty space = draw a new box; on a box = select/move/resize. "
+            "Mouse wheel = zoom, middle-button drag = pan."))
         lv.addWidget(self.view)
         splitter.addWidget(left)
 
@@ -361,6 +423,9 @@ class BBoxEditor(QDialog):
         """Atajos para agilizar el flujo de ×N imágenes:
           Supr/Backspace = borrar la caja seleccionada (solo sobre el lienzo o la
                            lista, para no chocar con la edición de texto en campos),
+          Flechas        = mover la caja 1 px; Shift+flechas = 10 px (solo sobre el
+                           lienzo, para no robarle la navegación a la lista),
+          Ctrl+D         = duplicar la caja seleccionada,
           Ctrl+S         = guardar y cerrar,
           Esc            = cerrar sin guardar (default de QDialog → reject)."""
         for seq in (QKeySequence.Delete, QKeySequence(Qt.Key_Backspace)):
@@ -368,9 +433,61 @@ class BBoxEditor(QDialog):
                 sc = QShortcut(seq, widget)
                 sc.setContext(Qt.WidgetWithChildrenShortcut)
                 sc.activated.connect(self._delete_selected)
+        # Mover con flechas: solo en el lienzo (la lista conserva su navegación).
+        arrows = ((Qt.Key_Left, -1, 0), (Qt.Key_Right, 1, 0),
+                  (Qt.Key_Up, 0, -1), (Qt.Key_Down, 0, 1))
+        for key, dx, dy in arrows:
+            for mod, step in ((Qt.NoModifier, 1), (Qt.ShiftModifier, 10)):
+                sc = QShortcut(QKeySequence(mod | key), self.view)
+                sc.setContext(Qt.WidgetWithChildrenShortcut)
+                sc.activated.connect(
+                    lambda dx=dx, dy=dy, s=step: self._nudge_selected(dx * s, dy * s))
+        dup_sc = QShortcut(QKeySequence("Ctrl+D"), self)
+        dup_sc.setContext(Qt.WindowShortcut)
+        dup_sc.activated.connect(self._duplicate_selected)
         save_sc = QShortcut(QKeySequence.Save, self)  # Ctrl+S
         save_sc.setContext(Qt.WindowShortcut)
         save_sc.activated.connect(self._save_and_close)
+
+    def _build_zoom_bar(self):
+        """Fila compacta de controles de zoom encima del lienzo."""
+        bar = QWidget()
+        bar.setStyleSheet(f"background-color: {Theme.BG_PANEL};")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(8, 4, 8, 4)
+        row.setSpacing(6)
+
+        def mk(label, tip, slot):
+            b = QPushButton(label)
+            b.setFixedHeight(24)
+            b.setStyleSheet(Theme.get_button_style())
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            return b
+
+        row.addWidget(mk(self.tr("ig4.zoom_out", "−"),
+                         self.tr("ig4.tip.zoom_out", "Zoom out"),
+                         lambda: self.view.zoom_by(1 / 1.25)))
+        row.addWidget(mk(self.tr("ig4.zoom_in", "+"),
+                         self.tr("ig4.tip.zoom_in", "Zoom in"),
+                         lambda: self.view.zoom_by(1.25)))
+        row.addWidget(mk(self.tr("ig4.zoom_fit", "Fit"),
+                         self.tr("ig4.tip.zoom_fit", "Fit the whole image in the view"),
+                         self._zoom_fit))
+        row.addWidget(mk(self.tr("ig4.zoom_100", "100%"),
+                         self.tr("ig4.tip.zoom_100", "Actual size (1:1 pixels)"),
+                         self._zoom_100))
+        hint = QLabel(self.tr("ig4.zoom_hint", "wheel = zoom · middle drag = pan"))
+        hint.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 10px;")
+        row.addWidget(hint)
+        row.addStretch()
+        return bar
+
+    def _zoom_fit(self):
+        self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+
+    def _zoom_100(self):
+        self.view.resetTransform()
 
     def _build_sidebar(self):
         panel = QWidget()
@@ -721,6 +838,49 @@ class BBoxEditor(QDialog):
         self._selected.setRect(QRectF(QPointF(bx0, by0), QPointF(bx1, by1)))
         row = self._items.index(self._selected)
         self._list.item(row).setText(self._list_label(elem, row + 1))
+
+    def _nudge_selected(self, dx, dy):
+        """Mueve la caja seleccionada `dx,dy` px de escena, con clamp a la imagen."""
+        if not self._selected:
+            return
+        item = self._selected
+        r = item.rect().translated(dx, dy)
+        bounds = self.scene.sceneRect()
+        # Clamp: no dejar que la caja se salga del área de la imagen.
+        if r.left() < bounds.left():
+            r.translate(bounds.left() - r.left(), 0)
+        if r.top() < bounds.top():
+            r.translate(0, bounds.top() - r.top())
+        if r.right() > bounds.right():
+            r.translate(bounds.right() - r.right(), 0)
+        if r.bottom() > bounds.bottom():
+            r.translate(0, bounds.bottom() - r.bottom())
+        item.prepareGeometryChange()
+        item.setRect(r)
+        item._sync_to_element()
+
+    def _duplicate_selected(self):
+        """Crea una copia de la caja seleccionada, desplazada para no taparla.
+
+        Copia tipo, descripción y texto literal; NO copia el render compuesto ni la
+        paleta (esos implican píxeles ya pintados en la imagen original, que no se
+        re-componen en la copia). La copia queda seleccionada al final de la lista."""
+        if not self._selected:
+            return
+        src = self._selected.element
+        off = 12
+        x0, y0, x1, y1 = src.bbox_px
+        bounds = self.scene.sceneRect()
+        # Desplaza la copia y la mantiene dentro de la imagen.
+        if x1 + off <= bounds.right() and y1 + off <= bounds.bottom():
+            x0, y0, x1, y1 = x0 + off, y0 + off, x1 + off, y1 + off
+        elem = Element(id=self._doc.next_element_id(), type=src.type,
+                       bbox_px=[x0, y0, x1, y1], desc=src.desc,
+                       text=(src.text if src.type == "text" else ""))
+        self._doc.elements.append(elem)
+        self._add_item(elem)
+        self._refresh_orders()
+        self._list.setCurrentRow(len(self._items) - 1)
 
     def _delete_selected(self):
         if not self._selected:

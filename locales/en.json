@@ -617,8 +617,8 @@
   "ig4.type.character": "Character",
   "ig4.tip.is_character": "Style = one global art_style for the whole set (best for a consistent style LoRA). Character = the subject appears in many styles, so the VLM infers the style of each image individually.",
   "ig4.infer_style": "Infer the global style with the VLM",
-  "ig4.canvas_help": "Drag on the image to draw a box. Click a box to select it, then drag its corners to resize or its body to move it. Only the selected box moves.",
-  "ig4.tip.canvas": "Drawing area. Empty space = draw a new box; on a box = select/move/resize.",
+  "ig4.canvas_help": "Drag on the image to draw a box. Click a box to select it, then drag its corners to resize or its body to move it. Only the selected box moves. Wheel = zoom, middle-button drag = pan. Arrow keys move the box (Shift = 10 px); Ctrl+D duplicates it.",
+  "ig4.tip.canvas": "Drawing area. Empty space = draw a new box; on a box = select/move/resize. Wheel = zoom, middle-button drag = pan.",
   "ig4.tip.type_obj": "Object: a visual element (character, prop, panel, frame). On Start the VLM describes it and k-means extracts its colors.",
   "ig4.tip.type_text": "Text: literal words in the image (titles, dialog). You type the exact string; it is ground truth and never sent to the VLM.",
   "ig4.tip.list": "Every box you draw. Order = prominence: #1 is the most salient. Drag rows to reorder — it matters for the caption. Text boxes are moved to the end automatically on export.",
@@ -678,5 +678,14 @@
   "ig4.tip.sh_fill": "Fill the shape with a solid color (e.g. white bubble so text reads).",
   "ig4.tip.sh_fill_color": "Fill color (used when Fill is on).",
   "ig4.tip.sh_alpha": "Fill opacity: 0 = transparent, 255 = solid.",
-  "ig4.tip.sh_apply": "Bake the shape onto the output copy and return. The box is computed automatically."
+  "ig4.tip.sh_apply": "Bake the shape onto the output copy and return. The box is computed automatically.",
+  "ig4.zoom_out": "−",
+  "ig4.zoom_in": "+",
+  "ig4.zoom_fit": "Fit",
+  "ig4.zoom_100": "100%",
+  "ig4.zoom_hint": "wheel = zoom · middle drag = pan",
+  "ig4.tip.zoom_out": "Zoom out",
+  "ig4.tip.zoom_in": "Zoom in",
+  "ig4.tip.zoom_fit": "Fit the whole image in the view",
+  "ig4.tip.zoom_100": "Actual size (1:1 pixels)"
 }

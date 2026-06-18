@@ -617,8 +617,8 @@
   "ig4.type.character": "Personaje",
   "ig4.tip.is_character": "Estilo = un único art_style global para todo el set (lo mejor para un LoRA de estilo consistente). Personaje = el sujeto aparece en muchos estilos, así que el VLM infiere el estilo de cada imagen por separado.",
   "ig4.infer_style": "Inferir el estilo global con el VLM",
-  "ig4.canvas_help": "Arrastra sobre la imagen para dibujar una caja. Haz clic en una caja para seleccionarla; luego arrastra sus esquinas para redimensionar o su cuerpo para moverla. Solo se mueve la caja seleccionada.",
-  "ig4.tip.canvas": "Zona de dibujo. Espacio vacío = dibujar caja nueva; sobre una caja = seleccionar/mover/redimensionar.",
+  "ig4.canvas_help": "Arrastra sobre la imagen para dibujar una caja. Haz clic en una caja para seleccionarla; luego arrastra sus esquinas para redimensionar o su cuerpo para moverla. Solo se mueve la caja seleccionada. Rueda = zoom, arrastre con botón central = paneo. Flechas mueven la caja (Shift = 10 px); Ctrl+D la duplica.",
+  "ig4.tip.canvas": "Área de dibujo. Espacio vacío = nueva caja; sobre una caja = seleccionar/mover/redimensionar. Rueda = zoom, arrastre con botón central = paneo.",
   "ig4.tip.type_obj": "Objeto: un elemento visual (personaje, accesorio, panel, marco). Al Iniciar, el VLM lo describe y k-means extrae sus colores.",
   "ig4.tip.type_text": "Texto: palabras literales en la imagen (títulos, diálogos). Tú escribes la cadena exacta; es ground truth y nunca pasa por el VLM.",
   "ig4.tip.list": "Todas las cajas que dibujas. El orden = prominencia: #1 es la más saliente. Arrastra filas para reordenar — importa para el caption. Las cajas de texto se mueven al final automáticamente al exportar.",
@@ -678,5 +678,14 @@
   "ig4.tip.sh_fill": "Rellena la forma con un color sólido (p. ej. globo blanco para que el texto se lea).",
   "ig4.tip.sh_fill_color": "Color de relleno (se usa con Relleno activo).",
   "ig4.tip.sh_alpha": "Opacidad del relleno: 0 = transparente, 255 = sólido.",
-  "ig4.tip.sh_apply": "Funde la forma en la copia de salida y vuelve. La caja se calcula automáticamente."
+  "ig4.tip.sh_apply": "Funde la forma en la copia de salida y vuelve. La caja se calcula automáticamente.",
+  "ig4.zoom_out": "−",
+  "ig4.zoom_in": "+",
+  "ig4.zoom_fit": "Ajustar",
+  "ig4.zoom_100": "100%",
+  "ig4.zoom_hint": "rueda = zoom · arrastre central = paneo",
+  "ig4.tip.zoom_out": "Alejar",
+  "ig4.tip.zoom_in": "Acercar",
+  "ig4.tip.zoom_fit": "Ajustar toda la imagen a la vista",
+  "ig4.tip.zoom_100": "Tamaño real (píxeles 1:1)"
 }
