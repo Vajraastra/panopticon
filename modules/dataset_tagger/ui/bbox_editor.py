@@ -924,12 +924,11 @@ class BBoxEditor(QDialog):
 
     def _on_auto_detected(self, dets):
         self._restore_autodet_button()
-        from ..logic.ideogram.autobox import desc_for
         added = 0
         for d in dets:
+            # type=obj, desc vacío: el VLM lo captura al Iniciar (no precategorizar).
             elem = Element(id=self._doc.next_element_id(), type="obj",
-                           bbox_px=self._clamp_bbox(d["bbox_px"]),
-                           desc=desc_for(d["class"]))
+                           bbox_px=self._clamp_bbox(d["bbox_px"]))
             self._doc.elements.append(elem)
             self._add_item(elem)
             added += 1

@@ -4,11 +4,13 @@ Usa YOLOv8 (COCO, 80 clases) para PRE-CREAR cajas que el usuario luego repasa:
 ajusta medidas, añade las que falten o borra las innecesarias. No busca certeza
 absoluta, sino ahorrar el grueso del trabajo manual.
 
-El esquema canónico de Ideogram solo admite `type` = obj/text (sin campo de
-categoría), así que la distinción personaje/animal/objeto se precarga en `desc`
-—la descripción legible que el VLM refina al pulsar Iniciar y que el usuario ve
-en la etiqueta de cada caja—. Todas las detecciones entran como `type="obj"`;
-el texto se sigue marcando a mano.
+El esquema canónico de Ideogram solo admite `type` = obj/text (y `text` es una
+categoría "sintética" nuestra para componer texto sobre la imagen). En la
+práctica solo existe `obj`: personajes, animales y objetos caben todos ahí. Por
+eso las detecciones entran como `type="obj"` con `desc` VACÍO: precategorizar
+sería redundante —y contraproducente, porque el editor conserva el `desc` que no
+esté vacío y bloquearía la descripción rica que el VLM captura al pulsar Iniciar—.
+La categoría detectada se usa SOLO internamente para ordenar por saliencia.
 
 El peso de YOLO se descarga solo (ultralytics) a models/yolo/ la primera vez.
 """
@@ -41,11 +43,6 @@ def category_for(class_name):
     if class_name in _COCO_ANIMALS:
         return "animal"
     return "object"
-
-
-def desc_for(class_name):
-    """Descripción inicial precargada: 'character' para personas, si no la clase."""
-    return "character" if class_name == "person" else class_name
 
 
 class AutoBoxer:
@@ -172,9 +169,10 @@ class AutoBoxBatchWorker(QThread):
                     x0, y0, x1, y1 = d["bbox_px"]
                     x0, x1 = max(0, min(x0, w)), max(0, min(x1, w))
                     y0, y1 = max(0, min(y0, h)), max(0, min(y1, h))
+                    # desc vacío: el VLM lo captura al Iniciar (no precategorizar).
                     doc.elements.append(Element(
                         id=doc.next_element_id(), type="obj",
-                        bbox_px=[x0, y0, x1, y1], desc=desc_for(d["class"])))
+                        bbox_px=[x0, y0, x1, y1]))
                 doc.save(pano)
                 created += 1
             self.finished_ok.emit(created, skipped)

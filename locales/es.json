@@ -692,11 +692,11 @@
   "ig4.auto_detecting": "Detectando…",
   "ig4.auto_none": "No se detectaron objetos. Dibuja las cajas a mano.",
   "ig4.auto_err_title": "Error de detección",
-  "ig4.tip.auto_detect": "Detecta personajes, animales y objetos con YOLO y los agrega como cajas (tipo 'objeto', categoría precargada en desc). Repásalas y ajústalas: redimensiona, añade las que falten o borra las de más. El texto se sigue dibujando a mano.",
+  "ig4.tip.auto_detect": "Detecta personajes, animales y objetos con YOLO y los agrega como cajas (tipo 'objeto', sin descripción: el VLM la captura al Iniciar). Repásalas y ajústalas: redimensiona, añade las que falten o borra las de más. El texto se sigue dibujando a mano.",
   "ig4.batch_detect": "Pre-detectar cajas (todo el set)",
   "ig4.batch_no_images": "No hay imágenes en el set.",
   "ig4.batch_progress": "Detectando cajas… {0}/{1}: {2}",
   "ig4.batch_done": "Pre-detección lista — {0} borradores creados, {1} omitidos.",
   "ig4.batch_err": "Error de detección: {0}",
-  "ig4.tip.batch_detect": "Corre YOLO sobre todas las imágenes del set y guarda un borrador .pano.json con los personajes/animales/objetos detectados. Las imágenes que ya tienen cajas no se tocan. Luego haz doble clic en cada imagen para repasar y ajustar."
+  "ig4.tip.batch_detect": "Corre YOLO sobre todas las imágenes del set y guarda un borrador .pano.json con los objetos detectados (sin descripción: el VLM la captura al Iniciar). Las imágenes que ya tienen cajas no se tocan. Luego haz doble clic en cada imagen para repasar y ajustar."
 }
