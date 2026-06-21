@@ -1313,12 +1313,22 @@ class DatasetTaggerView(QWidget):
             return self.combo_model_tags.currentData()
         return None
 
+    def _llm_config(self):
+        """Endpoint + api_key + modelo VLM actuales, para la sugerencia de prosa
+        del editor (mismo backend que usó la captura)."""
+        return dict(
+            endpoint=self.edit_endpoint.text().strip(),
+            api_key=self.edit_apikey.text().strip() or None,
+            vlm_model=self.combo_endpoint_model.currentData(),
+        )
+
     def _open_review(self):
         """Abre el editor de captions sobre el último dataset o una carpeta a elegir."""
         from .review_view import ReviewView
         folder, as_tag = (self._last_output or (None, True))
         self._review = ReviewView(self.context, folder=folder, as_tag=as_tag,
-                                  model_key=self._review_model_hint())
+                                  model_key=self._review_model_hint(),
+                                  **self._llm_config())
         self._review.show()
         self._review.raise_()
 
@@ -1371,7 +1381,8 @@ class DatasetTaggerView(QWidget):
             self._last_output and self._last_output[0] == folder) else True
         self._review = ReviewView(self.context, folder=folder,
                                   as_tag=as_tag, select=image_path,
-                                  model_key=self._review_model_hint())
+                                  model_key=self._review_model_hint(),
+                                  **self._llm_config())
         self._review.show()
         self._review.raise_()
 

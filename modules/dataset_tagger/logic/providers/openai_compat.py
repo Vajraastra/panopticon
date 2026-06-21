@@ -61,3 +61,24 @@ class OpenAICompatProvider(BaseProvider):
             return r.json()["choices"][0]["message"]["content"].strip()
         except (KeyError, IndexError, ValueError) as e:
             raise ProviderError(f"Respuesta inesperada del servidor: {e}") from e
+
+    def complete(self, prompt, model=None):
+        model = model or self.model
+        if not model:
+            raise ProviderError("No se especificó un modelo para la sugerencia.")
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.3,
+            "max_tokens": 512,
+        }
+        try:
+            r = requests.post(f"{self.base_url}/chat/completions", headers=self._headers(),
+                              json=payload, timeout=self.timeout)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            raise ProviderError(f"Fallo en la sugerencia: {e}") from e
+        try:
+            return r.json()["choices"][0]["message"]["content"].strip()
+        except (KeyError, IndexError, ValueError) as e:
+            raise ProviderError(f"Respuesta inesperada del servidor: {e}") from e

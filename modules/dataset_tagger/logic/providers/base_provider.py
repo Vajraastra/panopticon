@@ -64,6 +64,15 @@ class BaseProvider:
         """Genera y retorna el caption (str) para una imagen."""
         raise NotImplementedError
 
+    def complete(self, prompt, model=None):
+        """Completa un prompt SOLO de texto (sin imagen). Retorna el texto.
+
+        Lo usa la sugerencia de prosa del editor (corrige/estructura/traduce un
+        caption ya escrito sin re-mirar la imagen). Un provider sin LLM de texto
+        (p. ej. el WD tagger) puede dejarlo sin implementar.
+        """
+        raise NotImplementedError
+
     def test_connection(self):
         """Prueba la conexión. Retorna (ok: bool, mensaje: str)."""
         try:

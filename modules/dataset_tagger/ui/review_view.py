@@ -20,10 +20,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 
-from ..logic import tag_tools, tag_db
+from ..logic import tag_tools, tag_db, refine
 from ..logic.sidecar import IMAGE_EXTS
 from ..logic.templates import CaptionTemplate, available_models
+from ..logic.providers.openai_compat import OpenAICompatProvider
 from .tag_completer import TagCompleter
+from .refine_dialog import RefineProposalDialog
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +33,8 @@ log = logging.getLogger(__name__)
 class ReviewView(QWidget):
     """Editor de sidecars de un dataset. Ventana de nivel superior."""
 
-    def __init__(self, context, folder=None, as_tag=True, select=None, model_key=None):
+    def __init__(self, context, folder=None, as_tag=True, select=None, model_key=None,
+                 endpoint="", api_key=None, vlm_model=None):
         super().__init__()
         self.context = context
         self.folder = str(folder) if folder else None
@@ -42,6 +45,13 @@ class ReviewView(QWidget):
         # el grupo de quality tags. El usuario puede cambiarla en el combo.
         self._model_key = model_key
         self._tagdb_worker = None
+        # Config del LLM para la sugerencia de prosa (Fase 2). Llega del tagger:
+        # mismo endpoint/modelo VLM que usó para capturar. Sin esto, el botón
+        # "Sugerir" queda deshabilitado.
+        self._endpoint = (endpoint or "").strip()
+        self._api_key = api_key or None
+        self._vlm_model = vlm_model or None
+        self._refine_worker = None
 
         self.setWindowTitle(self._tr("review.title", "Review captions"))
         self.resize(960, 640)
@@ -52,6 +62,7 @@ class ReviewView(QWidget):
             self._load_folder(self.folder)
         # arranca la carga del CSV si el dataset es de tags
         self._on_arch_changed()
+        self._update_mode_ui()   # muestra acciones de tags vs prosa
 
     # -- helpers --------------------------------------------------------------
     def _tr(self, key, default=None):
@@ -104,6 +115,64 @@ class ReviewView(QWidget):
         self.completer.set_enabled(on)
         if on:
             self._start_tagdb_load(self._current_template())
+        self._update_mode_ui()
+
+    def _update_mode_ui(self):
+        """Muestra las acciones del modo activo: tags (autocompletado + quality)
+        vs prosa (sugerencia LLM). Evita mezclar controles que no aplican."""
+        is_tags = self.chk_as_tag.isChecked()
+        for w in (self.lbl_arch, self.combo_arch, self.lbl_tagdb, self.btn_quality):
+            w.setVisible(is_tags)
+        for w in (self.btn_suggest, self.chk_suggest_image):
+            w.setVisible(not is_tags)
+        # el botón Sugerir necesita endpoint + modelo VLM configurados en el tagger
+        if not is_tags:
+            ready = bool(self._endpoint and self._vlm_model)
+            self.btn_suggest.setEnabled(ready)
+            self.btn_suggest.setToolTip(
+                self.btn_suggest.toolTip() if ready else self._tr(
+                    "review.suggest.no_llm",
+                    "Configure an endpoint and vision model in the tagger first."))
+
+    # -- sugerencia de prosa (LLM, a demanda) ---------------------------------
+    def _on_suggest(self):
+        if self._refine_worker and self._refine_worker.isRunning():
+            return
+        text = self.editor.toPlainText().strip()
+        if not text:
+            self.status.setText(self._tr("review.suggest.empty", "Nothing to improve yet."))
+            return
+        if not (self._endpoint and self._vlm_model):
+            return
+        tmpl = self._current_template()
+        structure = getattr(tmpl, "structure", "") if tmpl else ""
+        label = getattr(tmpl, "label", "") if tmpl else ""
+        image = self._current_image_path() if self.chk_suggest_image.isChecked() else None
+        provider = OpenAICompatProvider(self._endpoint, self._api_key,
+                                        model=self._vlm_model, timeout=120)
+        self.btn_suggest.setEnabled(False)
+        self.status.setText(self._tr("review.suggest.working", "Asking the LLM…"))
+        self._refine_worker = refine.RefineWorker(
+            provider, self._vlm_model, text, structure=structure,
+            label=label, image_path=image)
+        self._refine_worker.ready.connect(self._on_refine_ready)
+        self._refine_worker.failed.connect(self._on_refine_failed)
+        self._refine_worker.start()
+
+    def _on_refine_ready(self, suggested):
+        self.btn_suggest.setEnabled(True)
+        self.status.setText("")
+        original = self.editor.toPlainText().strip()
+        dlg = RefineProposalDialog(original, suggested, tr=self._tr, parent=self)
+        if dlg.exec():
+            final = dlg.result_text()
+            if final:
+                self.editor.setPlainText(final)
+                self._save_current()
+
+    def _on_refine_failed(self, msg):
+        self.btn_suggest.setEnabled(True)
+        self.status.setText(self._tr("review.suggest.error", "Suggestion failed: {0}").format(msg))
 
     def _start_tagdb_load(self, tmpl):
         if not tmpl or not tmpl.tag_csv:
@@ -199,7 +268,8 @@ class ReviewView(QWidget):
         self.preview.setStyleSheet("background: #1a1a1a; border-radius: 8px;")
         rlay.addWidget(self.preview, 1)
 
-        # barra de acciones del caption actual (quality tags)
+        # barra de acciones del caption actual. En modo TAGS: quality tags. En
+        # modo PROSA: sugerencia del LLM (corrige/estructura/traduce a demanda).
         actions = QHBoxLayout()
         self.btn_quality = QPushButton(self._tr("review.add_quality", "+ Quality tags"))
         self.btn_quality.setToolTip(self._tr(
@@ -207,6 +277,19 @@ class ReviewView(QWidget):
             "Prepend this architecture's standard quality tags if missing."))
         self.btn_quality.clicked.connect(self._insert_quality)
         actions.addWidget(self.btn_quality, 0)
+
+        self.btn_suggest = QPushButton(self._tr("review.suggest", "✨ Suggest"))
+        self.btn_suggest.setToolTip(self._tr(
+            "review.suggest.tip",
+            "Ask the LLM to fix grammar, restructure for the target model and "
+            "translate to English. Shown as a proposal — you accept or reject."))
+        self.btn_suggest.clicked.connect(self._on_suggest)
+        self.chk_suggest_image = QCheckBox(self._tr("review.suggest.use_image", "use image"))
+        self.chk_suggest_image.setToolTip(self._tr(
+            "review.suggest.use_image.tip",
+            "Also look at the image to correct factual errors (slower)."))
+        actions.addWidget(self.btn_suggest, 0)
+        actions.addWidget(self.chk_suggest_image, 0)
         actions.addStretch(1)
         rlay.addLayout(actions)
 
@@ -302,15 +385,25 @@ class ReviewView(QWidget):
         self.editor.setPlainText(tag_tools.read(path))
         self._show_preview(path)
 
-    def _show_preview(self, txt_path):
+    def _image_for(self, txt_path):
+        """Ruta de la imagen junto a un .txt (misma raíz), o None."""
+        if not txt_path:
+            return None
         stem = Path(txt_path).stem
         folder = Path(txt_path).parent
-        img = None
         for ext in IMAGE_EXTS:
             cand = folder / (stem + ext)
             if cand.exists():
-                img = cand
-                break
+                return cand
+        return None
+
+    def _current_image_path(self):
+        """Imagen del caption en edición (para la sugerencia con imagen)."""
+        p = self._image_for(self._current)
+        return str(p) if p else None
+
+    def _show_preview(self, txt_path):
+        img = self._image_for(txt_path)
         if not img:
             self.preview.setText(self._tr("review.no_image", "(image not found)"))
             return
@@ -363,4 +456,6 @@ class ReviewView(QWidget):
         self._save_current()
         if self._tagdb_worker and self._tagdb_worker.isRunning():
             self._tagdb_worker.wait(3000)
+        if self._refine_worker and self._refine_worker.isRunning():
+            self._refine_worker.wait(3000)
         super().closeEvent(event)

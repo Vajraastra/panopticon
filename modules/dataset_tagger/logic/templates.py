@@ -67,6 +67,11 @@ class CaptionTemplate:
         # Vacío en modelos de prosa natural; el editor solo lo usa en modo tags.
         self.tag_csv = self.cfg.get("tag_csv", "")
         self.tag_csv_url = self.cfg.get("tag_csv_url", "")
+        # Descripción de la estructura de salida deseada para los modelos de
+        # prosa. La usa la sugerencia del editor (logic/refine) para reestructurar
+        # un caption al formato del modelo destino. Vacío en modelos de tags.
+        self.structure = self.cfg.get("structure", "")
+        self.label = self.cfg.get("label", model_key)
 
     def meta_prompt(self):
         return self.cfg["meta_prompt"]
