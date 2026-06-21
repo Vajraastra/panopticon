@@ -1306,11 +1306,19 @@ class DatasetTaggerView(QWidget):
         except Exception as e:  # noqa: BLE001
             log.debug("No se pudo abrir la salida ig4: %s", e)
 
+    def _review_model_hint(self):
+        """Arquitectura sugerida para el editor: el modelo de tags seleccionado
+        (dirige el CSV de autocompletado y el grupo de quality tags)."""
+        if self.combo_model_tags.count():
+            return self.combo_model_tags.currentData()
+        return None
+
     def _open_review(self):
         """Abre el editor de captions sobre el último dataset o una carpeta a elegir."""
         from .review_view import ReviewView
         folder, as_tag = (self._last_output or (None, True))
-        self._review = ReviewView(self.context, folder=folder, as_tag=as_tag)
+        self._review = ReviewView(self.context, folder=folder, as_tag=as_tag,
+                                  model_key=self._review_model_hint())
         self._review.show()
         self._review.raise_()
 
@@ -1362,7 +1370,8 @@ class DatasetTaggerView(QWidget):
         as_tag = self._last_output[1] if (
             self._last_output and self._last_output[0] == folder) else True
         self._review = ReviewView(self.context, folder=folder,
-                                  as_tag=as_tag, select=image_path)
+                                  as_tag=as_tag, select=image_path,
+                                  model_key=self._review_model_hint())
         self._review.show()
         self._review.raise_()
 

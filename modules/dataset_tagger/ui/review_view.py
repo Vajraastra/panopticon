@@ -15,13 +15,15 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QPlainTextEdit, QListWidget, QListWidgetItem, QSplitter, QFrame, QCheckBox,
-    QFileDialog,
+    QFileDialog, QComboBox,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 
-from ..logic import tag_tools
+from ..logic import tag_tools, tag_db
 from ..logic.sidecar import IMAGE_EXTS
+from ..logic.templates import CaptionTemplate, available_models
+from .tag_completer import TagCompleter
 
 log = logging.getLogger(__name__)
 
@@ -29,13 +31,17 @@ log = logging.getLogger(__name__)
 class ReviewView(QWidget):
     """Editor de sidecars de un dataset. Ventana de nivel superior."""
 
-    def __init__(self, context, folder=None, as_tag=True, select=None):
+    def __init__(self, context, folder=None, as_tag=True, select=None, model_key=None):
         super().__init__()
         self.context = context
         self.folder = str(folder) if folder else None
         self._current = None  # Path del .txt en edición
         # stem a preseleccionar al cargar (p. ej. la imagen abierta desde el grid)
         self._select_stem = Path(select).stem if select else None
+        # arquitectura sugerida (del tagger). Dirige el CSV de autocompletado y
+        # el grupo de quality tags. El usuario puede cambiarla en el combo.
+        self._model_key = model_key
+        self._tagdb_worker = None
 
         self.setWindowTitle(self._tr("review.title", "Review captions"))
         self.resize(960, 640)
@@ -44,6 +50,8 @@ class ReviewView(QWidget):
         self.chk_as_tag.setChecked(as_tag)
         if self.folder:
             self._load_folder(self.folder)
+        # arranca la carga del CSV si el dataset es de tags
+        self._on_arch_changed()
 
     # -- helpers --------------------------------------------------------------
     def _tr(self, key, default=None):
@@ -56,6 +64,92 @@ class ReviewView(QWidget):
         tm = self.context.get('theme_manager') if self.context else None
         return tm.get_color('accent_main') if tm else "#bd93f9"
 
+    # -- arquitectura / autocompletado de tags --------------------------------
+    @staticmethod
+    def _tag_models():
+        """(key, label) de los modelos de formato 'tags' (los que tienen CSV)."""
+        out = []
+        for key, _label in available_models(include_deferred=False):
+            try:
+                if CaptionTemplate(key).format == "tags":
+                    out.append((key, _label))
+            except KeyError:
+                continue
+        return out
+
+    def _current_template(self):
+        key = self.combo_arch.currentData()
+        if not key:
+            return None
+        try:
+            return CaptionTemplate(key)
+        except KeyError:
+            return None
+
+    def _on_arch_changed(self, *_):
+        """Cambió la arquitectura (o se abrió la vista): recarga el CSV asociado
+        si el dataset es de tags."""
+        tmpl = self._current_template()
+        if tmpl and tmpl.quality_prefix:
+            self.btn_quality.setToolTip(self._tr(
+                "review.add_quality.tip",
+                "Prepend this architecture's standard quality tags if missing.")
+                + "\n" + tmpl.separator.join(tmpl.quality_prefix))
+        if self.chk_as_tag.isChecked():
+            self._start_tagdb_load(tmpl)
+        else:
+            self.completer.set_enabled(False)
+
+    def _on_as_tag_toggled(self, on):
+        self.completer.set_enabled(on)
+        if on:
+            self._start_tagdb_load(self._current_template())
+
+    def _start_tagdb_load(self, tmpl):
+        if not tmpl or not tmpl.tag_csv:
+            self.lbl_tagdb.setText(self._tr("review.tagdb.none", "(no tag DB for this architecture)"))
+            self.completer.set_csv("")
+            return
+        if tag_db.is_ready(tmpl.tag_csv):
+            self._on_tagdb_ready(tmpl.tag_csv, 0)
+            return
+        if self._tagdb_worker and self._tagdb_worker.isRunning():
+            return
+        verb = (self._tr("review.tagdb.downloading", "Downloading tag DB…")
+                if not tag_db.is_present(tmpl.tag_csv)
+                else self._tr("review.tagdb.loading", "Loading tag DB…"))
+        self.lbl_tagdb.setText(verb)
+        self._tagdb_worker = tag_db.TagDbWorker(tmpl.tag_csv, tmpl.tag_csv_url)
+        self._tagdb_worker.ready.connect(self._on_tagdb_ready)
+        self._tagdb_worker.failed.connect(self._on_tagdb_failed)
+        self._tagdb_worker.start()
+
+    def _on_tagdb_ready(self, csv_name, _n):
+        count = tag_db.tag_count(csv_name) or _n
+        self.completer.set_csv(csv_name)
+        self.completer.set_enabled(self.chk_as_tag.isChecked())
+        self.lbl_tagdb.setText(self._tr("review.tagdb.ready", "{0} tags ready")
+                               .format(f"{count:,}"))
+
+    def _on_tagdb_failed(self, _csv_name, msg):
+        self.completer.set_enabled(False)
+        self.lbl_tagdb.setText(self._tr("review.tagdb.error", "Tag DB error: {0}").format(msg))
+
+    def _insert_quality(self):
+        """Antepone el grupo de quality tags de la arquitectura si falta (no
+        destructivo, dedup case-insensitive). Decisión de David: las quality tags
+        de un grupo general van SIEMPRE en los datasets de tags."""
+        tmpl = self._current_template()
+        if not tmpl or not tmpl.quality_prefix:
+            return
+        existing = [t.strip() for t in self.editor.toPlainText().split(",") if t.strip()]
+        have = {t.lower() for t in existing}
+        missing = [q for q in tmpl.quality_prefix if q.lower() not in have]
+        if not missing:
+            return
+        self.editor.setPlainText(tmpl.separator.join(missing + existing))
+        self._save_current()
+
     # -- construcción ---------------------------------------------------------
     def _build(self):
         root = QVBoxLayout(self)
@@ -67,10 +161,29 @@ class ReviewView(QWidget):
         btn_open = QPushButton(self._tr("review.open", "Open folder…"))
         btn_open.clicked.connect(self._browse)
         self.chk_as_tag = QCheckBox(self._tr("review.as_tag", "Treat as tags"))
+        self.chk_as_tag.toggled.connect(self._on_as_tag_toggled)
         head.addWidget(self.lbl_folder, 1)
         head.addWidget(self.chk_as_tag, 0)
         head.addWidget(btn_open, 0)
         root.addLayout(head)
+
+        # fila de arquitectura: dirige el CSV de autocompletado + quality tags
+        arch = QHBoxLayout()
+        self.lbl_arch = QLabel(self._tr("review.arch", "Architecture:"))
+        self.combo_arch = QComboBox()
+        for key, label in self._tag_models():
+            self.combo_arch.addItem(label, key)
+        if self._model_key:
+            i = self.combo_arch.findData(self._model_key)
+            if i >= 0:
+                self.combo_arch.setCurrentIndex(i)
+        self.combo_arch.currentIndexChanged.connect(self._on_arch_changed)
+        self.lbl_tagdb = QLabel("")
+        self.lbl_tagdb.setStyleSheet("color: #888;")
+        arch.addWidget(self.lbl_arch, 0)
+        arch.addWidget(self.combo_arch, 0)
+        arch.addWidget(self.lbl_tagdb, 1)
+        root.addLayout(arch)
 
         # cuerpo: lista | (preview + editor)
         split = QSplitter(Qt.Horizontal)
@@ -85,8 +198,22 @@ class ReviewView(QWidget):
         self.preview.setMinimumHeight(240)
         self.preview.setStyleSheet("background: #1a1a1a; border-radius: 8px;")
         rlay.addWidget(self.preview, 1)
+
+        # barra de acciones del caption actual (quality tags)
+        actions = QHBoxLayout()
+        self.btn_quality = QPushButton(self._tr("review.add_quality", "+ Quality tags"))
+        self.btn_quality.setToolTip(self._tr(
+            "review.add_quality.tip",
+            "Prepend this architecture's standard quality tags if missing."))
+        self.btn_quality.clicked.connect(self._insert_quality)
+        actions.addWidget(self.btn_quality, 0)
+        actions.addStretch(1)
+        rlay.addLayout(actions)
+
         self.editor = QPlainTextEdit()
         rlay.addWidget(self.editor, 1)
+        # autocompletado de tags (sin LLM); solo activo en modo tags
+        self.completer = TagCompleter(self.editor)
         btn_save = QPushButton(self._tr("review.save", "Save this caption"))
         btn_save.clicked.connect(self._save_current)
         rlay.addWidget(btn_save)
@@ -234,4 +361,6 @@ class ReviewView(QWidget):
 
     def closeEvent(self, event):
         self._save_current()
+        if self._tagdb_worker and self._tagdb_worker.isRunning():
+            self._tagdb_worker.wait(3000)
         super().closeEvent(event)

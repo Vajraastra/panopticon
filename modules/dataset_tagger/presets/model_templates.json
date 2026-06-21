@@ -24,6 +24,8 @@
       "trigger_position": "start",
       "quality_prefix": [],
       "structure": "trigger, sujeto, apariencia, ropa, pose/accion, fondo, composicion. Tags booru separados por coma, mas-saliente primero. Presupuesto ~75 tokens.",
+      "tag_csv": "danbooru_e621_merged_2024-12-22_pt25-ia-dd-ed",
+      "tag_csv_url": "https://raw.githubusercontent.com/DraconicDragon/dbr-e621-lists-archive/main/tag-lists/danbooru_e621_merged/danbooru_e621_merged_2024-12-22_pt25-ia-dd-ed.csv",
       "meta_prompt": "Describe this image as a comma-separated list of concise Danbooru-style tags in English, ordered most-salient first: subject, then appearance, clothing, pose/action, setting, composition. Use lowercase. No full sentences, no articles. Describe only what is visible; do not invent text or details.",
       "notes": "Limite de 77 tokens. Los finetunes anime de SDXL prefieren tags booru; el trigger va primero y con conteo consistente en todo el dataset."
     },
@@ -36,6 +38,8 @@
       "rating_options": ["rating_safe", "rating_questionable", "rating_explicit"],
       "source_options": ["source_anime", "source_cartoon", "source_furry", "source_pony"],
       "structure": "score_9, score_8_up, score_7_up, score_6_up, score_5_up, score_4_up, [rating], [source], trigger, tags de contenido",
+      "tag_csv": "e621_2026-04-01_pt20-ia-ed",
+      "tag_csv_url": "https://raw.githubusercontent.com/DraconicDragon/dbr-e621-lists-archive/main/tag-lists/e621/e621_2026-04-01_pt20-ia-ed.csv",
       "meta_prompt": "Describe this image as a comma-separated list of concise Danbooru-style tags in English, most-salient first. Lowercase, no sentences, no articles. Do NOT output score_/rating_/source_ tags (those are added automatically). Describe only what is visible; do not invent details.",
       "notes": "El prefijo de score (3-6 tags) es obligatorio y va al inicio. rating_/source_ son opcionales que inserta el usuario."
     },
@@ -47,6 +51,8 @@
       "quality_prefix": ["masterpiece", "best quality", "score_7"],
       "rating_options": ["safe", "sensitive", "questionable", "explicit"],
       "structure": "[quality/meta/year/safety] [1girl/1boy/1other] [character] [series] [@artist] [tags generales]. Tags booru en minusculas con ESPACIOS (no guiones bajos), separados por coma. Los nombres de artista llevan prefijo '@'. Mas-saliente primero.",
+      "tag_csv": "danbooru_e621_merged_2024-12-22_pt25-ia-dd-ed",
+      "tag_csv_url": "https://raw.githubusercontent.com/DraconicDragon/dbr-e621-lists-archive/main/tag-lists/danbooru_e621_merged/danbooru_e621_merged_2024-12-22_pt25-ia-dd-ed.csv",
       "meta_prompt": "Describe this image as a comma-separated list of Danbooru-style tags in English, most-salient first: subject count (1girl/1boy/etc), then character, appearance, clothing, pose/action, setting, composition. Use lowercase with SPACES, not underscores. Do NOT output quality tags (masterpiece, best quality, score_x), rating/safety tags, or artist names (those are added separately). Describe only what is visible; do not invent details.",
       "notes": "Anima (2B, text encoder Qwen-3 0.6B, corte de datos anime sep-2025). Acepta quality tags humanos (masterpiece, best quality, ...) y/o aesthetic score (score_9..score_1); default usa el prefijo positivo recomendado 'masterpiece, best quality, score_7'. rating_/source_ y trigger son opcionales del usuario. Espacios (no '_') salvo en score_*. Artistas con '@'. Dataset tags 'ye-pop'/'deviantart' son solo para data no-anime (no aplican a datasets tipicos)."
     },
@@ -58,6 +64,8 @@
       "quality_prefix": ["masterpiece", "best quality", "amazing quality"],
       "aesthetic_suffix": ["very aesthetic", "newest"],
       "structure": "masterpiece, best quality, amazing quality, [very aesthetic, newest], trigger, tags danbooru de contenido",
+      "tag_csv": "danbooru_e621_merged_2024-12-22_pt25-ia-dd-ed",
+      "tag_csv_url": "https://raw.githubusercontent.com/DraconicDragon/dbr-e621-lists-archive/main/tag-lists/danbooru_e621_merged/danbooru_e621_merged_2024-12-22_pt25-ia-dd-ed.csv",
       "meta_prompt": "Describe this image as a comma-separated list of Danbooru tags in English, most-salient first: character, then appearance, clothing, pose/action, background. Lowercase, no sentences. Do NOT output quality tags like 'masterpiece' or 'best quality' (added automatically). Describe only what is visible.",
       "notes": "Entrenado con Danbooru hasta 2024-06. v2.0 tambien acepta lenguaje natural; el default aqui es tags."
     },

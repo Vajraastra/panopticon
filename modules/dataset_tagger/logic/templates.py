@@ -61,7 +61,12 @@ class CaptionTemplate:
         self.format = self.cfg.get("format", "tags")          # "tags" | "natural"
         self.separator = self.cfg.get("separator", ", ")
         self.quality_prefix = list(self.cfg.get("quality_prefix", []))
+        self.aesthetic_suffix = list(self.cfg.get("aesthetic_suffix", []))
         self.trigger_position = self.cfg.get("trigger_position", "start")
+        # Base de datos de tags para el autocompletado del editor (sin LLM).
+        # Vacío en modelos de prosa natural; el editor solo lo usa en modo tags.
+        self.tag_csv = self.cfg.get("tag_csv", "")
+        self.tag_csv_url = self.cfg.get("tag_csv_url", "")
 
     def meta_prompt(self):
         return self.cfg["meta_prompt"]
