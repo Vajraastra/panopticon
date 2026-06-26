@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# run.sh — Panopticon launcher (fuente ÚNICA, portable Linux/macOS/Windows-GitBash).
-# El run.bat de Windows solo delega aquí. No dupliques lógica de arranque.
+# run.sh — launcher best-effort para Linux/macOS. NO es la plataforma soportada:
+# el launcher principal y testeado es run.bat (Windows-first). Sin garantía aquí.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,20 +8,16 @@ cd "$SCRIPT_DIR"
 
 PYTHON_VERSION="3.12"
 VENV_DIR="$SCRIPT_DIR/venv"
-TOTAL=5
+TOTAL=3
 
-# ── Detección de OS (locale-safe, vía uname) ──────────────────────────────────
-# Define el subdirectorio de binarios del venv y el nombre del intérprete según
-# la plataforma. En Git-Bash/MSYS el venv usa Scripts/ y python.exe.
-case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) VENV_BIN="Scripts"; VENV_PY="python.exe" ;;
-    *)                    VENV_BIN="bin";     VENV_PY="python" ;;
-esac
-VENV_PY_PATH="$VENV_DIR/$VENV_BIN/$VENV_PY"
+# Detección del subdirectorio de binarios del venv (bin/ en Unix).
+VENV_PY_PATH="$VENV_DIR/bin/python"
 
-# uv se instala en el perfil del usuario (~/.local/bin); lo añadimos al PATH para
-# encontrarlo aunque acabe de instalarse en esta misma ejecución.
+# uv vive en el perfil del usuario; lo añadimos al PATH para encontrarlo aunque
+# acabe de instalarse en esta misma ejecución. only-managed: no engancha Pythons
+# ajenos del sistema (paridad con run.bat).
 export PATH="$HOME/.local/bin:$PATH"
+export UV_PYTHON_PREFERENCE="only-managed"
 
 # ── Paso 1: uv ────────────────────────────────────────────────────────────────
 echo "[1/$TOTAL] Verificando uv..."
@@ -33,19 +29,10 @@ else
     echo "  -> uv OK ($(command -v uv))"
 fi
 
-# ── Paso 2: Python 3.12 (gestionado por uv, no por el OS) ─────────────────────
-echo "[2/$TOTAL] Verificando Python $PYTHON_VERSION..."
-if ! uv python list --only-installed 2>/dev/null | grep -q "cpython-${PYTHON_VERSION}"; then
-    echo "  -> Descargando Python $PYTHON_VERSION..."
-    uv python install "$PYTHON_VERSION"
-else
-    echo "  -> Python $PYTHON_VERSION OK"
-fi
-
-# ── Paso 3: venv (autorepara si es de otra plataforma) ───────────────────────
-# Al mover el proyecto entre Linux y Windows el venv viejo apunta a un intérprete
-# inexistente. Si falta el python esperado para ESTA plataforma, lo recreamos.
-echo "[3/$TOTAL] Verificando entorno virtual..."
+# ── Paso 2: venv (autorepara si es de otra plataforma) ───────────────────────
+# uv venv descarga el Python 3.12 gestionado si falta, sin crear shims en
+# ~/.local/bin. Si falta el python esperado, el venv es de otro OS o no existe.
+echo "[2/$TOTAL] Verificando entorno virtual..."
 if [ ! -f "$VENV_PY_PATH" ]; then
     if [ -d "$VENV_DIR" ]; then
         echo "  -> venv incompatible con esta plataforma, recreando..."
@@ -58,13 +45,12 @@ else
     echo "  -> venv OK"
 fi
 
-# ── Paso 4: dependencias ─────────────────────────────────────────────────────
-echo "[4/$TOTAL] Instalando dependencias..."
+# ── Paso 3: dependencias e inicio ────────────────────────────────────────────
+echo "[3/$TOTAL] Instalando dependencias..."
 # shellcheck disable=SC1090
-source "$VENV_DIR/$VENV_BIN/activate"
+source "$VENV_DIR/bin/activate"
 uv pip install -q -r requirements.txt
 echo "  -> Dependencias OK"
 
-# ── Paso 5: lanzar ───────────────────────────────────────────────────────────
-echo "[5/$TOTAL] Iniciando Panopticon..."
+echo "[LAUNCH] Iniciando Panopticon..."
 python main.py

@@ -10,7 +10,7 @@ set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 REM No engancha el Python de cherry-dl (PEP 514): solo Pythons gestionados por uv.
 set "UV_PYTHON_PREFERENCE=only-managed"
 
-echo [1/4] Verificando uv...
+echo [1/3] Verificando uv...
 where uv >nul 2>&1
 if errorlevel 1 (
     echo   -^> Instalando uv...
@@ -18,12 +18,10 @@ if errorlevel 1 (
     set "PATH=%USERPROFILE%\.local\bin;%PATH%"
 )
 
-echo [2/4] Verificando Python %PYTHON_VERSION%...
-uv python install %PYTHON_VERSION%
-if errorlevel 1 ( echo [ERROR] No se pudo preparar Python %PYTHON_VERSION%. & pause & exit /b 1 )
-
-echo [3/4] Verificando entorno virtual...
-REM Si falta el python esperado, el venv es de otra plataforma o no existe: recrear.
+echo [2/3] Verificando entorno virtual...
+REM uv venv descarga el Python 3.12 gestionado si falta, sin crear shims en
+REM ~/.local/bin (no toca el Python ajeno de cherry-dl). Si falta el python
+REM esperado, el venv es de otra plataforma o no existe: recrear.
 if not exist "%VENV_PY%" (
     if exist "%VENV_DIR%" (
         echo   -^> venv incompatible, recreando...
@@ -37,7 +35,7 @@ if not exist "%VENV_PY%" (
     echo   -^> venv OK
 )
 
-echo [4/4] Instalando dependencias...
+echo [3/3] Instalando dependencias...
 uv pip install --python "%VENV_PY%" -r requirements.txt
 if errorlevel 1 ( echo [ERROR] Fallo instalando dependencias. & pause & exit /b 1 )
 
