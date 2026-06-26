@@ -36,9 +36,21 @@ from PIL import Image
 from core.theme import Theme
 from ..logic.ideogram.datamodel import WorkDoc, Element, STATUS_DRAFT
 from ..logic.ideogram import layout
+from ..logic import refine
+from ..logic.providers.openai_compat import OpenAICompatProvider
 from .text_panel import TextComposerDialog, pil_to_qpixmap
+from .refine_dialog import RefineProposalDialog
 
 log = logging.getLogger(__name__)
+
+# Forma deseada de cada campo de PROSA para la sugerencia del LLM (Fase 3). El
+# `structure` se pasa a refine.build_prompt como instrucción; el modelo produce
+# inglés aunque la guía esté en inglés. Coherente con ig4 (prosa, NO tags booru).
+REFINE_LABEL = "Ideogram v4"
+DESC_STRUCT = ("a concise visual description of this single element/object — one "
+               "short phrase or sentence, not a list of tags")
+HLD_STRUCT = "one or two sentences describing the whole scene at a high level"
+BG_STRUCT = "a short description of ONLY the background of the scene"
 
 # Tipos a dibujar (locale-safe: nunca comparar por texto)
 DRAW_OBJ = 0
@@ -392,7 +404,8 @@ class BBoxEditor(QDialog):
     """Ventana de edición de un .pano.json para una imagen."""
 
     def __init__(self, image_path, pano_path, locale_manager=None,
-                 style_defaults=None, images=None, out_dir=None, parent=None):
+                 style_defaults=None, images=None, out_dir=None,
+                 endpoint="", api_key=None, vlm_model=None, parent=None):
         super().__init__(parent)
         self._lm = locale_manager
         self._style_defaults = style_defaults or {}
@@ -403,6 +416,16 @@ class BBoxEditor(QDialog):
         self._selected = None
         self._autodet = None      # _AutoDetectWorker en curso (auto-bbox)
         self._eyedropper_active = False  # modo cuentagotas (color de texto)
+
+        # Sugerencia de prosa con LLM (Fase 3): mismo backend que usó la captura.
+        # Los campos de prosa (desc, high_level, background) llevan un botón
+        # "✨ Suggest" que corrige/estructura/traduce a inglés a demanda.
+        self._endpoint = (endpoint or "").strip()
+        self._api_key = api_key or None
+        self._vlm_model = vlm_model or None
+        self._refine_worker = None
+        self._refine_target = None   # QPlainTextEdit que recibirá la sugerencia
+        self._refine_btn = None      # botón disparador (para rehabilitarlo)
 
         # Navegación por el set: lista de imágenes + carpeta de salida (para
         # derivar el .pano.json de cada una). Permite ◀/▶ sin cerrar la ventana.
@@ -635,6 +658,8 @@ class BBoxEditor(QDialog):
             return
         if self._autodet is not None and self._autodet.isRunning():
             return  # no cambiar de imagen con una detección en curso
+        if self._refine_worker is not None and self._refine_worker.isRunning():
+            return  # ni con una sugerencia de prosa en curso (aplicaría al campo viejo)
         # Guarda solo si hay algo (o ya había un .pano.json): no crea vacíos al hojear.
         self._collect_globals()
         if (self._has_content() or self.pano_path.exists()) and not self._save():
@@ -748,7 +773,15 @@ class BBoxEditor(QDialog):
         self._ed_desc.textChanged.connect(self._on_elem_field_changed)
         self._lbl_text = QLabel(self.tr("ig4.text_field", "text"))
         form.addRow(self._lbl_text, self._ed_text)
-        form.addRow(QLabel(self.tr("ig4.desc_field", "desc")), self._ed_desc)
+        # desc + botón Suggest (LLM, a demanda). desc es prosa → se beneficia de
+        # corrección/traducción; el botón se desactiva si no hay endpoint+VLM.
+        desc_box = QWidget()
+        desc_lay = QVBoxLayout(desc_box)
+        desc_lay.setContentsMargins(0, 0, 0, 0)
+        desc_lay.setSpacing(2)
+        desc_lay.addWidget(self._ed_desc)
+        desc_lay.addLayout(self._suggest_row(self._ed_desc, DESC_STRUCT))
+        form.addRow(QLabel(self.tr("ig4.desc_field", "desc")), desc_box)
         lay.addLayout(form)
 
         # Color del texto (Caso B: texto YA presente en la imagen). El cuentagotas
@@ -826,12 +859,31 @@ class BBoxEditor(QDialog):
             "ig4.tip.art_style",
             "REQUIRED to export. The set's art style (e.g. 'stylized 3D character "
             "render'). Inherited from the panel — keep it identical across the set."))
-        gform.addRow(QLabel(self.tr("ig4.hld", "high level")), self._ed_hld)
-        gform.addRow(QLabel(self.tr("ig4.background", "background")), self._ed_bg)
+        # high_level y background son prosa → botón Suggest (LLM) en cada uno.
+        hld_box = QWidget()
+        hld_lay = QVBoxLayout(hld_box)
+        hld_lay.setContentsMargins(0, 0, 0, 0)
+        hld_lay.setSpacing(2)
+        hld_lay.addWidget(self._ed_hld)
+        hld_lay.addLayout(self._suggest_row(self._ed_hld, HLD_STRUCT))
+        bg_box = QWidget()
+        bg_lay = QVBoxLayout(bg_box)
+        bg_lay.setContentsMargins(0, 0, 0, 0)
+        bg_lay.setSpacing(2)
+        bg_lay.addWidget(self._ed_bg)
+        bg_lay.addLayout(self._suggest_row(self._ed_bg, BG_STRUCT))
+        gform.addRow(QLabel(self.tr("ig4.hld", "high level")), hld_box)
+        gform.addRow(QLabel(self.tr("ig4.background", "background")), bg_box)
         gform.addRow(QLabel(self.tr("ig4.aesthetics", "aesthetics")), self._ed_aes)
         gform.addRow(QLabel(self.tr("ig4.lighting", "lighting")), self._ed_light)
         gform.addRow(QLabel(self.tr("ig4.art_style_req", "art_style *")), self._ed_artstyle)
         lay.addLayout(gform)
+
+        # Estado de la sugerencia de prosa (vacío salvo trabajando / error).
+        self._refine_status = QLabel("")
+        self._refine_status.setWordWrap(True)
+        self._refine_status.setStyleSheet("color: #888;")
+        lay.addWidget(self._refine_status)
 
         # Acciones
         save_btn = QPushButton(self.tr("ig4.save_close", "Save & close"))
@@ -999,6 +1051,78 @@ class BBoxEditor(QDialog):
         elem.desc = self._ed_desc.toPlainText()
         row = self._items.index(self._selected)
         self._list.item(row).setText(self._list_label(elem, row + 1))
+
+    # ── sugerencia de prosa con LLM (Fase 3) ────────────────────────────
+    def _llm_ready(self):
+        """True si hay endpoint + modelo VLM para pedir la sugerencia."""
+        return bool(self._endpoint and self._vlm_model)
+
+    def _suggest_row(self, target_edit, structure):
+        """Fila con un botón '✨ Suggest' que refina `target_edit` (prosa).
+
+        Devuelve un QHBoxLayout listo para insertar bajo el campo. El botón queda
+        deshabilitado si no hay backend (con tooltip explicativo)."""
+        btn = QPushButton(self.tr("ig4.suggest", "✨ Suggest"))
+        ready = self._llm_ready()
+        btn.setEnabled(ready)
+        btn.setToolTip(self.tr(
+            "ig4.tip.suggest",
+            "Ask the LLM to fix grammar, tighten the wording and translate to "
+            "English. Shown as a proposal — you accept or reject.") if ready else
+            self.tr("ig4.tip.suggest_off",
+                    "Configure an endpoint and vision model in the tagger first."))
+        btn.clicked.connect(lambda: self._on_suggest(target_edit, structure, btn))
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addStretch(1)
+        row.addWidget(btn, 0)
+        return row
+
+    def _on_suggest(self, target_edit, structure, btn):
+        if self._refine_worker and self._refine_worker.isRunning():
+            return
+        text = target_edit.toPlainText().strip()
+        if not text:
+            self._refine_status.setText(
+                self.tr("ig4.suggest_empty", "Nothing to improve yet."))
+            return
+        if not self._llm_ready():
+            return
+        provider = OpenAICompatProvider(self._endpoint, self._api_key,
+                                        model=self._vlm_model, timeout=120)
+        self._refine_target = target_edit
+        self._refine_btn = btn
+        btn.setEnabled(False)
+        self._refine_status.setText(self.tr("ig4.suggest_working", "Asking the LLM…"))
+        # Solo texto (Regla #4: fuera del hilo GUI). Sin imagen: cada desc es de un
+        # crop y los globales del conjunto; el valor aquí es forma + traducción EN.
+        self._refine_worker = refine.RefineWorker(
+            provider, self._vlm_model, text, structure=structure, label=REFINE_LABEL)
+        self._refine_worker.ready.connect(self._on_refine_ready)
+        self._refine_worker.failed.connect(self._on_refine_failed)
+        self._refine_worker.start()
+
+    def _on_refine_ready(self, suggested):
+        if self._refine_btn:
+            self._refine_btn.setEnabled(self._llm_ready())
+        self._refine_status.setText("")
+        target = self._refine_target
+        self._refine_target = None
+        if target is None:
+            return
+        original = target.toPlainText().strip()
+        dlg = RefineProposalDialog(original, suggested, tr=self.tr, parent=self)
+        if dlg.exec():
+            final = dlg.result_text()
+            if final:
+                target.setPlainText(final)   # textChanged guarda desc; globales al cerrar
+
+    def _on_refine_failed(self, msg):
+        if self._refine_btn:
+            self._refine_btn.setEnabled(self._llm_ready())
+        self._refine_target = None
+        self._refine_status.setText(
+            self.tr("ig4.suggest_error", "Suggestion failed: {0}").format(msg))
 
     # ── color del texto (Caso B) ────────────────────────────────────────
     def _set_swatch_color(self, hexv):
@@ -1248,4 +1372,6 @@ class BBoxEditor(QDialog):
         # el QThread mientras corre.
         if self._autodet is not None and self._autodet.isRunning():
             self._autodet.wait()
+        if self._refine_worker is not None and self._refine_worker.isRunning():
+            self._refine_worker.wait(3000)
         super().closeEvent(event)

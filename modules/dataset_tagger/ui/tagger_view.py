@@ -1363,7 +1363,8 @@ class DatasetTaggerView(QWidget):
             self._bbox_editor = BBoxEditor(
                 image_path, pano_path, locale_manager=lm,
                 style_defaults=style_defaults,
-                images=self._ig4_all_images(), out_dir=out_dir, parent=self)
+                images=self._ig4_all_images(), out_dir=out_dir,
+                **self._llm_config(), parent=self)
         except ValueError as e:
             self.status.setText(str(e))
             return
