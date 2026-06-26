@@ -542,9 +542,15 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     # Diálogos nativos del OS (selector de archivos, etc.): enrutar al portal del
     # escritorio. Sin esto, Qt cae a su propio diálogo (feo y estilizado por la QSS
-    # global). setdefault respeta cualquier override que el usuario ya tenga.
-    os.environ.setdefault("QT_QPA_PLATFORMTHEME", "xdgdesktopportal")
+    # global). SOLO Linux: en Windows/macOS este theme no existe y fuerza el estilo
+    # nativo. setdefault respeta cualquier override que el usuario ya tenga.
+    if sys.platform.startswith("linux"):
+        os.environ.setdefault("QT_QPA_PLATFORMTHEME", "xdgdesktopportal")
     app = QApplication(sys.argv)
+    # Estilo Fusion en TODAS las plataformas: apariencia idéntica Linux/Windows y,
+    # en Windows, evita el motor de QSS del estilo nativo, que provoca un access
+    # violation al construir la página de ajustes (reproducido en PySide6 6.8/6.9/6.11).
+    app.setStyle("Fusion")
     # Habilitar fallback de fuente emoji en Linux (Noto Color Emoji / Noto Emoji)
     _f = app.font()
     _f.setFamilies([_f.family(), "Noto Color Emoji", "Noto Emoji", "Segoe UI Emoji", "Apple Color Emoji"])
