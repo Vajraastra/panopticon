@@ -1,1 +1,0 @@
-# Quality Scorer Logic Module

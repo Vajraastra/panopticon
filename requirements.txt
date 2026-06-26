@@ -13,5 +13,3 @@ numpy>=2.0.0
 scikit-learn
 psd-tools
 imagehash
-mediapipe>=0.10.0
-open-clip-torch>=2.24.0

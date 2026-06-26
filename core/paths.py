@@ -53,7 +53,6 @@ class CachePaths:
         "watermarker": "watermarked",
         "optimizer": "optimized",
         "cropper": "cropped",
-        "quality_scorer": "scored",
         "face_scorer": "face_sorted",
         "format_converter": "converted",
     }

@@ -12,7 +12,6 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 |---|---|
 | **Librarian** | Central library manager. Scans folders, builds an indexed collection, provides thumbnails and lazy loading for large sets. |
 | **Gallery** | Visual browser for your collection. Paginates and displays images with filtering and sorting. |
-| **Quality Scorer** | Two-phase AI-powered filter. Phase 1 (Slop Filter) removes anatomically broken or low-quality images using YOLOv8-pose, MediaPipe Hands, YuNet, and CLIP aesthetic scoring. Phase 2 ranks survivors by technical quality (sharpness, artifacts, resolution, color, composition). |
 | **Character Recognizer** | Identifies and tags characters within a set using face recognition (ArcFace + YuNet) with landmark alignment. Supports real photos, 3D renders, and illustration/anime. |
 | **Smart Cropper** | Batch-crops images to target aspect ratios. Supports standard dataset ratios, monitor formats, and mobile sizes. |
 | **Duplicate Finder** | Detects duplicate and near-duplicate images using perceptual hashing. |
@@ -39,7 +38,7 @@ Every module that transforms files uses `StampLib` to embed original metadata in
 
 - Python 3.10+
 - PySide6
-- GPU recommended for Quality Scorer (YOLOv8, CLIP, MediaPipe)
+- GPU recommended for AI modules (YOLOv8 auto-bbox, WD tagger, face recognition)
 
 ```bash
 git clone https://github.com/Vajraastra/panopticon.git
