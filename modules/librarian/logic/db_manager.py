@@ -54,8 +54,17 @@ class DatabaseManager(QObject):
                 meta_positive TEXT,
                 meta_negative TEXT,
                 meta_seed TEXT,
-                
-                rating INTEGER DEFAULT 0
+
+                rating INTEGER DEFAULT 0,
+
+                -- Identidad de contenido + origen recabado (CHERRY_FUSION_DESIGN
+                -- CF3/CF8). Todos nullable: bloque espejo del de generación.
+                hash_original TEXT,  -- SHA-256 INMUTABLE (tal como se catalogó por 1ª vez)
+                hash_mod TEXT,       -- SHA-256 actual tras estampado; NULL si nunca estampado
+                phash TEXT,          -- hash perceptual (near-dups), poblado por backfill opcional
+                origin_url TEXT,     -- url_source de cherry-dl
+                origin_site TEXT,    -- kemono/patreon/pixiv/...
+                artist TEXT          -- display_name del perfil cherry
             )
         """)
         
@@ -111,6 +120,26 @@ class DatabaseManager(QObject):
         if 'rating' not in cols:
             cursor.execute("ALTER TABLE files ADD COLUMN rating INTEGER DEFAULT 0")
             self.conn.commit()
+
+        # Migración B1 (CHERRY_FUSION_DESIGN): identidad de contenido + origen
+        # recabado. ALTERs aditivos nullable — seguros e idempotentes.
+        for col, decl in (
+            ('hash_original', 'TEXT'),
+            ('hash_mod', 'TEXT'),
+            ('phash', 'TEXT'),
+            ('origin_url', 'TEXT'),
+            ('origin_site', 'TEXT'),
+            ('artist', 'TEXT'),
+        ):
+            if col not in cols:
+                cursor.execute(f"ALTER TABLE files ADD COLUMN {col} {decl}")
+        # Índice de dedup/anti-redescarga. Va aquí (no en create_schema) para
+        # que en DBs viejas la columna exista antes que el índice. hash_mod no
+        # lleva índice: solo se consulta junto a hash_original vía COALESCE.
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_files_hash_original ON files(hash_original)"
+        )
+        self.conn.commit()
 
         # Migración FTS: si el índice está vacío pero ya hay archivos (DB previa
         # a FTS5), reconstruirlo una vez para no dejar la búsqueda sin resultados.
