@@ -706,5 +706,13 @@
   "ig4.next": "Siguiente ▶",
   "ig4.nav_pos": "{0}/{1}  ·  {2}",
   "ig4.tip.prev": "Guarda y va a la imagen anterior (Alt+←).",
-  "ig4.tip.next": "Guarda y va a la imagen siguiente (Alt+→)."
+  "ig4.tip.next": "Guarda y va a la imagen siguiente (Alt+→).",
+  "cherry.title": "Cherry-DL",
+  "cherry.subtitle": "Descargador masivo de colecciones de artistas (Kemono / Patreon / Pixiv).",
+  "cherry.launch": "Lanzar Cherry-DL",
+  "cherry.status_idle": "Detenido",
+  "cherry.status_running": "Corriendo en su propia ventana…",
+  "cherry.status_exit_error": "Terminó con error (código {code}) — ver logs/{log}",
+  "cherry.status_launch_failed": "No se pudo iniciar — ver logs/{log}",
+  "cherry.note": "Se abre en su propia ventana. Los perfiles y la configuración viven en ~/.cherry-dl y se comparten con el cherry-dl autónomo."
 }

@@ -706,5 +706,13 @@
   "ig4.next": "Next ▶",
   "ig4.nav_pos": "{0}/{1}  ·  {2}",
   "ig4.tip.prev": "Save and go to the previous image (Alt+←).",
-  "ig4.tip.next": "Save and go to the next image (Alt+→)."
+  "ig4.tip.next": "Save and go to the next image (Alt+→).",
+  "cherry.title": "Cherry-DL",
+  "cherry.subtitle": "Mass downloader for artist collections (Kemono / Patreon / Pixiv).",
+  "cherry.launch": "Launch Cherry-DL",
+  "cherry.status_idle": "Not running",
+  "cherry.status_running": "Running in its own window…",
+  "cherry.status_exit_error": "Exited with error (code {code}) — see logs/{log}",
+  "cherry.status_launch_failed": "Failed to start — see logs/{log}",
+  "cherry.note": "Opens in its own window. Profiles and settings live in ~/.cherry-dl and are shared with the standalone cherry-dl."
 }
