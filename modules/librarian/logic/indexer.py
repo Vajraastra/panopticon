@@ -52,10 +52,7 @@ class IndexerWorker(QThread):
             self.progress_signal.emit(f"🔍 Scanning: {folder_name}")
 
             # --- FASE 1: DESCUBRIMIENTO ---
-            if is_cherry_catalog(folder):
-                disk_files, disk_paths = self._discover_cherry(folder)
-            else:
-                disk_files, disk_paths = self._discover_walk(folder, extensions)
+            disk_files, disk_paths = self._discover_tree(folder, extensions)
 
             total_found += len(disk_files)
 
@@ -88,6 +85,51 @@ class IndexerWorker(QThread):
     # ------------------------------------------------------------------
     # Estrategias de descubrimiento
     # ------------------------------------------------------------------
+
+    def _discover_tree(self, folder: str, extensions: tuple) -> tuple[list[dict], set[str]]:
+        """
+        Descubrimiento unificado: detecta catálogos cherry-dl a CUALQUIER
+        profundidad (caso real: carpeta madre vigilada con una subcarpeta por
+        artista). Cada subcarpeta con catalog.db se ingesta en modo cherry
+        (hash/url/artista gratis) y se PODA del walk para no re-descubrirla
+        plana; el resto se escanea con os.walk normal.
+        """
+        if is_cherry_catalog(folder):
+            return self._discover_cherry(folder)
+
+        disk_files = []
+        disk_paths = set()
+
+        for root, dirs, files in os.walk(folder):
+            if not self.is_running:
+                break
+
+            # Subcarpetas con catálogo cherry → modo cherry + poda del walk.
+            for d in [d for d in dirs if is_cherry_catalog(os.path.join(root, d))]:
+                f2, p2 = self._discover_cherry(os.path.join(root, d))
+                disk_files.extend(f2)
+                disk_paths.update(p2)
+                dirs.remove(d)
+
+            for f in files:
+                if not self.is_running:
+                    return disk_files, disk_paths
+                if f.lower().endswith(extensions):
+                    full_path = os.path.join(root, f)
+                    try:
+                        stat = os.stat(full_path)
+                        norm = os.path.normpath(full_path).replace('\\', '/')
+                        disk_files.append({
+                            'path':     norm,
+                            'filename': f,
+                            'size':     stat.st_size,
+                            'created':  stat.st_ctime,
+                        })
+                        disk_paths.add(norm)
+                    except OSError:
+                        pass
+
+        return disk_files, disk_paths
 
     def _discover_cherry(self, folder: str) -> tuple[list[dict], set[str]]:
         """
@@ -126,31 +168,3 @@ class IndexerWorker(QThread):
 
         return disk_files, disk_paths
 
-    def _discover_walk(self, folder: str, extensions: tuple) -> tuple[list[dict], set[str]]:
-        """
-        Modo estándar: escaneo recursivo con os.walk.
-        Devuelve (disk_files, disk_paths).
-        """
-        disk_files = []
-        disk_paths = set()
-
-        for root, _, files in os.walk(folder):
-            for f in files:
-                if not self.is_running:
-                    return disk_files, disk_paths
-                if f.lower().endswith(extensions):
-                    full_path = os.path.join(root, f)
-                    try:
-                        stat = os.stat(full_path)
-                        norm = os.path.normpath(full_path).replace('\\', '/')
-                        disk_files.append({
-                            'path':     norm,
-                            'filename': f,
-                            'size':     stat.st_size,
-                            'created':  stat.st_ctime,
-                        })
-                        disk_paths.add(norm)
-                    except OSError:
-                        pass
-
-        return disk_files, disk_paths
