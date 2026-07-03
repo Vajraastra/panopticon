@@ -208,24 +208,36 @@ class DatabaseManager(QObject):
         """
         Phase 1: Fast Bulk Insert of basic file info.
         files_data: list of dicts {'path', 'filename', 'size', 'created'}
+        Claves opcionales (ingesta cherry, M2 de CHERRY_FUSION_DESIGN):
+        'hash_original', 'origin_url', 'origin_site', 'artist'.
         """
         if not files_data: return
-        
+
         cursor = self.conn.cursor()
+        # hash_original es INMUTABLE: si la fila ya lo tiene, se conserva
+        # (identidad "tal como se catalogó por 1ª vez"). El resto de campos
+        # de origen se actualizan solo si llega un valor nuevo no-NULL.
         sql = """
-            INSERT INTO files (path, filename, file_size, created_date)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO files (path, filename, file_size, created_date,
+                               hash_original, origin_url, origin_site, artist)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 file_size=excluded.file_size,
-                created_date=excluded.created_date
+                created_date=excluded.created_date,
+                hash_original=COALESCE(files.hash_original, excluded.hash_original),
+                origin_url=COALESCE(excluded.origin_url, files.origin_url),
+                origin_site=COALESCE(excluded.origin_site, files.origin_site),
+                artist=COALESCE(excluded.artist, files.artist)
         """
-        
+
         params = []
         norm_paths = []
         for f in files_data:
             np = self._normalize_path(f['path'])
             norm_paths.append(np)
-            params.append((np, f['filename'], f['size'], f['created']))
+            params.append((np, f['filename'], f['size'], f['created'],
+                           f.get('hash_original'), f.get('origin_url'),
+                           f.get('origin_site'), f.get('artist')))
 
         try:
             cursor.executemany(sql, params)

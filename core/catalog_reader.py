@@ -48,8 +48,9 @@ def get_image_files(folder: str | Path) -> list[dict]:
             'cherry_hash': str | None — SHA-256 de cherry-dl (informativo),
         }
 
-    Los campos 'cherry_*' son extras: register_files_minimal los ignora,
-    pero están disponibles para uso futuro (dedup por hash, mostrar origen).
+    Los campos 'cherry_*' los ingesta el IndexerWorker (M2 de
+    CHERRY_FUSION_DESIGN): cherry_hash → files.hash_original y
+    cherry_url → files.origin_url en panopticon.db.
     """
     folder = Path(folder)
     catalog_path = folder / _CATALOG_FILENAME

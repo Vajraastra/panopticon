@@ -1,7 +1,7 @@
 import os
 import logging
 from PySide6.QtCore import QThread, Signal
-from core.catalog_reader import is_cherry_catalog, get_image_files
+from core.catalog_reader import is_cherry_catalog, get_image_files, get_artist_info
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +99,11 @@ class IndexerWorker(QThread):
 
         entries = get_image_files(folder)
 
+        # Perfil del artista (index.db central de cherry-dl) — uno por carpeta.
+        info = get_artist_info(folder) or {}
+        artist = info.get('display_name')
+        site = info.get('primary_site')
+
         disk_files = []
         disk_paths = set()
 
@@ -111,6 +116,11 @@ class IndexerWorker(QThread):
                 'filename': entry['filename'],
                 'size':     entry['size'],
                 'created':  entry['created'],
+                # Ingesta M2: identidad y origen ya calculados por cherry-dl.
+                'hash_original': entry['cherry_hash'],
+                'origin_url':    entry['cherry_url'],
+                'origin_site':   site,
+                'artist':        artist,
             })
             disk_paths.add(norm)
 
