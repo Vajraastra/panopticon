@@ -714,5 +714,9 @@
   "cherry.status_running": "Corriendo en su propia ventana…",
   "cherry.status_exit_error": "Terminó con error (código {code}) — ver logs/{log}",
   "cherry.status_launch_failed": "No se pudo iniciar — ver logs/{log}",
-  "cherry.note": "Se abre en su propia ventana. Los perfiles y la configuración viven en ~/.cherry-dl y se comparten con el cherry-dl autónomo."
+  "cherry.note": "Se abre en su propia ventana. Los perfiles y la configuración viven en ~/.cherry-dl y se comparten con el cherry-dl autónomo.",
+  "lib.backfill": "🧬 Calcular hashes",
+  "lib.stop_backfill": "🛑 Detener hashing",
+  "lib.backfill_tip": "Calcula la identidad de contenido SHA-256 de los archivos que no la tienen (las carpetas cherry-dl la traen de su catalog.db). Reanudable.",
+  "lib.msg.backfill_done": "Hashing completo: {hashed} hasheados, {failed} saltados."
 }

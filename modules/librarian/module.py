@@ -8,6 +8,7 @@ from core.components.thumbnail import ClickableThumbnail
 from core.components.tag_widgets import FlowLayout, TagChip
 from .logic.db_manager import DatabaseManager
 from .logic.indexer import IndexerWorker
+from .logic.hash_backfill import HashBackfillWorker
 import os
 import logging
 
@@ -37,6 +38,7 @@ class LibrarianModule(BaseModule):
         # Gestor de base de datos SQLite persistente
         self.db = DatabaseManager()
         self.indexer_thread = None
+        self.backfill_thread = None
 
         # Re-index dirigido tras cambios externos (ej. Pickler mueve archivos).
         # Carpetas marcadas como "sucias" + temporizador para coalescer eventos.
@@ -355,6 +357,17 @@ class LibrarianModule(BaseModule):
         layout.addStretch()
 
         # Controls
+        self.btn_backfill = QPushButton(self.tr("lib.backfill", "🧬 Compute Hashes"))
+        self.btn_backfill.clicked.connect(self.toggle_backfill)
+        self.btn_backfill.setMinimumWidth(120)
+        self.btn_backfill.setCursor(Qt.PointingHandCursor)
+        self.btn_backfill.setToolTip(self.tr(
+            "lib.backfill_tip",
+            "Compute the SHA-256 content identity of files that lack it "
+            "(cherry-dl folders get theirs from catalog.db). Resumable."
+        ))
+        self.btn_backfill.setStyleSheet(f"background-color: transparent; color: {c('text_secondary')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px 12px;")
+
         self.btn_sync = QPushButton(self.tr("lib.purge", "🧹 Sweep Ghost Files"))
         self.btn_sync.clicked.connect(lambda: self.toggle_scan(sync_only=True))
         self.btn_sync.setMinimumWidth(120)
@@ -367,6 +380,7 @@ class LibrarianModule(BaseModule):
         self.btn_scan.setCursor(Qt.PointingHandCursor)
         self.btn_scan.setStyleSheet(f"background-color: {c('accent_main')}; color: {c('bg_main')}; font-weight: bold; border-radius: 4px; padding: 6px 12px;")
 
+        layout.addWidget(self.btn_backfill)
         layout.addWidget(self.btn_sync)
         layout.addWidget(self.btn_scan)
 
@@ -656,6 +670,8 @@ class LibrarianModule(BaseModule):
             self.btn_scan.setEnabled(False)
         else:
             # Start logic
+            if self.backfill_thread and self.backfill_thread.isRunning():
+                return  # excluyente con el backfill de hashes
             folders = self.db.get_watched_folders()
             if not folders:
                 if not auto:
@@ -669,6 +685,7 @@ class LibrarianModule(BaseModule):
                 self.btn_scan.setText(self.tr("lib.stop_indexer", "🛑 Stop Scanning"))
                 self.btn_scan.setStyleSheet(f"background-color: {c('accent_warning')}; color: {c('text_primary')}; border-radius: 4px; padding: 6px; font-weight: bold;")
                 if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(False)
+                if hasattr(self, 'btn_backfill'): self.btn_backfill.setEnabled(False)
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setValue(0)
                 self.lbl_status.setText(self.tr("lib.indexing", "🔍 Running Background Sync..."))
@@ -679,6 +696,46 @@ class LibrarianModule(BaseModule):
             self.indexer_thread.count_signal.connect(self.update_progress_bar)
             self.indexer_thread.finished_signal.connect(self.scan_finished)
             self.indexer_thread.start()
+
+    def toggle_backfill(self):
+        """Backfill de hash_original (M3). Excluyente con el indexer: ambos
+        escriben en files y compartir la barra de progreso sería ambiguo."""
+        if self.backfill_thread and self.backfill_thread.isRunning():
+            self.backfill_thread.stop()
+            self.btn_backfill.setText(self.tr("lib.status.stopping", "Stopping..."))
+            self.btn_backfill.setEnabled(False)
+        else:
+            if self.indexer_thread and self.indexer_thread.isRunning():
+                return
+            tm = self.context.get('theme_manager')
+            c = tm.get_color if tm else lambda k: '#000000'
+            self.btn_backfill.setText(self.tr("lib.stop_backfill", "🛑 Stop Hashing"))
+            self.btn_backfill.setStyleSheet(f"background-color: {c('accent_warning')}; color: {c('text_primary')}; border-radius: 4px; padding: 6px 12px; font-weight: bold;")
+            self.btn_scan.setEnabled(False)
+            if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(False)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+
+            self.backfill_thread = HashBackfillWorker(self.db)
+            self.backfill_thread.progress_signal.connect(self.update_progress_text)
+            self.backfill_thread.count_signal.connect(self.update_progress_bar)
+            self.backfill_thread.finished_signal.connect(self.backfill_finished)
+            self.backfill_thread.start()
+
+    def backfill_finished(self, hashed, failed):
+        tm = self.context.get('theme_manager')
+        c = tm.get_color if tm else lambda k: '#000000'
+        self.btn_backfill.setText(self.tr("lib.backfill", "🧬 Compute Hashes"))
+        self.btn_backfill.setStyleSheet(f"background-color: transparent; color: {c('text_secondary')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px 12px;")
+        self.btn_backfill.setEnabled(True)
+        self.btn_scan.setEnabled(True)
+        if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        QMessageBox.information(
+            self.view, self.tr("common.success", "Done"),
+            self.tr("lib.msg.backfill_done", "Hashing complete: {hashed} hashed, {failed} skipped.")
+                .format(hashed=hashed, failed=failed)
+        )
 
     def update_progress_text(self, text):
         self.lbl_status.setText(text)
@@ -694,6 +751,7 @@ class LibrarianModule(BaseModule):
         self.btn_scan.setText(self.tr("lib.run_indexer", "🚀 Run Indexer"))
         self.btn_scan.setStyleSheet(f"background-color: {c('accent_main')}; color: {c('bg_main')}; font-weight: bold; border-radius: 4px; padding: 6px;")
         if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(True)
+        if hasattr(self, 'btn_backfill'): self.btn_backfill.setEnabled(True)
         self.btn_scan.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.refresh_ui()

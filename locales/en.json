@@ -714,5 +714,9 @@
   "cherry.status_running": "Running in its own window…",
   "cherry.status_exit_error": "Exited with error (code {code}) — see logs/{log}",
   "cherry.status_launch_failed": "Failed to start — see logs/{log}",
-  "cherry.note": "Opens in its own window. Profiles and settings live in ~/.cherry-dl and are shared with the standalone cherry-dl."
+  "cherry.note": "Opens in its own window. Profiles and settings live in ~/.cherry-dl and are shared with the standalone cherry-dl.",
+  "lib.backfill": "🧬 Compute Hashes",
+  "lib.stop_backfill": "🛑 Stop Hashing",
+  "lib.backfill_tip": "Compute the SHA-256 content identity of files that lack it (cherry-dl folders get theirs from catalog.db). Resumable.",
+  "lib.msg.backfill_done": "Hashing complete: {hashed} hashed, {failed} skipped."
 }

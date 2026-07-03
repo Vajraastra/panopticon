@@ -575,6 +575,37 @@ class DatabaseManager(QObject):
             
         return total, folders
         
+    # --- Backfill de identidad de contenido (M3, CHERRY_FUSION_DESIGN) ---
+
+    def count_files_missing_hash(self):
+        cursor = self.conn.cursor()
+        return cursor.execute(
+            "SELECT count(*) FROM files WHERE hash_original IS NULL"
+        ).fetchone()[0]
+
+    def get_files_missing_hash(self, after_id=0, limit=200):
+        """Lote de (id, path) sin hash, por keyset (id > after_id): los
+        archivos que fallen al hashear no re-entran en la misma corrida."""
+        cursor = self.conn.cursor()
+        return cursor.execute(
+            "SELECT id, path FROM files WHERE hash_original IS NULL AND id > ? "
+            "ORDER BY id LIMIT ?", (after_id, limit)
+        ).fetchall()
+
+    def set_hash_original_bulk(self, pairs):
+        """pairs: [(hash_hex, file_id)]. El guard IS NULL preserva la
+        inmutabilidad de hash_original ante corridas concurrentes."""
+        if not pairs: return
+        try:
+            self.conn.executemany(
+                "UPDATE files SET hash_original=? WHERE id=? AND hash_original IS NULL",
+                pairs
+            )
+            self.conn.commit()
+        except sqlite3.Error as e:
+            log.warning("[DB] set_hash_original_bulk error: %s", e)
+            self.conn.rollback()
+
     def vacuum_database(self):
         try:
             self.conn.execute("VACUUM")
