@@ -4,7 +4,7 @@ REM Plataforma soportada y testeada. run.sh queda best-effort para Linux.
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
-set "PYTHON_VERSION=3.12"
+set "PYTHON_VERSION=3.13"
 set "VENV_DIR=%~dp0venv"
 set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 REM No engancha el Python de cherry-dl (PEP 514): solo Pythons gestionados por uv.
@@ -19,12 +19,17 @@ if errorlevel 1 (
 )
 
 echo [2/3] Verificando entorno virtual...
-REM uv venv descarga el Python 3.12 gestionado si falta, sin crear shims en
-REM ~/.local/bin (no toca el Python ajeno de cherry-dl). Si falta el python
-REM esperado, el venv es de otra plataforma o no existe: recrear.
-if not exist "%VENV_PY%" (
+REM uv venv descarga el Python gestionado si falta, sin crear shims en
+REM ~/.local/bin (no toca el Python ajeno de cherry-dl). No alcanza con que
+REM python.exe exista: el trampoline de uv puede apuntar a un Python managed
+REM compartido que desaparecio entre sesiones. Se prueba que arranque de
+REM verdad; si no, se borra el venv entero y se recrea.
+set "VENV_OK=0"
+if exist "%VENV_PY%" "%VENV_PY%" -c "import sys; sys.exit(0 if sys.version_info[:2] == (3, 13) else 1)" >nul 2>nul
+if not errorlevel 1 if exist "%VENV_PY%" set "VENV_OK=1"
+if "%VENV_OK%"=="0" (
     if exist "%VENV_DIR%" (
-        echo   -^> venv incompatible, recreando...
+        echo   -^> venv ausente, danado o en otra version, recreando...
         rmdir /s /q "%VENV_DIR%"
     ) else (
         echo   -^> Creando venv con Python %PYTHON_VERSION%...
