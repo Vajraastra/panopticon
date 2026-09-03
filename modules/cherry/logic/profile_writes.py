@@ -99,3 +99,21 @@ async def set_url_enabled(url_id: int, enabled: bool) -> None:
     from third_party.cherry_dl.index import set_profile_url_enabled
 
     await set_profile_url_enabled(INDEX_DB, url_id, enabled)
+
+
+async def delete_profile(profile_id: int) -> None:
+    """Borra un proyecto del índice: sus fuentes (CASCADE) y su artista.
+
+    **No toca el disco.** La carpeta y su `catalog.db` se quedan enteros, así
+    que esto no destruye ninguna descarga; lo que se pierde es el `last_synced`
+    de cada fuente, es decir, la frontera incremental. Volver a darlo de alta
+    funciona, pero su primer escaneo recorrerá el historial completo otra vez.
+
+    Es también la razón de que desactivar una fuente y borrar el proyecto sean
+    cosas distintas: para dejar de bajar algo, se desactiva.
+    """
+    from third_party.cherry_dl.config import INDEX_DB
+    from third_party.cherry_dl.index import delete_profile as _delete
+
+    await _delete(INDEX_DB, profile_id)
+    log.info("cherry: perfil %s borrado del índice", profile_id)

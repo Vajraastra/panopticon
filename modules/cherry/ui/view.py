@@ -41,8 +41,10 @@ from ..logic.download_bridge import DownloadBridge
 from ..logic.download_queue import DownloadQueue
 from ..logic.runtime import CherryRuntime
 from .download_panel import DownloadPanel
+from .duplicates_dialog import DuplicatesDialog
 from .legacy_gui import LOG_NAME, LegacyGuiLauncher
 from .profile_dialogs import AddUrlDialog, NewProfileDialog
+from .settings_dialog import SettingsDialog
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +62,7 @@ class CherryView(StandardToolLayout):
     _profile_created = Signal(int, bool)    # id nuevo, descargar al terminar
     _url_added       = Signal(int)          # perfil al que se le añadió
     _filter_saved    = Signal(int, str)     # perfil, ext_filter guardado
+    _profile_deleted = Signal(int)          # perfil que ya no está en el índice
     _load_failed    = Signal(str)
 
     def __init__(self, context: dict | None = None, runtime: CherryRuntime | None = None) -> None:
@@ -114,6 +117,7 @@ class CherryView(StandardToolLayout):
         self._profile_created.connect(self._on_profile_created)
         self._url_added.connect(self._on_url_added)
         self._filter_saved.connect(self._on_filter_saved)
+        self._profile_deleted.connect(self._on_profile_deleted)
         self._load_failed.connect(self._on_load_failed)
         self._legacy.state_changed.connect(self._on_legacy_state)
 
@@ -232,6 +236,14 @@ class CherryView(StandardToolLayout):
         self._btn_add_url.clicked.connect(self._add_url)
         lay.addWidget(self._btn_add_url)
 
+        self._btn_delete = QPushButton(self.tr("cherry.delete_profile", "Remove project"))
+        self._btn_delete.setToolTip(self.tr(
+            "cherry.delete_profile_tip",
+            "Removes it from the index. The downloaded folder is left untouched.",
+        ))
+        self._btn_delete.clicked.connect(self._delete_profile)
+        lay.addWidget(self._btn_delete)
+
         lay.addSpacing(6)
         lay.addWidget(self._divider())
         lay.addWidget(self._section_label(self.tr("cherry.dl_options", "DOWNLOAD OPTIONS")))
@@ -257,6 +269,17 @@ class CherryView(StandardToolLayout):
         lay.addWidget(self._btn_all)
 
         lay.addStretch(1)
+
+        lay.addWidget(self._divider())
+        lay.addWidget(self._section_label(self.tr("cherry.maintenance", "MAINTENANCE")))
+
+        self._btn_dups = QPushButton(self.tr("cherry.dups_open", "Find duplicate projects"))
+        self._btn_dups.clicked.connect(self._open_duplicates)
+        lay.addWidget(self._btn_dups)
+
+        self._btn_settings = QPushButton(self.tr("cherry.settings_open", "Settings…"))
+        self._btn_settings.clicked.connect(self._open_settings)
+        lay.addWidget(self._btn_settings)
 
         lay.addWidget(self._divider())
         lay.addWidget(self._section_label(self.tr("cherry.legacy", "CLASSIC GUI")))
@@ -617,6 +640,8 @@ class CherryView(StandardToolLayout):
         self._btn_all.setEnabled(bool(self._profiles) and not running)
         self._btn_cancel.setEnabled(running)
         self._btn_new.setEnabled(not running)
+        self._btn_delete.setEnabled(bool(profile) and not running)
+        self._btn_add_url.setEnabled(bool(profile) and not running)
         # Durante una descarga el filtro se congela: el motor ya lo leyó al
         # arrancar y editarlo a media sync solo mentiría sobre lo que baja.
         self._set_ext_enabled(bool(profile) and not running)
@@ -738,6 +763,80 @@ class CherryView(StandardToolLayout):
                 await self._load_detail(self._selected_id)
             return
         self._url_added.emit(-1)  # solo para refrescar la tabla y el estado
+
+    # ── Borrar, ajustes y duplicados (A5) ─────────────────────────────────
+    def _delete_profile(self) -> None:
+        """Quita el proyecto del índice. La carpeta en disco no se toca.
+
+        Se avisa de las dos cosas que importan y que no son obvias: que los
+        archivos se quedan (así que esto no destruye una descarga de meses), y
+        que lo que sí se pierde es el `last_synced` de cada fuente — volver a
+        darlo de alta funciona, pero su primer escaneo recorrerá el historial
+        entero otra vez.
+        """
+        profile = self._current_profile()
+        if profile is None:
+            self._set_status(self.tr("cherry.no_selection", "Select a profile first."))
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(self.tr("cherry.delete_title", "Remove project"))
+        box.setText(self.tr(
+            "cherry.delete_body", "Remove “{name}” from the index?").format(
+                name=profile["display_name"]))
+        box.setInformativeText(self.tr(
+            "cherry.delete_detail",
+            "The folder and everything downloaded into it stay where they are:\n{folder}\n\n"
+            "What is lost is the sync state of its sources, so adding it again would "
+            "re-scan the whole history from scratch. To just stop downloading, untick "
+            "its sources instead.",
+        ).format(folder=profile.get("folder_path", "?")))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+        if not self._runtime.start():
+            self._set_status(self.tr("cherry.runtime_failed", "Could not start the async runtime."))
+            return
+        try:
+            self._runtime.submit(self._delete_async(profile["id"]))
+        except RuntimeError as exc:
+            self._load_failed.emit(str(exc))
+
+    async def _delete_async(self, profile_id: int) -> None:
+        try:
+            await writes.delete_profile(profile_id)
+        except Exception as exc:
+            log.exception("cherry: no se pudo borrar el perfil")
+            self._load_failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self._profile_deleted.emit(profile_id)
+
+    def _on_profile_deleted(self, profile_id: int) -> None:
+        if self._selected_id == profile_id:
+            self._selected_id = None
+            self._clear_ext_filter()
+            self._sources.clear()
+            self._detail_label.setText(
+                self.tr("cherry.detail_empty", "No profile selected."))
+        self._filter_cache.pop(profile_id, None)
+        self._set_status(self.tr("cherry.deleted", "Project removed."), flash=True)
+        self.refresh()
+
+    def _open_settings(self) -> None:
+        """Ajustes del motor. Al guardar cambia la carpeta donde NACEN los
+        proyectos nuevos, así que la vista previa de carpeta del alta ya no
+        diría lo mismo; nada que refrescar en la tabla."""
+        dialog = SettingsDialog(self._theme, self._lm, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._set_status(self.tr("cherry.settings_saved", "Settings saved."), flash=True)
+
+    def _open_duplicates(self) -> None:
+        if not self._runtime.start():
+            self._set_status(self.tr("cherry.runtime_failed", "Could not start the async runtime."))
+            return
+        DuplicatesDialog(self._runtime, self._theme, self._lm, self).exec()
 
     # ── Filtro de tipos por perfil ────────────────────────────────────────
     def _set_ext_enabled(self, on: bool) -> None:

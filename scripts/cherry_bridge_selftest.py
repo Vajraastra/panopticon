@@ -417,6 +417,68 @@ def test_queue(app, runtime, bridge, rec) -> None:
           f"({[type(p).__name__ for p, _ in ended]})")
 
 
+def test_a5() -> None:
+    """A5: ajustes, detección de duplicados y exclusiones — todo sin escribir."""
+    print("\n[11] A5: ajustes y duplicados")
+    from modules.cherry.logic import duplicates as dup
+    from modules.cherry.logic import settings
+
+    # ── ajustes ────────────────────────────────────────────────────────────
+    cfg = settings.load()
+    check("los ajustes traen las tres claves",
+          set(cfg) == {"download_dir", "workers", "timeout"}, f"({sorted(cfg)})")
+    check("workers es un entero >= 1",
+          isinstance(cfg["workers"], int) and cfg["workers"] >= 1, f"({cfg['workers']})")
+    check("timeout es un entero >= 5",
+          isinstance(cfg["timeout"], int) and cfg["timeout"] >= 5, f"({cfg['timeout']})")
+    check("la carpeta de descargas coincide con la del motor",
+          settings.download_root() == Path(cfg["download_dir"]),
+          f"({settings.download_root()} vs {cfg['download_dir']})")
+    check("el config vive en ~/.cherry-dl, no en el repo",
+          settings.config_file().name == "config.toml"
+          and ".cherry-dl" in str(settings.config_file()),
+          f"({settings.config_file()})")
+
+    # ── duplicados ─────────────────────────────────────────────────────────
+    pairs = asyncio.run(dup.find_pairs())
+    check("find_pairs devuelve una lista", isinstance(pairs, list), f"({type(pairs).__name__})")
+    tiers = {dup.TIER_SOURCE, dup.TIER_PROBABLE, dup.TIER_POSSIBLE}
+    check("todo par trae un tier conocido",
+          all(p["tier"] in tiers for p in pairs),
+          f"({[p['tier'] for p in pairs if p['tier'] not in tiers]})")
+    check("todo par trae los dos lados",
+          all({"id_a", "name_a", "folder_a", "id_b", "name_b", "folder_b"} <= set(p)
+              for p in pairs))
+    check("un par nunca se empareja consigo mismo",
+          all(p["id_a"] != p["id_b"] for p in pairs))
+    check("no hay pares repetidos en los dos sentidos",
+          len({(min(p["id_a"], p["id_b"]), max(p["id_a"], p["id_b"])) for p in pairs})
+          == len(pairs))
+    order = {dup.TIER_SOURCE: 0, dup.TIER_PROBABLE: 1, dup.TIER_POSSIBLE: 2}
+    check("las certezas salen antes que las sospechas",
+          [order[p["tier"]] for p in pairs] == sorted(order[p["tier"]] for p in pairs),
+          f"({[p['tier'] for p in pairs]})")
+    check("los umbrales son los del original",
+          (dup.NAME_PROBABLE, dup.NAME_POSSIBLE) == (0.80, 0.60),
+          f"({dup.NAME_PROBABLE}, {dup.NAME_POSSIBLE})")
+    check("excluded_count no revienta",
+          isinstance(asyncio.run(dup.excluded_count()), int))
+
+    # Sin índice no se busca nada — y sobre todo, no se crea el archivo.
+    import third_party.cherry_dl.config as _cfg
+    real = _cfg.INDEX_DB
+    ghost = Path(tempfile.gettempdir()) / "cherry_index_fantasma_selftest.db"
+    ghost.unlink(missing_ok=True)
+    _cfg.INDEX_DB = ghost
+    try:
+        check("sin índice, no hay pares", asyncio.run(dup.find_pairs()) == [])
+        check("sin índice, no hay exclusiones", asyncio.run(dup.excluded_count()) == 0)
+        check("buscar duplicados NO crea el índice", not ghost.exists(), f"({ghost})")
+    finally:
+        _cfg.INDEX_DB = real
+        ghost.unlink(missing_ok=True)
+
+
 def test_library_probe() -> None:
     """A4: el lector de `panopticon.db` y las consultas de "esto ya lo tengo"."""
     print("\n[10] Biblioteca: library_probe y library_check")
@@ -518,6 +580,7 @@ def main() -> int:
     try:
         test_ext_filter()
         test_library_probe()
+        test_a5()
         test_runtime(app, runtime)
         profiles = test_index_read(app, runtime)
 
