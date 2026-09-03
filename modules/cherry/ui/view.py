@@ -1,8 +1,27 @@
 """
-Vista nativa del módulo Cherry-DL — perfiles del índice (A2, CF12 = UI nativa).
+Vista nativa del módulo Cherry-DL — perfiles del índice (CF12 = UI nativa).
 
-Reemplaza al lanzador de la GUI qasync, que sobrevive como botón transitorio
-(`legacy_gui.py`) hasta que A3 traiga la vista de descarga.
+**No usa `StandardToolLayout`, y es el primer módulo que se sale** (David,
+2026-09-03). Ese layout reserva el centro para una imagen y deja los controles
+en una columna de 320 px; aquí el centro es una tabla de 46 filas y una consola
+de descarga, y no hay nada que centrar. El resultado era una barra lateral que
+pedía 1014 px de alto —scroll permanente— y 535 px de ancho comprimidos a 320.
+
+En su lugar, tres zonas que siguen la función:
+
+  - **Arriba**: volver, alta, los filtros —que son de la tabla, y por eso viven
+    a dos centímetros de ella— y las acciones que no son de ningún proyecto.
+  - **Centro, en un splitter**: la tabla a la izquierda con toda la altura, y a
+    la derecha un inspector que solo habla de la fila seleccionada (sus
+    fuentes, sus tipos de archivo, sus opciones y sus acciones). 573 px de alto
+    en vez de 1014.
+  - **Abajo**: la consola, siempre presente y plegable. Antes compartía sitio
+    con la tabla en un `QStackedWidget`, así que una descarga de horas obligaba
+    a elegir entre ver el progreso y usar la app.
+
+Lo único que aportaba el layout estándar además de la disposición era el botón
+"← Dashboard"; está repuesto en la barra superior, porque sin él el módulo sería
+un callejón sin salida.
 
 Todas las lecturas de `index.db` son asíncronas, así que el flujo es siempre el
 mismo triángulo: la GUI encola una corrutina en `CherryRuntime`, la corrutina
@@ -27,12 +46,11 @@ from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMessageBox, QPushButton, QSpinBox, QStackedWidget, QTableWidget,
+    QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from core import library_probe
-from core.components.standard_layout import StandardToolLayout
 from core.paths import CachePaths
 from ..logic import ext_filter as ext_logic
 from ..logic import profile_writes as writes
@@ -52,7 +70,7 @@ log = logging.getLogger(__name__)
 # cabecera, que está traducido).
 COL_NAME, COL_SITE, COL_SOURCES, COL_CHECKED, COL_FOLDER = range(5)
 
-class CherryView(StandardToolLayout):
+class CherryView(QWidget):
     """Lista de perfiles de cherry-dl, en vivo sobre `index.db`."""
 
     # Puentes loop → GUI (se emiten desde el hilo del runtime).
@@ -88,19 +106,40 @@ class CherryView(StandardToolLayout):
         self._started = False
         self._auth_boxes: dict[int, QMessageBox] = {}
 
+        super().__init__()
+
+        # Tres zonas en vez de la sidebar de 320 px del layout estándar: la
+        # tabla manda, el inspector solo habla del proyecto seleccionado y la
+        # consola vive abajo sin tapar nada. El porqué, en el docstring.
         self._table = self._build_table()
         self._panel = DownloadPanel(self._theme, self._lm)
         self._panel.bind(self._bridge, self._queue)
-        self._stack = QStackedWidget()
-        self._stack.addWidget(self._table)
-        self._stack.addWidget(self._panel)
-        super().__init__(
-            self._stack,
-            sidebar_widget=self._build_sidebar(),
-            bottom_widget=self._build_action_bar(),
-            theme_manager=self._theme,
-            event_bus=self._event_bus,
-        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._build_topbar())
+        root.addWidget(self._hline())
+
+        # Splitter y no anchos fijos: 46 proyectos con nombres largos y una
+        # pantalla ancha no piden el mismo reparto que 5 y un portátil.
+        self._split_main = QSplitter(Qt.Horizontal)
+        self._split_main.addWidget(self._table)
+        self._split_main.addWidget(self._build_inspector())
+        self._split_main.setStretchFactor(0, 3)
+        self._split_main.setStretchFactor(1, 1)
+        self._split_main.setChildrenCollapsible(False)
+        # El inspector pide ~530 px por el grid de tipos y las rutas largas.
+        # Con solo el stretch nacería comprimido en una ventana ancha.
+        self._split_main.setSizes([1000, 540])
+
+        self._split_console = QSplitter(Qt.Vertical)
+        self._split_console.addWidget(self._split_main)
+        self._split_console.addWidget(self._build_console())
+        self._split_console.setStretchFactor(0, 4)
+        self._split_console.setStretchFactor(1, 1)
+        self._split_console.setChildrenCollapsible(False)
+        root.addWidget(self._split_console, 1)
 
         # Después de `super()`: antes, `self` todavía no es un QObject y no
         # puede ser padre de nada. Leer el índice tarda decenas de milisegundos,
@@ -151,6 +190,8 @@ class CherryView(StandardToolLayout):
         div.setStyleSheet(f"background-color: {self._color('border', '#333')};")
         return div
 
+    _hline = _divider
+
     def _build_table(self) -> QTableWidget:
         table = QTableWidget(0, 5)
         table.setHorizontalHeaderLabels([
@@ -180,26 +221,43 @@ class CherryView(StandardToolLayout):
         table.doubleClicked.connect(self._open_folder)
         return table
 
-    def _build_sidebar(self) -> QWidget:
-        panel = QWidget()
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(15, 15, 15, 15)
-        lay.setSpacing(10)
+    # ── Zona 1: barra superior ────────────────────────────────────────────
+    def _build_topbar(self) -> QWidget:
+        """Volver, alta, filtros de la tabla y acciones que no son de un proyecto.
+
+        Los filtros viven aquí y no en un panel lateral porque son de la tabla:
+        escribir en el buscador cambia lo que se ve dos centímetros más abajo.
+        """
+        bar = QWidget()
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(8)
+
+        # `StandardToolLayout` traía este botón de serie; al salirse del patrón
+        # hay que reponerlo o el módulo se convierte en un callejón sin salida.
+        self._btn_back = QPushButton(f"← {self.tr('settings.back', 'Dashboard')}")
+        self._btn_back.setCursor(Qt.PointingHandCursor)
+        self._btn_back.setStyleSheet(
+            "border: none; background: transparent; font-weight: bold; "
+            f"font-size: 14px; color: {self._color('accent_main', '#00ffcc')};")
+        self._btn_back.clicked.connect(self._go_back)
+        lay.addWidget(self._btn_back)
+
+        lay.addWidget(self._vline())
 
         self._btn_new = QPushButton(self.tr("cherry.new_profile", "+ New project"))
         self._btn_new.clicked.connect(self._new_profile)
         lay.addWidget(self._btn_new)
 
-        lay.addWidget(self._divider())
-        lay.addWidget(self._section_label(self.tr("cherry.filters", "FILTERS")))
-
         self._search = QLineEdit()
         self._search.setPlaceholderText(self.tr("cherry.search_ph", "Search name or folder…"))
         self._search.setClearButtonEnabled(True)
+        self._search.setMaximumWidth(280)
         self._search.textChanged.connect(self._apply_filters)
         lay.addWidget(self._search)
 
         self._site_combo = QComboBox()
+        self._site_combo.setMinimumWidth(130)
         self._site_combo.currentIndexChanged.connect(self._apply_filters)
         lay.addWidget(self._site_combo)
 
@@ -213,8 +271,48 @@ class CherryView(StandardToolLayout):
             f"color: {self._color('text_dim', '#888')}; font-size: 11px;")
         lay.addWidget(self._count_label)
 
-        lay.addSpacing(6)
-        lay.addWidget(self._divider())
+        lay.addStretch(1)
+
+        self._btn_all = QPushButton()
+        self._btn_all.clicked.connect(self._start_all_visible)
+        lay.addWidget(self._btn_all)
+
+        self._btn_dups = QPushButton(self.tr("cherry.dups_open", "Find duplicate projects"))
+        self._btn_dups.clicked.connect(self._open_duplicates)
+        lay.addWidget(self._btn_dups)
+
+        self._btn_settings = QPushButton(self.tr("cherry.settings_open", "Settings…"))
+        self._btn_settings.clicked.connect(self._open_settings)
+        lay.addWidget(self._btn_settings)
+
+        self._btn_refresh = QPushButton(self.tr("cherry.refresh", "Refresh"))
+        self._btn_refresh.clicked.connect(self.refresh)
+        lay.addWidget(self._btn_refresh)
+
+        # La GUI clásica ya solo sirve para fusionar proyectos; hasta que llegue
+        # A5b se queda, pero como último botón y sin la nota que ocupaba media
+        # barra lateral: lo que decía ya no es cierto.
+        self._btn_legacy = QPushButton(self.tr("cherry.launch", "Classic GUI"))
+        self._btn_legacy.setToolTip(self.tr(
+            "cherry.legacy_note_short",
+            "Only merging projects still needs the classic window.",
+        ))
+        self._btn_legacy.clicked.connect(self._launch_legacy)
+        lay.addWidget(self._btn_legacy)
+        return bar
+
+    # ── Zona 2: inspector del proyecto seleccionado ───────────────────────
+    def _build_inspector(self) -> QWidget:
+        """Todo lo que pertenece a la fila seleccionada, y nada más.
+
+        Va dentro de un scroll porque los tipos de archivo y las fuentes crecen,
+        pero ya no arrastra los filtros ni el mantenimiento: eso era lo que
+        empujaba la barra lateral a 1014 px de alto.
+        """
+        panel = QWidget()
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(8)
 
         lay.addWidget(self._section_label(self.tr("cherry.detail", "SELECTED PROFILE")))
         self._detail_label = QLabel(self.tr("cherry.detail_empty", "No profile selected."))
@@ -228,7 +326,7 @@ class CherryView(StandardToolLayout):
         # desmarcar una es la forma que da el motor de "quitarla" sin perder su
         # `last_synced`.
         self._sources = QListWidget()
-        self._sources.setMaximumHeight(150)
+        self._sources.setMaximumHeight(140)
         self._sources.itemChanged.connect(self._on_source_toggled)
         lay.addWidget(self._sources)
 
@@ -236,15 +334,9 @@ class CherryView(StandardToolLayout):
         self._btn_add_url.clicked.connect(self._add_url)
         lay.addWidget(self._btn_add_url)
 
-        self._btn_delete = QPushButton(self.tr("cherry.delete_profile", "Remove project"))
-        self._btn_delete.setToolTip(self.tr(
-            "cherry.delete_profile_tip",
-            "Removes it from the index. The downloaded folder is left untouched.",
-        ))
-        self._btn_delete.clicked.connect(self._delete_profile)
-        lay.addWidget(self._btn_delete)
+        lay.addWidget(self._divider())
+        lay.addWidget(self._build_ext_filter())
 
-        lay.addSpacing(6)
         lay.addWidget(self._divider())
         lay.addWidget(self._section_label(self.tr("cherry.dl_options", "DOWNLOAD OPTIONS")))
 
@@ -259,45 +351,103 @@ class CherryView(StandardToolLayout):
         workers_row.addStretch(1)
         lay.addLayout(workers_row)
 
-        lay.addWidget(self._build_ext_filter())
-
         self._force_full = QCheckBox(self.tr("cherry.dl_rescan", "Full rescan (ignore last sync)"))
         lay.addWidget(self._force_full)
 
-        self._btn_all = QPushButton()
-        self._btn_all.clicked.connect(self._start_all_visible)
-        lay.addWidget(self._btn_all)
+        lay.addSpacing(4)
+        actions = QGridLayout()
+        actions.setSpacing(6)
+        self._btn_scan = QPushButton(self.tr("cherry.scan", "Scan"))
+        self._btn_scan.setToolTip(self.tr(
+            "cherry.scan_tip", "Look for new files and queue them, without downloading."))
+        self._btn_scan.clicked.connect(lambda: self._start_selected(scan_only=True))
+        actions.addWidget(self._btn_scan, 0, 0)
+
+        self._btn_download = QPushButton(self.tr("cherry.download", "Download"))
+        self._btn_download.clicked.connect(lambda: self._start_selected(scan_only=False))
+        actions.addWidget(self._btn_download, 0, 1)
+
+        self._btn_open = QPushButton(self.tr("cherry.open_folder", "Open folder"))
+        self._btn_open.clicked.connect(self._open_folder)
+        actions.addWidget(self._btn_open, 1, 0)
+
+        self._btn_delete = QPushButton(self.tr("cherry.delete_profile", "Remove project"))
+        self._btn_delete.setToolTip(self.tr(
+            "cherry.delete_profile_tip",
+            "Removes it from the index. The downloaded folder is left untouched.",
+        ))
+        self._btn_delete.clicked.connect(self._delete_profile)
+        actions.addWidget(self._btn_delete, 1, 1)
+        lay.addLayout(actions)
 
         lay.addStretch(1)
 
-        lay.addWidget(self._divider())
-        lay.addWidget(self._section_label(self.tr("cherry.maintenance", "MAINTENANCE")))
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(panel)
+        scroll.setMinimumWidth(300)
+        return scroll
 
-        self._btn_dups = QPushButton(self.tr("cherry.dups_open", "Find duplicate projects"))
-        self._btn_dups.clicked.connect(self._open_duplicates)
-        lay.addWidget(self._btn_dups)
+    # ── Zona 3: consola de descarga, siempre visible ──────────────────────
+    def _build_console(self) -> QWidget:
+        """La consola deja de tapar la tabla: vive abajo y se pliega.
 
-        self._btn_settings = QPushButton(self.tr("cherry.settings_open", "Settings…"))
-        self._btn_settings.clicked.connect(self._open_settings)
-        lay.addWidget(self._btn_settings)
+        Antes compartía sitio con la lista en un `QStackedWidget`, así que una
+        descarga de horas obligaba a elegir entre ver el progreso y usar la app.
+        Plegada ocupa una línea; el estado sigue leyéndose en la cabecera.
+        """
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
 
-        lay.addWidget(self._divider())
-        lay.addWidget(self._section_label(self.tr("cherry.legacy", "CLASSIC GUI")))
-        self._legacy_note = QLabel(self.tr(
-            "cherry.legacy_note",
-            "Downloading still happens in the classic cherry-dl window; the native "
-            "download view lands next. Profiles live in ~/.cherry-dl and are shared "
-            "with the standalone.",
-        ))
-        self._legacy_note.setWordWrap(True)
-        self._legacy_note.setStyleSheet(
-            f"color: {self._color('text_dim', '#888')}; font-size: 11px;")
-        lay.addWidget(self._legacy_note)
+        head = QWidget()
+        head_lay = QHBoxLayout(head)
+        head_lay.setContentsMargins(12, 6, 12, 6)
+        head_lay.setSpacing(8)
 
-        self._btn_legacy = QPushButton(self.tr("cherry.launch", "Launch Cherry-DL"))
-        self._btn_legacy.clicked.connect(self._launch_legacy)
-        lay.addWidget(self._btn_legacy)
-        return panel
+        self._btn_console = QPushButton("▼")
+        self._btn_console.setCheckable(True)
+        self._btn_console.setChecked(True)
+        self._btn_console.setFixedWidth(28)
+        self._btn_console.setToolTip(self.tr("cherry.console_toggle", "Collapse the console"))
+        self._btn_console.toggled.connect(self._toggle_console)
+        head_lay.addWidget(self._btn_console)
+
+        self._status_label = QLabel(self.tr("cherry.status_loading", "Reading index…"))
+        self._status_dim = self._color("text_dim", "#888")
+        self._status_label.setStyleSheet(f"color: {self._status_dim}; font-size: 12px;")
+        head_lay.addWidget(self._status_label)
+        head_lay.addStretch(1)
+
+        self._btn_cancel = QPushButton(self.tr("cherry.cancel", "Cancel"))
+        self._btn_cancel.clicked.connect(self._cancel)
+        head_lay.addWidget(self._btn_cancel)
+
+        lay.addWidget(head)
+        lay.addWidget(self._panel, 1)
+        return box
+
+    def _toggle_console(self, expanded: bool) -> None:
+        self._panel.setVisible(expanded)
+        self._btn_console.setText("▼" if expanded else "▲")
+        self._btn_console.setToolTip(
+            self.tr("cherry.console_toggle", "Collapse the console") if expanded
+            else self.tr("cherry.console_expand", "Expand the console"))
+
+    def _go_back(self) -> None:
+        if self._event_bus:
+            self._event_bus.publish("navigate", "dashboard")
+        else:
+            log.warning("cherry: botón Atrás sin EventBus")
+
+    def _vline(self) -> QFrame:
+        line = QFrame()
+        line.setFixedWidth(1)
+        line.setStyleSheet(f"background-color: {self._color('border', '#333')};")
+        return line
 
     def _build_ext_filter(self) -> QWidget:
         """Casillas de tipos + campo libre, del perfil seleccionado.
@@ -355,48 +505,6 @@ class CherryView(StandardToolLayout):
         self._set_ext_enabled(False)
         return box
 
-    def _build_action_bar(self) -> QWidget:
-        bar = QWidget()
-        lay = QHBoxLayout(bar)
-        lay.setContentsMargins(15, 10, 15, 10)
-        lay.setSpacing(10)
-
-        self._status_label = QLabel(self.tr("cherry.status_loading", "Reading index…"))
-        self._status_dim = self._color("text_dim", "#888")
-        self._status_label.setStyleSheet(f"color: {self._status_dim}; font-size: 12px;")
-        lay.addWidget(self._status_label)
-        lay.addStretch(1)
-
-        self._btn_view = QPushButton(self.tr("cherry.show_console", "Console"))
-        self._btn_view.setCheckable(True)
-        self._btn_view.toggled.connect(self._toggle_view)
-        lay.addWidget(self._btn_view)
-
-        self._btn_open = QPushButton(self.tr("cherry.open_folder", "Open folder"))
-        self._btn_open.clicked.connect(self._open_folder)
-        lay.addWidget(self._btn_open)
-
-        self._btn_scan = QPushButton(self.tr("cherry.scan", "Scan"))
-        self._btn_scan.setToolTip(self.tr(
-            "cherry.scan_tip", "Look for new files and queue them, without downloading."))
-        self._btn_scan.clicked.connect(lambda: self._start_selected(scan_only=True))
-        lay.addWidget(self._btn_scan)
-
-        self._btn_download = QPushButton(self.tr("cherry.download", "Download"))
-        self._btn_download.clicked.connect(lambda: self._start_selected(scan_only=False))
-        lay.addWidget(self._btn_download)
-
-        self._btn_cancel = QPushButton(self.tr("cherry.cancel", "Cancel"))
-        self._btn_cancel.clicked.connect(self._cancel)
-        lay.addWidget(self._btn_cancel)
-
-        self._btn_refresh = QPushButton(self.tr("cherry.refresh", "Refresh"))
-        self._btn_refresh.clicked.connect(self.refresh)
-        lay.addWidget(self._btn_refresh)
-
-        return bar
-
-    # ── Ciclo de vida ─────────────────────────────────────────────────────
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if not self._started:
@@ -1021,7 +1129,7 @@ class CherryView(StandardToolLayout):
 
         self._panel.reset()
         self._panel.set_phase(self.tr("cherry.dl_preparing", "Loading profile sources…"))
-        self._btn_view.setChecked(True)  # mirar la consola es lo que uno quiere ahora
+        self._btn_console.setChecked(True)  # si estaba plegada, ahora interesa
         self._set_status(self.tr("cherry.dl_preparing", "Loading profile sources…"))
         try:
             self._runtime.submit(self._load_details(profile_ids, scan_only))
@@ -1071,12 +1179,6 @@ class CherryView(StandardToolLayout):
             self._panel.set_phase(self.tr("cherry.dl_cancelling", "Cancelling…"))
             self._set_status(self.tr("cherry.dl_cancelling", "Cancelling…"))
         self._update_actions()
-
-    def _toggle_view(self, on: bool) -> None:
-        self._stack.setCurrentIndex(1 if on else 0)
-        self._btn_view.setText(
-            self.tr("cherry.show_list", "List") if on
-            else self.tr("cherry.show_console", "Console"))
 
     def _on_profile_finished(self, profile: dict, summary) -> None:
         name = profile.get("display_name", "?")
