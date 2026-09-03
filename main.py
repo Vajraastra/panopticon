@@ -539,6 +539,18 @@ class MainWindow(QMainWindow):
         if target == "dashboard":
             self.root_stack.setCurrentIndex(0)
 
+    def closeEvent(self, event):
+        """Cierre ordenado: cada módulo suelta lo suyo antes de que Qt destruya
+        la ventana. Sin esto, un módulo con hilos propios (p.ej. el event loop
+        asyncio de Cherry-DL) muere por terminación del proceso, no por parada
+        limpia."""
+        for name, module in self.loaded_modules.items():
+            try:
+                module.on_unload()
+            except Exception as e:
+                log.error("Error unloading module %s: %s", name, e)
+        super().closeEvent(event)
+
 if __name__ == "__main__":
     # Diálogos nativos del OS (selector de archivos, etc.): enrutar al portal del
     # escritorio. Sin esto, Qt cae a su propio diálogo (feo y estilizado por la QSS
