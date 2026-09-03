@@ -10,7 +10,7 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 
 | Module | What it does |
 |---|---|
-| **Cherry-DL** | Mass downloader for artist collections from Kemono, Patreon, and Pixiv. Builds the raw library the other modules curate. |
+| **Cherry-DL** | Mass downloader for artist collections from Kemono, Patreon, and Pixiv. Create a project from a URL, queue several artists, and watch progress per worker while it syncs incrementally. Builds the raw library the other modules curate. |
 | **Librarian** | Central library manager. Scans folders, builds an indexed collection, provides thumbnails and lazy loading for large sets. |
 | **Gallery** | Visual browser for your collection. Paginates and displays images with filtering and sorting. |
 | **Character Recognizer** | Identifies and tags characters within a set using face recognition (ArcFace + YuNet) with landmark alignment. Supports real photos, 3D renders, and illustration/anime. |
