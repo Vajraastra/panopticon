@@ -210,6 +210,10 @@ class PicklerView(StandardToolLayout):
         # Entrada: abrir carpeta + recientes
         lay.addWidget(self._section_label(self.tr("pickler.input", "INPUT")))
         self._btn_open = QPushButton(self.tr("pickler.open_folder", "Open folder…"))
+        self._btn_open.setToolTip(self.tr(
+            "pickler.open_folder_tip",
+            "Choose the folder of images to review. It is walked in order and nothing is "
+            "changed until you decide on each image."))
         self._btn_open.clicked.connect(self._browse)
         lay.addWidget(self._btn_open)
 
@@ -227,6 +231,11 @@ class PicklerView(StandardToolLayout):
         # Ajustes: modo
         lay.addWidget(self._section_label(self.tr("pickler.settings", "SETTINGS")))
         self._btn_mode = QPushButton()
+        self._btn_mode.setToolTip(self.tr(
+            "pickler.mode_tip",
+            "Switches the working MODE, it does not act on the current image. In «Keep» "
+            "the big button keeps the image; in «Discard» it discards it. This is the top "
+            "button: the bottom one is the one that acts."))
         self._btn_mode.clicked.connect(self._toggle_mode)
         lay.addWidget(self._btn_mode)
 
@@ -238,6 +247,10 @@ class PicklerView(StandardToolLayout):
             f"color: {self._color('text_dim', '#888')}; font-size: 11px;")
         lay.addWidget(self._lbl_dest)
         self._btn_dest = QPushButton(self.tr("pickler.choose_dest", "Choose destination…"))
+        self._btn_dest.setToolTip(self.tr(
+            "pickler.choose_dest_tip",
+            "Folder where the images you keep end up. Discards do NOT go here: they go to "
+            "«discarded» inside the source folder."))
         self._btn_dest.clicked.connect(self._choose_dest)
         lay.addWidget(self._btn_dest)
 
@@ -245,7 +258,15 @@ class PicklerView(StandardToolLayout):
         lay.addWidget(self._section_label(self.tr("pickler.transfer_mode", "When keeping:")))
         row = QHBoxLayout()
         self._rb_move = QRadioButton(self.tr("pickler.move", "Move"))
+        self._rb_move.setToolTip(self.tr(
+            "pickler.move_tip",
+            "The images you keep are MOVED to the destination: they leave the source "
+            "folder."))
         self._rb_copy = QRadioButton(self.tr("pickler.copy", "Copy"))
+        self._rb_copy.setToolTip(self.tr(
+            "pickler.copy_tip",
+            "The images you keep are COPIED to the destination: the original stays where "
+            "it is."))
         grp = QButtonGroup(panel)
         grp.addButton(self._rb_move)
         grp.addButton(self._rb_copy)
@@ -264,12 +285,23 @@ class PicklerView(StandardToolLayout):
 
         # Footer: abrir destino / papelera / deshacer
         self._btn_undo = QPushButton(self.tr("pickler.undo", "Undo last (Ctrl+Z)"))
+        self._btn_undo.setToolTip(self.tr(
+            "pickler.undo_tip",
+            "Undoes ONLY the last decision and puts the image back. It is not a history: "
+            "it does not chain several steps back."))
         self._btn_undo.clicked.connect(self._undo)
         lay.addWidget(self._btn_undo)
         self._btn_open_dest = QPushButton(self.tr("pickler.open_dest", "Open destination"))
+        self._btn_open_dest.setToolTip(self.tr(
+            "pickler.open_dest_tip",
+            "Opens the folder where the images you keep are saved."))
         self._btn_open_dest.clicked.connect(self._open_dest)
         lay.addWidget(self._btn_open_dest)
         self._btn_open_disc = QPushButton(self.tr("pickler.open_discarded", "Open discarded"))
+        self._btn_open_disc.setToolTip(self.tr(
+            "pickler.open_discarded_tip",
+            "Opens the source's «discarded» folder, where the discarded images are. They "
+            "are still there: nothing was really deleted."))
         self._btn_open_disc.clicked.connect(self._open_discarded)
         lay.addWidget(self._btn_open_disc)
 
@@ -282,8 +314,16 @@ class PicklerView(StandardToolLayout):
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(0, 0, 0, 0)
         self._btn_primary = QPushButton()
+        self._btn_primary.setToolTip(self.tr(
+            "pickler.action_tip",
+            "Applies the current mode to the image on screen and moves to the next one. "
+            "Discarding does NOT delete: it moves the file to «discarded», and it can be "
+            "undone."))
         self._btn_primary.clicked.connect(self._do_primary)
         self._btn_skip = QPushButton(self.tr("pickler.action_skip", "→  Skip"))
+        self._btn_skip.setToolTip(self.tr(
+            "pickler.action_skip_tip",
+            "Moves to the next image without touching it or deciding anything about it."))
         self._btn_skip.clicked.connect(self._next)
         lay.addWidget(self._btn_primary)
         lay.addWidget(self._btn_skip)

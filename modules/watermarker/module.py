@@ -69,6 +69,10 @@ class WatermarkerModule(BaseModule):
         layout.addWidget(lbl_img)
 
         self.btn_load_image = QPushButton(self.tr("common.load_image", "📂 Load Image"))
+        self.btn_load_image.setToolTip(self.tr(
+            "wm.load_image_tip",
+            "Loads the image to stamp onto. The original file is never touched: the "
+            "result is saved as a separate copy."))
         self.btn_load_image.setStyleSheet(Theme.get_action_button_style(self.accent_color))
         self.btn_load_image.setFixedHeight(36)
         self.btn_load_image.clicked.connect(self.load_source_image)
@@ -86,6 +90,10 @@ class WatermarkerModule(BaseModule):
         layout.addWidget(lbl_wm_section)
 
         self.btn_load_watermark = QPushButton(self.tr("wm.load_wm", "📂 Load Watermark"))
+        self.btn_load_watermark.setToolTip(self.tr(
+            "wm.load_wm_tip",
+            "Image tiled across the whole photo. Use a PNG with transparency so the "
+            "background shows through."))
         self.btn_load_watermark.setStyleSheet(Theme.get_button_style(Theme.TEXT_SECONDARY))
         self.btn_load_watermark.setFixedHeight(36)
         self.btn_load_watermark.clicked.connect(self.load_watermark_asset)
@@ -97,6 +105,10 @@ class WatermarkerModule(BaseModule):
 
         layout.addWidget(QLabel(self.tr("wm.angle", "Rotation Angle:")))
         self.combo_angle = QComboBox()
+        self.combo_angle.setToolTip(self.tr(
+            "wm.angle_tip",
+            "Tilt of the tiled pattern. A diagonal one is harder to crop out than a "
+            "horizontal one."))
         self.combo_angle.addItems(["0°", "45°", "90°", "135°", "180°", "225°", "270°", "315°"])
         self.combo_angle.setStyleSheet(Theme.get_input_style(self.accent_color))
         self.combo_angle.currentIndexChanged.connect(self.generate_preview)
@@ -104,6 +116,10 @@ class WatermarkerModule(BaseModule):
 
         layout.addWidget(QLabel(self.tr("wm.scale", "Pattern Scale:")))
         self.slider_scale = QSlider(Qt.Horizontal)
+        self.slider_scale.setToolTip(self.tr(
+            "wm.scale_tip",
+            "Size of each tile, from 10% to 200%. Bigger means fewer tiles, further "
+            "apart."))
         self.slider_scale.setRange(10, 200)
         self.slider_scale.setValue(100)
         self.slider_scale.valueChanged.connect(self.generate_preview)
@@ -111,6 +127,10 @@ class WatermarkerModule(BaseModule):
 
         layout.addWidget(QLabel(self.tr("wm.opacity", "Opacity:")))
         self.slider_opacity = QSlider(Qt.Horizontal)
+        self.slider_opacity.setToolTip(self.tr(
+            "wm.opacity_tip",
+            "How transparent the pattern is, from 0 to 100%. Under 20% it barely gets in "
+            "the way, but it is also easier to remove."))
         self.slider_opacity.setRange(0, 100)
         self.slider_opacity.setValue(30)
         self.slider_opacity.valueChanged.connect(self.generate_preview)
@@ -124,6 +144,10 @@ class WatermarkerModule(BaseModule):
         layout.addWidget(lbl_logo_section)
 
         self.btn_load_logo = QPushButton(self.tr("wm.load_logo", "📂 Load Logo"))
+        self.btn_load_logo.setToolTip(self.tr(
+            "wm.load_logo_tip",
+            "Image placed ONCE in a corner, on top of the tiled pattern. They are "
+            "separate things: you can use just one of them."))
         self.btn_load_logo.setStyleSheet(Theme.get_button_style(Theme.TEXT_SECONDARY))
         self.btn_load_logo.setFixedHeight(36)
         self.btn_load_logo.clicked.connect(self.load_logo_asset)
@@ -135,6 +159,8 @@ class WatermarkerModule(BaseModule):
 
         layout.addWidget(QLabel(self.tr("wm.logo_pos", "Logo Position:")))
         self.combo_logo_pos = QComboBox()
+        self.combo_logo_pos.setToolTip(self.tr(
+            "wm.logo_pos_tip", "Corner where the logo is placed."))
         self.combo_logo_pos.addItems(["Top-Right", "Top-Left", "Bottom-Right", "Bottom-Left"])
         self.combo_logo_pos.setStyleSheet(Theme.get_input_style(self.accent_color))
         self.combo_logo_pos.currentIndexChanged.connect(self.generate_preview)
@@ -142,6 +168,10 @@ class WatermarkerModule(BaseModule):
 
         layout.addWidget(QLabel(self.tr("wm.logo_size", "Logo Size (px):")))
         self.slider_logo_size = QSlider(Qt.Horizontal)
+        self.slider_logo_size.setToolTip(self.tr(
+            "wm.logo_size_tip",
+            "Logo width in pixels, from 50 to 500. It is a fixed size: it does not scale "
+            "with the image, so on a small photo it looks proportionally bigger."))
         self.slider_logo_size.setRange(50, 500)
         self.slider_logo_size.setValue(150)
         self.slider_logo_size.valueChanged.connect(self.generate_preview)
@@ -150,6 +180,11 @@ class WatermarkerModule(BaseModule):
         layout.addStretch()
 
         self.btn_save = QPushButton(self.tr("common.save_copy", "💾 SAVE COPY"))
+        self.btn_save.setToolTip(self.tr(
+            "wm.save_copy_tip",
+            "Saves a copy with the mark applied. NOTE: it deliberately strips ALL metadata "
+            "from the result (prompts, tags, EXIF), because these copies are meant for "
+            "publishing. The original keeps its own."))
         self.btn_save.setCursor(Qt.PointingHandCursor)
         self.btn_save.clicked.connect(self.save_copy)
         self.btn_save.setFixedHeight(44)

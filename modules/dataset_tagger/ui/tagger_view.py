@@ -303,6 +303,10 @@ class DatasetTaggerView(QWidget):
         self.lbl_source = QLabel(self._tr("tagger.no_source", "No source selected"))
         self.lbl_source.setWordWrap(True)
         btn_browse = QPushButton(self._tr("tagger.browse", "Browse folder…"))
+        btn_browse.setToolTip(self._tr(
+            "tagger.browse_tip",
+            "Folder of images to caption. Captions are written as .txt files next to each "
+            "image."))
         btn_browse.clicked.connect(self._browse_folder)
         row.addWidget(self.lbl_source, 1)
         row.addWidget(btn_browse, 0)
@@ -339,6 +343,11 @@ class DatasetTaggerView(QWidget):
         self.combo_mode.addItem(self._tr("tagger.mode.both", "Both (two datasets)"), MODE_BOTH)
         self.combo_mode.addItem(
             self._tr("tagger.mode.ideogram4", "Ideogram v4 (structured JSON)"), MODE_IDEOGRAM4)
+        self.combo_mode.setToolTip(self._tr(
+            "tagger.mode_tip",
+            "Which caption format is produced. «Both» yields TWO separate datasets, not "
+            "one mixed text; «Ideogram v4» produces structured JSON and enables its own "
+            "panel."))
         self.combo_mode.currentIndexChanged.connect(self._on_mode_changed)
         lay.addWidget(self.combo_mode)
 
@@ -347,6 +356,10 @@ class DatasetTaggerView(QWidget):
         self.combo_model_tags = QComboBox()
         for key, label in self._tags_models:
             self.combo_model_tags.addItem(label, key)
+        self.combo_model_tags.setToolTip(self._tr(
+            "tagger.model_tags_tip",
+            "Instruction template for tags. It changes the prompt below: a starting point "
+            "you can edit."))
         self.combo_model_tags.currentIndexChanged.connect(self._refresh_prompts)
         lay.addWidget(self.lbl_model_tags)
         lay.addWidget(self.combo_model_tags)
@@ -358,6 +371,11 @@ class DatasetTaggerView(QWidget):
             self._tr("tagger.engine.wd", "WD tagger (local · real booru tags)"), ENGINE_WD)
         self.combo_tags_engine.addItem(
             self._tr("tagger.engine.vlm", "Vision LLM (endpoint)"), ENGINE_VLM)
+        self.combo_tags_engine.setToolTip(self._tr(
+            "tagger.engine_tip",
+            "Who generates the tags. The WD tagger runs on your machine and gives real "
+            "booru tags; the vision LLM makes them up from the image and depends on the "
+            "endpoint."))
         self.combo_tags_engine.currentIndexChanged.connect(self._on_tags_engine_changed)
         lay.addWidget(self.lbl_tags_engine)
         lay.addWidget(self.combo_tags_engine)
@@ -372,11 +390,19 @@ class DatasetTaggerView(QWidget):
         for key, label in self._taggers:
             self.combo_wd_tagger.addItem(label, key)
         self.combo_wd_tagger.blockSignals(False)
+        self.combo_wd_tagger.setToolTip(self._tr(
+            "tagger.wd_tagger_tip",
+            "Which WD model to use. Confidence thresholds are set by the preset and not "
+            "exposed here: they are calibrated to prioritise the character."))
         wd.addWidget(self.combo_wd_tagger)
         # Los umbrales de confianza se fijan desde el preset (calibrados para
         # priorizar al personaje); no se exponen para no romper el resultado.
         # descarga del modelo + estado
         self.btn_wd_download = QPushButton(self._tr("tagger.wd.download", "Download model"))
+        self.btn_wd_download.setToolTip(self._tr(
+            "tagger.wd_download_tip",
+            "Downloads the selected WD model if it is not on disk yet. It is several "
+            "hundred MB and only needed once."))
         self.btn_wd_download.clicked.connect(self._download_wd)
         wd.addWidget(self.btn_wd_download)
         self.lbl_wd_status = QLabel("")
@@ -392,6 +418,10 @@ class DatasetTaggerView(QWidget):
         self.combo_model_nat = QComboBox()
         for key, label in self._natural_models:
             self.combo_model_nat.addItem(label, key)
+        self.combo_model_nat.setToolTip(self._tr(
+            "tagger.model_natural_tip",
+            "Instruction template for the natural-language text. It changes the prompt "
+            "below, which you can edit."))
         self.combo_model_nat.currentIndexChanged.connect(self._refresh_prompts)
         lay.addWidget(self.lbl_model_nat)
         lay.addWidget(self.combo_model_nat)
@@ -400,16 +430,31 @@ class DatasetTaggerView(QWidget):
         lay.addWidget(self._section(self._tr("tagger.sec.provider", "Provider (local OpenAI-compatible)")))
         self.edit_endpoint = QLineEdit("http://localhost:1234/v1")
         self.edit_endpoint.setPlaceholderText("http://localhost:1234/v1")
+        self.edit_endpoint.setToolTip(self._tr(
+            "tagger.endpoint_tip",
+            "Address of your local OpenAI-compatible server (LM Studio, Ollama…). Nothing "
+            "is sent to the internet."))
         lay.addWidget(self.edit_endpoint)
         self.edit_apikey = QLineEdit()
         self.edit_apikey.setPlaceholderText(self._tr("tagger.apikey", "API key (optional)"))
+        self.edit_apikey.setToolTip(self._tr(
+            "tagger.apikey_tip",
+            "Only if your server requires one. Most local servers do not need it."))
         self.edit_apikey.setEchoMode(QLineEdit.Password)
         lay.addWidget(self.edit_apikey)
 
         btn_row = QHBoxLayout()
         self.btn_discover = QPushButton(self._tr("tagger.discover", "Discover"))
+        self.btn_discover.setToolTip(self._tr(
+            "tagger.discover_tip",
+            "Scans the usual ports on your machine for compatible servers and fills the "
+            "address in for you."))
         self.btn_discover.clicked.connect(self._discover)
         self.btn_test = QPushButton(self._tr("tagger.test", "Test / list"))
+        self.btn_test.setToolTip(self._tr(
+            "tagger.test_tip",
+            "Checks that the address responds and fetches the list of models it offers, "
+            "so you can pick one below."))
         self.btn_test.clicked.connect(self._test_connection)
         btn_row.addWidget(self.btn_discover)
         btn_row.addWidget(self.btn_test)
@@ -417,6 +462,10 @@ class DatasetTaggerView(QWidget):
 
         self.lbl_endpoint_model = QLabel(self._tr("tagger.endpoint_model", "Endpoint model (vision)"))
         self.combo_endpoint_model = QComboBox()
+        self.combo_endpoint_model.setToolTip(self._tr(
+            "tagger.endpoint_model_tip",
+            "The actual model that will serve the requests. It must be a vision model: if "
+            "it is not, a warning appears just below."))
         self.combo_endpoint_model.currentIndexChanged.connect(self._on_endpoint_model_changed)
         lay.addWidget(self.lbl_endpoint_model)
         lay.addWidget(self.combo_endpoint_model)
@@ -435,6 +484,16 @@ class DatasetTaggerView(QWidget):
         self.edit_prefix.setPlaceholderText(self._tr("tagger.prefix", "Prefix (optional)"))
         self.edit_suffix = QLineEdit()
         self.edit_suffix.setPlaceholderText(self._tr("tagger.suffix", "Suffix (optional)"))
+        self.edit_trigger.setToolTip(self._tr(
+            "tagger.trigger_tip",
+            "Unique word placed first in every caption, the one that will later trigger "
+            "your LoRA. Best if it means nothing in English."))
+        self.edit_prefix.setToolTip(self._tr(
+            "tagger.prefix_tip",
+            "Fixed text prepended to every caption, after the trigger word."))
+        self.edit_suffix.setToolTip(self._tr(
+            "tagger.suffix_tip",
+            "Fixed text appended to the end of every caption."))
         for e in (self.edit_trigger, self.edit_prefix, self.edit_suffix):
             lay.addWidget(e)
 
@@ -447,6 +506,11 @@ class DatasetTaggerView(QWidget):
         content_row.addWidget(QLabel(self._tr("tagger.content.sfw", "SFW")))
         self.switch_content = ToggleSwitch(
             self._accent(), self._color('border', "#555"))
+        self.switch_content.setToolTip(self._tr(
+            "tagger.content_nsfw_tip",
+            "Adds a modifier to the prompt so the model describes explicit content "
+            "without censoring itself. You will see it appear in the prompt editor below. "
+            "The WD tagger ignores it: it already gives NSFW tags out of the box."))
         content_row.addWidget(self.switch_content)
         content_row.addWidget(QLabel(self._tr("tagger.content.nsfw", "NSFW")))
         content_row.addStretch()
@@ -468,9 +532,18 @@ class DatasetTaggerView(QWidget):
         self.combo_policy = QComboBox()
         for key, default, _val in POLICIES:
             self.combo_policy.addItem(self._tr(key, default))
+        self.combo_policy.setToolTip(self._tr(
+            "tagger.policy_tip",
+            "What to do with images that ALREADY have a .txt: skip them, overwrite them "
+            "or append. This is the difference between finishing a half-done folder and "
+            "redoing it whole."))
         lay.addWidget(QLabel(self._tr("tagger.policy", "If a caption exists:")))
         lay.addWidget(self.combo_policy)
         self.chk_recursive = QCheckBox(self._tr("tagger.recursive", "Include subfolders"))
+        self.chk_recursive.setToolTip(self._tr(
+            "tagger.recursive_tip",
+            "Also walks into subfolders. On large folders it multiplies the work and the "
+            "time."))
         self.chk_recursive.toggled.connect(self._on_recursive_toggled)
         lay.addWidget(self.chk_recursive)
 
@@ -485,6 +558,11 @@ class DatasetTaggerView(QWidget):
         head = QHBoxLayout()
         head.addWidget(QLabel(title))
         btn_reset = QPushButton(self._tr("tagger.reset", "Reset"))
+        btn_reset.setToolTip(self._tr(
+            "tagger.reset_tags_tip" if is_tags else "tagger.reset_natural_tip",
+            "Resets THIS prompt (the {} one) to the chosen template's default text. "
+            "Whatever you typed here is lost; the other prompt is untouched.".format(
+                "tags" if is_tags else "natural-language")))
         head.addStretch()
         head.addWidget(btn_reset)
         v.addLayout(head)
@@ -689,10 +767,21 @@ class DatasetTaggerView(QWidget):
         lay = QHBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
         self.btn_review = QPushButton(self._tr("tagger.review", "Review / edit captions"))
+        self.btn_review.setToolTip(self._tr(
+            "tagger.review_tip",
+            "Opens the captions already generated to read and fix them by hand, image by "
+            "image. It generates nothing new."))
         self.btn_review.clicked.connect(self._open_review)
         self.btn_run = QPushButton(self._tr("tagger.run", "Start captioning"))
+        self.btn_run.setToolTip(self._tr(
+            "tagger.run_tip",
+            "Starts generating captions for the whole folder. It can take a long time: it "
+            "goes image by image against the model."))
         self.btn_run.clicked.connect(self._run)
         self.btn_cancel = QPushButton(self._tr("tagger.cancel", "Cancel"))
+        self.btn_cancel.setToolTip(self._tr(
+            "tagger.cancel_tip",
+            "Stops the run. The captions already written stay on disk."))
         self.btn_cancel.clicked.connect(self._cancel)
         self.btn_cancel.setEnabled(False)
         lay.addWidget(self.btn_review)
