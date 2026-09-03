@@ -48,7 +48,7 @@ class DownloadQueue(QObject):
     """Ejecuta una lista de perfiles ya detallados (con su clave `urls`)."""
 
     profile_started  = Signal(int, int, str)   # posición (1-based), total, nombre
-    profile_finished = Signal(str, object)     # nombre, DownloadSummary | None
+    profile_finished = Signal(object, object)  # perfil, DownloadSummary | None
     queue_finished   = Signal(object)          # QueueTotals
     queue_cancelled  = Signal(object)          # QueueTotals parcial
 
@@ -142,24 +142,25 @@ class DownloadQueue(QObject):
     def _on_finished(self, summary) -> None:
         if self._current is None:
             return  # descarga suelta, no de esta cola
-        name = self._name()
+        profile = self._current
         self._totals.add(summary)
-        self.profile_finished.emit(name, summary)
+        self.profile_finished.emit(profile, summary)
         self._advance()
 
     def _on_failed(self, message: str) -> None:
         if self._current is None:
             return
-        name = self._name()
-        self._totals.failed.append((name, message))
-        self.profile_finished.emit(name, None)
+        profile = self._current
+        self._totals.failed.append((self._name(), message))
+        self.profile_finished.emit(profile, None)
         self._advance()
 
     def _on_cancelled(self) -> None:
         if self._current is None:
             return
+        profile = self._current
         self._cancelling = True
-        self.profile_finished.emit(self._name(), None)
+        self.profile_finished.emit(profile, None)
         self._current = None
         self._pending.clear()
         self.queue_cancelled.emit(self._totals)

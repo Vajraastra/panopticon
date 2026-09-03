@@ -21,7 +21,9 @@ sintéticos, perfiles sin template y lecturas locales de `index.db`. `--scan` y
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -371,7 +373,9 @@ def test_queue(app, runtime, bridge, rec) -> None:
     queue = DownloadQueue(bridge)
     seen: list[tuple[int, int, str]] = []
     done: list[object] = []
+    ended: list[tuple] = []
     queue.profile_started.connect(lambda i, n, name: seen.append((i, n, name)))
+    queue.profile_finished.connect(lambda prof, summ: ended.append((prof, summ)))
     queue.queue_finished.connect(done.append)
 
     # `params_for` es lo que hace que cada perfil baje SU filtro de tipos: se
@@ -406,6 +410,58 @@ def test_queue(app, runtime, bridge, rec) -> None:
     check("el puente queda libre tras la cola", not bridge.is_busy)
     check("params_for se consultó una vez por perfil",
           asked == ["FALSO A", "FALSO B"], f"({asked})")
+    # A4: quien reacciona al fin de una descarga necesita el `folder_path` del
+    # perfil, no solo su nombre.
+    check("profile_finished emite el perfil entero",
+          bool(ended) and all(isinstance(p, dict) and "folder_path" in p for p, _ in ended),
+          f"({[type(p).__name__ for p, _ in ended]})")
+
+
+def test_library_probe() -> None:
+    """A4: el lector de `panopticon.db` y las consultas de "esto ya lo tengo"."""
+    print("\n[10] Biblioteca: library_probe y library_check")
+    from core import library_probe as lp
+    from modules.cherry.logic import library_check as lc
+
+    win = "G:" + chr(92) + "images" + chr(92) + "x"
+    check("normalize deja barras hacia delante",
+          lp.normalize(win) == "G:/images/x", f"({lp.normalize(win)})")
+
+    watched = lp.watched_folders()
+    if not watched:
+        check("hay al menos una carpeta vigilada (se omite el resto)", False,
+              "(biblioteca vacía: is_watched no se puede ejercitar)")
+    else:
+        base = watched[0]
+        check("la carpeta vigilada se reconoce a sí misma", lp.is_watched(base))
+        check("una subcarpeta cuenta como vigilada", lp.is_watched(base + "/loquesea"))
+        check("una hermana con prefijo común NO cuenta",
+              not lp.is_watched(base + "-otra"), f"({base}-otra)")
+        check("una ruta de fuera no cuenta", not lp.is_watched("C:/definitivamente/fuera"))
+    check("una ruta vacía no cuenta como vigilada", not lp.is_watched(""))
+
+    empty = lp.artist_summary("__artista que no existe__")
+    check("un artista desconocido da cero", empty["files"] == 0, f"({empty})")
+    check("un nombre vacío da cero", lp.artist_summary("")["files"] == 0)
+
+    # La conexión es `mode=ro`: ni un bug puede crear una biblioteca fantasma.
+    ghost = Path(tempfile.gettempdir()) / "panopticon_fantasma_selftest.db"
+    ghost.unlink(missing_ok=True)
+    real_db_path = lp.db_path
+    lp.db_path = lambda: ghost
+    try:
+        check("sin biblioteca, is_available es False", not lp.is_available())
+        check("sin biblioteca, no hay carpetas vigiladas", lp.watched_folders() == [])
+        check("sin biblioteca, el resumen viene vacío", lp.artist_summary("x")["files"] == 0)
+        check("consultar NO crea el archivo", not ghost.exists(), f"({ghost})")
+    finally:
+        lp.db_path = real_db_path
+        ghost.unlink(missing_ok=True)
+
+    check("una URL vacía no busca nada", asyncio.run(lc.find_url("")) == [])
+    check("una URL que no está en el índice no da falsos positivos",
+          asyncio.run(lc.find_url("https://example.invalid/no-existe")) == [])
+    check("un artista vacío da cero", asyncio.run(lc.find_artist(""))["files"] == 0)
 
 
 def test_ext_filter() -> None:
@@ -461,6 +517,7 @@ def main() -> int:
 
     try:
         test_ext_filter()
+        test_library_probe()
         test_runtime(app, runtime)
         profiles = test_index_read(app, runtime)
 
