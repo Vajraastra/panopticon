@@ -1001,7 +1001,29 @@ class CherryView(QWidget):
         if not self._runtime.start():
             self._set_status(self.tr("cherry.runtime_failed", "Could not start the async runtime."))
             return
-        DuplicatesDialog(self._runtime, self._theme, self._lm, self).exec()
+        dialog = DuplicatesDialog(self._runtime, self._theme, self._lm, self)
+        dialog.folders_changed.connect(self._on_merge_folders)
+        dialog.exec()
+
+    def _on_merge_folders(self, folders) -> None:
+        """Una fusión movió archivos entre dos carpetas: avisar y refrescar.
+
+        Se avisa de **las dos**: la que recibe ganó archivos y la que se vacía
+        los perdió, y el Librarian tiene que enterarse de ambas cosas o se queda
+        con filas apuntando a rutas que ya no existen. Se reutiliza el mismo
+        filtro que la descarga —solo lo que cuelga de una carpeta vigilada—,
+        porque re-indexar lo de fuera metería archivos en la biblioteca sin que
+        nadie los haya dado de alta.
+        """
+        if self._event_bus is not None:
+            for folder in folders:
+                if not library_probe.is_watched(folder):
+                    log.info("cherry: %s no está bajo una carpeta vigilada; no se avisa", folder)
+                    continue
+                self._event_bus.publish("library_changed", str(folder))
+                log.info("cherry: library_changed → %s (fusión)", folder)
+        # Un proyecto desapareció del índice: la tabla ya no dice la verdad.
+        self.refresh()
 
     # ── Filtro de tipos por perfil ────────────────────────────────────────
     def _set_ext_enabled(self, on: bool) -> None:
