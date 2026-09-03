@@ -16,7 +16,7 @@ forma de expresarse en un botón.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from PySide6.QtCore import QObject, Signal
 
@@ -60,6 +60,7 @@ class DownloadQueue(QObject):
         self._current: dict | None = None
         self._totals = QueueTotals()
         self._params: dict = {}
+        self._params_for: Callable[[dict], dict] | None = None
         self._cancelling = False
 
         bridge.finished_signal.connect(self._on_finished)
@@ -74,8 +75,20 @@ class DownloadQueue(QObject):
     def totals(self) -> QueueTotals:
         return self._totals
 
-    def start(self, profiles: list[dict], **params) -> bool:
-        """Arranca el lote. False si ya hay uno corriendo o la lista está vacía."""
+    def start(
+        self,
+        profiles: list[dict],
+        *,
+        params_for: Callable[[dict], dict] | None = None,
+        **params,
+    ) -> bool:
+        """Arranca el lote. False si ya hay uno corriendo o la lista está vacía.
+
+        `params_for(perfil)` devuelve lo que cambia de un perfil a otro y se
+        superpone a `params`. Existe para el filtro de tipos, que se guarda en
+        cada perfil: sin esto un lote aplicaría a todos el filtro del primero.
+        La cola no sabe qué contiene ese dict y no debe saberlo — solo lo pasa.
+        """
         if self.is_running or self._bridge.is_busy:
             log.warning("cherry: ya hay una cola en marcha")
             return False
@@ -85,6 +98,7 @@ class DownloadQueue(QObject):
         self._total = len(profiles)
         self._totals = QueueTotals()
         self._params = params
+        self._params_for = params_for
         self._cancelling = False
         return self._advance()
 
@@ -109,7 +123,10 @@ class DownloadQueue(QObject):
         self._current = profile
         position = self._total - len(self._pending)
         self.profile_started.emit(position, self._total, profile["display_name"])
-        if self._bridge.start(profile, **self._params):
+        params = dict(self._params)
+        if self._params_for is not None:
+            params.update(self._params_for(profile))
+        if self._bridge.start(profile, **params):
             return True
 
         # No arrancó (runtime caído o puente ocupado): no se puede seguir.

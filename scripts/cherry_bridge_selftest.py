@@ -374,8 +374,18 @@ def test_queue(app, runtime, bridge, rec) -> None:
     queue.profile_started.connect(lambda i, n, name: seen.append((i, n, name)))
     queue.queue_finished.connect(done.append)
 
+    # `params_for` es lo que hace que cada perfil baje SU filtro de tipos: se
+    # anota lo que la cola pide para comprobar que se llamó por perfil y que
+    # lo devuelto pisa el valor común.
+    asked: list[str] = []
+
+    def params_for(profile: dict) -> dict:
+        asked.append(profile["display_name"])
+        return {"ext_filter": {".jpg"} if profile["id"] == -1 else {".zip"}}
+
     check("start() arranca la cola",
           queue.start([_fake_profile(-1, "FALSO A"), _fake_profile(-2, "FALSO B")],
+                      params_for=params_for,
                       workers=2, ext_filter=set(), exclude_mode=False,
                       force_full=False, scan_only=True))
     check("un segundo start() se rechaza", queue.start([_fake_profile(-3, "C")]) is False)
@@ -394,6 +404,40 @@ def test_queue(app, runtime, bridge, rec) -> None:
           [i for i, _, _ in seen] == [1, 2], f"({seen})")
     check("la cola queda libre", not queue.is_running)
     check("el puente queda libre tras la cola", not bridge.is_busy)
+    check("params_for se consultó una vez por perfil",
+          asked == ["FALSO A", "FALSO B"], f"({asked})")
+
+
+def test_ext_filter() -> None:
+    """El filtro de tipos: formato del motor, ida y vuelta, y el caso legacy."""
+    print("\n[9] Filtro de tipos por perfil")
+    from modules.cherry.logic import ext_filter as ef
+
+    gids = [gid for gid, _label, _exts in ef.groups()]
+    check("los grupos vienen del motor",
+          {"images", "anim", "video", "zip"} <= set(gids), f"({gids})")
+    check("cada grupo tiene traducción",
+          all(g in ef.GROUP_KEYS for g in gids),
+          f"(sin clave: {[g for g in gids if g not in ef.GROUP_KEYS]})")
+
+    enc = ef.encode(["images", "zip"], "psd, clip")
+    groups, custom = ef.decode(enc)
+    check("ida y vuelta conserva los grupos", groups == {"images", "zip"}, f"({groups})")
+    check("ida y vuelta conserva el campo extra", custom == "psd, clip", f"({custom!r})")
+
+    eff = ef.effective(enc)
+    check("las extensiones salen con punto", all(e.startswith(".") for e in eff))
+    check("el campo extra entra en el filtro", {".psd", ".clip"} <= eff)
+    check("los grupos entran en el filtro", {".jpg", ".zip"} <= eff)
+    check("un grupo sin marcar no entra", ".mp4" not in eff)
+
+    check("vacío significa TODO, no nada", ef.effective("") == set())
+    check("un ext_filter legacy sigue funcionando",
+          ef.effective(".jpg,.png") == {".jpg", ".png"})
+    check("un legacy se muestra como texto extra, no como grupos",
+          ef.decode(".jpg,.png") == (set(), ".jpg,.png"))
+    check("un JSON corrupto no revienta la vista",
+          ef.decode("{roto") == (set(), "{roto"))
 
 
 def main() -> int:
@@ -416,6 +460,7 @@ def main() -> int:
     rec = Recorder(bridge)
 
     try:
+        test_ext_filter()
         test_runtime(app, runtime)
         profiles = test_index_read(app, runtime)
 

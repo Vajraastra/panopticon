@@ -25,14 +25,15 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-    QPushButton, QSpinBox, QStackedWidget, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMessageBox, QPushButton, QSpinBox, QStackedWidget, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from core.components.standard_layout import StandardToolLayout
 from core.paths import CachePaths
+from ..logic import ext_filter as ext_logic
 from ..logic import profile_writes as writes
 from ..logic import profiles as profiles_logic
 from ..logic.download_bridge import DownloadBridge
@@ -57,6 +58,7 @@ class CherryView(StandardToolLayout):
     _details_ready  = Signal(object, bool)  # list[dict] a descargar, scan_only
     _profile_created = Signal(int, bool)    # id nuevo, descargar al terminar
     _url_added       = Signal(int)          # perfil al que se le añadió
+    _filter_saved    = Signal(int, str)     # perfil, ext_filter guardado
     _load_failed    = Signal(str)
 
     def __init__(self, context: dict | None = None, runtime: CherryRuntime | None = None) -> None:
@@ -74,6 +76,11 @@ class CherryView(StandardToolLayout):
 
         self._profiles: list[dict] = []
         self._selected_id: int | None = None
+        # Último filtro conocido por perfil, con la edición de la UI ya
+        # aplicada. La descarga lo prefiere sobre lo que traiga la lectura
+        # de `index.db`: guardar es una corrutina, y entre marcar una
+        # casilla y pulsar Descargar puede no haber hecho commit todavía.
+        self._filter_cache: dict[int, str] = {}
         self._started = False
         self._auth_boxes: dict[int, QMessageBox] = {}
 
@@ -105,6 +112,7 @@ class CherryView(StandardToolLayout):
         self._details_ready.connect(self._on_details_ready)
         self._profile_created.connect(self._on_profile_created)
         self._url_added.connect(self._on_url_added)
+        self._filter_saved.connect(self._on_filter_saved)
         self._load_failed.connect(self._on_load_failed)
         self._legacy.state_changed.connect(self._on_legacy_state)
 
@@ -238,17 +246,7 @@ class CherryView(StandardToolLayout):
         workers_row.addStretch(1)
         lay.addLayout(workers_row)
 
-        self._ext_filter = QLineEdit()
-        self._ext_filter.setPlaceholderText(self.tr("cherry.dl_ext_ph", "jpg, png, zip…"))
-        self._ext_filter.setToolTip(self.tr(
-            "cherry.dl_ext_tip",
-            "Extensions to include. The filter applies when downloading, not when "
-            "scanning: changing it never re-scans the history.",
-        ))
-        lay.addWidget(self._ext_filter)
-
-        self._ext_exclude = QCheckBox(self.tr("cherry.dl_exclude", "Exclude these instead"))
-        lay.addWidget(self._ext_exclude)
+        lay.addWidget(self._build_ext_filter())
 
         self._force_full = QCheckBox(self.tr("cherry.dl_rescan", "Full rescan (ignore last sync)"))
         lay.addWidget(self._force_full)
@@ -276,6 +274,62 @@ class CherryView(StandardToolLayout):
         self._btn_legacy.clicked.connect(self._launch_legacy)
         lay.addWidget(self._btn_legacy)
         return panel
+
+    def _build_ext_filter(self) -> QWidget:
+        """Casillas de tipos + campo libre, del perfil seleccionado.
+
+        Los grupos y sus extensiones los define el motor (`EXT_GROUPS`); aquí
+        solo se traduce la etiqueta. Sin nada marcado y con el campo vacío el
+        motor entiende "todo", que es lo que espera quien nunca abre esto.
+        """
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+
+        lay.addWidget(self._section_label(self.tr("cherry.ext_title", "FILE TYPES")))
+        self._ext_hint = QLabel(self.tr(
+            "cherry.ext_hint_none", "Select a project to choose its file types."))
+        self._ext_hint.setWordWrap(True)
+        self._ext_hint.setStyleSheet(
+            f"color: {self._color('text_dim', '#888')}; font-size: 11px;")
+        lay.addWidget(self._ext_hint)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 2, 0, 2)
+        grid.setSpacing(4)
+        self._ext_checks: dict[str, QCheckBox] = {}
+        for i, (gid, label, exts) in enumerate(ext_logic.groups()):
+            key, default = ext_logic.GROUP_KEYS.get(gid, ("", label))
+            chk = QCheckBox(self.tr(key, default) if key else label)
+            chk.setToolTip(", ".join(f".{e}" for e in exts))
+            chk.toggled.connect(self._on_ext_changed)
+            self._ext_checks[gid] = chk
+            grid.addWidget(chk, i // 2, i % 2)
+        lay.addLayout(grid)
+
+        self._ext_custom = QLineEdit()
+        self._ext_custom.setPlaceholderText(self.tr("cherry.ext_custom_ph", "psd, clip…"))
+        self._ext_custom.setToolTip(self.tr(
+            "cherry.ext_custom_tip",
+            "Extra extensions on top of the boxes above, comma separated.",
+        ))
+        # `editingFinished` y no `textChanged`: cada tecla sería una escritura
+        # en `index.db` (que además re-escribe el .cherry-meta.json del perfil).
+        self._ext_custom.editingFinished.connect(self._on_ext_changed)
+        lay.addWidget(self._ext_custom)
+
+        self._btn_ext_all = QPushButton(
+            self.tr("cherry.ext_apply_all", "Apply to all listed"))
+        self._btn_ext_all.setToolTip(self.tr(
+            "cherry.ext_apply_all_tip",
+            "Copy these types to every project currently listed.",
+        ))
+        self._btn_ext_all.clicked.connect(self._apply_ext_to_visible)
+        lay.addWidget(self._btn_ext_all)
+
+        self._set_ext_enabled(False)
+        return box
 
     def _build_action_bar(self) -> QWidget:
         bar = QWidget()
@@ -395,6 +449,7 @@ class CherryView(StandardToolLayout):
         if detail is None:
             self._detail_label.setText(self.tr("cherry.detail_gone", "Profile no longer in the index."))
             self._sources.clear()
+            self._clear_ext_filter()
             return
         if detail["id"] != self._selected_id:
             return  # llegó tarde: la selección ya cambió
@@ -413,6 +468,11 @@ class CherryView(StandardToolLayout):
         lines.append(self.tr("cherry.detail_sources", "Sources ({n}):").format(n=len(urls)))
         self._detail_label.setText("<br>".join(lines))
         self._populate_sources(urls)
+        # `list_profiles` no trae `ext_filter` — solo `get_profile`. Por eso el
+        # bloque de tipos se puebla aquí y no al pintar la tabla.
+        stored = detail.get("ext_filter", "")
+        self._filter_cache[detail["id"]] = stored
+        self._load_ext_filter(stored)
 
     def _on_load_failed(self, message: str) -> None:
         self._busy_refresh(False)
@@ -530,10 +590,17 @@ class CherryView(StandardToolLayout):
     def _on_selection_changed(self) -> None:
         profile = self._current_profile()
         self._update_actions()
-        if profile is None or profile["id"] == self._selected_id:
+        if profile is None:
+            # Sin selección no hay filtro que editar: dejarlo pintado sería
+            # enseñar el del perfil anterior y guardarlo sobre el siguiente.
+            self._clear_ext_filter()
+            return
+        if profile["id"] == self._selected_id:
             return
         self._selected_id = profile["id"]
         self._detail_label.setText(self.tr("cherry.detail_loading", "Loading…"))
+        # Lo que haya en cache se pinta ya; el detalle lo confirmará al llegar.
+        self._load_ext_filter(self._filter_cache.get(profile["id"], ""))
         if self._runtime.is_running:
             try:
                 self._runtime.submit(self._load_detail(profile["id"]))
@@ -549,6 +616,9 @@ class CherryView(StandardToolLayout):
         self._btn_all.setEnabled(bool(self._profiles) and not running)
         self._btn_cancel.setEnabled(running)
         self._btn_new.setEnabled(not running)
+        # Durante una descarga el filtro se congela: el motor ya lo leyó al
+        # arrancar y editarlo a media sync solo mentiría sobre lo que baja.
+        self._set_ext_enabled(bool(profile) and not running)
         self._btn_add_url.setEnabled(bool(profile) and not running)
 
     # ── Altas en el índice ────────────────────────────────────────────────
@@ -667,16 +737,152 @@ class CherryView(StandardToolLayout):
             return
         self._url_added.emit(-1)  # solo para refrescar la tabla y el estado
 
-    # ── Descarga (A3) ─────────────────────────────────────────────────────
-    def _ext_set(self) -> set[str]:
-        """'jpg, .png' → {'.jpg', '.png'}: el motor espera el punto incluido."""
-        out = set()
-        for chunk in self._ext_filter.text().replace(";", ",").split(","):
-            ext = chunk.strip().lower().lstrip("*")
-            if ext:
-                out.add(ext if ext.startswith(".") else f".{ext}")
-        return out
+    # ── Filtro de tipos por perfil ────────────────────────────────────────
+    def _set_ext_enabled(self, on: bool) -> None:
+        for chk in self._ext_checks.values():
+            chk.setEnabled(on)
+        self._ext_custom.setEnabled(on)
+        self._btn_ext_all.setEnabled(on)
 
+    def _load_ext_filter(self, stored: str) -> None:
+        """Refleja lo guardado en las casillas SIN disparar un guardado.
+
+        Sin bloquear las señales, repintar el filtro del perfil recién
+        seleccionado lo re-escribiría en la BD en el acto — y un valor legacy
+        se convertiría al formato nuevo por el mero hecho de mirarlo.
+        """
+        group_ids, custom = ext_logic.decode(stored)
+        for gid, chk in self._ext_checks.items():
+            chk.blockSignals(True)
+            chk.setChecked(gid in group_ids)
+            chk.blockSignals(False)
+        self._ext_custom.blockSignals(True)
+        self._ext_custom.setText(custom)
+        self._ext_custom.blockSignals(False)
+        self._set_ext_enabled(True)
+        self._update_ext_hint()
+
+    def _clear_ext_filter(self) -> None:
+        """Sin perfil seleccionado no hay filtro que editar: vaciar y apagar."""
+        self._load_ext_filter("")
+        self._set_ext_enabled(False)
+        self._ext_hint.setText(self.tr(
+            "cherry.ext_hint_none", "Select a project to choose its file types."))
+
+    def _ext_selection(self) -> tuple[list[str], str]:
+        groups = [gid for gid, chk in self._ext_checks.items() if chk.isChecked()]
+        return groups, self._ext_custom.text()
+
+    def _update_ext_hint(self) -> None:
+        groups, custom = self._ext_selection()
+        n = len(ext_logic.effective(ext_logic.encode(groups, custom)))
+        if not n:
+            self._ext_hint.setText(self.tr(
+                "cherry.ext_hint_all", "Nothing selected: every file type is downloaded."))
+        else:
+            self._ext_hint.setText(self.tr(
+                "cherry.ext_hint_n", "{n} extensions will be downloaded.").format(n=n))
+
+    def _on_ext_changed(self) -> None:
+        """Una casilla o el campo extra cambiaron: se guarda en el perfil."""
+        profile = self._current_profile()
+        if profile is None:
+            return
+        groups, custom = self._ext_selection()
+        # El cache se actualiza YA, en el hilo GUI: si el usuario pulsa
+        # Descargar antes de que el guardado haga commit, la descarga usa lo
+        # que ve en pantalla y no lo que aún hay en disco.
+        self._filter_cache[profile["id"]] = ext_logic.encode(groups, custom)
+        self._update_ext_hint()
+        if not self._runtime.start():
+            self._set_status(self.tr("cherry.runtime_failed", "Could not start the async runtime."))
+            return
+        try:
+            self._runtime.submit(self._save_ext_async(profile["id"], groups, custom))
+        except RuntimeError as exc:
+            self._load_failed.emit(str(exc))
+
+    async def _save_ext_async(self, profile_id: int, groups: list, custom: str) -> None:
+        try:
+            stored = await ext_logic.save(profile_id, groups, custom)
+        except Exception as exc:
+            log.exception("cherry: no se pudo guardar el filtro de tipos")
+            self._load_failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self._filter_saved.emit(profile_id, stored)
+
+    def _on_filter_saved(self, profile_id: int, stored: str) -> None:
+        if profile_id < 0:  # vino del lote: el cache ya se escribió al lanzarlo
+            self._set_status(
+                self.tr("cherry.ext_applied_all", "File types applied to the listed projects."),
+                flash=True)
+            return
+        self._filter_cache[profile_id] = stored
+        if profile_id == self._selected_id:
+            self._set_status(self.tr("cherry.ext_saved", "File types saved."), flash=True)
+
+    def _apply_ext_to_visible(self) -> None:
+        """Copia el filtro actual a todos los perfiles de la lista visible.
+
+        Existe porque el filtro es del perfil: sin esto, dejar 46 proyectos en
+        "solo imágenes" sería marcar casillas 46 veces. Respeta el filtro de la
+        tabla — se aplica a lo que se ve, no a todo el índice — y por eso el
+        diálogo dice cuántos son.
+        """
+        rows = self._visible_profiles()
+        if not rows:
+            return
+        groups, custom = self._ext_selection()
+        n_ext = len(ext_logic.effective(ext_logic.encode(groups, custom)))
+        body = (
+            self.tr("cherry.ext_apply_all_body",
+                    "{n} listed projects will download only these {e} extensions. "
+                    "Their current selection is replaced.")
+            if n_ext else
+            self.tr("cherry.ext_apply_all_body_none",
+                    "{n} listed projects will go back to downloading every file type. "
+                    "Their current selection is replaced.")
+        )
+        reply = QMessageBox.question(
+            self,
+            self.tr("cherry.ext_apply_all_title", "Apply file types"),
+            body.format(n=len(rows), e=n_ext),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if not self._runtime.start():
+            self._set_status(self.tr("cherry.runtime_failed", "Could not start the async runtime."))
+            return
+        ids = [p["id"] for p in rows]
+        encoded = ext_logic.encode(groups, custom)
+        for pid in ids:
+            self._filter_cache[pid] = encoded
+        try:
+            self._runtime.submit(self._save_ext_many_async(ids, groups, custom))
+        except RuntimeError as exc:
+            self._load_failed.emit(str(exc))
+
+    async def _save_ext_many_async(self, ids: list, groups: list, custom: str) -> None:
+        """Uno por uno: `update_profile_ext_filter` abre su propia conexión y
+        además re-escribe el meta de cada carpeta. En serie tarda, pero no deja
+        el índice a medias si uno falla."""
+        failed = 0
+        for pid in ids:
+            try:
+                await ext_logic.save(pid, groups, custom)
+            except Exception:
+                log.exception("cherry: no se pudo guardar el filtro del perfil %s", pid)
+                failed += 1
+        if failed:
+            self._load_failed.emit(
+                self.tr("cherry.ext_apply_all_failed", "{n} projects could not be saved.")
+                .format(n=failed))
+            return
+        self._filter_saved.emit(-1, "")
+
+    # ── Descarga (A3) ─────────────────────────────────────────────────────
     def _start_selected(self, scan_only: bool) -> None:
         profile = self._current_profile()
         if profile is None:
@@ -739,9 +945,8 @@ class CherryView(StandardToolLayout):
             return
         started = self._queue.start(
             rows,
+            params_for=self._params_for_profile,
             workers=self._workers.value(),
-            ext_filter=self._ext_set(),
-            exclude_mode=self._ext_exclude.isChecked(),
             force_full=self._force_full.isChecked(),
             scan_only=scan_only,
         )
@@ -750,6 +955,15 @@ class CherryView(StandardToolLayout):
         else:
             self._set_status(self.tr("cherry.dl_running", "Downloading…"))
         self._update_actions()
+
+    def _params_for_profile(self, profile: dict) -> dict:
+        """Lo que cambia de un perfil a otro: hoy, su filtro de tipos.
+
+        El cache manda sobre lo leído de `index.db` para que una casilla recién
+        marcada cuente aunque su guardado todavía no haya hecho commit.
+        """
+        stored = self._filter_cache.get(profile["id"], profile.get("ext_filter", ""))
+        return {"ext_filter": ext_logic.effective(stored)}
 
     def _cancel(self) -> None:
         if self._queue.cancel() or self._bridge.cancel():
