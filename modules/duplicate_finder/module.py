@@ -91,7 +91,7 @@ class DuplicateFinderModule(BaseModule):
         self._name = "Duplicate Finder"
         self._description = "Find and remove duplicate images by hash or visual similarity."
         self._icon = "👯"
-        self.accent_color = "#00ffcc"
+        self.accent_color = "#00ffcc"  # tono de identidad; el loader le pone el croma del tema
         self.view = None
         self.worker = None
         self.duplicate_groups = {}

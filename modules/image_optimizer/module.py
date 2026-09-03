@@ -123,7 +123,7 @@ class ImageOptimizerModule(BaseModule):
         self._name = "Image Optimizer"
         self._description = "Batch compress, resize and convert images preserving metadata."
         self._icon = "🚀"
-        self.accent_color = "#00ffcc"
+        self.accent_color = "#66ff66"  # tono de identidad; el loader le pone el croma del tema
         self.view = None
         self.queue = []
 

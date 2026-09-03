@@ -52,10 +52,30 @@ class ModuleLoader:
                     instance = obj()
                     # Inyección de dependencias
                     instance.on_load(context)
+                    self._retheme_accent(instance, context)
                     self.loaded_modules[module_name] = instance
                     return instance
         except Exception as e:
             log.error("Error cargando módulo %s: %s", module_name, e)
             return None
-        
+
         return None
+
+    @staticmethod
+    def _retheme_accent(instance, context):
+        """Reencaja el `accent_color` del módulo en la paleta activa.
+
+        Se hace aquí y no en cada módulo por dos razones: es el único punto por el que
+        pasan todos, y así el core no necesita conocerlos por nombre — el tono de
+        identidad lo sigue declarando el propio módulo. Va DESPUÉS de `on_load` y antes
+        del primer `get_view()`, que es perezoso, así que la vista ya lo ve reencajado.
+        """
+        theme = (context or {}).get("theme_manager")
+        accent = getattr(instance, "accent_color", None)
+        if not theme or not accent:
+            return
+        try:
+            instance.accent_color = theme.themed_accent(accent)
+        except Exception as e:
+            log.warning("No se pudo reencajar el acento de %s: %s",
+                        getattr(instance, "_name", instance), e)

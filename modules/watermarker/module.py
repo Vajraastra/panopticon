@@ -69,7 +69,7 @@ class WatermarkerModule(BaseModule):
         layout.addWidget(lbl_img)
 
         self.btn_load_image = QPushButton(self.tr("common.load_image", "📂 Load Image"))
-        self.btn_load_image.setStyleSheet(Theme.get_action_button_style(self.accent_color, "#000000"))
+        self.btn_load_image.setStyleSheet(Theme.get_action_button_style(self.accent_color))
         self.btn_load_image.setFixedHeight(36)
         self.btn_load_image.clicked.connect(self.load_source_image)
         layout.addWidget(self.btn_load_image)
@@ -86,7 +86,7 @@ class WatermarkerModule(BaseModule):
         layout.addWidget(lbl_wm_section)
 
         self.btn_load_watermark = QPushButton(self.tr("wm.load_wm", "📂 Load Watermark"))
-        self.btn_load_watermark.setStyleSheet(Theme.get_button_style("#555"))
+        self.btn_load_watermark.setStyleSheet(Theme.get_button_style(Theme.TEXT_SECONDARY))
         self.btn_load_watermark.setFixedHeight(36)
         self.btn_load_watermark.clicked.connect(self.load_watermark_asset)
         layout.addWidget(self.btn_load_watermark)
@@ -124,7 +124,7 @@ class WatermarkerModule(BaseModule):
         layout.addWidget(lbl_logo_section)
 
         self.btn_load_logo = QPushButton(self.tr("wm.load_logo", "📂 Load Logo"))
-        self.btn_load_logo.setStyleSheet(Theme.get_button_style("#555"))
+        self.btn_load_logo.setStyleSheet(Theme.get_button_style(Theme.TEXT_SECONDARY))
         self.btn_load_logo.setFixedHeight(36)
         self.btn_load_logo.clicked.connect(self.load_logo_asset)
         layout.addWidget(self.btn_load_logo)
@@ -153,7 +153,7 @@ class WatermarkerModule(BaseModule):
         self.btn_save.setCursor(Qt.PointingHandCursor)
         self.btn_save.clicked.connect(self.save_copy)
         self.btn_save.setFixedHeight(44)
-        self.btn_save.setStyleSheet(Theme.get_action_button_style(self.accent_color, "#000000"))
+        self.btn_save.setStyleSheet(Theme.get_action_button_style(self.accent_color))
         layout.addWidget(self.btn_save)
 
         return container

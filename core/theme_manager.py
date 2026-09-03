@@ -1,3 +1,4 @@
+import colorsys
 import json
 import os
 import logging
@@ -6,6 +7,28 @@ from PySide6.QtGui import QColor
 from core.locale_manager import LocaleManager
 
 log = logging.getLogger(__name__)
+
+
+def _to_hex(rgb):
+    return "#%02x%02x%02x" % tuple(round(c * 255) for c in rgb)
+
+
+def _luminance(hex_color):
+    """Luminancia relativa WCAG."""
+    h = hex_color.lstrip("#")
+    chan = []
+    for i in (0, 2, 4):
+        c = int(h[i:i + 2], 16) / 255
+        chan.append(c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4)
+    return .2126 * chan[0] + .7152 * chan[1] + .0722 * chan[2]
+
+
+def _contrast(a, b):
+    """Razón de contraste WCAG entre dos colores."""
+    l1, l2 = _luminance(a), _luminance(b)
+    if l1 < l2:
+        l1, l2 = l2, l1
+    return (l1 + .05) / (l2 + .05)
 
 class ThemeManager(QObject):
     """
@@ -134,12 +157,25 @@ class ThemeManager(QObject):
         },
     }
 
+    # Instancia en uso. `main.py` construye una sola y la inyecta en los módulos, pero
+    # la fachada `core.theme.Theme` no recibe inyección: la necesita para resolver los
+    # nombres históricos (Theme.BG_PANEL y compañía) contra la paleta viva.
+    _active = None
+
+    @classmethod
+    def active(cls):
+        """El ThemeManager en uso, o uno con la paleta por defecto si aún no hay."""
+        if cls._active is None:
+            cls._active = cls()
+        return cls._active
+
     def __init__(self, config_path="theme_config.json"):
         super().__init__()
         self.config_path = config_path
         self.current_theme = "cyberpunk"
         self.colors = self.DEFAULTS.copy()
         self.load_config()
+        ThemeManager._active = self
 
     def load_config(self):
         """Carga el tema activo y colores personalizados desde el archivo de configuración."""
@@ -197,6 +233,40 @@ class ThemeManager(QObject):
     def get_color(self, key):
         """Retorna un código de color Hex por su clave."""
         return self.colors.get(key, "#ff00ff")
+
+    def themed_accent(self, hex_color):
+        """Reencaja el acento de un módulo en la paleta activa.
+
+        Cada módulo declara un `accent_color` que es su identidad visual. Como eran
+        hex fijos, los once fallaban AA en algún tema: sobre el tema claro llegaban a
+        1.12:1 (invisibles) y sobre los oscuros a 12:1, que deslumbra. Aquí se
+        conserva el TONO —lo que distingue una herramienta de otra— y se le dan el
+        croma y la claridad del acento del tema, de modo que el módulo se siga
+        reconociendo y el contraste lo garantice la paleta.
+        """
+        try:
+            h = hex_color.lstrip("#")
+            rgb = tuple(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+        except (AttributeError, ValueError, IndexError):
+            return self.get_color("accent_main")
+
+        hue = colorsys.rgb_to_hls(*rgb)[0]
+        ref = self.get_color("accent_main").lstrip("#")
+        ref_rgb = tuple(int(ref[i:i + 2], 16) / 255 for i in (0, 2, 4))
+        _, light, sat = colorsys.rgb_to_hls(*ref_rgb)
+
+        panel = self.get_color("bg_panel")
+        # El tono cambia la luminancia aunque claridad y croma no se muevan (un azul
+        # es más oscuro que un amarillo con el mismo HSL), así que se corrige hasta
+        # recuperar AA, en la dirección que marque la polaridad del tema.
+        step = -0.02 if _luminance(panel) > 0.18 else 0.02
+        out = _to_hex(colorsys.hls_to_rgb(hue, light, sat))
+        for _ in range(40):
+            if _contrast(out, panel) >= 4.5:
+                break
+            light = min(0.97, max(0.03, light + step))
+            out = _to_hex(colorsys.hls_to_rgb(hue, light, sat))
+        return out
 
     def tr(self, key, default=None):
         """Atajo al LocaleManager para componentes que solo inyectan el ThemeManager."""

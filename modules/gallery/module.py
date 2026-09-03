@@ -21,7 +21,7 @@ class GalleryModule(BaseModule):
         self._name = "Gallery"
         self._description = "Browse and organize your image library."
         self._icon = "🖼️"
-        self.accent_color = "#00ffcc"
+        self.accent_color = "#00b4ff"  # tono de identidad; el loader le pone el croma del tema
 
         self.view_widget = None
         self.state = None

@@ -283,7 +283,7 @@ class FormatConverterModule(BaseModule):
         layout.addWidget(self._section_label(self.tr("fc.source", "📂 1. SOURCE"), text_sec))
 
         self.btn_select_folder = QPushButton(self.tr("fc.select_folder", "📁 Select Folder"))
-        self.btn_select_folder.setStyleSheet(Theme.get_action_button_style(self.accent_color, "#000"))
+        self.btn_select_folder.setStyleSheet(Theme.get_action_button_style(self.accent_color))
         self.btn_select_folder.setFixedHeight(36)
         self.btn_select_folder.clicked.connect(self.select_source_folder)
         layout.addWidget(self.btn_select_folder)
@@ -381,7 +381,7 @@ class FormatConverterModule(BaseModule):
         layout.addSpacing(4)
 
         self.btn_convert = QPushButton(self.tr("fc.convert", "🚀 START CONVERSION"))
-        self.btn_convert.setStyleSheet(Theme.get_action_button_style(self.accent_color, "#000"))
+        self.btn_convert.setStyleSheet(Theme.get_action_button_style(self.accent_color))
         self.btn_convert.setFixedHeight(48)
         self.btn_convert.clicked.connect(self.start_conversion)
         self.btn_convert.setEnabled(False)
