@@ -283,6 +283,8 @@ class FormatConverterModule(BaseModule):
         layout.addWidget(self._section_label(self.tr("fc.source", "📂 1. SOURCE"), text_sec))
 
         self.btn_select_folder = QPushButton(self.tr("fc.select_folder", "📁 Select Folder"))
+        self.btn_select_folder.setToolTip(self.tr(
+            "fc.select_folder_tip", "Converts every image in a folder."))
         self.btn_select_folder.setStyleSheet(Theme.get_action_button_style(self.accent_color))
         self.btn_select_folder.setFixedHeight(36)
         self.btn_select_folder.clicked.connect(self.select_source_folder)
@@ -290,6 +292,9 @@ class FormatConverterModule(BaseModule):
 
         # Blue area: Add Files button, right below Select Folder
         self.btn_add_files = QPushButton(self.tr("fc.add_files", "📄 Add Files"))
+        self.btn_add_files.setToolTip(self.tr(
+            "fc.add_files_tip",
+            "Adds individual files to the queue, on top of the folder or instead of it."))
         self.btn_add_files.setStyleSheet(Theme.get_button_style(self.accent_color))
         self.btn_add_files.setFixedHeight(36)
         self.btn_add_files.clicked.connect(self._add_manual_files)
@@ -301,6 +306,9 @@ class FormatConverterModule(BaseModule):
         layout.addWidget(self.lbl_folder)
 
         self.chk_recursive = QCheckBox(self.tr("fc.recursive", "Include subfolders"))
+        self.chk_recursive.setToolTip(self.tr(
+            "fc.recursive_tip",
+            "Also walks into the subfolders of the chosen folder."))
         self.chk_recursive.setChecked(True)
         self.chk_recursive.setStyleSheet(f"color: {text_sec};")
         self.chk_recursive.stateChanged.connect(self._refresh_queue)
@@ -313,6 +321,10 @@ class FormatConverterModule(BaseModule):
 
         layout.addWidget(QLabel(self.tr("fc.target_format", "Target Format:")))
         self.combo_format = QComboBox()
+        self.combo_format.setToolTip(self.tr(
+            "fc.format_tip",
+            "Format to convert to. The originals are untouched: the result goes to a "
+            "separate folder."))
         self.combo_format.addItems([
             self.tr("fc.fmt_png",  "PNG (Lossless)"),
             self.tr("fc.fmt_webp", "WebP (Lossless)"),
@@ -350,11 +362,20 @@ class FormatConverterModule(BaseModule):
         layout.addWidget(self._section_label(self.tr("fc.options", "⚙️ 3. OPTIONS"), text_sec))
 
         self.chk_preserve_meta = QCheckBox(self.tr("fc.preserve_meta", "Preserve AI metadata"))
+        self.chk_preserve_meta.setToolTip(self.tr(
+            "fc.preserve_meta_tip",
+            "Copies the original's prompts and generation data to the converted file. "
+            "Without it they are lost in the conversion."))
         self.chk_preserve_meta.setChecked(True)
         self.chk_preserve_meta.setStyleSheet(f"color: {text_sec};")
         layout.addWidget(self.chk_preserve_meta)
 
         self.chk_verify = QCheckBox(self.tr("fc.verify", "Verify metadata after"))
+        self.chk_verify.setToolTip(self.tr(
+            "fc.verify_tip",
+            "After converting, re-reads each file and checks the metadata really made it. "
+            "It is slower, but on large batches it is what stops you finding out too "
+            "late."))
         self.chk_verify.setChecked(True)
         self.chk_verify.setStyleSheet(f"color: {text_sec};")
         layout.addWidget(self.chk_verify)
@@ -371,6 +392,9 @@ class FormatConverterModule(BaseModule):
 
         # Small clear button, hidden until manual files exist
         self.btn_clear = QPushButton(self.tr("fc.clear_queue", "✕ Clear manual files"))
+        self.btn_clear.setToolTip(self.tr(
+            "fc.clear_queue_tip",
+            "Empties the list of manually added files. It deletes nothing from disk."))
         self.btn_clear.setStyleSheet(
             f"color: {text_dim}; border: none; background: transparent; font-size: 10px;"
         )
@@ -381,6 +405,10 @@ class FormatConverterModule(BaseModule):
         layout.addSpacing(4)
 
         self.btn_convert = QPushButton(self.tr("fc.convert", "🚀 START CONVERSION"))
+        self.btn_convert.setToolTip(self.tr(
+            "fc.convert_tip",
+            "Converts everything in the queue and opens the result folder when it "
+            "finishes."))
         self.btn_convert.setStyleSheet(Theme.get_action_button_style(self.accent_color))
         self.btn_convert.setFixedHeight(48)
         self.btn_convert.clicked.connect(self.start_conversion)

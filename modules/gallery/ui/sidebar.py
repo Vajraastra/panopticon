@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton, 
                                QFrame, QComboBox, QHBoxLayout, QCompleter)
 from PySide6.QtCore import Qt, Signal
+from core.locale_manager import LocaleManager
 from core.components.tag_widgets import FlowLayout, TagChip # widget compartido en core (Regla #3)
 
 class GallerySidebar(QWidget):
@@ -48,11 +49,16 @@ class GallerySidebar(QWidget):
         
         # New Open Folder Button
         self.btn_open = QPushButton("📂 Open Folder")
+        self.btn_open.setToolTip(LocaleManager().tr(
+            "gallery.open_folder_tip", "Opens a folder of images to browse here."))
         self.btn_open.setCursor(Qt.PointingHandCursor)
         self.btn_open.setStyleSheet("background-color: #222; color: #00ffcc; border: 1px solid #444; font-weight: bold;")
         layout.addWidget(self.btn_open)
         
         self.btn_back = QPushButton("🔙 Back to Albums")
+        self.btn_back.setToolTip(LocaleManager().tr(
+            "gallery.back_albums_tip",
+            "Back to the album view, leaving this folder's contents."))
         self.btn_back.setCursor(Qt.PointingHandCursor)
         self.btn_back.clicked.connect(lambda: self.state.set_mode(self.state.VIEW_ALBUMS))
         self.btn_back.setVisible(False) # Default hidden
@@ -67,12 +73,18 @@ class GallerySidebar(QWidget):
         
         # Search Input
         self.txt_search = QLineEdit()
+        self.txt_search.setToolTip(LocaleManager().tr(
+            "gallery.search_tip",
+            "Filters by tags or metadata text. Type several tags to keep only the images "
+            "that have them all."))
         self.txt_search.setPlaceholderText("Search tags or text...")
         self.txt_search.returnPressed.connect(self.on_search_submit)
         layout.addWidget(self.txt_search)
         
         # Rating
         self.combo_rating = QComboBox()
+        self.combo_rating.setToolTip(LocaleManager().tr(
+            "gallery.rating_tip", "Leaves only the images with that rating or better."))
         self.combo_rating.addItems(["All Ratings", "⭐ 1+", "⭐⭐ 2+", "⭐⭐⭐ 3+", "⭐⭐⭐⭐ 4+", "⭐⭐⭐⭐⭐ 5"])
         self.combo_rating.currentIndexChanged.connect(lambda idx: self.state.set_rating_filter(idx))
         layout.addWidget(self.combo_rating)
@@ -84,6 +96,9 @@ class GallerySidebar(QWidget):
         
         # Clear
         self.btn_clear = QPushButton("✕ Clear Filters")
+        self.btn_clear.setToolTip(LocaleManager().tr(
+            "gallery.clear_filters_tip",
+            "Clears the search and the rating at once, showing everything again."))
         self.btn_clear.clicked.connect(self.clear_all)
         self.btn_clear.setStyleSheet("color: #ff5555; background: transparent; border: 1px solid #331111;")
         layout.addWidget(self.btn_clear)
@@ -92,6 +107,10 @@ class GallerySidebar(QWidget):
         
         # 3. Picker Toggle
         self.btn_picker = QPushButton("🎯 Picker Mode")
+        self.btn_picker.setToolTip(LocaleManager().tr(
+            "gallery.picker_tip",
+            "Turns on multi-select so you can send several images to another tool. NOTE: "
+            "turning it off clears whatever you had selected."))
         self.btn_picker.setCheckable(True)
         self.btn_picker.toggled.connect(lambda chk: self.state.toggle_picker_mode(chk))
         self.btn_picker.setStyleSheet("""

@@ -93,6 +93,10 @@ class FormatScannerModule(BaseModule):
         layout.setSpacing(20)
 
         btn_select = QPushButton(self.tr("fscanner.btn.select", "📂 Select Folder"))
+        btn_select.setToolTip(self.tr(
+            "fscanner.select_tip",
+            "Folder to analyse. It only counts formats and sizes to give you a report: it "
+            "converts and touches nothing."))
         btn_select.clicked.connect(self.start_scan)
         layout.addWidget(btn_select)
 

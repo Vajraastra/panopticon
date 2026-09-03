@@ -163,6 +163,10 @@ class ImageOptimizerModule(BaseModule):
 
         layout.addWidget(QLabel(self.tr("opt.format", "Output Format:")))
         self.combo_format = QComboBox()
+        self.combo_format.setToolTip(self.tr(
+            "opt.format_tip",
+            "Output format. WebP and AVIF weigh far less than JPEG at the same apparent "
+            "quality, but not every program opens them."))
         self.combo_format.addItems([
             self.tr("opt.format.original", "Original (no change)"),
             "PNG", "JPEG", "WebP"
@@ -172,6 +176,9 @@ class ImageOptimizerModule(BaseModule):
 
         layout.addWidget(QLabel(self.tr("opt.resize", "Resize Strategy:")))
         self.combo_resize = QComboBox()
+        self.combo_resize.setToolTip(self.tr(
+            "opt.resize_tip",
+            "Whether to also shrink the pixel size on top of recompressing."))
         self.combo_resize.addItems([
             self.tr("opt.resize.original", "Keep Original Size"),
             self.tr("opt.resize.1024",     "Longest Side: 1024px"),
@@ -183,12 +190,20 @@ class ImageOptimizerModule(BaseModule):
         layout.addWidget(self.combo_resize)
 
         self.spin_max_side = QSpinBox()
+        self.spin_max_side.setToolTip(self.tr(
+            "opt.max_side_tip",
+            "Limit for the longest side, in pixels. The aspect ratio is kept and images "
+            "already smaller are not enlarged."))
         self.spin_max_side.setRange(64, 8192)
         self.spin_max_side.setValue(1024)
         self.spin_max_side.setEnabled(False)
         layout.addWidget(self.spin_max_side)
 
         self.chk_meta = QCheckBox(self.tr("opt.preserve_meta", "Preserve Metadata"))
+        self.chk_meta.setToolTip(self.tr(
+            "opt.preserve_meta_tip",
+            "Copies the original's prompts and generation data to the result. Without it, "
+            "the optimised copy loses the image's «recipe»."))
         self.chk_meta.setChecked(True)
         layout.addWidget(self.chk_meta)
 
@@ -201,11 +216,19 @@ class ImageOptimizerModule(BaseModule):
 
         # Action buttons — consolidated at sidebar bottom
         self.btn_load = QPushButton(self.tr("opt.load_images", "Load Images"))
+        self.btn_load.setToolTip(self.tr(
+            "opt.load_images_tip",
+            "Adds images to the queue. The originals are not modified: the result goes to "
+            "a separate folder."))
         self.btn_load.setCursor(Qt.PointingHandCursor)
         self.btn_load.clicked.connect(self._load_images)
         layout.addWidget(self.btn_load)
 
         self.btn_analyze = QPushButton(self.tr("opt.analyze", "Analyze Suggestion"))
+        self.btn_analyze.setToolTip(self.tr(
+            "opt.analyze_tip",
+            "Looks at the queued images and suggests a format and size, without "
+            "converting anything yet."))
         self.btn_analyze.setCursor(Qt.PointingHandCursor)
         self.btn_analyze.clicked.connect(self._analyze_first)
         layout.addWidget(self.btn_analyze)
@@ -219,6 +242,10 @@ class ImageOptimizerModule(BaseModule):
         layout.addWidget(self.progress)
 
         self.btn_run = QPushButton(self.tr("opt.process", "Process Queue"))
+        self.btn_run.setToolTip(self.tr(
+            "opt.process_tip",
+            "Converts the whole queue with the settings above and opens the result folder "
+            "when it finishes."))
         self.btn_run.setCursor(Qt.PointingHandCursor)
         self.btn_run.setStyleSheet(f"""
             QPushButton {{ background-color: {self.accent_color}; color: #000; font-weight: bold; padding: 8px 24px; border-radius: 4px; border: none; }}

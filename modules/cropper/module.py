@@ -140,6 +140,10 @@ class CropperModule(BaseModule):
         layout.addWidget(lbl_ar)
 
         self.combo_ar = QComboBox()
+        self.combo_ar.setToolTip(self.tr(
+            "crop.ar_tip",
+            "Locks the crop ratio. «Free» lets you drag as you like; the rest keep the "
+            "shape fixed while you adjust."))
         self.combo_ar.addItem(self.tr("crop.free",   "Free"))    # 0 = AR_FREE
         self.combo_ar.addItem(self.tr("crop.custom", "Custom"))  # 1 = AR_CUSTOM
 
@@ -184,6 +188,10 @@ class CropperModule(BaseModule):
         hbox_custom.setContentsMargins(0, 0, 0, 0)
 
         self.spin_w = QSpinBox()
+        self.spin_w.setToolTip(self.tr(
+            "crop.size_tip",
+            "Exact crop size in pixels. With a fixed ratio, changing one recomputes the "
+            "other."))
         self.spin_w.setRange(1, 999)
         self.spin_w.setValue(1)
         self.spin_w.setPrefix("W: ")
@@ -193,6 +201,10 @@ class CropperModule(BaseModule):
         lbl_x.setStyleSheet(f"color: {text_dim}; font-weight: bold;")
 
         self.spin_h = QSpinBox()
+        self.spin_h.setToolTip(self.tr(
+            "crop.size_tip",
+            "Exact crop size in pixels. With a fixed ratio, changing one recomputes the "
+            "other."))
         self.spin_h.setRange(1, 999)
         self.spin_h.setValue(1)
         self.spin_h.setPrefix("H: ")
@@ -215,6 +227,7 @@ class CropperModule(BaseModule):
         layout.setSpacing(15)
 
         self.btn_open = QPushButton(self.tr("crop.open", "📂 Open Image"))
+        self.btn_open.setToolTip(self.tr("crop.open_tip", "Loads the image to crop."))
         self.btn_open.setCursor(Qt.PointingHandCursor)
         self.btn_open.clicked.connect(self.open_image_dialog)
         self.btn_open.setFixedWidth(120)
@@ -223,6 +236,10 @@ class CropperModule(BaseModule):
         layout.addStretch()
 
         self.btn_save = QPushButton(self.tr("crop.save", "💾 Save Crop"))
+        self.btn_save.setToolTip(self.tr(
+            "crop.save_tip",
+            "Saves the crop as a new file. The original is left alone, and its metadata "
+            "is copied over to the crop."))
         self.btn_save.setCursor(Qt.PointingHandCursor)
         self.btn_save.clicked.connect(self.save_crop)
         self.btn_save.setFixedWidth(120)

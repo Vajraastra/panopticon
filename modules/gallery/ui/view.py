@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout, QPushButton
 from core.components.standard_layout import StandardToolLayout
+from core.locale_manager import LocaleManager
 from .sidebar import GallerySidebar
 from .grid import GalleryGrid
 
@@ -44,6 +45,9 @@ class GalleryView(QWidget):
         
         # Action Buttons (Picker)
         self.btn_send = QPushButton("🚀 Send Selection")
+        self.btn_send.setToolTip(LocaleManager().tr(
+            "gallery.send_tip",
+            "Sends the selected images to another tool. Opens a menu to pick which one."))
         self.btn_send.setVisible(False)
         # Connect to a placeholder, signal will be connected in Module
         self.btn_send.setStyleSheet("background: #00ffcc; color: black; font-weight: bold; padding: 5px 10px; border-radius: 4px;")

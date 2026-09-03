@@ -110,7 +110,13 @@ class CharacterRecognitionView(QWidget):
             "}"
         )
         self.btn_reject = QPushButton(self._tr("cr.btn.manual", "Manual (Esc)"))
+        self.btn_reject.setToolTip(self._tr(
+            "cr.btn_manual_tip",
+            "Rejects the suggestion and lets you type the name by hand. Shortcut: Esc."))
         self.btn_confirm = QPushButton(self._tr("cr.btn.yes", "Yes (Enter)"))
+        self.btn_confirm.setToolTip(self._tr(
+            "cr.btn_yes_tip",
+            "Confirms the face is who it suggests and saves the tag. Shortcut: Enter."))
         self.btn_confirm.setStyleSheet(f"background-color: {Theme.ACCENT_SUCCESS};" + _btn_style)
         self.btn_reject.setStyleSheet(f"background-color: {Theme.ACCENT_WARNING};" + _btn_style)
 
@@ -121,7 +127,11 @@ class CharacterRecognitionView(QWidget):
         nav_layout = QHBoxLayout()
         nav_layout.setSpacing(5)
         self.btn_return = QPushButton(self._tr("cr.btn.return", "↩ Return"))
+        self.btn_return.setToolTip(self._tr(
+            "cr.btn_return_tip", "Back to the previous recognition screen."))
         self.btn_skip = QPushButton(self._tr("cr.btn.skip", "⏭ Skip"))
+        self.btn_skip.setToolTip(self._tr(
+            "cr.btn_skip_tip", "Moves to the next face without tagging this one."))
         _nav_color = "#3a3a3a"
         self.btn_return.setStyleSheet(f"background-color: {_nav_color};" + _btn_style_sm)
         self.btn_skip.setStyleSheet(f"background-color: {_nav_color};" + _btn_style_sm)
@@ -139,6 +149,10 @@ class CharacterRecognitionView(QWidget):
         layout_manual.setSpacing(5)
 
         self.combo_names = QComboBox()
+        self.combo_names.setToolTip(self._tr(
+            "cr.combo_names_tip",
+            "Characters already known. Pick one instead of typing it to avoid duplicates "
+            "from a typo."))
         self.combo_names.setEditable(True)
         self.combo_names.setPlaceholderText(self._tr("cr.name_placeholder", "Name..."))
         self.combo_names.setStyleSheet("padding: 4px; font-size: 12px;")
@@ -146,8 +160,12 @@ class CharacterRecognitionView(QWidget):
         btn_manual_layout = QHBoxLayout()
         btn_manual_layout.setSpacing(5)
         btn_save = QPushButton(self._tr("cr.btn.save", "Save"))
+        btn_save.setToolTip(self._tr(
+            "cr.btn_save_tip", "Saves the typed name and links it to this face."))
         btn_save.setStyleSheet(f"background-color: {Theme.ACCENT_INFO};" + _btn_style)
         btn_cancel = QPushButton(self._tr("cr.btn.back", "Back"))
+        btn_cancel.setToolTip(self._tr(
+            "cr.btn_back_tip", "Goes back without saving the typed name."))
         btn_cancel.setStyleSheet(f"background-color: #555555; color: white;" + _btn_style)
 
         btn_manual_layout.addWidget(btn_cancel)
@@ -242,6 +260,9 @@ class CharacterRecognitionView(QWidget):
         layout.addWidget(self.list_tags)
 
         self.btn_remove_tag = QPushButton(self._tr("cr.btn.remove_tag", "🗑 Remove Tag"))
+        self.btn_remove_tag.setToolTip(self._tr(
+            "cr.btn_remove_tag_tip",
+            "Removes this tag from the image. The file itself is untouched."))
         self.btn_remove_tag.setStyleSheet(f"""
             QPushButton {{
                 background-color: {Theme.BG_INPUT};
@@ -297,11 +318,19 @@ class CharacterRecognitionView(QWidget):
         toggle_layout.setSpacing(0)
 
         self.btn_mode_illustration = QPushButton(self._tr("cr.mode.illustration", "Illustration"))
+        self.btn_mode_illustration.setToolTip(self._tr(
+            "cr.mode_illustration_tip",
+            "Mode for drawings and anime. Uses a detector trained on illustrated faces; "
+            "it does worse on real photos."))
         self.btn_mode_illustration.setStyleSheet(_btn_active)
         self.btn_mode_illustration.setToolTip(
             self._tr("cr.mode.illustration.tooltip", "Illustration / AI art mode (default)")
         )
         self.btn_mode_real = QPushButton(self._tr("cr.mode.real", "Real Person"))
+        self.btn_mode_real.setToolTip(self._tr(
+            "cr.mode_real_tip",
+            "Mode for photography. Uses a detector trained on real faces; it does worse "
+            "on drawings."))
         self.btn_mode_real.setStyleSheet(_btn_inactive)
         self.btn_mode_real.setToolTip(
             self._tr("cr.mode.real.tooltip", "Real photograph mode — uses landmark alignment")
@@ -322,6 +351,8 @@ class CharacterRecognitionView(QWidget):
         layout.addWidget(lbl_source)
 
         btn_load = QPushButton(self._tr("common.load_folder", "📂 Load Folder"))
+        btn_load.setToolTip(self._tr(
+            "cr.load_folder_tip", "Folder of images to look for known faces in."))
         btn_load.clicked.connect(self.on_load_folder_clicked)
         btn_load.setStyleSheet(f"""
             QPushButton {{
@@ -360,6 +391,10 @@ class CharacterRecognitionView(QWidget):
         layout.addWidget(lbl_auto)
 
         self.btn_auto_scan = QPushButton(self._tr("cr.auto_scan", "🤖 Auto Scan"))
+        self.btn_auto_scan.setToolTip(self._tr(
+            "cr.auto_scan_tip",
+            "Goes through the whole folder recognising faces without asking one by one, "
+            "then shows what it found for you to confirm."))
         self.btn_auto_scan.setToolTip(
             self._tr("cr.auto_scan.tooltip",
                      "Pre-scan all images and suggest a bulk tag if one character dominates")
@@ -409,11 +444,18 @@ class CharacterRecognitionView(QWidget):
         sug_btn_layout = QHBoxLayout()
         sug_btn_layout.setSpacing(4)
         self.btn_tag_all = QPushButton(self._tr("cr.auto.tag_all", "Tag All"))
+        self.btn_tag_all.setToolTip(self._tr(
+            "cr.tag_all_tip",
+            "Applies the suggested name to ALL the faces the scan grouped as the same "
+            "person, in one go."))
         self.btn_tag_all.setStyleSheet(
             f"background-color: {Theme.ACCENT_SUCCESS}; color: black;"
             " border-radius: 4px; font-size: 11px; font-weight: bold; padding: 4px 6px;"
         )
         self.btn_auto_cancel = QPushButton(self._tr("cr.auto.cancel", "Cancel"))
+        self.btn_auto_cancel.setToolTip(self._tr(
+            "cr.auto_cancel_tip",
+            "Stops the automatic scan. Whatever was tagged so far is kept."))
         self.btn_auto_cancel.setStyleSheet(
             "background-color: #555555; color: white;"
             " border-radius: 4px; font-size: 11px; padding: 4px 6px;"

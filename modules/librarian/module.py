@@ -132,10 +132,18 @@ class LibrarianModule(BaseModule):
         # Buttons
         btn_layout = QHBoxLayout()
         self.btn_add = QPushButton(self.tr("lib.add", "➕ Add"))
+        self.btn_add.setToolTip(self.tr(
+            "lib.add_tip",
+            "Registers a folder to watch. It copies nothing: it only notes where to look "
+            "when indexing."))
         self.btn_add.clicked.connect(self.add_folder)
         self.btn_add.setStyleSheet(f"background-color: {c('bg_input')}; color: {c('accent_main')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px;")
 
         self.btn_remove = QPushButton(self.tr("lib.remove", "🗑️ Remove"))
+        self.btn_remove.setToolTip(self.tr(
+            "lib.remove_tip",
+            "Stops watching the folder and drops its files from the index. The files on "
+            "disk are NOT touched."))
         self.btn_remove.clicked.connect(self.remove_folder)
         self.btn_remove.setStyleSheet(f"background-color: {c('bg_input')}; color: {c('accent_warning')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px;")
 
@@ -216,6 +224,14 @@ class LibrarianModule(BaseModule):
         """)
 
         self.btn_search = QPushButton("🔍")
+        self.btn_search.setToolTip(self.tr(
+            "lib.search_tip",
+            "Searches by name, tags and metadata text across the whole indexed library, "
+            "not just the open folder."))
+        self.input_search.setToolTip(self.tr(
+            "lib.search_tip",
+            "Searches by name, tags and metadata text across the whole indexed library, "
+            "not just the open folder."))
         self.btn_search.setFixedWidth(50)
         self.btn_search.clicked.connect(self.perform_search)
         self.btn_search.setStyleSheet(f"background-color: {c('bg_panel')}; color: {c('text_primary')}; border-radius: 6px; border: 1px solid {c('border')};")
@@ -241,7 +257,9 @@ class LibrarianModule(BaseModule):
         # Pagination Header
         self.pagination_layout = QHBoxLayout()
         self.btn_prev = QPushButton(self.tr("common.prev", "◀ Prev"))
+        self.btn_prev.setToolTip(self.tr("common.prev_tip", "Previous page of results."))
         self.btn_next = QPushButton(self.tr("common.next", "Next ▶"))
+        self.btn_next.setToolTip(self.tr("common.next_tip", "Next page of results."))
         self.lbl_page_info = QLabel(self.tr("common.pagination", "Page 1 of 1").format(curr=1, total=1))
         self.lbl_page_info.setStyleSheet(f"color: {c('text_dim')}; font-weight: bold;")
 
@@ -308,12 +326,18 @@ class LibrarianModule(BaseModule):
                 selection-color: {c('bg_main')};
             }}
         """)
+        self.combo_actions.setToolTip(self.tr(
+            "lib.selection_action_tip",
+            "Which tool to send the selected images to. Pick here and press Execute."))
         self.combo_actions.currentIndexChanged.connect(self._on_action_selection_changed)
         ab_layout.addWidget(self.combo_actions)
 
         self.btn_execute = QPushButton(self.tr("lib.execute", "⚡ Execute"))
         self.btn_execute.setCursor(Qt.PointingHandCursor)
         self.btn_execute.setEnabled(False)
+        self.btn_execute.setToolTip(self.tr(
+            "lib.execute_tip",
+            "Sends the selection to the tool chosen in the dropdown next to it."))
         self.btn_execute.clicked.connect(self.execute_selected_action)
         self.btn_execute.setStyleSheet(f"""
             QPushButton {{ background-color: {c('accent_main')}; color: {c('bg_main')}; font-weight: bold; padding: 8px 20px; border-radius: 4px; }}
@@ -369,12 +393,21 @@ class LibrarianModule(BaseModule):
         self.btn_backfill.setStyleSheet(f"background-color: transparent; color: {c('text_secondary')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px 12px;")
 
         self.btn_sync = QPushButton(self.tr("lib.purge", "🧹 Sweep Ghost Files"))
+        self.btn_sync.setToolTip(self.tr(
+            "lib.purge_tip",
+            "Goes through the index and drops entries whose file is gone from disk. "
+            "Useful after deleting or moving things outside the app. It deletes no "
+            "files."))
         self.btn_sync.clicked.connect(lambda: self.toggle_scan(sync_only=True))
         self.btn_sync.setMinimumWidth(120)
         self.btn_sync.setCursor(Qt.PointingHandCursor)
         self.btn_sync.setStyleSheet(f"background-color: transparent; color: {c('text_secondary')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px 12px;")
 
         self.btn_scan = QPushButton(self.tr("lib.run_indexer", "🚀 Run Indexer"))
+        self.btn_scan.setToolTip(self.tr(
+            "lib.run_indexer_tip",
+            "Walks the watched folders and adds whatever is new to the library. On a "
+            "large library it takes a while; the same button stops it."))
         self.btn_scan.clicked.connect(self.toggle_scan)
         self.btn_scan.setMinimumWidth(120)
         self.btn_scan.setCursor(Qt.PointingHandCursor)

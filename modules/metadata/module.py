@@ -160,6 +160,10 @@ class MetadataModule(BaseModule):
 
         # Mode Selector (Toggle)
         self.btn_mode_view = QPushButton(self.tr("meta.viewer", "🔍 Viewer Mode"))
+        self.btn_mode_view.setToolTip(self.tr(
+            "meta.viewer_tip",
+            "Read-only: shows the prompts and generation data without letting you change "
+            "them."))
         self.btn_mode_view.setCheckable(True)
         self.btn_mode_view.setChecked(True)
         self.btn_mode_view.setFixedHeight(38)
@@ -167,6 +171,10 @@ class MetadataModule(BaseModule):
         layout.addWidget(self.btn_mode_view)
 
         self.btn_mode_edit = QPushButton(self.tr("meta.editor", "✍️ Editor Mode"))
+        self.btn_mode_edit.setToolTip(self.tr(
+            "meta.editor_tip",
+            "Lets you edit the prompts. This is the only module that can write over the "
+            "original file — that is what it is for."))
         self.btn_mode_edit.setCheckable(True)
         self.btn_mode_edit.setFixedHeight(38)
         self.btn_mode_edit.clicked.connect(lambda: self.set_mode(self.MODE_EDITOR))
@@ -181,6 +189,11 @@ class MetadataModule(BaseModule):
         layout.addWidget(lbl_act)
 
         self.btn_save = QPushButton(self.tr("meta.save", "💾 Save Changes"))
+        self.btn_save.setToolTip(self.tr(
+            "meta.save_tip",
+            "OVERWRITES the original file with your edits. It asks for confirmation, and "
+            "warns separately if you are about to leave it with no metadata: that erases "
+            "the «recipe» and cannot be undone."))
         self.btn_save.setFixedHeight(40)
         self.btn_save.setCursor(Qt.PointingHandCursor)
         self.btn_save.clicked.connect(self.action_save_current)
@@ -195,6 +208,10 @@ class MetadataModule(BaseModule):
         layout.addWidget(self.btn_save)
 
         self.btn_export = QPushButton(self.tr("meta.export", "📂 Export Copy"))
+        self.btn_export.setToolTip(self.tr(
+            "meta.export_tip",
+            "Saves a NEW file with the edited metadata and leaves the original untouched. "
+            "It is the safe option next to «Save changes»."))
         self.btn_export.setFixedHeight(36)
         self.btn_export.setCursor(Qt.PointingHandCursor)
         self.btn_export.clicked.connect(self.action_export_copy)
@@ -238,6 +255,8 @@ class MetadataModule(BaseModule):
         # Action Bar (Top)
         top_bar = QHBoxLayout()
         self.btn_open = QPushButton(self.tr("opt.load_images", "📂 Open Image(s)"))
+        self.btn_open.setToolTip(self.tr(
+            "meta.open_tip", "Loads one or more images to view or edit their metadata."))
         self.btn_open.clicked.connect(self.open_files_dialog)
         self.btn_open.setStyleSheet(f"background: {c('bg_panel')}; color: {c('text_primary')}; padding: 8px 15px; border-radius: 5px; border: 1px solid {c('border')};")
         top_bar.addWidget(self.btn_open)
@@ -259,10 +278,14 @@ class MetadataModule(BaseModule):
         carousel_layout = QHBoxLayout()
         nav_style = f"padding: 10px; background: {c('bg_input')}; color: {c('text_secondary')}; border-radius: 5px; border: 1px solid {c('border')};"
         self.btn_prev = QPushButton(self.tr("meta.prev", "◀ Previous"))
+        self.btn_prev.setToolTip(self.tr(
+            "meta.prev_tip", "Previous of the loaded images. Unsaved changes are lost."))
         self.btn_prev.clicked.connect(self.go_prev)
         self.btn_prev.setStyleSheet(nav_style)
 
         self.btn_next = QPushButton(self.tr("meta.next", "Next ▶"))
+        self.btn_next.setToolTip(self.tr(
+            "meta.next_tip", "Next of the loaded images. Unsaved changes are lost."))
         self.btn_next.clicked.connect(self.go_next)
         self.btn_next.setStyleSheet(nav_style)
 

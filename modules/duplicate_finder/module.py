@@ -129,6 +129,10 @@ class DuplicateFinderModule(BaseModule):
 
         layout.addWidget(QLabel(self.tr("dup.mode_label", "Comparison Mode:")))
         self.combo_mode = QComboBox()
+        self.combo_mode.setToolTip(self.tr(
+            "dup.mode_tip",
+            "How images are compared. Exact content only groups identical files; visual "
+            "similarity also catches crops and recompressions, but it can get it wrong."))
         self.combo_mode.addItems([
             self.tr("dup.mode_hash",   "Hash (Exact Match)"),
             self.tr("dup.mode_visual", "Visual (Similarity)")
@@ -149,6 +153,10 @@ class DuplicateFinderModule(BaseModule):
         thr_layout.addWidget(QLabel(self.tr("dup.threshold", "Visual Tolerance (lower = more exact):")))
 
         self.slider_thr = QSlider(Qt.Horizontal)
+        self.slider_thr.setToolTip(self.tr(
+            "dup.threshold_tip",
+            "How alike two images must be to be grouped. Lowering it finds more matches "
+            "and also more false positives."))
         self.slider_thr.setRange(1, 20)
         self.slider_thr.setValue(5)
         thr_layout.addWidget(self.slider_thr)
@@ -163,6 +171,8 @@ class DuplicateFinderModule(BaseModule):
         layout.addWidget(self.threshold_container)
 
         self.btn_select = QPushButton(self.tr("dup.select_folder", "📁 Select Folder"))
+        self.btn_select.setToolTip(self.tr(
+            "dup.select_folder_tip", "Folder to search for duplicates in."))
         self.btn_select.setCursor(Qt.PointingHandCursor)
         self.btn_select.clicked.connect(self.select_folder)
         self.btn_select.setStyleSheet("background: #222; border: 1px solid #444; padding: 10px;")
@@ -176,6 +186,10 @@ class DuplicateFinderModule(BaseModule):
         layout.addStretch()
 
         self.btn_run = QPushButton(self.tr("dup.run_scan", "🚀 START SCAN"))
+        self.btn_run.setToolTip(self.tr(
+            "dup.run_scan_tip",
+            "Analyses the folder and groups the repeated images. It deletes nothing: it "
+            "just shows the groups for you to decide."))
         self.btn_run.setCursor(Qt.PointingHandCursor)
         self.btn_run.clicked.connect(self.run_scan)
         self.btn_run.setStyleSheet(
@@ -220,6 +234,10 @@ class DuplicateFinderModule(BaseModule):
         layout.addWidget(self.progress, 1)
 
         self.btn_auto_select = QPushButton(self.tr("dup.auto_select", "🧹 Delete all but first"))
+        self.btn_auto_select.setToolTip(self.tr(
+            "dup.auto_select_tip",
+            "It only TICKS the boxes: leaves the first of each group unticked and ticks "
+            "the rest. It deletes nothing — the red button below is the one that does."))
         self.btn_auto_select.setCursor(Qt.PointingHandCursor)
         self.btn_auto_select.clicked.connect(self.auto_select_duplicates)
         self.btn_auto_select.setStyleSheet(
@@ -229,6 +247,10 @@ class DuplicateFinderModule(BaseModule):
         layout.addWidget(self.btn_auto_select)
 
         self.btn_delete = QPushButton(self.tr("dup.delete", "🔥 DELETE SELECTED"))
+        self.btn_delete.setToolTip(self.tr(
+            "dup.delete_tip",
+            "Deletes the ticked files from disk PERMANENTLY: they do not go to the "
+            "recycle bin. It warns first if you ticked every copy in some group."))
         self.btn_delete.setCursor(Qt.PointingHandCursor)
         self.btn_delete.clicked.connect(self.delete_files)
         self.btn_delete.setStyleSheet(

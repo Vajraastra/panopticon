@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import (QWidget, QGridLayout, QScrollArea, QVBoxLayout, QLabel, 
                                QPushButton, QHBoxLayout)
 from PySide6.QtCore import Qt, Slot, QSize
+from core.locale_manager import LocaleManager
 from PySide6.QtGui import QImage, QPixmap
 
 from modules.gallery.logic.loader import get_loader
@@ -57,6 +58,8 @@ class GalleryGrid(QWidget):
         f_layout = QHBoxLayout(footer)
         
         self.btn_prev = QPushButton("◀")
+        self.btn_prev.setToolTip(LocaleManager().tr(
+            "gallery.page_prev_tip", "Previous page of images."))
         self.btn_prev.setFixedSize(40, 30)
         self.btn_prev.clicked.connect(self.prev_page)
         
@@ -64,6 +67,8 @@ class GalleryGrid(QWidget):
         self.lbl_page.setStyleSheet("color: #888;")
         
         self.btn_next = QPushButton("▶")
+        self.btn_next.setToolTip(LocaleManager().tr(
+            "gallery.page_next_tip", "Next page of images."))
         self.btn_next.setFixedSize(40, 30)
         self.btn_next.clicked.connect(self.next_page)
         
