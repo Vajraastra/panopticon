@@ -860,5 +860,20 @@
   "lib.backfill": "🧬 Compute Hashes",
   "lib.stop_backfill": "🛑 Stop Hashing",
   "lib.backfill_tip": "Compute the SHA-256 content identity of files that lack it (cherry-dl folders get theirs from catalog.db). Resumable.",
-  "lib.msg.backfill_done": "Hashing complete: {hashed} hashed, {failed} skipped."
+  "lib.msg.backfill_done": "Hashing complete: {hashed} hashed, {failed} skipped.",
+  "settings.back_tip": "Back to the dashboard. Nothing in progress is cancelled and the tool keeps its state.",
+  "cherry.new_profile_tip": "Registers a project: name, target folder and its first source. Downloads nothing yet.",
+  "cherry.search_ph_tip": "Filters the list by project name or by its folder on disk. Does not search inside files.",
+  "cherry.site_filter_tip": "Shows only the projects from one site (Patreon, Pixiv…).",
+  "cherry.only_missing_tip": "Leaves only the projects whose folder is gone from disk — typical after moving files or unplugging a drive.",
+  "cherry.download_all_tip": "Downloads EVERY project currently listed, one after another, honouring the filter you have set. It can take hours; you can cancel at any point.",
+  "cherry.dups_open_tip": "Looks for projects pointing at the same source or with near-identical names. It only reports: it deletes and merges nothing.",
+  "cherry.settings_open_tip": "Download folder, parallel workers and timeout. The network throttles deliberately stay in config.toml.",
+  "cherry.refresh_tip": "Re-reads the index from disk. Useful if another program touched the projects.",
+  "cherry.add_url_tip": "Adds another source URL to the selected project. One project can gather several sources into a single folder.",
+  "cherry.dl_workers_tip": "How many files download at once. Each site has its own cap and the engine trims this number if you go over.",
+  "cherry.dl_rescan_tip": "Goes through the whole project instead of resuming from the last sync. Much slower; use it when you suspect something old is missing.",
+  "cherry.download_tip": "Downloads the new files of the selected project. When it finishes it tells the library to index them.",
+  "cherry.open_folder_tip": "Opens the project's download folder in the file explorer.",
+  "cherry.cancel_tip": "Stops the running download and the rest of the queue. Whatever already downloaded is kept."
 }

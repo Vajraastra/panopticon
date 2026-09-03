@@ -55,6 +55,12 @@ class StandardToolLayout(QWidget):
         
         self.btn_back = QPushButton(f"← {LocaleManager().tr('settings.back', 'Dashboard')}")
         self.btn_back.setCursor(Qt.PointingHandCursor)
+        # Aquí está una vez lo que serían 13 tooltips idénticos: el botón lo pone
+        # este layout, no cada módulo.
+        self.btn_back.setToolTip(LocaleManager().tr(
+            "settings.back_tip",
+            "Back to the dashboard. Nothing in progress is cancelled and the tool "
+            "keeps its state."))
         accent_col = self.theme.get_color('accent_main') if self.theme else "#00ffcc"
         self.btn_back.setStyleSheet(f"border: none; background: transparent; font-weight: bold; font-size: 14px; color: {accent_col}; text-align: left;")
         self.btn_back.clicked.connect(self._go_back)

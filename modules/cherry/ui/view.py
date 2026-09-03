@@ -236,6 +236,10 @@ class CherryView(QWidget):
         # `StandardToolLayout` traía este botón de serie; al salirse del patrón
         # hay que reponerlo o el módulo se convierte en un callejón sin salida.
         self._btn_back = QPushButton(f"← {self.tr('settings.back', 'Dashboard')}")
+        self._btn_back.setToolTip(self.tr(
+            "settings.back_tip",
+            "Back to the dashboard. Nothing in progress is cancelled and the tool "
+            "keeps its state."))
         self._btn_back.setCursor(Qt.PointingHandCursor)
         self._btn_back.setStyleSheet(
             "border: none; background: transparent; font-weight: bold; "
@@ -246,22 +250,37 @@ class CherryView(QWidget):
         lay.addWidget(self._vline())
 
         self._btn_new = QPushButton(self.tr("cherry.new_profile", "+ New project"))
+        self._btn_new.setToolTip(self.tr(
+            "cherry.new_profile_tip",
+            "Registers a project: name, target folder and its first source. "
+            "Downloads nothing yet."))
         self._btn_new.clicked.connect(self._new_profile)
         lay.addWidget(self._btn_new)
 
         self._search = QLineEdit()
         self._search.setPlaceholderText(self.tr("cherry.search_ph", "Search name or folder…"))
+        self._search.setToolTip(self.tr(
+            "cherry.search_ph_tip",
+            "Filters the list by project name or by its folder on disk. "
+            "Does not search inside files."))
         self._search.setClearButtonEnabled(True)
         self._search.setMaximumWidth(280)
         self._search.textChanged.connect(self._apply_filters)
         lay.addWidget(self._search)
 
         self._site_combo = QComboBox()
+        self._site_combo.setToolTip(self.tr(
+            "cherry.site_filter_tip",
+            "Shows only the projects from one site (Patreon, Pixiv…)."))
         self._site_combo.setMinimumWidth(130)
         self._site_combo.currentIndexChanged.connect(self._apply_filters)
         lay.addWidget(self._site_combo)
 
         self._only_missing = QPushButton(self.tr("cherry.only_missing", "Missing folders only"))
+        self._only_missing.setToolTip(self.tr(
+            "cherry.only_missing_tip",
+            "Leaves only the projects whose folder is gone from disk — typical after "
+            "moving files or unplugging a drive."))
         self._only_missing.setCheckable(True)
         self._only_missing.toggled.connect(self._apply_filters)
         lay.addWidget(self._only_missing)
@@ -274,18 +293,33 @@ class CherryView(QWidget):
         lay.addStretch(1)
 
         self._btn_all = QPushButton()
+        self._btn_all.setToolTip(self.tr(
+            "cherry.download_all_tip",
+            "Downloads EVERY project currently listed, one after another, honouring the "
+            "filter you have set. It can take hours; you can cancel at any point."))
         self._btn_all.clicked.connect(self._start_all_visible)
         lay.addWidget(self._btn_all)
 
         self._btn_dups = QPushButton(self.tr("cherry.dups_open", "Find duplicate projects"))
+        self._btn_dups.setToolTip(self.tr(
+            "cherry.dups_open_tip",
+            "Looks for projects pointing at the same source or with near-identical names. "
+            "It only reports: it deletes and merges nothing."))
         self._btn_dups.clicked.connect(self._open_duplicates)
         lay.addWidget(self._btn_dups)
 
         self._btn_settings = QPushButton(self.tr("cherry.settings_open", "Settings…"))
+        self._btn_settings.setToolTip(self.tr(
+            "cherry.settings_open_tip",
+            "Download folder, parallel workers and timeout. The network throttles "
+            "deliberately stay in config.toml."))
         self._btn_settings.clicked.connect(self._open_settings)
         lay.addWidget(self._btn_settings)
 
         self._btn_refresh = QPushButton(self.tr("cherry.refresh", "Refresh"))
+        self._btn_refresh.setToolTip(self.tr(
+            "cherry.refresh_tip",
+            "Re-reads the index from disk. Useful if another program touched the projects."))
         self._btn_refresh.clicked.connect(self.refresh)
         lay.addWidget(self._btn_refresh)
 
@@ -331,6 +365,10 @@ class CherryView(QWidget):
         lay.addWidget(self._sources)
 
         self._btn_add_url = QPushButton(self.tr("cherry.add_url", "+ Add source"))
+        self._btn_add_url.setToolTip(self.tr(
+            "cherry.add_url_tip",
+            "Adds another source URL to the selected project. One project can gather "
+            "several sources into a single folder."))
         self._btn_add_url.clicked.connect(self._add_url)
         lay.addWidget(self._btn_add_url)
 
@@ -347,11 +385,19 @@ class CherryView(QWidget):
         # número y avisa con `workers_resolved`. Aquí solo se pide.
         self._workers.setRange(1, 16)
         self._workers.setValue(4)
+        self._workers.setToolTip(self.tr(
+            "cherry.dl_workers_tip",
+            "How many files download at once. Each site has its own cap and the engine "
+            "trims this number if you go over."))
         workers_row.addWidget(self._workers)
         workers_row.addStretch(1)
         lay.addLayout(workers_row)
 
         self._force_full = QCheckBox(self.tr("cherry.dl_rescan", "Full rescan (ignore last sync)"))
+        self._force_full.setToolTip(self.tr(
+            "cherry.dl_rescan_tip",
+            "Goes through the whole project instead of resuming from the last sync. Much "
+            "slower; use it when you suspect something old is missing."))
         lay.addWidget(self._force_full)
 
         lay.addSpacing(4)
@@ -364,10 +410,17 @@ class CherryView(QWidget):
         actions.addWidget(self._btn_scan, 0, 0)
 
         self._btn_download = QPushButton(self.tr("cherry.download", "Download"))
+        self._btn_download.setToolTip(self.tr(
+            "cherry.download_tip",
+            "Downloads the new files of the selected project. When it finishes it tells "
+            "the library to index them."))
         self._btn_download.clicked.connect(lambda: self._start_selected(scan_only=False))
         actions.addWidget(self._btn_download, 0, 1)
 
         self._btn_open = QPushButton(self.tr("cherry.open_folder", "Open folder"))
+        self._btn_open.setToolTip(self.tr(
+            "cherry.open_folder_tip",
+            "Opens the project's download folder in the file explorer."))
         self._btn_open.clicked.connect(self._open_folder)
         actions.addWidget(self._btn_open, 1, 0)
 
@@ -423,6 +476,10 @@ class CherryView(QWidget):
         head_lay.addStretch(1)
 
         self._btn_cancel = QPushButton(self.tr("cherry.cancel", "Cancel"))
+        self._btn_cancel.setToolTip(self.tr(
+            "cherry.cancel_tip",
+            "Stops the running download and the rest of the queue. Whatever already "
+            "downloaded is kept."))
         self._btn_cancel.clicked.connect(self._cancel)
         head_lay.addWidget(self._btn_cancel)
 

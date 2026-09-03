@@ -860,5 +860,20 @@
   "lib.backfill": "🧬 Calcular hashes",
   "lib.stop_backfill": "🛑 Detener hashing",
   "lib.backfill_tip": "Calcula la identidad de contenido SHA-256 de los archivos que no la tienen (las carpetas cherry-dl la traen de su catalog.db). Reanudable.",
-  "lib.msg.backfill_done": "Hashing completo: {hashed} hasheados, {failed} saltados."
+  "lib.msg.backfill_done": "Hashing completo: {hashed} hasheados, {failed} saltados.",
+  "settings.back_tip": "Vuelve al panel principal. No cancela nada de lo que esté corriendo y la herramienta conserva su estado.",
+  "cherry.new_profile_tip": "Da de alta un proyecto: nombre, carpeta de destino y su primera fuente. No descarga nada todavía.",
+  "cherry.search_ph_tip": "Filtra la lista por nombre de proyecto o por su carpeta en disco. No busca dentro de los archivos.",
+  "cherry.site_filter_tip": "Muestra solo los proyectos de un sitio (Patreon, Pixiv…).",
+  "cherry.only_missing_tip": "Deja a la vista solo los proyectos cuya carpeta ya no está en disco — típico tras mover o desconectar un disco.",
+  "cherry.download_all_tip": "Descarga TODOS los proyectos de la lista de arriba, uno tras otro, respetando el filtro que tengas puesto. Puede tardar horas; se puede cancelar en cualquier momento.",
+  "cherry.dups_open_tip": "Busca proyectos que apunten a la misma fuente o tengan nombres casi iguales. Solo informa: no borra ni fusiona nada.",
+  "cherry.settings_open_tip": "Carpeta de descargas, descargas en paralelo y tiempo de espera. Los frenos de red se quedan en el config.toml a propósito.",
+  "cherry.refresh_tip": "Relee el índice en disco. Útil si otro programa tocó los proyectos.",
+  "cherry.add_url_tip": "Añade otra URL de origen al proyecto seleccionado. Un proyecto puede juntar varias fuentes en una sola carpeta.",
+  "cherry.dl_workers_tip": "Cuántos archivos se bajan a la vez. Cada sitio tiene su propio tope y el motor recorta este número si te pasas.",
+  "cherry.dl_rescan_tip": "Repasa el proyecto entero en vez de continuar desde la última sincronización. Tarda mucho más; sirve cuando sospechas que falta algo antiguo.",
+  "cherry.download_tip": "Descarga los archivos nuevos del proyecto seleccionado. Al terminar avisa a la biblioteca para que los indexe.",
+  "cherry.open_folder_tip": "Abre en el explorador la carpeta de descarga del proyecto.",
+  "cherry.cancel_tip": "Detiene la descarga en curso y el resto de la cola. Lo ya bajado se conserva."
 }
