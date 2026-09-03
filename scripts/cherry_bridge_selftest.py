@@ -13,8 +13,8 @@ Uso (siempre con el Python del venv):
     venv/Scripts/python.exe scripts/cherry_bridge_selftest.py --scan 3   # TOCA LA RED
     venv/Scripts/python.exe scripts/cherry_bridge_selftest.py --download 3 [--cancel-after 20]
 
-Sin argumentos NO sale a la red: los siete primeros casos usan eventos
-sintéticos, un perfil sin template y lecturas locales de `index.db`. `--scan` y
+Sin argumentos NO sale a la red: los ocho primeros casos usan eventos
+sintéticos, perfiles sin template y lecturas locales de `index.db`. `--scan` y
 `--download` sí golpean la API del sitio y descargan de verdad.
 """
 
@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PySide6.QtCore import QCoreApplication, QEventLoop  # noqa: E402
 
 from modules.cherry.logic.download_bridge import DownloadBridge  # noqa: E402
+from modules.cherry.logic.download_queue import DownloadQueue  # noqa: E402
 from modules.cherry.logic.runtime import CherryRuntime  # noqa: E402
 
 # La consola de Windows es cp1252: sin esto, el primer ✓ mata el script (y los
@@ -348,6 +349,53 @@ def run_live(app, runtime, bridge, rec, profile: dict, *, scan_only: bool,
     check("el puente queda libre", not bridge.is_busy)
 
 
+def _fake_profile(pid: int, name: str) -> dict:
+    """Perfil sin template: recorre el servicio entero sin salir a la red.
+
+    El id negativo no existe en index.db, así que el UPDATE final de
+    last_checked afecta 0 filas y el estado de cherry-dl no se toca.
+    """
+    return {
+        "id": pid,
+        "display_name": name,
+        "folder_path": str(Path(__file__).resolve().parent.parent / "cache" / "_selftest"),
+        "urls": [{
+            "id": pid, "url": "https://example.invalid/no-template",
+            "site": "?", "enabled": 1, "last_synced": None, "file_count": 0,
+        }],
+    }
+
+
+def test_queue(app, runtime, bridge, rec) -> None:
+    print("\n[8] DownloadQueue: varios perfiles en fila (A3)")
+    queue = DownloadQueue(bridge)
+    seen: list[tuple[int, int, str]] = []
+    done: list[object] = []
+    queue.profile_started.connect(lambda i, n, name: seen.append((i, n, name)))
+    queue.queue_finished.connect(done.append)
+
+    check("start() arranca la cola",
+          queue.start([_fake_profile(-1, "FALSO A"), _fake_profile(-2, "FALSO B")],
+                      workers=2, ext_filter=set(), exclude_mode=False,
+                      force_full=False, scan_only=True))
+    check("un segundo start() se rechaza", queue.start([_fake_profile(-3, "C")]) is False)
+
+    ok = pump(app, lambda: bool(done), timeout=30)
+    check("la cola termina sola", ok, f"(perfiles vistos: {len(seen)})")
+    if not ok:
+        queue.cancel()
+        return
+    totals = done[0]
+    check("corrió los dos perfiles", totals.done == 2, f"({totals.done})")
+    check("ninguno falló", not totals.failed, f"({totals.failed})")
+    check("el orden se respeta",
+          [n for _, _, n in seen] == ["FALSO A", "FALSO B"], f"({seen})")
+    check("la posición se numera 1..n",
+          [i for i, _, _ in seen] == [1, 2], f"({seen})")
+    check("la cola queda libre", not queue.is_running)
+    check("el puente queda libre tras la cola", not bridge.is_busy)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--list", action="store_true", help="listar perfiles y salir")
@@ -396,6 +444,7 @@ def main() -> int:
             test_cancel_mechanics(app, runtime)
             test_auth_roundtrip(app, runtime, bridge, rec)
             test_runner_no_network(app, runtime, bridge, rec)
+            test_queue(app, runtime, bridge, rec)
     finally:
         print("\n[fin] apagando el runtime")
         runtime.stop()

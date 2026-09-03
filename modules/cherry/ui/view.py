@@ -25,14 +25,18 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QFrame, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QFrame, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QStackedWidget,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from core.components.standard_layout import StandardToolLayout
 from core.paths import CachePaths
 from ..logic import profiles as profiles_logic
+from ..logic.download_bridge import DownloadBridge
+from ..logic.download_queue import DownloadQueue
 from ..logic.runtime import CherryRuntime
+from .download_panel import DownloadPanel
 from .legacy_gui import LOG_NAME, LegacyGuiLauncher
 
 log = logging.getLogger(__name__)
@@ -47,6 +51,7 @@ class CherryView(StandardToolLayout):
     # Puentes loop → GUI (se emiten desde el hilo del runtime).
     _profiles_ready = Signal(object)   # list[dict]
     _detail_ready   = Signal(object)   # dict | None
+    _details_ready  = Signal(object, bool)  # list[dict] a descargar, scan_only
     _load_failed    = Signal(str)
 
     def __init__(self, context: dict | None = None, runtime: CherryRuntime | None = None) -> None:
@@ -59,13 +64,22 @@ class CherryView(StandardToolLayout):
         self._runtime = runtime or CherryRuntime()
         self._legacy = LegacyGuiLauncher()
 
+        self._bridge = DownloadBridge(self._runtime)
+        self._queue = DownloadQueue(self._bridge)
+
         self._profiles: list[dict] = []
         self._selected_id: int | None = None
         self._started = False
+        self._auth_boxes: dict[int, QMessageBox] = {}
 
         self._table = self._build_table()
+        self._panel = DownloadPanel(self._theme, self._lm)
+        self._panel.bind(self._bridge, self._queue)
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._table)
+        self._stack.addWidget(self._panel)
         super().__init__(
-            self._table,
+            self._stack,
             sidebar_widget=self._build_sidebar(),
             bottom_widget=self._build_action_bar(),
             theme_manager=self._theme,
@@ -83,8 +97,15 @@ class CherryView(StandardToolLayout):
 
         self._profiles_ready.connect(self._on_profiles_ready)
         self._detail_ready.connect(self._on_detail_ready)
+        self._details_ready.connect(self._on_details_ready)
         self._load_failed.connect(self._on_load_failed)
         self._legacy.state_changed.connect(self._on_legacy_state)
+
+        self._bridge.auth_required.connect(self._on_auth_required)
+        self._bridge.auth_aborted.connect(self._on_auth_aborted)
+        self._queue.profile_finished.connect(self._on_profile_finished)
+        self._queue.queue_finished.connect(self._on_queue_finished)
+        self._queue.queue_cancelled.connect(self._on_queue_cancelled)
 
         self._update_actions()
 
@@ -178,6 +199,40 @@ class CherryView(StandardToolLayout):
             f"color: {self._color('text_secondary', '#ccc')}; font-size: 11px;")
         lay.addWidget(self._detail_label)
 
+        lay.addSpacing(6)
+        lay.addWidget(self._divider())
+        lay.addWidget(self._section_label(self.tr("cherry.dl_options", "DOWNLOAD OPTIONS")))
+
+        workers_row = QHBoxLayout()
+        workers_row.addWidget(QLabel(self.tr("cherry.dl_workers_label", "Workers")))
+        self._workers = QSpinBox()
+        # El tope real lo pone el template de cada sitio: el motor recorta este
+        # número y avisa con `workers_resolved`. Aquí solo se pide.
+        self._workers.setRange(1, 16)
+        self._workers.setValue(4)
+        workers_row.addWidget(self._workers)
+        workers_row.addStretch(1)
+        lay.addLayout(workers_row)
+
+        self._ext_filter = QLineEdit()
+        self._ext_filter.setPlaceholderText(self.tr("cherry.dl_ext_ph", "jpg, png, zip…"))
+        self._ext_filter.setToolTip(self.tr(
+            "cherry.dl_ext_tip",
+            "Extensions to include. The filter applies when downloading, not when "
+            "scanning: changing it never re-scans the history.",
+        ))
+        lay.addWidget(self._ext_filter)
+
+        self._ext_exclude = QCheckBox(self.tr("cherry.dl_exclude", "Exclude these instead"))
+        lay.addWidget(self._ext_exclude)
+
+        self._force_full = QCheckBox(self.tr("cherry.dl_rescan", "Full rescan (ignore last sync)"))
+        lay.addWidget(self._force_full)
+
+        self._btn_all = QPushButton()
+        self._btn_all.clicked.connect(self._start_all_visible)
+        lay.addWidget(self._btn_all)
+
         lay.addStretch(1)
 
         lay.addWidget(self._divider())
@@ -210,9 +265,28 @@ class CherryView(StandardToolLayout):
         lay.addWidget(self._status_label)
         lay.addStretch(1)
 
+        self._btn_view = QPushButton(self.tr("cherry.show_console", "Console"))
+        self._btn_view.setCheckable(True)
+        self._btn_view.toggled.connect(self._toggle_view)
+        lay.addWidget(self._btn_view)
+
         self._btn_open = QPushButton(self.tr("cherry.open_folder", "Open folder"))
         self._btn_open.clicked.connect(self._open_folder)
         lay.addWidget(self._btn_open)
+
+        self._btn_scan = QPushButton(self.tr("cherry.scan", "Scan"))
+        self._btn_scan.setToolTip(self.tr(
+            "cherry.scan_tip", "Look for new files and queue them, without downloading."))
+        self._btn_scan.clicked.connect(lambda: self._start_selected(scan_only=True))
+        lay.addWidget(self._btn_scan)
+
+        self._btn_download = QPushButton(self.tr("cherry.download", "Download"))
+        self._btn_download.clicked.connect(lambda: self._start_selected(scan_only=False))
+        lay.addWidget(self._btn_download)
+
+        self._btn_cancel = QPushButton(self.tr("cherry.cancel", "Cancel"))
+        self._btn_cancel.clicked.connect(self._cancel)
+        lay.addWidget(self._btn_cancel)
 
         self._btn_refresh = QPushButton(self.tr("cherry.refresh", "Refresh"))
         self._btn_refresh.clicked.connect(self.refresh)
@@ -229,6 +303,8 @@ class CherryView(StandardToolLayout):
 
     def shutdown(self) -> None:
         """La llama el módulo al descargarse: para el loop y su hilo."""
+        if self._queue.is_running:
+            self._queue.cancel()
         self._runtime.stop()
 
     # ── Carga de datos ────────────────────────────────────────────────────
@@ -406,6 +482,8 @@ class CherryView(StandardToolLayout):
         table.setSortingEnabled(True)
         shown = self.tr("cherry.showing", "Showing {n} of {total}")
         self._count_label.setText(shown.format(n=len(rows), total=len(self._profiles)))
+        self._btn_all.setText(
+            self.tr("cherry.download_all", "Download all visible ({n})").format(n=len(rows)))
         self._restore_selection()
         self._update_actions()
 
@@ -446,7 +524,182 @@ class CherryView(StandardToolLayout):
 
     def _update_actions(self) -> None:
         profile = self._current_profile()
+        running = self._queue.is_running or self._bridge.is_busy
         self._btn_open.setEnabled(bool(profile and profile.get("folder_exists")))
+        self._btn_scan.setEnabled(bool(profile) and not running)
+        self._btn_download.setEnabled(bool(profile) and not running)
+        self._btn_all.setEnabled(bool(self._profiles) and not running)
+        self._btn_cancel.setEnabled(running)
+
+    # ── Descarga (A3) ─────────────────────────────────────────────────────
+    def _ext_set(self) -> set[str]:
+        """'jpg, .png' → {'.jpg', '.png'}: el motor espera el punto incluido."""
+        out = set()
+        for chunk in self._ext_filter.text().replace(";", ",").split(","):
+            ext = chunk.strip().lower().lstrip("*")
+            if ext:
+                out.add(ext if ext.startswith(".") else f".{ext}")
+        return out
+
+    def _start_selected(self, scan_only: bool) -> None:
+        profile = self._current_profile()
+        if profile is None:
+            self._set_status(self.tr("cherry.no_selection", "Select a profile first."))
+            return
+        self._start([profile["id"]], scan_only)
+
+    def _start_all_visible(self) -> None:
+        rows = self._visible_profiles()
+        if not rows:
+            return
+        if len(rows) > 1:
+            reply = QMessageBox.question(
+                self,
+                self.tr("cherry.batch_title", "Download several profiles"),
+                self.tr(
+                    "cherry.batch_body",
+                    "{n} profiles will be synced one after another. It can take hours "
+                    "and hits the sites in sequence; you can cancel at any point.",
+                ).format(n=len(rows)),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        self._start([p["id"] for p in rows], scan_only=False)
+
+    def _start(self, profile_ids: list[int], scan_only: bool) -> None:
+        if self._queue.is_running or self._bridge.is_busy:
+            self._set_status(self.tr("cherry.dl_busy", "A download is already running."))
+            return
+        if not self._runtime.start():
+            self._set_status(self.tr("cherry.runtime_failed", "Could not start the async runtime."))
+            return
+
+        self._panel.reset()
+        self._panel.set_phase(self.tr("cherry.dl_preparing", "Loading profile sources…"))
+        self._btn_view.setChecked(True)  # mirar la consola es lo que uno quiere ahora
+        self._set_status(self.tr("cherry.dl_preparing", "Loading profile sources…"))
+        try:
+            self._runtime.submit(self._load_details(profile_ids, scan_only))
+        except RuntimeError as exc:
+            self._load_failed.emit(str(exc))
+        self._update_actions()
+
+    async def _load_details(self, profile_ids: list[int], scan_only: bool) -> None:
+        """`run_profile_download` exige la clave `urls`, que la tabla no trae."""
+        try:
+            rows = await profiles_logic.load_profile_details(profile_ids)
+        except Exception as exc:
+            log.exception("cherry: fallo cargando los perfiles a descargar")
+            self._load_failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self._details_ready.emit(rows, scan_only)
+
+    def _on_details_ready(self, rows: list, scan_only: bool) -> None:
+        if not rows:
+            self._set_status(self.tr("cherry.dl_nothing", "Nothing to download."))
+            self._update_actions()
+            return
+        started = self._queue.start(
+            rows,
+            workers=self._workers.value(),
+            ext_filter=self._ext_set(),
+            exclude_mode=self._ext_exclude.isChecked(),
+            force_full=self._force_full.isChecked(),
+            scan_only=scan_only,
+        )
+        if not started:
+            self._set_status(self.tr("cherry.dl_busy", "A download is already running."))
+        else:
+            self._set_status(self.tr("cherry.dl_running", "Downloading…"))
+        self._update_actions()
+
+    def _cancel(self) -> None:
+        if self._queue.cancel() or self._bridge.cancel():
+            self._panel.set_phase(self.tr("cherry.dl_cancelling", "Cancelling…"))
+            self._set_status(self.tr("cherry.dl_cancelling", "Cancelling…"))
+        self._update_actions()
+
+    def _toggle_view(self, on: bool) -> None:
+        self._stack.setCurrentIndex(1 if on else 0)
+        self._btn_view.setText(
+            self.tr("cherry.show_list", "List") if on
+            else self.tr("cherry.show_console", "Console"))
+
+    def _on_profile_finished(self, name: str, summary) -> None:
+        if summary is None:
+            self._panel.append_log(
+                self.tr("cherry.dl_profile_failed", "✗ {name} did not finish").format(name=name),
+                "error")
+            return
+        self._panel.append_log(self.tr(
+            "cherry.dl_profile_done",
+            "✓ {name} · ↓{d} ⏭{s} ✗{e} ⏸{f}",
+        ).format(name=name, d=summary.downloaded, s=summary.skipped,
+                 e=summary.errors, f=summary.deferred), "ok")
+
+    def _on_queue_finished(self, totals) -> None:
+        text = self.tr(
+            "cherry.dl_queue_done", "Done · {n} profiles · ↓{d} ⏭{s} ✗{e} ⏸{f}"
+        ).format(n=totals.done, d=totals.downloaded, s=totals.skipped,
+                 e=totals.errors, f=totals.deferred)
+        self._panel.set_phase(text)
+        self._panel.append_log(text, "ok")
+        for name, message in totals.failed:
+            self._panel.append_log(f"✗ {name}: {message}", "error")
+        self._update_actions()
+        # `last_checked` y los contadores por fuente cambiaron: la tabla ya no
+        # dice la verdad.
+        self.refresh()
+
+    def _on_queue_cancelled(self, totals) -> None:
+        text = self.tr(
+            "cherry.dl_queue_cancelled", "Cancelled · {n} profiles done · ↓{d}"
+        ).format(n=totals.done, d=totals.downloaded)
+        self._panel.set_phase(text)
+        self._panel.append_log(text, "warn")
+        self._update_actions()
+        self.refresh()
+
+    # ── Autenticación interactiva ─────────────────────────────────────────
+    def _on_auth_required(self, site: str, token: int) -> None:
+        """La descarga está detenida esperando esta respuesta (`asyncio.Future`).
+
+        `exec()` abre un bucle de eventos anidado, así que las señales del
+        puente se siguen entregando mientras el diálogo está abierto — incluida
+        `auth_aborted`, que lo cierra si la descarga muere entretanto.
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(self.tr("cherry.auth_title", "Session required"))
+        box.setText(self.tr(
+            "cherry.auth_body",
+            "{site} needs an active session. Without one, only free public posts "
+            "would be downloaded.\n\nLog in now? Your real browser will open so you "
+            "can sign in; the download resumes by itself afterwards.",
+        ).format(site=site.capitalize()))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        box.setProperty("aborted", False)
+        self._auth_boxes[token] = box
+
+        result = box.exec()
+        self._auth_boxes.pop(token, None)
+        if box.property("aborted"):
+            return  # la descarga ya murió; el Future no existe
+        if result == QMessageBox.StandardButton.Yes:
+            self._panel.set_phase(self.tr("cherry.auth_waiting", "Waiting for the browser login…"))
+            self._bridge.run_site_login(site, token)
+        else:
+            self._bridge.resolve_auth_result(token, False)
+
+    def _on_auth_aborted(self, token: int) -> None:
+        box = self._auth_boxes.pop(token, None)
+        if box is not None:
+            box.setProperty("aborted", True)
+            box.done(int(QMessageBox.StandardButton.Cancel))
 
     # ── Acciones ──────────────────────────────────────────────────────────
     def _open_folder(self) -> None:

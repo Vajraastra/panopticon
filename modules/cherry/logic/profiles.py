@@ -79,3 +79,16 @@ async def load_profile_detail(profile_id: int, db_path: Path | None = None) -> d
     flags = await asyncio.to_thread(_check_folders, [profile["folder_path"]])
     profile["folder_exists"] = flags[0]
     return profile
+
+
+async def load_profile_details(profile_ids: list[int], db_path: Path | None = None) -> list[dict]:
+    """Varios perfiles con sus fuentes, en el orden pedido, saltando los que ya
+    no estén. Lo que necesita una descarga por lotes: `run_profile_download`
+    exige la clave `urls`, que `list_profiles()` no trae.
+    """
+    out = []
+    for pid in profile_ids:
+        detail = await load_profile_detail(pid, db_path)
+        if detail is not None:
+            out.append(detail)
+    return out
