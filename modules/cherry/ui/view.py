@@ -19,9 +19,10 @@ en el primer `showEvent`.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFrame, QHBoxLayout, QHeaderView, QLabel,
@@ -70,6 +71,15 @@ class CherryView(StandardToolLayout):
             theme_manager=self._theme,
             event_bus=self._event_bus,
         )
+
+        # Después de `super()`: antes, `self` todavía no es un QObject y no
+        # puede ser padre de nada. Leer el índice tarda decenas de milisegundos,
+        # así que sin este destello actualizar repinta el mismo texto y parece
+        # que el botón no hiciera nada.
+        self._flash_timer = QTimer(self)
+        self._flash_timer.setSingleShot(True)
+        self._flash_timer.setInterval(900)
+        self._flash_timer.timeout.connect(self._unflash_status)
 
         self._profiles_ready.connect(self._on_profiles_ready)
         self._detail_ready.connect(self._on_detail_ready)
@@ -195,8 +205,8 @@ class CherryView(StandardToolLayout):
         lay.setSpacing(10)
 
         self._status_label = QLabel(self.tr("cherry.status_loading", "Reading index…"))
-        self._status_label.setStyleSheet(
-            f"color: {self._color('text_dim', '#888')}; font-size: 12px;")
+        self._status_dim = self._color("text_dim", "#888")
+        self._status_label.setStyleSheet(f"color: {self._status_dim}; font-size: 12px;")
         lay.addWidget(self._status_label)
         lay.addStretch(1)
 
@@ -207,6 +217,7 @@ class CherryView(StandardToolLayout):
         self._btn_refresh = QPushButton(self.tr("cherry.refresh", "Refresh"))
         self._btn_refresh.clicked.connect(self.refresh)
         lay.addWidget(self._btn_refresh)
+
         return bar
 
     # ── Ciclo de vida ─────────────────────────────────────────────────────
@@ -236,12 +247,12 @@ class CherryView(StandardToolLayout):
             self._set_status(self.tr("cherry.runtime_failed", "Could not start the async runtime."))
             return
 
-        self._btn_refresh.setEnabled(False)
+        self._busy_refresh(True)
         self._set_status(self.tr("cherry.status_loading", "Reading index…"))
         try:
             self._runtime.submit(self._load_profiles())
         except RuntimeError as exc:
-            self._btn_refresh.setEnabled(True)
+            self._busy_refresh(False)
             self._load_failed.emit(str(exc))
 
     async def _load_profiles(self) -> None:
@@ -265,17 +276,20 @@ class CherryView(StandardToolLayout):
     # ── Slots (hilo GUI) ──────────────────────────────────────────────────
     def _on_profiles_ready(self, rows: list) -> None:
         self._profiles = rows
-        self._btn_refresh.setEnabled(True)
+        self._busy_refresh(False)
         self._rebuild_site_combo()
         self._apply_filters()
+        # La hora es la prueba de que la lectura ocurrió: si el índice no
+        # cambió, el resto del texto sería idéntico al de hace un segundo.
+        stamp = datetime.now().strftime("%H:%M:%S")
         missing = sum(1 for r in rows if not r.get("folder_exists"))
         if missing:
             msg = self.tr("cherry.status_loaded_missing",
-                          "{n} profiles · {m} with a missing folder")
-            self._set_status(msg.format(n=len(rows), m=missing))
+                          "{n} profiles · {m} with a missing folder · {t}")
+            self._set_status(msg.format(n=len(rows), m=missing, t=stamp), flash=True)
         else:
-            msg = self.tr("cherry.status_loaded", "{n} profiles")
-            self._set_status(msg.format(n=len(rows)))
+            msg = self.tr("cherry.status_loaded", "{n} profiles · {t}")
+            self._set_status(msg.format(n=len(rows), t=stamp), flash=True)
 
     def _on_detail_ready(self, detail) -> None:
         if detail is None:
@@ -308,8 +322,9 @@ class CherryView(StandardToolLayout):
         self._detail_label.setText("<br>".join(lines))
 
     def _on_load_failed(self, message: str) -> None:
-        self._btn_refresh.setEnabled(True)
-        self._set_status(self.tr("cherry.status_error", "Error: {msg}").format(msg=message))
+        self._busy_refresh(False)
+        self._set_status(
+            self.tr("cherry.status_error", "Error: {msg}").format(msg=message), flash=True)
 
     def _on_legacy_state(self, running: bool, key: str, value) -> None:
         self._btn_legacy.setEnabled(not running)
@@ -442,5 +457,21 @@ class CherryView(StandardToolLayout):
     def _launch_legacy(self) -> None:
         self._legacy.launch()
 
-    def _set_status(self, text: str) -> None:
+    def _busy_refresh(self, busy: bool) -> None:
+        self._btn_refresh.setEnabled(not busy)
+        self._btn_refresh.setText(
+            self.tr("cherry.refreshing", "Refreshing…") if busy
+            else self.tr("cherry.refresh", "Refresh"))
+
+    def _set_status(self, text: str, flash: bool = False) -> None:
+        """`flash` tiñe el estado con el acento un instante: es la única señal
+        visible cuando el texto nuevo coincide con el viejo."""
         self._status_label.setText(text)
+        if not flash:
+            return
+        accent = self._color("accent_success", "#00ff66")
+        self._status_label.setStyleSheet(f"color: {accent}; font-size: 12px; font-weight: bold;")
+        self._flash_timer.start()
+
+    def _unflash_status(self) -> None:
+        self._status_label.setStyleSheet(f"color: {self._status_dim}; font-size: 12px;")
