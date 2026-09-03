@@ -25,19 +25,22 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QFrame, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QStackedWidget,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QPushButton, QSpinBox, QStackedWidget, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from core.components.standard_layout import StandardToolLayout
 from core.paths import CachePaths
+from ..logic import profile_writes as writes
 from ..logic import profiles as profiles_logic
 from ..logic.download_bridge import DownloadBridge
 from ..logic.download_queue import DownloadQueue
 from ..logic.runtime import CherryRuntime
 from .download_panel import DownloadPanel
 from .legacy_gui import LOG_NAME, LegacyGuiLauncher
+from .profile_dialogs import AddUrlDialog, NewProfileDialog
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +55,8 @@ class CherryView(StandardToolLayout):
     _profiles_ready = Signal(object)   # list[dict]
     _detail_ready   = Signal(object)   # dict | None
     _details_ready  = Signal(object, bool)  # list[dict] a descargar, scan_only
+    _profile_created = Signal(int, bool)    # id nuevo, descargar al terminar
+    _url_added       = Signal(int)          # perfil al que se le añadió
     _load_failed    = Signal(str)
 
     def __init__(self, context: dict | None = None, runtime: CherryRuntime | None = None) -> None:
@@ -98,6 +103,8 @@ class CherryView(StandardToolLayout):
         self._profiles_ready.connect(self._on_profiles_ready)
         self._detail_ready.connect(self._on_detail_ready)
         self._details_ready.connect(self._on_details_ready)
+        self._profile_created.connect(self._on_profile_created)
+        self._url_added.connect(self._on_url_added)
         self._load_failed.connect(self._on_load_failed)
         self._legacy.state_changed.connect(self._on_legacy_state)
 
@@ -166,6 +173,11 @@ class CherryView(StandardToolLayout):
         lay.setContentsMargins(15, 15, 15, 15)
         lay.setSpacing(10)
 
+        self._btn_new = QPushButton(self.tr("cherry.new_profile", "+ New project"))
+        self._btn_new.clicked.connect(self._new_profile)
+        lay.addWidget(self._btn_new)
+
+        lay.addWidget(self._divider())
         lay.addWidget(self._section_label(self.tr("cherry.filters", "FILTERS")))
 
         self._search = QLineEdit()
@@ -198,6 +210,18 @@ class CherryView(StandardToolLayout):
         self._detail_label.setStyleSheet(
             f"color: {self._color('text_secondary', '#ccc')}; font-size: 11px;")
         lay.addWidget(self._detail_label)
+
+        # Las fuentes van en una lista con casillas, no en el HTML del detalle:
+        # desmarcar una es la forma que da el motor de "quitarla" sin perder su
+        # `last_synced`.
+        self._sources = QListWidget()
+        self._sources.setMaximumHeight(150)
+        self._sources.itemChanged.connect(self._on_source_toggled)
+        lay.addWidget(self._sources)
+
+        self._btn_add_url = QPushButton(self.tr("cherry.add_url", "+ Add source"))
+        self._btn_add_url.clicked.connect(self._add_url)
+        lay.addWidget(self._btn_add_url)
 
         lay.addSpacing(6)
         lay.addWidget(self._divider())
@@ -370,6 +394,7 @@ class CherryView(StandardToolLayout):
     def _on_detail_ready(self, detail) -> None:
         if detail is None:
             self._detail_label.setText(self.tr("cherry.detail_gone", "Profile no longer in the index."))
+            self._sources.clear()
             return
         if detail["id"] != self._selected_id:
             return  # llegó tarde: la selección ya cambió
@@ -385,17 +410,9 @@ class CherryView(StandardToolLayout):
         lines.append(self.tr("cherry.detail_created", "Created: {d}").format(d=created))
 
         urls = detail.get("urls", [])
-        lines.append("")
         lines.append(self.tr("cherry.detail_sources", "Sources ({n}):").format(n=len(urls)))
-        for u in urls:
-            mark = "" if u["enabled"] else "✕ "
-            target = u["url"] or f"{u['site']}:{u['artist_id'] or '?'}"
-            synced = u["last_synced"] or "—"
-            lines.append(
-                f"{mark}{target}<br><span style='opacity:0.7'>"
-                f"{u['file_count']} · {synced}</span>"
-            )
         self._detail_label.setText("<br>".join(lines))
+        self._populate_sources(urls)
 
     def _on_load_failed(self, message: str) -> None:
         self._busy_refresh(False)
@@ -498,6 +515,7 @@ class CherryView(StandardToolLayout):
                 return
         self._selected_id = None
         self._detail_label.setText(self.tr("cherry.detail_empty", "No profile selected."))
+        self._sources.clear()
 
     def _current_profile(self) -> dict | None:
         row = self._table.currentRow()
@@ -530,6 +548,124 @@ class CherryView(StandardToolLayout):
         self._btn_download.setEnabled(bool(profile) and not running)
         self._btn_all.setEnabled(bool(self._profiles) and not running)
         self._btn_cancel.setEnabled(running)
+        self._btn_new.setEnabled(not running)
+        self._btn_add_url.setEnabled(bool(profile) and not running)
+
+    # ── Altas en el índice ────────────────────────────────────────────────
+    def _populate_sources(self, urls: list) -> None:
+        """Rellena la lista sin que `itemChanged` la confunda con un clic."""
+        self._sources.blockSignals(True)
+        self._sources.clear()
+        for u in urls:
+            item = QListWidgetItem(u["url"] or f"{u['site']}:{u['artist_id'] or '?'}")
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked if u["enabled"] else Qt.CheckState.Unchecked)
+            item.setData(Qt.ItemDataRole.UserRole, u["id"])
+            item.setToolTip(self.tr(
+                "cherry.source_tip", "{n} files · last sync {t}"
+            ).format(n=u["file_count"], t=u["last_synced"] or "—"))
+            self._sources.addItem(item)
+        self._sources.blockSignals(False)
+
+    def _reload_detail(self) -> None:
+        if self._selected_id is None or not self._runtime.is_running:
+            return
+        try:
+            self._runtime.submit(self._load_detail(self._selected_id))
+        except RuntimeError as exc:
+            self._load_failed.emit(str(exc))
+
+    def _new_profile(self) -> None:
+        dialog = NewProfileDialog(self._runtime, self._theme, self._lm, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if not self._runtime.start():
+            self._set_status(self.tr("cherry.runtime_failed", "Could not start the async runtime."))
+            return
+        self._set_status(self.tr("cherry.creating", "Creating the project…"))
+        try:
+            self._runtime.submit(self._create_async(
+                dialog.display_name(), dialog.url(), dialog.download_now()))
+        except RuntimeError as exc:
+            self._load_failed.emit(str(exc))
+
+    async def _create_async(self, name: str, url: str, download: bool) -> None:
+        try:
+            profile_id = await writes.create_profile(name, url)
+        except Exception as exc:
+            log.exception("cherry: no se pudo crear el perfil")
+            self._load_failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self._profile_created.emit(profile_id, download)
+
+    def _on_profile_created(self, profile_id: int, download: bool) -> None:
+        # `refresh()` vuelve a leer el índice y `_restore_selection` deja
+        # marcado el perfil nuevo, que ya es el seleccionado.
+        self._selected_id = profile_id
+        self._set_status(self.tr("cherry.created", "Project created."))
+        self.refresh()
+        if download:
+            self._start([profile_id], scan_only=False)
+
+    def _add_url(self) -> None:
+        profile = self._current_profile()
+        if profile is None:
+            self._set_status(self.tr("cherry.no_selection", "Select a profile first."))
+            return
+        dialog = AddUrlDialog(profile["display_name"], self._theme, self._lm, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if not self._runtime.start():
+            self._set_status(self.tr("cherry.runtime_failed", "Could not start the async runtime."))
+            return
+        try:
+            self._runtime.submit(self._add_url_async(profile["id"], dialog.url()))
+        except RuntimeError as exc:
+            self._load_failed.emit(str(exc))
+
+    async def _add_url_async(self, profile_id: int, url: str) -> None:
+        try:
+            await writes.add_url(profile_id, url)
+        except Exception as exc:
+            log.exception("cherry: no se pudo añadir la url")
+            self._load_failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self._url_added.emit(profile_id)
+
+    def _on_url_added(self, profile_id: int) -> None:
+        if profile_id < 0:
+            # Vino de activar/desactivar una fuente: la casilla ya refleja el
+            # cambio, pero `url_count` de la tabla cuenta solo las activas.
+            self._set_status(self.tr("cherry.source_updated", "Source updated."))
+            self.refresh()
+            return
+        self._set_status(self.tr("cherry.url_added", "Source added."))
+        self.refresh()      # cambió url_count
+        self._reload_detail()
+
+    def _on_source_toggled(self, item: QListWidgetItem) -> None:
+        url_id = item.data(Qt.ItemDataRole.UserRole)
+        if url_id is None or not self._runtime.start():
+            return
+        enabled = item.checkState() == Qt.CheckState.Checked
+        try:
+            self._runtime.submit(self._set_enabled_async(int(url_id), enabled))
+        except RuntimeError as exc:
+            self._load_failed.emit(str(exc))
+
+    async def _set_enabled_async(self, url_id: int, enabled: bool) -> None:
+        try:
+            await writes.set_url_enabled(url_id, enabled)
+        except Exception as exc:
+            log.exception("cherry: no se pudo cambiar el estado de la fuente")
+            self._load_failed.emit(f"{type(exc).__name__}: {exc}")
+            # La casilla ya se pintó marcada: hay que devolverla a lo que dice
+            # el índice, no a lo que el usuario creyó.
+            if self._selected_id is not None:
+                await self._load_detail(self._selected_id)
+            return
+        self._url_added.emit(-1)  # solo para refrescar la tabla y el estado
 
     # ── Descarga (A3) ─────────────────────────────────────────────────────
     def _ext_set(self) -> set[str]:
