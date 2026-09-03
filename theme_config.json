@@ -1,16 +1,4 @@
 {
     "current_theme": "grape",
-    "bg_main": "#1a0030",
-    "bg_sidebar": "#22003e",
-    "bg_panel": "#2e0055",
-    "bg_input": "#110020",
-    "border": "#440090",
-    "border_highlight": "#ec00f0",
-    "text_primary": "#ffffff",
-    "text_secondary": "#e0b0ff",
-    "text_dim": "#8844cc",
-    "accent_main": "#ec00f0",
-    "accent_hover": "#c400cc",
-    "accent_warning": "#ff5555",
-    "accent_success": "#54efea"
+    "palette_version": 2
 }

@@ -15,21 +15,24 @@ class ThemeManager(QObject):
     """
     theme_changed = Signal() # Se emite cuando se actualiza un color para refrescar la UI
 
-    # Colores por defecto (Aestética Cyber/Dark)
+    # Las paletas se generan, no se eligen a ojo: para cada tema se fija un tono de
+    # identidad y se derivan las superficies por LUMINANCIA objetivo (input hundido <
+    # sidebar < main < panel elevado), los textos y los dos niveles de borde por su
+    # contraste contra la superficie más clara, y los cinco acentos por tono, separados
+    # >=38 grados entre sí para que ninguno se confunda con otro. Todas las combinaciones
+    # que la UI puede producir superan WCAG AA. El generador vive en `scripts/`.
+    #
+    # Subir esto invalida los colores guardados en theme_config.json: la paleta anterior
+    # se persistía entera como "overrides" y taparía la nueva al arrancar.
+    PALETTE_VERSION = 2
+
+    # Paleta por defecto (= tema Cyberpunk).
     DEFAULTS = {
-        "bg_main": "#050505",
-        "bg_sidebar": "#0a0a0a",
-        "bg_panel": "#111111",
-        "bg_input": "#000000",
-        "border": "#333333",
-        "border_highlight": "#00ffcc",
-        "text_primary": "#ffffff",
-        "text_secondary": "#cccccc",
-        "text_dim": "#666666",
-        "accent_main": "#00ffcc",
-        "accent_hover": "#00ccaa",
-        "accent_warning": "#ff3333",
-        "accent_success": "#00ff66",
+        "bg_main": "#171f1d", "bg_sidebar": "#0f1513", "bg_panel": "#23302d", "bg_input": "#090d0c",
+        "border": "#314843", "border_strong": "#4c6f68", "border_highlight": "#73dec9",
+        "text_primary": "#d7dfdd", "text_secondary": "#afbdba", "text_dim": "#839a95",
+        "accent_main": "#73dec9", "accent_hover": "#a4eadc", "accent_info": "#73a5de",
+        "accent_success": "#73de84", "accent_warning": "#dec073", "accent_danger": "#de7c73",
     }
 
     THEME_NAMES = {
@@ -60,64 +63,74 @@ class ThemeManager(QObject):
 
     THEMES = {
         "cyberpunk": {
-            "bg_main": "#050505", "bg_sidebar": "#0a0a0a", "bg_panel": "#111111", "bg_input": "#000000",
-            "border": "#333333", "border_highlight": "#00ffcc",
-            "text_primary": "#ffffff", "text_secondary": "#cccccc", "text_dim": "#666666",
-            "accent_main": "#00ffcc", "accent_hover": "#00ccaa", "accent_warning": "#ff3333", "accent_success": "#00ff66",
+            "bg_main": "#171f1d", "bg_sidebar": "#0f1513", "bg_panel": "#23302d", "bg_input": "#090d0c",
+            "border": "#314843", "border_strong": "#4c6f68", "border_highlight": "#73dec9",
+            "text_primary": "#d7dfdd", "text_secondary": "#afbdba", "text_dim": "#839a95",
+            "accent_main": "#73dec9", "accent_hover": "#a4eadc", "accent_info": "#73a5de",
+            "accent_success": "#73de84", "accent_warning": "#dec073", "accent_danger": "#de7c73",
         },
         "midnight": {
-            "bg_main": "#0a0e1a", "bg_sidebar": "#0f1525", "bg_panel": "#141d35", "bg_input": "#080c18",
-            "border": "#1e2d4a", "border_highlight": "#4d9fff",
-            "text_primary": "#e8f0ff", "text_secondary": "#a0b4d6", "text_dim": "#4a6080",
-            "accent_main": "#4d9fff", "accent_hover": "#3080dd", "accent_warning": "#ff5555", "accent_success": "#44ff88",
+            "bg_main": "#171d26", "bg_sidebar": "#0f1419", "bg_panel": "#242e3a", "bg_input": "#090c0f",
+            "border": "#32445d", "border_strong": "#4e6b90", "border_highlight": "#6fa1e2",
+            "text_primary": "#d8dee5", "text_secondary": "#b0bbca", "text_dim": "#8596ae",
+            "accent_main": "#6fa1e2", "accent_hover": "#a2c2ec", "accent_info": "#9d8be4",
+            "accent_success": "#73deac", "accent_warning": "#dec073", "accent_danger": "#de7c73",
         },
         "forest": {
-            "bg_main": "#080d08", "bg_sidebar": "#0e140e", "bg_panel": "#131f13", "bg_input": "#060a06",
-            "border": "#1a2e1a", "border_highlight": "#44ff88",
-            "text_primary": "#dfffdf", "text_secondary": "#a0c8a0", "text_dim": "#4a6a4a",
-            "accent_main": "#44ff88", "accent_hover": "#33cc66", "accent_warning": "#ff5533", "accent_success": "#00ff44",
+            "bg_main": "#151f18", "bg_sidebar": "#0e1511", "bg_panel": "#203026", "bg_input": "#080d0a",
+            "border": "#2c4936", "border_strong": "#457354", "border_highlight": "#76db98",
+            "text_primary": "#d4dfd8", "text_secondary": "#a9bfb1", "text_dim": "#7b9d86",
+            "accent_main": "#76db98", "accent_hover": "#a6e7bc", "accent_info": "#769edb",
+            "accent_success": "#76dbd7", "accent_warning": "#dbbe76", "accent_danger": "#db7e76",
         },
         "slate": {
-            "bg_main": "#0f0f0f", "bg_sidebar": "#141414", "bg_panel": "#1c1c1c", "bg_input": "#0a0a0a",
-            "border": "#2e2e2e", "border_highlight": "#999999",
-            "text_primary": "#ffffff", "text_secondary": "#b0b0b0", "text_dim": "#555555",
-            "accent_main": "#cccccc", "accent_hover": "#aaaaaa", "accent_warning": "#ff4444", "accent_success": "#44cc44",
+            "bg_main": "#1c1d20", "bg_sidebar": "#131315", "bg_panel": "#2b2d31", "bg_input": "#0b0b0d",
+            "border": "#3f434c", "border_strong": "#626975", "border_highlight": "#8b9ec6",
+            "text_primary": "#dbdcdf", "text_secondary": "#b8babe", "text_dim": "#91959c",
+            "accent_main": "#8b9ec6", "accent_hover": "#b4c1da", "accent_info": "#a38bda",
+            "accent_success": "#7bd5ab", "accent_warning": "#d5bc7b", "accent_danger": "#d5837b",
         },
         "light": {
-            "bg_main": "#f0f0f0", "bg_sidebar": "#e8e8e8", "bg_panel": "#ffffff", "bg_input": "#fafafa",
-            "border": "#cccccc", "border_highlight": "#0066cc",
-            "text_primary": "#111111", "text_secondary": "#444444", "text_dim": "#888888",
-            "accent_main": "#0066cc", "accent_hover": "#0055aa", "accent_warning": "#cc2200", "accent_success": "#008833",
+            "bg_main": "#e2e5e8", "bg_sidebar": "#eef0f2", "bg_panel": "#feffff", "bg_input": "#fafafb",
+            "border": "#afb7c1", "border_strong": "#778496", "border_highlight": "#1f64bd",
+            "text_primary": "#2e363f", "text_secondary": "#485363", "text_dim": "#586679",
+            "accent_main": "#1f64bd", "accent_hover": "#1f64bd", "accent_info": "#684dd5",
+            "accent_success": "#1b744a", "accent_warning": "#7d621d", "accent_danger": "#b7372b",
         },
         "sepia": {
-            "bg_main": "#1a1208", "bg_sidebar": "#221a0e", "bg_panel": "#2a200f", "bg_input": "#120e05",
-            "border": "#3a2a15", "border_highlight": "#c8a04a",
-            "text_primary": "#f5e6c8", "text_secondary": "#c8a878", "text_dim": "#7a6040",
-            "accent_main": "#c8a04a", "accent_hover": "#aa8835", "accent_warning": "#cc3300", "accent_success": "#44aa66",
+            "bg_main": "#211c15", "bg_sidebar": "#17130e", "bg_panel": "#332b20", "bg_input": "#0d0b09",
+            "border": "#4f412d", "border_strong": "#7b6546", "border_highlight": "#dbb276",
+            "text_primary": "#e3dcd1", "text_secondary": "#c7b8a3", "text_dim": "#a89270",
+            "accent_main": "#dbb276", "accent_hover": "#e7cda6", "accent_info": "#76a5db",
+            "accent_success": "#76dbac", "accent_warning": "#c3db76", "accent_danger": "#dc7a7d",
         },
         "cosmic": {
-            "bg_main": "#1f004b", "bg_sidebar": "#2a005f", "bg_panel": "#350078", "bg_input": "#160035",
-            "border": "#4a0090", "border_highlight": "#54efea",
-            "text_primary": "#ffffff", "text_secondary": "#d0b0ff", "text_dim": "#7050a0",
-            "accent_main": "#54efea", "accent_hover": "#3dccc4", "accent_warning": "#ec00f0", "accent_success": "#44ff88",
+            "bg_main": "#231a2b", "bg_sidebar": "#17111d", "bg_panel": "#352642", "bg_input": "#0d0a11",
+            "border": "#52376b", "border_strong": "#8155a8", "border_highlight": "#b37de3",
+            "text_primary": "#e2dae8", "text_secondary": "#c4b4d1", "text_dim": "#a38cb8",
+            "accent_main": "#b37de3", "accent_hover": "#c9a3eb", "accent_info": "#73a5de",
+            "accent_success": "#73deac", "accent_warning": "#dec073", "accent_danger": "#de7c73",
         },
         "grape": {
-            "bg_main": "#1a0030", "bg_sidebar": "#22003e", "bg_panel": "#2e0055", "bg_input": "#110020",
-            "border": "#440090", "border_highlight": "#ec00f0",
-            "text_primary": "#ffffff", "text_secondary": "#e0b0ff", "text_dim": "#8844cc",
-            "accent_main": "#ec00f0", "accent_hover": "#c400cc", "accent_warning": "#ff5555", "accent_success": "#54efea",
+            "bg_main": "#251929", "bg_sidebar": "#18111b", "bg_panel": "#39263f", "bg_input": "#0e0a10",
+            "border": "#583663", "border_strong": "#89539b", "border_highlight": "#c878e3",
+            "text_primary": "#e4dae7", "text_secondary": "#c8b3cf", "text_dim": "#a98ab4",
+            "accent_main": "#c878e3", "accent_hover": "#d9a2ec", "accent_info": "#73a5de",
+            "accent_success": "#73deac", "accent_warning": "#dec073", "accent_danger": "#de7c73",
         },
         "ocean": {
-            "bg_main": "#060810", "bg_sidebar": "#0a1020", "bg_panel": "#0d1a30", "bg_input": "#040610",
-            "border": "#1a3050", "border_highlight": "#00d4ff",
-            "text_primary": "#e0f0ff", "text_secondary": "#88b8d8", "text_dim": "#3a5878",
-            "accent_main": "#00d4ff", "accent_hover": "#00aacc", "accent_warning": "#ff5533", "accent_success": "#41abae",
+            "bg_main": "#141f22", "bg_sidebar": "#0e1517", "bg_panel": "#203035", "bg_input": "#080c0e",
+            "border": "#2b4751", "border_strong": "#426e7f", "border_highlight": "#6fc3e2",
+            "text_primary": "#d3dee3", "text_secondary": "#a6bdc6", "text_dim": "#769ba8",
+            "accent_main": "#6fc3e2", "accent_hover": "#a2d8ec", "accent_info": "#8790e3",
+            "accent_success": "#73deac", "accent_warning": "#dec073", "accent_danger": "#de7c73",
         },
         "aurora": {
-            "bg_main": "#060810", "bg_sidebar": "#0a1210", "bg_panel": "#0d1e18", "bg_input": "#040810",
-            "border": "#1a3028", "border_highlight": "#74f9fe",
-            "text_primary": "#e8fff0", "text_secondary": "#88c8a8", "text_dim": "#3a6050",
-            "accent_main": "#74f9fe", "accent_hover": "#50d8e0", "accent_warning": "#ff5959", "accent_success": "#a7fff3",
+            "bg_main": "#14201f", "bg_sidebar": "#0e1515", "bg_panel": "#1f302f", "bg_input": "#080c0c",
+            "border": "#294846", "border_strong": "#40716d", "border_highlight": "#74dcd5",
+            "text_primary": "#d2dfdf", "text_secondary": "#a4bfbe", "text_dim": "#729d9a",
+            "accent_main": "#74dcd5", "accent_hover": "#a5e9e4", "accent_info": "#74a1dc",
+            "accent_success": "#74dc93", "accent_warning": "#dcbf74", "accent_danger": "#dc7d74",
         },
     }
 
@@ -130,26 +143,44 @@ class ThemeManager(QObject):
 
     def load_config(self):
         """Carga el tema activo y colores personalizados desde el archivo de configuración."""
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path, 'r') as f:
-                    saved = json.load(f)
-                    theme_key = saved.get("current_theme", "cyberpunk")
-                    if theme_key in self.THEMES:
-                        self.current_theme = theme_key
-                        self.colors = self.THEMES[theme_key].copy()
-                    # Apply any individual color overrides on top
-                    for k, v in saved.items():
-                        if k != "current_theme" and k in self.DEFAULTS:
-                            self.colors[k] = v
-            except Exception as e:
-                log.warning("Error loading theme config: %s", e)
+        if not os.path.exists(self.config_path):
+            return
+        try:
+            with open(self.config_path, 'r') as f:
+                saved = json.load(f)
+        except Exception as e:
+            log.warning("Error loading theme config: %s", e)
+            return
+
+        theme_key = saved.get("current_theme", "cyberpunk")
+        if theme_key in self.THEMES:
+            self.current_theme = theme_key
+            self.colors = self.THEMES[theme_key].copy()
+
+        # Los overrides de una paleta anterior son la paleta vieja completa, no una
+        # personalización: aplicarlos dejaría el tema nuevo sin efecto.
+        if saved.get("palette_version") != self.PALETTE_VERSION:
+            log.info("theme: paleta v%s descartada, se adopta v%s",
+                     saved.get("palette_version"), self.PALETTE_VERSION)
+            self.save_config()
+            return
+
+        for k, v in saved.items():
+            if k not in ("current_theme", "palette_version") and k in self.DEFAULTS:
+                self.colors[k] = v
 
     def save_config(self):
-        """Persiste el tema activo y la paleta de colores en disco."""
+        """Persiste el tema activo y los colores personalizados en disco.
+
+        Solo se guarda lo que se APARTA del tema: volcar la paleta entera la convertía
+        en overrides que tapaban cualquier retoque posterior de `THEMES` (es lo que
+        obligó a la migración de PALETTE_VERSION).
+        """
         try:
-            data = {"current_theme": self.current_theme}
-            data.update(self.colors)
+            base = self.THEMES.get(self.current_theme, self.DEFAULTS)
+            data = {"current_theme": self.current_theme,
+                    "palette_version": self.PALETTE_VERSION}
+            data.update({k: v for k, v in self.colors.items() if base.get(k) != v})
             with open(self.config_path, 'w') as f:
                 json.dump(data, f, indent=4)
         except Exception as e:
@@ -181,6 +212,11 @@ class ThemeManager(QObject):
         """
         Genera el bloque masivo de CSS (QSS) inyectando los colores de la paleta actual.
         Define la estética global de botones, inputs, barras de desplazamiento, etc.
+
+        Hay dos niveles de borde y no da igual cuál se use: `border` separa superficies
+        (marcos, cabeceras, líneas divisorias) y `border_strong` dibuja lo que el usuario
+        puede accionar o escribir (casillas, campos, botones). Un control pintado con
+        `border` se pierde contra el fondo — que es justo lo que le pasaba a las casillas.
         """
         c = self.colors
         return f"""
@@ -191,7 +227,8 @@ class ThemeManager(QObject):
                 font-family: 'Segoe UI', 'Roboto', sans-serif;
                 font-size: 14px;
             }}
-            
+            QWidget:disabled {{ color: {c['text_dim']}; }}
+
             /* Contenedores y Marcos */
             QFrame {{
                 border: none;
@@ -201,28 +238,53 @@ class ThemeManager(QObject):
                 border-right: 1px solid {c['border']};
             }}
             QFrame#drop_zone {{
-                border: 2px dashed {c['border']};
+                border: 2px dashed {c['border_strong']};
                 border-radius: 8px;
             }}
             QFrame#drop_zone:hover {{
                 border: 2px dashed {c['accent_main']};
                 background-color: {c['bg_panel']};
             }}
+            QGroupBox {{
+                border: 1px solid {c['border']};
+                border-radius: 4px;
+                margin-top: 10px;
+                padding-top: 8px;
+                font-weight: bold;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+                color: {c['accent_main']};
+            }}
+            QSplitter::handle {{ background-color: {c['border']}; }}
+            QSplitter::handle:horizontal {{ width: 1px; }}
+            QSplitter::handle:vertical {{ height: 1px; }}
+            QSplitter::handle:hover {{ background-color: {c['accent_main']}; }}
 
-            /* Campos de Entrada (Inputs) */
-            QLineEdit, QSpinBox, QComboBox {{
+            /* Campos de Entrada — borde fuerte: son controles, no superficies */
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QTextEdit {{
                 background-color: {c['bg_input']};
                 color: {c['text_primary']};
-                border: 1px solid {c['border']};
+                border: 1px solid {c['border_strong']};
                 padding: 6px;
-                border-radius: 2px;
+                border-radius: 3px;
+                selection-background-color: {c['accent_main']};
+                selection-color: {c['bg_main']};
             }}
-            QLineEdit:hover, QSpinBox:hover, QComboBox:hover {{
-                border: 1px solid {c['text_dim']};
+            QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover,
+            QPlainTextEdit:hover, QTextEdit:hover {{
+                border: 1px solid {c['accent_hover']};
             }}
-            QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{
+            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus,
+            QPlainTextEdit:focus, QTextEdit:focus {{
                 border: 1px solid {c['accent_main']};
+            }}
+            QLineEdit:disabled, QSpinBox:disabled, QComboBox:disabled {{
                 background-color: {c['bg_panel']};
+                border: 1px solid {c['border']};
+                color: {c['text_dim']};
             }}
 
             /* Menús Desplegables (ComboBox) */
@@ -231,10 +293,10 @@ class ThemeManager(QObject):
                 subcontrol-position: top right;
                 width: 20px;
                 border-left-width: 1px;
-                border-left-color: {c['border']};
+                border-left-color: {c['border_strong']};
                 border-left-style: solid;
             }}
-            
+
             /* El menú que se despliega (Popup) */
             QComboBox QAbstractItemView {{
                 background-color: {c['bg_sidebar']} !important;
@@ -242,7 +304,7 @@ class ThemeManager(QObject):
                 color: {c['text_primary']};
                 border: 1px solid {c['accent_main']};
                 selection-background-color: {c['accent_main']};
-                selection-color: black;
+                selection-color: {c['bg_main']};
                 outline: none;
             }}
 
@@ -258,11 +320,48 @@ class ThemeManager(QObject):
                 border: none;
             }}
 
+            /* Casillas y radios. El indicador se dibuja aquí: sin estas reglas Qt lo pinta
+               con su paleta nativa y desaparece sobre las superficies del tema. */
+            QCheckBox, QRadioButton {{
+                spacing: 8px;
+                background: transparent;
+                padding: 2px;
+            }}
+            QCheckBox::indicator, QRadioButton::indicator {{
+                width: 16px;
+                height: 16px;
+                background-color: {c['bg_input']};
+                border: 2px solid {c['border_strong']};
+            }}
+            QCheckBox::indicator {{ border-radius: 3px; }}
+            QRadioButton::indicator {{ border-radius: 10px; }}
+            QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
+                border-color: {c['accent_main']};
+                background-color: {c['bg_panel']};
+            }}
+            QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
+                background-color: {c['accent_main']};
+                border-color: {c['accent_main']};
+            }}
+            QCheckBox::indicator:checked:hover, QRadioButton::indicator:checked:hover {{
+                background-color: {c['accent_hover']};
+                border-color: {c['accent_hover']};
+            }}
+            QCheckBox::indicator:indeterminate {{
+                background-color: {c['text_dim']};
+                border-color: {c['border_strong']};
+            }}
+            QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
+                border-color: {c['border']};
+                background-color: {c['bg_panel']};
+            }}
+            QCheckBox::indicator:checked:disabled {{ background-color: {c['text_dim']}; }}
+
             /* Botones Estándar */
             QPushButton {{
-                background-color: {c['bg_panel']}; 
-                color: {c['text_primary']}; 
-                border: 1px solid {c['border']};
+                background-color: {c['bg_panel']};
+                color: {c['text_primary']};
+                border: 1px solid {c['border_strong']};
                 padding: 8px 16px;
                 border-radius: 3px;
                 font-weight: bold;
@@ -273,21 +372,112 @@ class ThemeManager(QObject):
             }}
             QPushButton:pressed {{
                 background-color: {c['accent_main']};
-                color: black;
+                color: {c['bg_main']};
+            }}
+            QPushButton:disabled {{
+                background-color: {c['bg_main']};
+                border: 1px solid {c['border']};
+                color: {c['text_dim']};
+            }}
+
+            /* Tablas y listas. Van sobre la superficie BASE, no sobre la elevada: una
+               tabla ocupa media pantalla y `bg_panel` en esa superficie deja el area
+               dominante en el nivel mas claro, que es justo lo que cansa la vista. */
+            QTableView, QTreeView, QListView, QListWidget, QTableWidget {{
+                background-color: {c['bg_main']};
+                alternate-background-color: {c['bg_sidebar']};
+                border: 1px solid {c['border']};
+                gridline-color: {c['border']};
+                selection-background-color: {c['accent_main']};
+                selection-color: {c['bg_main']};
+                outline: none;
+            }}
+            QTableView::item, QTreeView::item, QListView::item, QListWidget::item {{
+                padding: 4px;
+                border: none;
+            }}
+            QTableView::item:hover, QTreeView::item:hover, QListWidget::item:hover {{
+                background-color: {c['bg_sidebar']};
+            }}
+            QHeaderView::section {{
+                background-color: {c['bg_sidebar']};
+                color: {c['text_secondary']};
+                padding: 6px;
+                border: none;
+                border-right: 1px solid {c['border']};
+                border-bottom: 1px solid {c['border_strong']};
+                font-weight: bold;
+            }}
+            QHeaderView::section:hover {{ color: {c['accent_main']}; }}
+
+            /* Pestañas */
+            QTabWidget::pane {{
+                border: 1px solid {c['border']};
+                background-color: {c['bg_panel']};
+            }}
+            QTabBar::tab {{
+                background-color: {c['bg_main']};
+                color: {c['text_dim']};
+                border: 1px solid {c['border']};
+                border-bottom: none;
+                padding: 7px 14px;
+            }}
+            QTabBar::tab:hover {{ color: {c['text_primary']}; }}
+            QTabBar::tab:selected {{
+                background-color: {c['bg_panel']};
+                color: {c['accent_main']};
+                border-bottom: 2px solid {c['accent_main']};
+            }}
+
+            /* Progreso, menús y tooltips */
+            QProgressBar {{
+                background-color: {c['bg_input']};
+                border: 1px solid {c['border_strong']};
+                border-radius: 3px;
+                text-align: center;
+                color: {c['text_primary']};
+            }}
+            QProgressBar::chunk {{
+                background-color: {c['accent_main']};
+                border-radius: 2px;
+            }}
+            QMenu {{
+                background-color: {c['bg_sidebar']};
+                border: 1px solid {c['border_strong']};
+                color: {c['text_primary']};
+            }}
+            QMenu::item:selected {{
+                background-color: {c['accent_main']};
+                color: {c['bg_main']};
+            }}
+            QMenu::separator {{ height: 1px; background: {c['border']}; margin: 4px 8px; }}
+            QToolTip {{
+                background-color: {c['bg_sidebar']};
+                color: {c['text_primary']};
+                border: 1px solid {c['accent_main']};
+                padding: 5px;
             }}
 
             /* Barras de Desplazamiento (ScrollBars) */
             QScrollBar:vertical {{
                 background: {c['bg_main']};
-                width: 8px;
+                width: 10px;
+                margin: 0;
             }}
-            QScrollBar::handle:vertical {{
-                background: {c['border']};
-                min-height: 20px;
-                border-radius: 4px;
+            QScrollBar:horizontal {{
+                background: {c['bg_main']};
+                height: 10px;
+                margin: 0;
             }}
-            QScrollBar::handle:vertical:hover {{
+            QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
+                background: {c['border_strong']};
+                min-height: 24px;
+                min-width: 24px;
+                border-radius: 5px;
+            }}
+            QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{
                 background: {c['accent_main']};
             }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+            QScrollBar::add-line, QScrollBar::sub-line {{ height: 0px; width: 0px; }}
+            QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
         """
