@@ -41,7 +41,7 @@ Every module that transforms files uses `StampLib` to embed original metadata in
 ## Requirements
 
 - **Windows 10/11** — the primary, tested target. Linux support is best-effort.
-- Python 3.12 — downloaded and managed automatically by [`uv`](https://astral.sh/uv); no system Python required.
+- Python 3.13 — downloaded and managed automatically by [`uv`](https://astral.sh/uv); no system Python required.
 - PySide6 (installed from `requirements.txt`).
 - GPU recommended for AI modules (YOLOv8 auto-bbox, WD tagger, face recognition).
 
@@ -49,7 +49,7 @@ Every module that transforms files uses `StampLib` to embed original metadata in
 
 Panopticon ships a self-contained, portable environment driven by `uv`.
 
-**Windows (recommended)** — just run the launcher. It installs `uv` if missing, creates/repairs the venv with the managed Python 3.12, installs dependencies, and starts the app:
+**Windows (recommended)** — just run the launcher. It installs `uv` if missing, creates/repairs the venv with the managed Python 3.13, installs dependencies, and starts the app:
 
 ```
 run.bat
@@ -66,7 +66,7 @@ chmod +x run.sh && ./run.sh
 ```bash
 git clone https://github.com/Vajraastra/panopticon.git
 cd panopticon
-uv venv --python 3.12
+uv venv --python 3.13
 uv pip install -r requirements.txt
 uv run python main.py
 ```
