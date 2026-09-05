@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
+import time
 from pathlib import Path
 from typing import AsyncIterator, Callable
 
@@ -76,7 +78,8 @@ def _finalize_download(
 class ErrorKind:
     """Categorías de error para decidir la estrategia de reintento."""
     NOT_FOUND    = "not_found"    # 404 — el archivo no existe; saltar
-    AUTH         = "auth"         # 401 — sin credenciales; saltar
+    AUTH         = "auth"         # 401/403 — sin acceso al archivo; saltar
+    URL_EXPIRED  = "url_expired"  # firma del CDN vencida; re-resolver, no reintentar
     CLOUDFLARE   = "cloudflare"   # CF challenge/ban; esperar y reintentar
     RATE_LIMIT   = "rate_limit"   # 429 — demasiadas peticiones; esperar y reintentar
     SERVER       = "server_error" # 5xx — error del servidor; reintentar
@@ -338,7 +341,7 @@ class DownloadEngine:
                     )
 
                 # 403 Cloudflare — temporal, hay que esperar
-                if code == 403 and _is_cloudflare(resp):
+                if code == 403 and _is_cloudflare_block(resp):
                     wait = 60 + attempt * 30
                     last_error = RuntimeError(f"Cloudflare 403 en {url}")
                     await asyncio.sleep(wait)
@@ -404,6 +407,7 @@ class DownloadEngine:
 
         Estrategias por código HTTP:
           404 / 401  → retorno inmediato, sin retry
+          403 origen → retorno inmediato, sin retry (firma vencida o sin acceso)
           403 CF     → esperar 60 s + 30 s por error, luego retry desde 0
           429        → esperar 35 s + 10 s por error, luego retry desde 0
           5xx        → backoff exponencial, luego retry desde 0
@@ -427,6 +431,18 @@ class DownloadEngine:
         # Tiempo de inicio para timeout total del engine.
         # get_running_loop().time() usa el reloj monotónico del loop.
         _t_start = asyncio.get_running_loop().time() if total_timeout else 0.0
+
+        # Firma del CDN ya vencida antes de empezar: el 403 es seguro. Se falla
+        # de inmediato para no gastar ni el request ni el delay previo; el
+        # archivo se queda en `pending` y la próxima sync pide una firma nueva.
+        _aged = _signed_url_expiry(url)
+        if _aged is not None:
+            return DownloadResult(
+                url=url, filename=filename,
+                error=(f"URL firmada vencida hace {_aged / 3600:.1f} h "
+                       f"- se re-resuelve en la proxima sync"),
+                error_kind=ErrorKind.URL_EXPIRED,
+            )
 
         while True:
             if error_count >= max_errors:
@@ -491,7 +507,7 @@ class DownloadEngine:
                         )
 
                     # ── Cloudflare: 403 con cabeceras CF ──────────────────
-                    if code == 403 and _is_cloudflare(resp):
+                    if code == 403 and _is_cloudflare_block(resp):
                         wait = 60 + error_count * 30
                         last_error = f"Cloudflare bloqueó la descarga (403 CF) — esperando {wait}s"
                         last_kind  = ErrorKind.CLOUDFLARE
@@ -501,6 +517,25 @@ class DownloadEngine:
                         chunks.clear(); resume_from = 0; full_size = 0
                         await asyncio.sleep(wait)
                         continue
+
+                    # ── 403 del origen: denegación, no bloqueo de CF ───────
+                    # No se reintenta: ni una firma vencida ni la falta de
+                    # permiso cambian esperando. El archivo se queda pendiente
+                    # y la próxima sync lo resuelve con una URL nueva.
+                    if code == 403:
+                        aged = _signed_url_expiry(url)
+                        if aged is not None:
+                            return DownloadResult(
+                                url=url, filename=filename,
+                                error=(f"URL firmada vencida hace {aged / 3600:.1f} h "
+                                       f"- se re-resuelve en la proxima sync"),
+                                error_kind=ErrorKind.URL_EXPIRED,
+                            )
+                        return DownloadResult(
+                            url=url, filename=filename,
+                            error="Acceso denegado (403) - la sesión no da acceso a este archivo",
+                            error_kind=ErrorKind.AUTH,
+                        )
 
                     # ── Rate limit ─────────────────────────────────────────
                     if code == 429:
@@ -714,16 +749,55 @@ def _parse_content_range_total(header: str) -> int | None:
         return None
 
 
-def _is_cloudflare(resp: httpx.Response) -> bool:
-    """Detecta respuestas bloqueadas por Cloudflare."""
-    # CF siempre incluye el header cf-ray o server: cloudflare
+# Patreon firma sus URLs de media con `token-time=<epoch UTC>`; pasado ese
+# instante el CDN responde 403 y ninguna espera lo revierte.
+_TOKEN_TIME_RE = re.compile(r"[?&]token-time=(\d+)")
+
+
+def _signed_url_expiry(url: str) -> float | None:
+    """
+    Segundos transcurridos desde que venció la firma de una URL de CDN, o None
+    si la URL no va firmada o su firma sigue vigente.
+
+    Sirve para no gastar un request —ni el ciclo de reintentos— en una URL que
+    el servidor va a rechazar con certeza: la firma no se renueva reintentando,
+    hay que volver a resolver el post para obtener otra.
+    """
+    m = _TOKEN_TIME_RE.search(url)
+    if not m:
+        return None
+    try:
+        expiry = int(m.group(1))
+    except ValueError:
+        return None
+    elapsed = time.time() - expiry
+    return elapsed if elapsed > 0 else None
+
+
+def _is_cloudflare_block(resp: httpx.Response) -> bool:
+    """
+    Detecta que Cloudflare está MITIGANDO la petición (challenge o ban), no que
+    la respuesta simplemente venga servida a través de su CDN.
+
+    La distinción decide la estrategia de reintento, y confundirla sale caro:
+    patreonusercontent.com sirve TODO detrás de Cloudflare, así que `cf-ray` y
+    `server: cloudflare` los cumple igual un 403 del origen —firma vencida, sin
+    permiso—, que esperando no se arregla. Tratarlo como bloqueo costaba el
+    ciclo completo (60+90+...+240 s ~ 17 min por archivo) para fallar igual.
+
+    Un challenge real se anuncia con `cf-mitigated` o, en su defecto, sirve una
+    página HTML; una denegación del origen es un cuerpo corto de texto plano.
+    """
     headers = resp.headers
-    if "cf-ray" in headers or headers.get("server", "").lower() == "cloudflare":
-        return True
-    # Algunos challenge pages devuelven 403 sin cf-ray pero con cf-mitigated
     if "cf-mitigated" in headers:
         return True
-    return False
+    behind_cf = (
+        "cf-ray" in headers
+        or headers.get("server", "").lower() == "cloudflare"
+    )
+    if not behind_cf:
+        return False
+    return "text/html" in headers.get("content-type", "").lower()
 
 
 # ── Progress bar factory ───────────────────────────────────────────────────────
