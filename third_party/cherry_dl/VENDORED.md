@@ -75,3 +75,20 @@ exacta desde la que reanudar; `_flush()` se llama antes de evaluar completitud y
 handlers de excepción para que ese invariante se cumpla siempre. `_restart()` reemplaza al
 `chunks.clear()` y trunca el `.tmp`. Un `finally` cierra el handle y borra el `.tmp` aunque el
 worker se cancele: en Windows un handle abierto impide borrarlo después.
+
+### `engine.py` — el presupuesto de tiempo crece con lo ya bajado (2026-09-05)
+
+El worker pasa `total_timeout=300.0`. Como tope fijo condena a los archivos grandes: un `.zip` de
+3 GB no cabe en 300 s, así que al primer tropiezo se aborta por TIMEOUT, pasa a la cola diferida
+y allí se le dan otros 300 s — nunca termina, y cada intento cuesta el ancho de banda gastado.
+Ahora el presupuesto es `total_timeout + written / _MIN_RATE` (256 KiB/s): segundos de gracia más
+lo que costaría bajar a una tasa mínima decente lo ya confirmado. Lo que no progresa se sigue
+cortando en seco, porque sin bytes confirmados el presupuesto no crece.
+
+### `engine.py` — el delay entre peticiones ya no se paga dos veces (2026-09-05)
+
+En un reintento se pagaba el backoff exponencial y, encima, el `_delay()` de 10-30 s, porque la
+condición miraba solo si había progreso. Ese delay es el espaciado que evita el 429 entre
+peticiones distintas; en un reintento ese papel ya lo cumple el backoff. Sumar los dos añadía
+10-30 s por error, hasta ~2 min extra en un archivo que agota los reintentos. Ahora el delay
+completo se paga solo en el primer intento del archivo.

@@ -49,6 +49,10 @@ from .config import UserConfig, load_session, save_session
 # escrituras en unas pocas por MB en lugar de una por chunk de 64 KiB.
 _FLUSH_EVERY = 8 * 1024 * 1024
 
+# Tasa por debajo de la cual una descarga se considera estancada, a efectos del
+# presupuesto de `total_timeout`. Ver el cálculo del budget en `_do_download`.
+_MIN_RATE = 256 * 1024   # 256 KiB/s
+
 
 def _write_chunks(fh: BinaryIO, hasher, parts: list[bytes]) -> None:
     """
@@ -499,17 +503,31 @@ class DownloadEngine:
                 # httpx puede re-crear CancelledError al hacer cleanup de streams
                 # HTTP/2, lo que impide que wait_for lo convierta correctamente a
                 # TimeoutError y causa que el worker desaparezca sin log.
-                if total_timeout and asyncio.get_running_loop().time() - _t_start >= total_timeout:
-                    return DownloadResult(
-                        url=url, filename=filename,
-                        error=f"Timeout total ({total_timeout:.0f}s)",
-                        error_kind=ErrorKind.TIMEOUT,
-                    )
+                #
+                # El presupuesto no es fijo: son `total_timeout` segundos de
+                # gracia MÁS lo que costaría bajar a `_MIN_RATE` lo ya
+                # confirmado. Con un tope fijo un archivo grande es imposible
+                # de bajar — un .zip de 3 GB no cabe en los 300 s que pasa el
+                # worker, así que al primer tropiezo se aborta, se difiere, y
+                # en la cola diferida se le vuelven a dar 300 s: nunca termina.
+                # Lo que sigue cortando en seco es lo que NO progresa.
+                if total_timeout:
+                    budget = total_timeout + written / _MIN_RATE
+                    if asyncio.get_running_loop().time() - _t_start >= budget:
+                        return DownloadResult(
+                            url=url, filename=filename,
+                            error=f"Timeout total ({budget:.0f}s)",
+                            error_kind=ErrorKind.TIMEOUT,
+                        )
 
                 try:
-                    # Delay completo antes de cada intento fresco.
-                    # Pausa mínima entre range resumes para no cerrar el flujo.
-                    if written == 0:
+                    # Delay completo solo en el PRIMER intento del archivo: es
+                    # el espaciado entre peticiones que evita el 429, y en un
+                    # reintento ese papel ya lo cumple el backoff que se acaba
+                    # de pagar. Sumar los dos añadía 10-30 s por error, hasta
+                    # ~2 min extra en un archivo que agota los reintentos.
+                    # Entre range resumes, pausa mínima para no cerrar el flujo.
+                    if written == 0 and error_count == 0:
                         if on_status:
                             d_min = self.config.network.delay_min
                             d_max = self.config.network.delay_max
@@ -517,7 +535,7 @@ class DownloadEngine:
                         await self._delay()
                     else:
                         if on_status:
-                            on_status("↺ continuando rango…")
+                            on_status("↺ continuando rango…" if written else "↺ reintentando…")
                         await asyncio.sleep(random.uniform(0.5, 2.0))
 
                     # Añadir Range header si estamos resumiendo un archivo parcial.

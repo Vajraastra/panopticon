@@ -6,10 +6,13 @@ el motor tiene que sobrevivir: descarga limpia, conexión truncada a mitad
 —que obliga a reanudar por Range—, servidor que ignora el Range, y los 403 que
 distinguen un bloqueo real de Cloudflare de una denegación del origen.
 
+También mide el techo de memoria y el presupuesto de tiempo de los archivos
+grandes, que es donde el motor fallaba en silencio.
+
 Por qué existe: `_do_download` reanuda descargas parciales con una máquina de
-estados delicada (`resume_from`, `full_size`, descarte de lo acumulado) y aquí
-no hay tests del motor — `tests/` no se copió en el vendorizado. Cualquier
-cambio en ese bucle se valida con esto antes de tocar nada real.
+estados delicada (`written`, `full_size`, descarte de lo acumulado) y aquí no
+hay tests del motor — `tests/` no se copió en el vendorizado. Cualquier cambio
+en ese bucle se valida con esto antes de tocar nada real.
 
 No toca la red, ni `~/.cherry-dl`, ni `G:`: todo vive en un temporal que se
 borra al terminar.
@@ -25,6 +28,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import tracemalloc
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -104,6 +108,8 @@ class Handler(BaseHTTPRequestHandler):
       /ok/<size>       descarga limpia
       /trunc/<size>    corta la conexión a la mitad; con Range sirve el resto
       /norange/<size>  ignora el Range y siempre devuelve 200 completo
+      /slow/<size>     sirve a ~1 MiB/s
+      /slowtrunc/<size> sirve lento Y corta a la mitad: obliga a reanudar tarde
       /cf403           403 del origen servido por Cloudflare (texto plano)
       /cfblock         403 con cf-mitigated: bloqueo real de Cloudflare
       /expired/<size>  204 vacío — solo se pide con token-time vencido
@@ -149,11 +155,13 @@ class Handler(BaseHTTPRequestHandler):
         size = self._size()
         rng = self.headers.get("Range")
 
-        def send(desde: int, hasta: int) -> None:
+        def send(desde: int, hasta: int, lento: bool = False) -> None:
             """Envía body[desde:hasta] por trozos, sin materializarlo."""
             enviado = 0
             objetivo = hasta - desde
-            for part in body_chunks(size):
+            for part in body_chunks(size, chunk=64 * 1024 if lento else 256 * 1024):
+                if lento:
+                    time.sleep(0.06)   # ~1 MiB/s
                 fin = enviado + len(part)
                 if fin > desde:
                     trozo = part[max(0, desde - enviado):]
@@ -181,7 +189,22 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(size - start))
             self.send_header("Content-Range", f"bytes {start}-{size - 1}/{size}")
             self.end_headers()
-            send(start, size)
+            send(start, size, lento=path.startswith("/slow"))
+            return
+
+        # Servidor lento: entrega real pero por debajo de lo cómodo.
+        if path.startswith("/slow"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            if path.startswith("/slowtrunc"):
+                # Lento Y cortado: cuando el motor vuelva a intentar, ya habrá
+                # gastado más segundos que el total_timeout fijo.
+                send(0, size // 2, lento=True)
+                self.close_connection = True
+                return
+            send(0, size, lento=True)
             return
 
         # Primer request.
@@ -317,6 +340,30 @@ async def run() -> None:
             check(r.file_hash == esperado, "hash correcto")
             print(f"      pico de memoria: {mb:.1f} MiB para un archivo de {size / 2**20:.0f} MiB")
             check(mb < 32, f"el pico NO escala con el tamaño del archivo ({mb:.1f} MiB < 32)")
+
+            # ── 8. Un archivo grande no muere por el timeout total ───────
+            # El worker pasa total_timeout=300; con un tope fijo, cualquier
+            # archivo que tarde más queda condenado a fallar y re-diferirse.
+            print("\n[8] Archivo lento que excede el total_timeout fijo")
+            # Sirve lento y corta a la mitad, así que el motor vuelve al bucle
+            # cuando ya lleva más segundos que el total_timeout: con un tope fijo
+            # aborta ahí; con el presupuesto proporcional continúa, porque para
+            # entonces ya tiene bytes confirmados que se lo ganaron.
+            size = 3 * 1024 * 1024          # ~3 s a 1 MiB/s
+            t0 = asyncio.get_running_loop().time()
+            r = await eng.download(f"{base}/slowtrunc/{size}", tmp, "lento.bin",
+                                   total_timeout=1.0)
+            dt = asyncio.get_running_loop().time() - t0
+            check(r.ok, f"termina pese a tardar {dt:.1f}s con total_timeout=1s")
+            check(r.file_size == size, "el archivo llega entero")
+            check(r.file_hash == body_hash(size), "hash correcto")
+
+            # ── 9. Lo que NO progresa sí se corta ────────────────────────
+            # El presupuesto crece con lo bajado; si no baja nada, no crece.
+            print("\n[9] El presupuesto no tapa una descarga que no avanza")
+            r = await eng.download(f"{base}/cf403", tmp, "nada.bin",
+                                   total_timeout=0.001)
+            check(not r.ok, "sigue fallando cuando no hay progreso que premiar")
 
     finally:
         srv.shutdown()
