@@ -62,8 +62,9 @@ _ETIQUETAS = {
     repoint.LISTO:         "id y nombre cuadran — se añaden",
     repoint.OTRO_NOMBRE:   "el id es de otro creador — NO se tocan",
     repoint.NO_ESTA:       "el id no está en Pawchive",
+    repoint.AMBIGUO:       "el id existe en varios servicios — NO se tocan",
     repoint.OTRO_SERVICIO: "servicio que Pawchive no tiene",
-    repoint.SIN_URL:       "entrada sin URL (migrada de Fase 1)",
+    repoint.SIN_URL:       "sin URL y sin artist_id — no hay por dónde empezar",
     repoint.YA_ESTA:       "el proyecto ya tenía la fuente",
     EXCLUIDO:              "excluidos a mano",
 }
@@ -129,6 +130,15 @@ async def fase_repoint(aplicar: bool, excluir: list[str]) -> list:
         print(f"\nExcluidos a mano ({len(fuera)}), no se tocan:")
         for c in fuera:
             print(f"  {c.profile_name[:26]:<27} {c.pawchive_url}")
+
+    ambiguos = [c for c in candidatos if c.estado == repoint.AMBIGUO]
+    if ambiguos:
+        print(f"\nEl id existe en varios servicios ({len(ambiguos)}) — "
+              f"hay que elegir a mano:")
+        for c in ambiguos:
+            print(f"\n  {c.profile_name}  (id {c.creator_id})")
+            for linea in _sugerencias(c):
+                print(linea)
 
     sin_id = [c for c in candidatos if c.estado == repoint.NO_ESTA]
     if sin_id:
@@ -221,6 +231,7 @@ def escribir_informe(ruta: Path, candidatos: list, purgadas: int) -> None:
     dudosos = [c for c in candidatos if c.estado == repoint.OTRO_NOMBRE]
     fuera = [c for c in candidatos if c.estado == EXCLUIDO]
     sin_id = [c for c in candidatos if c.estado == repoint.NO_ESTA]
+    ambiguos = [c for c in candidatos if c.estado == repoint.AMBIGUO]
     sin_destino = [c for c in candidatos
                    if c.estado in (repoint.OTRO_SERVICIO, repoint.SIN_URL)]
 
@@ -239,12 +250,13 @@ def escribir_informe(ruta: Path, candidatos: list, purgadas: int) -> None:
     add(f"Fuentes añadidas ............... {len(aplicados)}")
     add(f"Id ocupado por otro creador .... {len(dudosos)}   <- REVISAR")
     add(f"Id que no está en Pawchive ..... {len(sin_id)}   <- REVISAR")
+    add(f"Id en varios servicios ......... {len(ambiguos)}   <- REVISAR")
     add(f"Excluidas a mano ............... {len(fuera)}")
     add(f"Sin destino posible ............ {len(sin_destino)}")
     add(f"Filas de cola purgadas ......... {purgadas:,}")
     add("")
 
-    if dudosos or sin_id or fuera:
+    if dudosos or sin_id or ambiguos or fuera:
         add("=" * 78)
         add("PENDIENTE DE REVISIÓN MANUAL")
         add("=" * 78)
@@ -283,6 +295,7 @@ def escribir_informe(ruta: Path, candidatos: list, purgadas: int) -> None:
 
     bloque("EL ID EXISTE PERO ES DE OTRO CREADOR", dudosos, True)
     bloque("EL ID NO ESTÁ EN PAWCHIVE", sin_id, True)
+    bloque("EL ID EXISTE EN VARIOS SERVICIOS", ambiguos, True)
     bloque("EXCLUIDOS A MANO", fuera, True)
 
     add("=" * 78)

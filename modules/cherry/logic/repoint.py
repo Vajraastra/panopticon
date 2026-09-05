@@ -27,6 +27,21 @@ candidatos por nombre en el índice de creadores —que ya está en memoria, as�
 sugerir no cuesta ninguna petición extra—. La decisión final es de un humano
 mirando la página.
 
+## Las fuentes sin URL no están vacías
+
+Una entrada de Kemono puede no tener `url` —migrada de la Fase 1, o borrada a
+mano— y aun así conservar el `artist_id` que guardó al sincronizar. Ese id es
+justo el que Pawchive necesita; lo único que falta es de qué servicio es, y eso
+lo dice el mismo índice de creadores, sin pedir nada más. Solo se acepta cuando
+el id aparece en **un** servicio: si está en patreon y en fanbox a la vez,
+elegir a ciegas es exactamente lo que este módulo no hace.
+
+Y no es un caso de laboratorio: `Hoovesart` y `RuiDX` llegaron así, y el id
+bueno resultó ser **el que guardó Kemono, no el de su fuente de Patreon** — los
+566125 y 7051109 de sus fuentes de Patreon no existen en Pawchive, mientras que
+los 4231621 y 14225392 de Kemono dan «Hooves-art» y «RuiDX». El `artist_id` de
+una fuente de Patreon no vive en el mismo espacio de ids.
+
 ## Qué hace y qué no
 
 **Añade** la fuente de Pawchive al mismo proyecto y **deja la de Kemono como
@@ -79,10 +94,11 @@ UMBRAL = 0.72
 
 # Estados de un candidato.
 LISTO         = "listo"          # id y nombre cuadran: se puede añadir
-SIN_URL       = "sin_url"        # entrada migrada de Fase 1, sin URL que traducir
+SIN_URL       = "sin_url"        # ni URL ni artist_id: no hay por dónde empezar
 OTRO_SERVICIO = "otro_servicio"  # discord/fantia: Pawchive no los tiene
 NO_ESTA       = "no_esta"        # el id no está indexado en Pawchive
 OTRO_NOMBRE   = "otro_nombre"    # el id existe pero es de otro creador
+AMBIGUO       = "ambiguo"        # el artist_id existe en varios servicios
 YA_ESTA       = "ya_esta"        # el proyecto ya tiene esa fuente
 
 
@@ -220,6 +236,10 @@ async def plan(db_path=None) -> list[Candidato]:
 
     # ── 1. Recolectar los candidatos, sin red ────────────────────────────────
     crudos: list[Candidato] = []
+    # Por perfil, las fuentes de Pawchive que ya tiene. Se guarda además de
+    # usarse aquí porque las entradas sin URL resuelven su destino más tarde
+    # (fase 3) y necesitan la misma comprobación entonces.
+    existentes: dict[int, set[str]] = {}
     for p in await list_profiles(db):
         detalle = await get_profile(db, p["id"])
         if not detalle:
@@ -229,12 +249,20 @@ async def plan(db_path=None) -> list[Candidato]:
             for u in detalle["urls"]
             if u.get("site") == "pawchive"
         }
+        existentes[p["id"]] = ya_en_pawchive
         for u in detalle["urls"]:
             if u.get("site") != "kemono":
                 continue
             par = traducir(u.get("url") or "")
             if par is None:
-                estado, service, creator_id, destino = SIN_URL, "", "", ""
+                # Sin URL, pero puede quedar el `artist_id` que la fuente
+                # guardó al sincronizar. Es exactamente el id que Pawchive
+                # necesita, así que la entrada no está vacía: solo le falta
+                # saber de qué servicio es, y eso lo dice el índice (fase 4).
+                # Casos reales: Hoovesart y RuiDX, cuyas URLs de Kemono borró
+                # David a mano y cuyo id sobrevivió aquí.
+                aid = (u.get("artist_id") or "").strip()
+                estado, service, creator_id, destino = SIN_URL, "", aid, ""
             else:
                 service, creator_id = par
                 destino = f"{_PAWCHIVE}/{service}/user/{creator_id}"
@@ -257,7 +285,10 @@ async def plan(db_path=None) -> list[Candidato]:
             ))
 
     pendientes = [c for c in crudos if c.estado == LISTO]
-    if not pendientes:
+    # Las entradas sin URL pero con artist_id también necesitan el índice: es
+    # lo único que puede decir a qué servicio pertenece ese id.
+    huerfanas = [c for c in crudos if c.estado == SIN_URL and c.creator_id]
+    if not pendientes and not huerfanas:
         return crudos
 
     # ── 2. Una única petición para confirmarlos todos ────────────────────────
@@ -266,7 +297,24 @@ async def plan(db_path=None) -> list[Candidato]:
         template = PawchiveTemplate(engine)
         indice = await template._get_creators_index()
 
-    # ── 3. El id propone, el nombre confirma ─────────────────────────────────
+    # ── 3. Resolver el servicio de las entradas que solo tienen id ───────────
+    for c in huerfanas:
+        servicios = [svc for (svc, cid) in indice if cid == c.creator_id]
+        if len(servicios) != 1:
+            # Ninguno: el id no está. Varios: el mismo id en patreon y fanbox,
+            # y elegir uno a ciegas es justo lo que este módulo no hace.
+            c.estado = NO_ESTA if not servicios else AMBIGUO
+            c.sugerencias = buscar_por_nombre(indice, c.profile_name)
+            continue
+        c.service = servicios[0]
+        c.pawchive_url = f"{_PAWCHIVE}/{c.service}/user/{c.creator_id}"
+        if c.pawchive_url.lower() in existentes.get(c.profile_id, ()):
+            c.estado = YA_ESTA    # la misma comprobación que hacen las demás
+            continue
+        c.estado = LISTO          # provisional: lo confirma el nombre, abajo
+        pendientes.append(c)
+
+    # ── 4. El id propone, el nombre confirma ─────────────────────────────────
     for c in pendientes:
         nombre = indice.get((c.service, c.creator_id))
         if nombre is None:

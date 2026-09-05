@@ -69,6 +69,12 @@ INDICE = {
     ("fanbox",  "30462830"):  "マックス",
     ("fanbox",  "389873"):    "shift",
     ("fanbox",  "560126"):    "cross-kan",
+    # El caso de las entradas sin URL: el id que guardó Kemono sí está, y el de
+    # su fuente de Patreon (566125) NO — a propósito, es lo que prueba el
+    # bloque 7.
+    ("patreon", "4231621"):   "Hooves-art",
+    ("patreon", "14225392"):  "RuiDX",
+    ("fanbox",  "45722"):     "kanabun305",
 }
 
 
@@ -140,7 +146,29 @@ def main() -> int:
     chk(repoint.buscar_por_nombre(INDICE, "") == [],
         "un nombre vacío no propone nada")
 
-    print("\n[7] Estados y resumen")
+    print("\n[7] Una entrada sin URL no está vacía")
+    # Hoovesart y RuiDX llegaron así: David borró sus URLs de Kemono, pero el
+    # artist_id que la fuente guardó al sincronizar sobrevivió — y es
+    # exactamente el id que Pawchive necesita. Lo único que falta es el
+    # servicio, y eso lo dice el índice. Aquí se prueba esa resolución sin red.
+    def servicios_de(indice, cid):
+        return [svc for (svc, c) in indice if c == cid]
+
+    chk(servicios_de(INDICE, "4231621") == ["patreon"],
+        "el id 4231621 (Hoovesart, guardado por Kemono) sale en un solo servicio")
+    chk(INDICE.get(("patreon", "4231621")) == "Hooves-art",
+        "y ese id es «Hooves-art»")
+    chk(repoint.parecido("Hoovesart", "Hooves-art") >= repoint.UMBRAL,
+        "que el nombre confirma (Hoovesart ≈ Hooves-art)")
+    chk(servicios_de(INDICE, "566125") == [],
+        "el id de su fuente de PATREON (566125) no existe en Pawchive — "
+        "no viven en el mismo espacio de ids")
+    chk(len(servicios_de(INDICE, "45722")) == 1,
+        "un id que solo está en fanbox también se resuelve")
+    chk(len(servicios_de(INDICE, "999999")) == 0,
+        "un id inexistente no resuelve nada")
+
+    print("\n[8] Estados y resumen")
     def cand(estado: str, nombre: str = "X"):
         return repoint.Candidato(
             profile_id=1, profile_name=nombre, url_id=1, kemono_url="",
@@ -154,7 +182,7 @@ def main() -> int:
                          cand(repoint.OTRO_NOMBRE)])
     chk(r == {repoint.LISTO: 2, repoint.OTRO_NOMBRE: 1}, f"el resumen cuenta bien ({r})")
 
-    print("\n[8] Qué host se considera muerto")
+    print("\n[9] Qué host se considera muerto")
     chk(pending_purge._host("https://kemono.cr/b1/0b/abc.png") == "kemono.cr",
         "saca el host de una URL de descarga")
     chk(pending_purge._host("patreon://media/179166692") == "",
