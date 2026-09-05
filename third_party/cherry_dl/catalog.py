@@ -486,18 +486,33 @@ async def add_pending(
     profile_url_id: int | None = None,
 ) -> None:
     """
-    Agrega un archivo a la cola de pendientes (INSERT OR IGNORE).
-    Si la url_source ya existe no hace nada — seguro llamar múltiples veces.
+    Agrega un archivo a la cola de pendientes. Seguro llamar múltiples veces:
+    la url_source es la clave, así que un re-scan no duplica la fila.
+
+    Si la fila ya existe se REFRESCAN `download_url` y `extra_headers`. No es un
+    detalle: Patreon entrega URLs firmadas con `token-time` y caducidad diaria,
+    así que la URL guardada en un scan viejo llega muerta al momento de
+    descargar, y con el `INSERT OR IGNORE` de antes ningún re-scan la reponía —
+    el archivo quedaba atascado en la cola para siempre. Lo demás no se toca; en
+    particular `discovered_at` conserva cuándo se vio el archivo por primera vez.
+
+    El WHERE evita reescribir la fila cuando nada cambió, que es el caso normal
+    en sitios que direccionan por hash (kemono) y donde la URL es estable.
     """
     db_path = artist_dir / CATALOG_NAME
     async with _db(db_path) as db:
         await db.execute(
             """
-            INSERT OR IGNORE INTO pending_queue
+            INSERT INTO pending_queue
                 (url_source, download_url, filename_hint, post_id,
                  post_published, remote_hash, extra_headers,
                  profile_url_id, discovered_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(url_source) DO UPDATE SET
+                download_url  = excluded.download_url,
+                extra_headers = excluded.extra_headers
+            WHERE pending_queue.download_url  IS NOT excluded.download_url
+               OR pending_queue.extra_headers IS NOT excluded.extra_headers
             """,
             (
                 url_source, download_url, filename_hint,

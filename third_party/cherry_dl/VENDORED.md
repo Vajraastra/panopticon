@@ -44,3 +44,16 @@ falla sin gastar el request ni el delay previo, con el nuevo `ErrorKind.URL_EXPI
 reintentarla en la misma corrida es otro fallo seguro. Al no ser éxito tampoco se llama
 `remove_pending`, de modo que el archivo se queda en `pending` y la **próxima sync** lo resuelve
 con una firma nueva — que es lo único que lo arregla.
+
+### `catalog.py` — un re-scan refresca la URL guardada en `pending_queue` (2026-09-05)
+
+`add_pending()` insertaba con `INSERT OR IGNORE`: si la `url_source` ya estaba en la cola, la
+fila no se tocaba. Como las descargas salen de `pending_queue` y **no** de la respuesta recién
+resuelta, una URL firmada de Patreon guardada en un scan viejo llegaba muerta al momento de
+descargar, y ningún re-scan la reponía — el archivo quedaba atascado en la cola de forma
+permanente. Medido el 2026-09-05: 12 pendientes con la firma vencida, y en dos proyectos
+(Hoovesart, BadSpider) eran el 100% de su cola, así que no podían terminar nunca.
+
+Ahora es un UPSERT que refresca `download_url` y `extra_headers`, con un `WHERE` que evita
+reescribir la fila cuando nada cambió (el caso normal en sitios que direccionan por hash, donde
+la URL es estable). `discovered_at` se conserva a propósito: sigue marcando el primer avistaje.
