@@ -115,6 +115,7 @@ class Handler(BaseHTTPRequestHandler):
       /cf403           403 del origen servido por Cloudflare (texto plano)
       /cfblock         403 con cf-mitigated: bloqueo real de Cloudflare
       /expired/<size>  204 vacío — solo se pide con token-time vencido
+      /gone            404: el archivo ya no existe en el origen
     """
 
     protocol_version = "HTTP/1.1"
@@ -149,6 +150,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("CF-RAY", "a3667c491d37667b-QRO")
             self.send_header("cf-mitigated", "challenge")
             self.send_header("Content-Type", "text/html; charset=UTF-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if path.startswith("/gone"):
+            payload = b"not found"
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain;charset=UTF-8")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -366,6 +376,23 @@ async def run() -> None:
             r = await eng.download(f"{base}/cf403", tmp, "nada.bin",
                                    total_timeout=0.001)
             check(not r.ok, "sigue fallando cuando no hay progreso que premiar")
+
+            # ── 10. 404: el archivo ya no existe ─────────────────────────
+            # Lo que sigue después es cosa de download_service (lo saca de
+            # pending_queue), pero depende de que el motor lo clasifique bien
+            # y de que no sea diferible: reintentar un 404 es gastar la misma
+            # petición para el mismo resultado.
+            print("\n[10] El archivo que ya no existe en el origen")
+            t0 = asyncio.get_running_loop().time()
+            r = await eng.download(f"{base}/gone", tmp, "fantasma.bin")
+            dt = asyncio.get_running_loop().time() - t0
+            check(not r.ok, "falla, como debe")
+            check(r.error_kind == ErrorKind.NOT_FOUND,
+                  f"clasificado como NOT_FOUND (fue {r.error_kind})")
+            check(ErrorKind.NOT_FOUND not in ErrorKind.DEFERRABLE,
+                  "no es diferible: reintentarlo daría otro 404")
+            check(dt < 5.0, f"retorna sin ciclo de reintentos ({dt:.2f}s)")
+            check(not (tmp / "fantasma.bin").exists(), "no deja archivo a medias")
 
             # ── 11. El ritmo aguanta la concurrencia ─────────────────────
             # Contra el motor de verdad y con descargas simultáneas reales:

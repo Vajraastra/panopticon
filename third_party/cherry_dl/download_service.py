@@ -183,6 +183,7 @@ class DownloadSummary:
     skipped: int = 0
     errors: int = 0
     deferred: int = 0
+    dropped: int = 0    # retirados de la cola por no existir ya en el origen
 
 
 # ── Servicio ────────────────────────────────────────────────────────────────────
@@ -543,6 +544,24 @@ async def run_profile_download(
                                 deferred.append((fi, artist_info, folder, pace))
                                 emit(WorkerDone(slot_id, fi.filename, "⏸"))
                                 emit(Log(f"⏸ {fi.filename[:55]}  [{result.error_kind}]", "warn"))
+                            elif result.error_kind == ErrorKind.NOT_FOUND:
+                                # 404 con la URL recién refrescada por el scan:
+                                # el archivo ya no existe en el origen y no va a
+                                # volver. Dejarlo en la cola lo condena a
+                                # reintentarse en cada sync para siempre, así
+                                # que sale. Solo aquí: un 403 puede ser sesión
+                                # caducada y un url_expired se re-resuelve, y
+                                # retirar cualquiera de esos SÍ perdería el
+                                # archivo. Lo borrado es una fila de cola, no un
+                                # archivo en disco; si el origen lo repone, el
+                                # próximo scan lo vuelve a descubrir.
+                                summ.dropped += 1
+                                await remove_pending(folder, fi.dedup_key)
+                                emit(WorkerDone(slot_id, fi.filename, "⊘"))
+                                emit(Log(
+                                    f"⊘ {fi.filename[:45]}  "
+                                    f"[404 — ya no existe, fuera de la cola]", "dim",
+                                ))
                             else:
                                 summ.errors += 1
                                 emit(WorkerDone(slot_id, fi.filename, "✗"))

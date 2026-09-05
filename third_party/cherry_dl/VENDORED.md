@@ -149,3 +149,16 @@ Efectos colaterales, los dos deliberados: `templates/kemono.py` gana `max_worker
 que su comentario ya decía de facto («>2 activa rate limiting agresivo») y que sin declarar habría
 dejado que Kemono subiera a 3; y `pawchive.scan_page_delay` baja a 0, porque el pacer ya espacia
 las páginas del scan y sumarle un sleep propio pagaba el peaje dos veces.
+
+### `download_service.py` — un 404 sale de la cola de pendientes (2026-09-05)
+
+Un `not_found` contaba como error y la fila se quedaba en `pending_queue` para siempre: cada sync
+volvía a intentarlo, y cada intento gastaba una petición para llegar al mismo 404. Como el scan
+refresca la URL antes de descargar (ver `add_pending`, más arriba), un 404 ahí ya no es una firma
+vencida: el archivo no está en el origen y no va a volver. Ahora se retira con `remove_pending` y
+se cuenta aparte, en `DownloadSummary.dropped`.
+
+Solo `NOT_FOUND`. Un `AUTH` (403) puede ser una sesión caducada y un `URL_EXPIRED` se re-resuelve
+en el siguiente scan; retirar cualquiera de esos sí perdería el archivo de verdad. Y lo que se
+borra es una fila de cola, nunca un archivo en disco: si el origen lo repone, el próximo scan lo
+vuelve a descubrir.
