@@ -57,3 +57,21 @@ permanente. Medido el 2026-09-05: 12 pendientes con la firma vencida, y en dos p
 Ahora es un UPSERT que refresca `download_url` y `extra_headers`, con un `WHERE` que evita
 reescribir la fila cuando nada cambió (el caso normal en sitios que direccionan por hash, donde
 la URL es estable). `discovered_at` se conserva a propósito: sigue marcando el primer avistaje.
+
+### `engine.py` — el archivo va al disco según llega, no a la RAM (2026-09-05)
+
+`_do_download` acumulaba el archivo entero en una lista de chunks y al terminar
+`_finalize_download` hacía `b"".join(chunks)`, que además duplica el pico porque la lista sigue
+viva mientras se construye la copia. Medido con `scripts/cherry_download_toytest.py`: **128 MiB
+de pico para un archivo de 64 MiB** — el doble del tamaño, y por descarga concurrente.
+
+No era teórico: 41 de los 46 perfiles tienen el filtro de tipos vacío, así que bajan también
+`.zip` y `.psd`. Un pack de 3 GB con los workers ocupados se lleva el proceso por delante.
+
+Ahora el contenido se vuelca al `.tmp` cada `_FLUSH_EVERY` (8 MiB) y el SHA-256 se calcula
+incremental, así que el pico es constante: **8.9 MiB para ese mismo archivo de 64 MiB**. El
+estado del Range resume pasa a ser `written` —bytes confirmados en el `.tmp`—, que es la posición
+exacta desde la que reanudar; `_flush()` se llama antes de evaluar completitud y en los dos
+handlers de excepción para que ese invariante se cumpla siempre. `_restart()` reemplaza al
+`chunks.clear()` y trunca el `.tmp`. Un `finally` cierra el handle y borra el `.tmp` aunque el
+worker se cancele: en Windows un handle abierto impide borrarlo después.

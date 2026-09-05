@@ -14,11 +14,12 @@ Manejo de DDoS-Guard (DDG):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import random
 import re
 import time
 from pathlib import Path
-from typing import AsyncIterator, Callable
+from typing import AsyncIterator, BinaryIO, Callable
 
 import httpx
 from rich.progress import (
@@ -39,30 +40,38 @@ from tenacity import (
 )
 
 from .config import UserConfig, load_session, save_session
-from .hasher import sha256_bytes
 
 
 # ── Helpers de I/O en thread ───────────────────────────────────────────────────
 
-def _finalize_download(
-    chunks: list[bytes],
-    tmp_file: Path,
-    dest_file: Path,
-) -> str:
-    """
-    Une los chunks, calcula el hash SHA-256, escribe el archivo .tmp y lo
-    renombra atómicamente al destino final.
+# Cuánto se acumula en RAM antes de volcar al .tmp. Acota la memoria por
+# descarga a este valor en vez de al tamaño del archivo, y mantiene las
+# escrituras en unas pocas por MB en lugar de una por chunk de 64 KiB.
+_FLUSH_EVERY = 8 * 1024 * 1024
 
-    Se ejecuta en un thread executor para no bloquear el event loop de asyncio:
-    tanto b"".join() como sha256_bytes() y write_bytes() son operaciones
-    CPU/I/O síncronas que pueden tardar varios segundos en archivos grandes.
 
-    Retorna el hash SHA-256 del archivo.
+def _write_chunks(fh: BinaryIO, hasher, parts: list[bytes]) -> None:
     """
-    data = b"".join(chunks)
-    file_hash = sha256_bytes(data)
-    dest_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp_file.write_bytes(data)
+    Vuelca al .tmp los chunks acumulados y los suma al hash incremental.
+
+    Se ejecuta en un thread executor para no bloquear el event loop: write() es
+    I/O síncrona y sha256 es CPU, y a 10 MB/s esto se llama poco más de una vez
+    por segundo.
+    """
+    for part in parts:
+        hasher.update(part)
+        fh.write(part)
+
+
+def _finalize_download(fh: BinaryIO, tmp_file: Path, dest_file: Path) -> None:
+    """
+    Cierra el .tmp ya completo y lo renombra atómicamente al destino final.
+
+    El hash no se calcula aquí: viene del hasher incremental que se alimentó
+    mientras la descarga bajaba, así que el archivo nunca se relee ni se
+    duplica en memoria.
+    """
+    fh.close()
     try:
         # replace() (no rename()): en Windows rename lanza FileExistsError si el
         # destino existe; replace sobrescribe atómicamente en ambos OS.
@@ -70,7 +79,6 @@ def _finalize_download(
     except OSError:
         tmp_file.unlink(missing_ok=True)
         raise
-    return file_hash
 
 
 # ── Clasificación de errores ───────────────────────────────────────────────────
@@ -400,7 +408,7 @@ class DownloadEngine:
         que sirven archivos en chunks (ej. kemono.cr: chunks de 4 MB).
 
         Dos tipos de reintentos con contadores separados:
-          Range resume  : CDN truncó la conexión → continuar desde resume_from.
+          Range resume  : CDN truncó la conexión → continuar desde `written`.
                           No cuenta como error; no re-descarga bytes ya recibidos.
           Error real    : timeout, connection error, 5xx → preserva progreso previo
                           y reintenta con backoff exponencial. Cuenta hacia max_errors.
@@ -411,7 +419,7 @@ class DownloadEngine:
           403 CF     → esperar 60 s + 30 s por error, luego retry desde 0
           429        → esperar 35 s + 10 s por error, luego retry desde 0
           5xx        → backoff exponencial, luego retry desde 0
-          red/timeout → backoff exponencial, preservar progreso si resume_from > 0
+          red/timeout → backoff exponencial, preservar progreso si written > 0
 
         total_timeout: si se especifica, el engine retorna DownloadResult(TIMEOUT)
           antes de agotar ese tiempo. Esto evita depender de asyncio.wait_for,
@@ -423,8 +431,15 @@ class DownloadEngine:
         last_kind:  str = ErrorKind.UNKNOWN
 
         # Estado de descarga — persiste entre range resumes.
-        chunks:      list[bytes] = []   # chunks acumulados (todos los segmentos)
-        resume_from: int = 0            # bytes ya recibidos; 0 = descarga fresca
+        # El archivo se vuelca al .tmp según llega y el hash se calcula
+        # incremental: nada de acumularlo entero en RAM. Antes se guardaba en
+        # una lista de chunks que además se unía con b"".join() al final, así
+        # que el pico de memoria era ~3x el tamaño del archivo (medido: 197 MiB
+        # para uno de 64 MiB) y un pack .zip de varios GB tumbaba el proceso.
+        written:     int = 0            # bytes YA volcados al .tmp
+        buf:         list[bytes] = []   # recibidos y aún sin volcar
+        buf_len:     int = 0
+        hasher                   = hashlib.sha256()
         full_size:   int = 0            # tamaño total declarado por el servidor
         error_count: int = 0            # solo errores reales (no range resumes)
 
@@ -444,282 +459,318 @@ class DownloadEngine:
                 error_kind=ErrorKind.URL_EXPIRED,
             )
 
-        while True:
-            if error_count >= max_errors:
-                return DownloadResult(
-                    url=url, filename=filename,
-                    error=f"{last_error} (tras {max_errors} intentos)",
-                    error_kind=last_kind,
-                )
+        dest_file = dest_dir / filename
+        tmp_file  = dest_dir / (filename + ".tmp")
+        dest_dir.mkdir(parents=True, exist_ok=True)
 
-            # Timeout total del engine: retornar limpiamente antes de que el
-            # asyncio.wait_for del TUI dispare CancelledError. En Python 3.12
-            # httpx puede re-crear CancelledError al hacer cleanup de streams
-            # HTTP/2, lo que impide que wait_for lo convierta correctamente a
-            # TimeoutError y causa que el worker desaparezca sin log.
-            if total_timeout and asyncio.get_running_loop().time() - _t_start >= total_timeout:
-                return DownloadResult(
-                    url=url, filename=filename,
-                    error=f"Timeout total ({total_timeout:.0f}s)",
-                    error_kind=ErrorKind.TIMEOUT,
-                )
+        async def _flush() -> None:
+            """Vuelca al .tmp lo recibido desde el último volcado."""
+            nonlocal buf, buf_len, written
+            if not buf:
+                return
+            await asyncio.to_thread(_write_chunks, fh, hasher, buf)
+            written += buf_len
+            buf = []
+            buf_len = 0
 
-            try:
-                # Delay completo antes de cada intento fresco.
-                # Pausa mínima entre range resumes para no cerrar el flujo.
-                if resume_from == 0:
-                    if on_status:
-                        d_min = self.config.network.delay_min
-                        d_max = self.config.network.delay_max
-                        on_status(f"⏳ esperando ({d_min:.0f}–{d_max:.0f}s)…")
-                    await self._delay()
-                else:
-                    if on_status:
-                        on_status("↺ continuando rango…")
-                    await asyncio.sleep(random.uniform(0.5, 2.0))
+        def _restart() -> None:
+            """Descarta lo bajado y deja el .tmp listo para empezar de cero."""
+            nonlocal buf, buf_len, written, hasher, full_size
+            buf = []
+            buf_len = 0
+            written = 0
+            hasher = hashlib.sha256()
+            full_size = 0
+            fh.seek(0)
+            fh.truncate(0)
 
-                # Añadir Range header si estamos resumiendo un archivo parcial.
-                req_headers = dict(extra_headers or {})
-                if resume_from > 0:
-                    req_headers["Range"] = f"bytes={resume_from}-"
+        fh = open(tmp_file, "wb")
+        try:
+            while True:
+                if error_count >= max_errors:
+                    return DownloadResult(
+                        url=url, filename=filename,
+                        error=f"{last_error} (tras {max_errors} intentos)",
+                        error_kind=last_kind,
+                    )
 
-                chunk_received = 0   # bytes recibidos en ESTE request
+                # Timeout total del engine: retornar limpiamente antes de que el
+                # asyncio.wait_for del TUI dispare CancelledError. En Python 3.12
+                # httpx puede re-crear CancelledError al hacer cleanup de streams
+                # HTTP/2, lo que impide que wait_for lo convierta correctamente a
+                # TimeoutError y causa que el worker desaparezca sin log.
+                if total_timeout and asyncio.get_running_loop().time() - _t_start >= total_timeout:
+                    return DownloadResult(
+                        url=url, filename=filename,
+                        error=f"Timeout total ({total_timeout:.0f}s)",
+                        error_kind=ErrorKind.TIMEOUT,
+                    )
 
-                if on_status:
-                    on_status("→ conectando…")
-                async with self._client.stream(
-                    "GET", url, headers=req_headers
-                ) as resp:
-                    code = resp.status_code
-
-                    # ── Errores permanentes: no reintentar ─────────────────
-                    if code == 404:
-                        return DownloadResult(
-                            url=url, filename=filename,
-                            error="Archivo no encontrado en el servidor (404)",
-                            error_kind=ErrorKind.NOT_FOUND,
-                        )
-                    if code == 401:
-                        return DownloadResult(
-                            url=url, filename=filename,
-                            error="No autorizado — el archivo requiere sesión (401)",
-                            error_kind=ErrorKind.AUTH,
-                        )
-
-                    # ── Cloudflare: 403 con cabeceras CF ──────────────────
-                    if code == 403 and _is_cloudflare_block(resp):
-                        wait = 60 + error_count * 30
-                        last_error = f"Cloudflare bloqueó la descarga (403 CF) — esperando {wait}s"
-                        last_kind  = ErrorKind.CLOUDFLARE
-                        error_count += 1
+                try:
+                    # Delay completo antes de cada intento fresco.
+                    # Pausa mínima entre range resumes para no cerrar el flujo.
+                    if written == 0:
                         if on_status:
-                            on_status(f"🛡 Cloudflare — esperando {wait}s…")
-                        chunks.clear(); resume_from = 0; full_size = 0
-                        await asyncio.sleep(wait)
-                        continue
+                            d_min = self.config.network.delay_min
+                            d_max = self.config.network.delay_max
+                            on_status(f"⏳ esperando ({d_min:.0f}–{d_max:.0f}s)…")
+                        await self._delay()
+                    else:
+                        if on_status:
+                            on_status("↺ continuando rango…")
+                        await asyncio.sleep(random.uniform(0.5, 2.0))
 
-                    # ── 403 del origen: denegación, no bloqueo de CF ───────
-                    # No se reintenta: ni una firma vencida ni la falta de
-                    # permiso cambian esperando. El archivo se queda pendiente
-                    # y la próxima sync lo resuelve con una URL nueva.
-                    if code == 403:
-                        aged = _signed_url_expiry(url)
-                        if aged is not None:
+                    # Añadir Range header si estamos resumiendo un archivo parcial.
+                    req_headers = dict(extra_headers or {})
+                    if written > 0:
+                        req_headers["Range"] = f"bytes={written}-"
+
+                    received_now = 0   # bytes recibidos en ESTE request
+
+                    if on_status:
+                        on_status("→ conectando…")
+                    async with self._client.stream(
+                        "GET", url, headers=req_headers
+                    ) as resp:
+                        code = resp.status_code
+
+                        # ── Errores permanentes: no reintentar ─────────────────
+                        if code == 404:
                             return DownloadResult(
                                 url=url, filename=filename,
-                                error=(f"URL firmada vencida hace {aged / 3600:.1f} h "
-                                       f"- se re-resuelve en la proxima sync"),
-                                error_kind=ErrorKind.URL_EXPIRED,
+                                error="Archivo no encontrado en el servidor (404)",
+                                error_kind=ErrorKind.NOT_FOUND,
                             )
-                        return DownloadResult(
-                            url=url, filename=filename,
-                            error="Acceso denegado (403) - la sesión no da acceso a este archivo",
-                            error_kind=ErrorKind.AUTH,
-                        )
+                        if code == 401:
+                            return DownloadResult(
+                                url=url, filename=filename,
+                                error="No autorizado — el archivo requiere sesión (401)",
+                                error_kind=ErrorKind.AUTH,
+                            )
 
-                    # ── Rate limit ─────────────────────────────────────────
-                    if code == 429:
-                        wait = 35 + error_count * 10
-                        last_error = f"Demasiadas peticiones (429) — esperando {wait}s"
-                        last_kind  = ErrorKind.RATE_LIMIT
-                        error_count += 1
-                        if on_status:
-                            on_status(f"⏸ rate limit 429 — esperando {wait}s…")
-                        chunks.clear(); resume_from = 0; full_size = 0
-                        await asyncio.sleep(wait)
-                        continue
+                        # ── Cloudflare: 403 con cabeceras CF ──────────────────
+                        if code == 403 and _is_cloudflare_block(resp):
+                            wait = 60 + error_count * 30
+                            last_error = f"Cloudflare bloqueó la descarga (403 CF) — esperando {wait}s"
+                            last_kind  = ErrorKind.CLOUDFLARE
+                            error_count += 1
+                            if on_status:
+                                on_status(f"🛡 Cloudflare — esperando {wait}s…")
+                            _restart()
+                            await asyncio.sleep(wait)
+                            continue
 
-                    # ── Error de servidor ──────────────────────────────────
-                    if code >= 500:
+                        # ── 403 del origen: denegación, no bloqueo de CF ───────
+                        # No se reintenta: ni una firma vencida ni la falta de
+                        # permiso cambian esperando. El archivo se queda pendiente
+                        # y la próxima sync lo resuelve con una URL nueva.
+                        if code == 403:
+                            aged = _signed_url_expiry(url)
+                            if aged is not None:
+                                return DownloadResult(
+                                    url=url, filename=filename,
+                                    error=(f"URL firmada vencida hace {aged / 3600:.1f} h "
+                                           f"- se re-resuelve en la proxima sync"),
+                                    error_kind=ErrorKind.URL_EXPIRED,
+                                )
+                            return DownloadResult(
+                                url=url, filename=filename,
+                                error="Acceso denegado (403) - la sesión no da acceso a este archivo",
+                                error_kind=ErrorKind.AUTH,
+                            )
+
+                        # ── Rate limit ─────────────────────────────────────────
+                        if code == 429:
+                            wait = 35 + error_count * 10
+                            last_error = f"Demasiadas peticiones (429) — esperando {wait}s"
+                            last_kind  = ErrorKind.RATE_LIMIT
+                            error_count += 1
+                            if on_status:
+                                on_status(f"⏸ rate limit 429 — esperando {wait}s…")
+                            _restart()
+                            await asyncio.sleep(wait)
+                            continue
+
+                        # ── Error de servidor ──────────────────────────────────
+                        if code >= 500:
+                            backoff = 2 ** error_count + random.uniform(0, 1)
+                            last_error = f"Error del servidor ({code})"
+                            last_kind  = ErrorKind.SERVER
+                            error_count += 1
+                            if on_status:
+                                on_status(
+                                    f"↺ error {code} — reintentando "
+                                    f"({error_count}/{max_errors})…"
+                                )
+                            _restart()
+                            await asyncio.sleep(backoff)
+                            continue
+
+                        # ── Otros códigos HTTP no exitosos ─────────────────────
+                        if code >= 400:
+                            return DownloadResult(
+                                url=url, filename=filename,
+                                error=f"HTTP {code} — no se puede descargar",
+                                error_kind=ErrorKind.UNKNOWN,
+                            )
+
+                        # ── 206 Partial Content — range request aceptado ───────
+                        if code == 206:
+                            cr_total = _parse_content_range_total(
+                                resp.headers.get("content-range", "")
+                            )
+                            if cr_total:
+                                full_size = cr_total
+                            if progress and task_id is not None and full_size:
+                                progress.update(task_id, total=full_size)
+
+                        # ── 200 OK — server ignoró Range o primer request ───────
+                        elif code == 200:
+                            if written > 0:
+                                # Server no soporta Range: descartar parcial y aceptar todo
+                                _restart()
+                            full_size = int(resp.headers.get("content-length", 0))
+                            if progress and task_id is not None:
+                                progress.update(task_id, total=full_size or None)
+
+                        # ── Leer chunks del stream ─────────────────────────────
+                        # Watchdog de progreso: asyncio.timeout se reprograma con
+                        # CADA chunk recibido. Si pasan más de stall_timeout segundos
+                        # sin un chunk nuevo, lanza TimeoutError → tratado abajo como
+                        # stall (reintento con Range, preservando lo recibido).
+                        # Mide progreso real de ESTA descarga, no actividad del
+                        # socket — cubre el caso del read-timeout de httpx que no
+                        # disparaba con streams huérfanos (ver __aenter__).
+                        _first_chunk = True
+                        _stall = self.config.network.stall_timeout
+                        _loop = asyncio.get_running_loop()
+                        # Reprogramar el watchdog COMO MUCHO cada _resched_every s, NO
+                        # por chunk. Bajo qasync cada reschedule (call_at → startTimer)
+                        # crea un timer de Windows que solo se libera cuando SE DISPARA,
+                        # no cuando se cancela. Reprogramar por chunk (~160/s a 10 MB/s)
+                        # acumula miles de timers vivos (cada uno dura _stall segundos)
+                        # y agota los USER handles del proceso → "QEventDispatcherWin32:
+                        # Failed to create a timer … máximo de manipuladores" y crash de
+                        # Qt en runs largas. Throttlearlo mantiene la detección de stall
+                        # (latencia ≤ _stall + _resched_every) con un puñado de timers.
+                        _resched_every = max(1.0, _stall / 4)
+                        _next_resched = _loop.time() + _resched_every
+                        async with asyncio.timeout(_stall) as _wd:
+                            async for chunk in resp.aiter_bytes(chunk_size=65536):
+                                _now = _loop.time()
+                                if _now >= _next_resched:
+                                    _wd.reschedule(_now + _stall)
+                                    _next_resched = _now + _resched_every
+                                if _first_chunk:
+                                    if on_status:
+                                        on_status("↓ descargando…")
+                                    _first_chunk = False
+                                buf.append(chunk)
+                                buf_len += len(chunk)
+                                received_now += len(chunk)
+                                if buf_len >= _FLUSH_EVERY:
+                                    await _flush()
+                                if progress and task_id is not None:
+                                    progress.update(task_id, advance=len(chunk))
+                                if on_progress:
+                                    on_progress(written + buf_len, full_size)
+
+                    # ── Post-stream: evaluar completitud ───────────────────────
+
+                    # Volcar lo que quedó en el buffer ANTES de decidir nada: a
+                    # partir de aquí `written` tiene que ser la verdad completa
+                    # de lo recibido, porque es lo que fija el offset del Range.
+                    await _flush()
+
+                    # Guard: CDN devolvió 0 bytes en un range request — error real.
+                    # Si ya teníamos datos de requests anteriores, conservarlos y
+                    # reintentar el Range desde la misma posición.
+                    if received_now == 0 and full_size > 0 and written < full_size:
                         backoff = 2 ** error_count + random.uniform(0, 1)
-                        last_error = f"Error del servidor ({code})"
-                        last_kind  = ErrorKind.SERVER
+                        last_error = "CDN devolvió 0 bytes en range request"
+                        last_kind  = ErrorKind.NETWORK
                         error_count += 1
-                        if on_status:
-                            on_status(
-                                f"↺ error {code} — reintentando "
-                                f"({error_count}/{max_errors})…"
-                            )
-                        chunks.clear(); resume_from = 0; full_size = 0
+                        if written == 0:
+                            _restart()
+                        # Si written > 0: conservar lo bajado y reintentar Range
                         await asyncio.sleep(backoff)
                         continue
 
-                    # ── Otros códigos HTTP no exitosos ─────────────────────
-                    if code >= 400:
-                        return DownloadResult(
-                            url=url, filename=filename,
-                            error=f"HTTP {code} — no se puede descargar",
-                            error_kind=ErrorKind.UNKNOWN,
+                    total = written
+
+                    # Truncación: CDN cerró el chunk antes de terminar el archivo.
+                    # Continuar con Range request — NO es un error real, no se
+                    # incrementa error_count ni se descartan los bytes recibidos.
+                    if full_size > 0 and total < full_size:
+                        last_error = (
+                            f"Chunk recibido: {total}/{full_size} bytes "
+                            f"({total * 100 // full_size}%) — continuando con Range…"
                         )
+                        last_kind = ErrorKind.NETWORK
+                        continue
 
-                    # ── 206 Partial Content — range request aceptado ───────
-                    if code == 206:
-                        cr_total = _parse_content_range_total(
-                            resp.headers.get("content-range", "")
-                        )
-                        if cr_total:
-                            full_size = cr_total
-                        if progress and task_id is not None and full_size:
-                            progress.update(task_id, total=full_size)
+                    # ── Descarga completa ───────────────────────────────────────
+                    # El contenido ya está en el .tmp y el hash salió del hasher
+                    # incremental; aquí solo queda cerrar y renombrar, en thread
+                    # para no bloquear el event loop.
+                    file_hash = hasher.hexdigest()
+                    await asyncio.to_thread(
+                        _finalize_download, fh, tmp_file, dest_file
+                    )
 
-                    # ── 200 OK — server ignoró Range o primer request ───────
-                    elif code == 200:
-                        if resume_from > 0:
-                            # Server no soporta Range: descartar parcial y aceptar todo
-                            chunks.clear()
-                            resume_from = 0
-                        full_size = int(resp.headers.get("content-length", 0))
-                        if progress and task_id is not None:
-                            progress.update(task_id, total=full_size or None)
+                    if progress and task_id is not None:
+                        progress.update(task_id, description=f"[green]{filename[:40]}")
 
-                    # ── Leer chunks del stream ─────────────────────────────
-                    # Watchdog de progreso: asyncio.timeout se reprograma con
-                    # CADA chunk recibido. Si pasan más de stall_timeout segundos
-                    # sin un chunk nuevo, lanza TimeoutError → tratado abajo como
-                    # stall (reintento con Range, preservando lo recibido).
-                    # Mide progreso real de ESTA descarga, no actividad del
-                    # socket — cubre el caso del read-timeout de httpx que no
-                    # disparaba con streams huérfanos (ver __aenter__).
-                    _first_chunk = True
-                    _stall = self.config.network.stall_timeout
-                    _loop = asyncio.get_running_loop()
-                    # Reprogramar el watchdog COMO MUCHO cada _resched_every s, NO
-                    # por chunk. Bajo qasync cada reschedule (call_at → startTimer)
-                    # crea un timer de Windows que solo se libera cuando SE DISPARA,
-                    # no cuando se cancela. Reprogramar por chunk (~160/s a 10 MB/s)
-                    # acumula miles de timers vivos (cada uno dura _stall segundos)
-                    # y agota los USER handles del proceso → "QEventDispatcherWin32:
-                    # Failed to create a timer … máximo de manipuladores" y crash de
-                    # Qt en runs largas. Throttlearlo mantiene la detección de stall
-                    # (latencia ≤ _stall + _resched_every) con un puñado de timers.
-                    _resched_every = max(1.0, _stall / 4)
-                    _next_resched = _loop.time() + _resched_every
-                    async with asyncio.timeout(_stall) as _wd:
-                        async for chunk in resp.aiter_bytes(chunk_size=65536):
-                            _now = _loop.time()
-                            if _now >= _next_resched:
-                                _wd.reschedule(_now + _stall)
-                                _next_resched = _now + _resched_every
-                            if _first_chunk:
-                                if on_status:
-                                    on_status("↓ descargando…")
-                                _first_chunk = False
-                            chunks.append(chunk)
-                            chunk_received += len(chunk)
-                            if progress and task_id is not None:
-                                progress.update(task_id, advance=len(chunk))
-                            if on_progress:
-                                on_progress(resume_from + chunk_received, full_size)
+                    return DownloadResult(
+                        url=url, filename=filename,
+                        dest=dest_file, file_hash=file_hash, file_size=total,
+                    )
 
-                # ── Post-stream: evaluar completitud ───────────────────────
-
-                # Guard: CDN devolvió 0 bytes en un range request — error real.
-                # Si ya teníamos datos de requests anteriores, conservarlos y
-                # reintentar el Range desde la misma posición.
-                if chunk_received == 0 and full_size > 0 and resume_from < full_size:
+                except (httpx.TimeoutException, TimeoutError):
+                    # httpx.TimeoutException = read/connect timeout del socket.
+                    # TimeoutError = watchdog de progreso (asyncio.timeout) que se
+                    # disparó por falta de chunks nuevos. Mismo tratamiento: stall.
                     backoff = 2 ** error_count + random.uniform(0, 1)
-                    last_error = "CDN devolvió 0 bytes en range request"
+                    last_error = "Timeout en descarga"
+                    last_kind  = ErrorKind.TIMEOUT
+                    error_count += 1
+                    # Preservar progreso acumulado: volcar al .tmp lo recibido
+                    # antes del corte, para que `written` marque la posición
+                    # exacta desde la que reanudar el Range.
+                    # Solo reiniciar desde 0 si no tenemos ningún dato.
+                    await _flush()
+                    if written == 0:
+                        _restart()
+                    if on_status:
+                        on_status(
+                            f"⏱ stall/timeout — reintentando "
+                            f"({error_count}/{max_errors}) en {backoff:.1f}s…"
+                        )
+                    await asyncio.sleep(backoff)
+
+                except httpx.RequestError as e:
+                    # Error de conexión: misma lógica — preservar progreso previo.
+                    backoff = 2 ** error_count + random.uniform(0, 1)
+                    last_error = f"Error de conexión: {type(e).__name__}"
                     last_kind  = ErrorKind.NETWORK
                     error_count += 1
-                    if resume_from == 0:
-                        chunks.clear()
-                        full_size = 0
-                    # Si resume_from > 0: conservar chunks y reintentar Range
+                    await _flush()
+                    if written == 0:
+                        _restart()
+                    if on_status:
+                        on_status(
+                            f"⚠ red ({type(e).__name__}) — reintentando "
+                            f"({error_count}/{max_errors}) en {backoff:.1f}s…"
+                        )
                     await asyncio.sleep(backoff)
-                    continue
 
-                resume_from += chunk_received
-                total = resume_from
-
-                # Truncación: CDN cerró el chunk antes de terminar el archivo.
-                # Continuar con Range request — NO es un error real, no se
-                # incrementa error_count ni se descartan los bytes recibidos.
-                if full_size > 0 and total < full_size:
-                    last_error = (
-                        f"Chunk recibido: {total}/{full_size} bytes "
-                        f"({total * 100 // full_size}%) — continuando con Range…"
-                    )
-                    last_kind = ErrorKind.NETWORK
-                    continue
-
-                # ── Descarga completa ───────────────────────────────────────
-                dest_file = dest_dir / filename
-                tmp_file  = dest_dir / (filename + ".tmp")
-
-                # Mover join+hash+write+rename a thread para no bloquear
-                # el event loop durante operaciones CPU/I/O pesadas.
-                file_hash = await asyncio.to_thread(
-                    _finalize_download, chunks, tmp_file, dest_file
-                )
-
-                if progress and task_id is not None:
-                    progress.update(task_id, description=f"[green]{filename[:40]}")
-
-                return DownloadResult(
-                    url=url, filename=filename,
-                    dest=dest_file, file_hash=file_hash, file_size=total,
-                )
-
-            except (httpx.TimeoutException, TimeoutError):
-                # httpx.TimeoutException = read/connect timeout del socket.
-                # TimeoutError = watchdog de progreso (asyncio.timeout) que se
-                # disparó por falta de chunks nuevos. Mismo tratamiento: stall.
-                backoff = 2 ** error_count + random.uniform(0, 1)
-                last_error = "Timeout en descarga"
-                last_kind  = ErrorKind.TIMEOUT
-                error_count += 1
-                # Preservar progreso acumulado: si ya tenemos bytes de requests
-                # previas (resume_from > 0) o de este request (chunk_received > 0),
-                # actualizar resume_from y conservar los chunks para reanudar el
-                # Range request desde la posición correcta.
-                # Solo reiniciar desde 0 si no tenemos ningún dato.
-                resume_from += chunk_received
-                if resume_from == 0:
-                    chunks.clear()
-                    full_size = 0
-                if on_status:
-                    on_status(
-                        f"⏱ stall/timeout — reintentando "
-                        f"({error_count}/{max_errors}) en {backoff:.1f}s…"
-                    )
-                await asyncio.sleep(backoff)
-
-            except httpx.RequestError as e:
-                # Error de conexión: misma lógica — preservar progreso previo.
-                backoff = 2 ** error_count + random.uniform(0, 1)
-                last_error = f"Error de conexión: {type(e).__name__}"
-                last_kind  = ErrorKind.NETWORK
-                error_count += 1
-                resume_from += chunk_received
-                if resume_from == 0:
-                    chunks.clear()
-                    full_size = 0
-                if on_status:
-                    on_status(
-                        f"⚠ red ({type(e).__name__}) — reintentando "
-                        f"({error_count}/{max_errors}) en {backoff:.1f}s…"
-                    )
-                await asyncio.sleep(backoff)
+        finally:
+            # Cierre garantizado incluso si el worker se cancela: en Windows un
+            # handle abierto impide borrar el .tmp, y quedaría ocupando disco
+            # hasta el siguiente scan. Si la descarga terminó bien el .tmp ya se
+            # renombró al destino, así que aquí no queda nada que borrar.
+            fh.close()
+            tmp_file.unlink(missing_ok=True)
 
     async def _delay(self) -> None:
         """Espera aleatoria entre delay_min y delay_max segundos."""
