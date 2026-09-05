@@ -50,6 +50,7 @@ class KemonoTemplate(SiteTemplate):
     name = "kemono"
     base_url = _BASE
     workers = 2                  # >2 workers activa rate limiting agresivo en Kemono
+    max_workers = 2              # el de arriba era un tope de facto; explícito
     provides_file_hashes = True  # Kemono expone SHA-256 en el path del CDN
     scan_page_delay = 1.0        # 1 s entre páginas de API — evita burst de cientos de GETs
     cooldown_threshold = 100     # si >100 URLs nuevas → enfriamiento antes de descargar

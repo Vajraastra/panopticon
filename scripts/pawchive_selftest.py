@@ -2,14 +2,17 @@
 Selftest del template de Pawchive.
 
 Comprueba detección de URL, resolución del artista, extracción de archivos,
-paginación y —lo que más importa aquí— que el tope de un archivo a la vez llega
-de verdad al servicio de descarga.
+paginación y —lo que más importa aquí— que los límites que pidió su
+administrador (1 petición/s y 5 descargas simultáneas) llegan de verdad al
+motor: que el pool efectivo sale de ahí y que el ritmo NO se multiplica por
+worker.
 
 **No toca la red.** El motor se sustituye por uno falso que devuelve respuestas
 capturadas del sitio real el 2026-09-05. Eso no es solo comodidad de test: el
 administrador de pawchive pide expresamente que no se le machaque
 (`third_party/cherry_dl/templates/pawchive.py` lo cita), así que las pruebas no
-gastan ni una petición suya.
+gastan ni una petición suya —cero, no «una por segundo»—. El bloque del pacer
+mide contra un reloj falso, así que tampoco tarda un segundo por turno.
 
 Uso:  venv/Scripts/python.exe scripts/pawchive_selftest.py
 """
@@ -30,7 +33,11 @@ for _s in (sys.stdout, sys.stderr):
     except (AttributeError, OSError):
         pass
 
+from cherry_dl.download_service import site_workers                       # noqa: E402
+from cherry_dl.engine import _Pacer                                       # noqa: E402
 from cherry_dl.templates._registry import find_template, list_templates   # noqa: E402
+from cherry_dl.templates.kemono import KemonoTemplate                     # noqa: E402
+from cherry_dl.templates.patreon import PatreonTemplate                   # noqa: E402
 from cherry_dl.templates.pawchive import (                                # noqa: E402
     PawchiveTemplate,
     _hash_from_path,
@@ -121,17 +128,20 @@ async def main() -> int:
     chk(_hash_from_path("/ad/93/no-es-un-hash.jpg") is None, "rechaza lo que no es hash")
     chk(_hash_from_path("/data/ab/cd/xyz") is None, "rechaza un path con otra forma")
 
-    print("\n[3] Límites de cortesía con el sitio")
-    chk(PawchiveTemplate.max_workers == 1, "max_workers = 1 (tope rígido)")
-    chk(PawchiveTemplate.workers == 1, "workers = 1 por defecto")
-    chk(PawchiveTemplate.scan_page_delay >= 2.0,
-        f"scan_page_delay = {PawchiveTemplate.scan_page_delay}s (kemono usa 1)")
+    print("\n[3] Los límites que pidió su administrador")
+    # Las dos cifras vienen de su respuesta del 2026-09-05, no de afinar
+    # rendimiento. Si alguien las sube, que sea contra un test que falle.
+    chk(PawchiveTemplate.max_workers == 5, "max_workers = 5 (tope rígido)")
+    chk(PawchiveTemplate.workers == 5, "workers = 5 por defecto")
+    chk(PawchiveTemplate.min_request_interval == 1.0,
+        "min_request_interval = 1 s (1 petición/s)")
+    chk(PawchiveTemplate.scan_page_delay == 0.0,
+        "scan_page_delay = 0: lo espacia el pacer, no un sleep propio")
     chk(PawchiveTemplate.provides_file_hashes is True,
         "declara que expone hashes → dedup antes de descargar")
 
     eng = EngineFalso()
     t = PawchiveTemplate(eng)
-    t.scan_page_delay = 0        # no dormir dentro del test
 
     print("\n[4] Info del artista")
     a = await t.get_artist_info("https://pawchive.pw/patreon/user/30500811")
@@ -166,17 +176,53 @@ async def main() -> int:
     chk(sum(1 for u in eng.llamadas if u.endswith("/creators")) == 1,
         "el índice de creadores (12,8 MB) se pide UNA sola vez por sesión")
 
-    print("\n[7] El tope llega al servicio de descarga")
-    # Reproduce el cálculo de download_service: el perfil pide N workers y el
-    # template más restrictivo manda. Sin esto, el tope del template sería
-    # decorativo y un perfil con workers=3 abriría tres descargas a la vez.
+    print("\n[7] El pool llega al servicio de descarga")
+    # Se llama a la función REAL de download_service, no a una copia del
+    # cálculo: la copia ya se quedó desfasada una vez y el test pasó igual.
+    cls_paw = find_template("https://pawchive.pw/patreon/user/30500811")
+    chk(cls_paw is PawchiveTemplate, "el registry resuelve el template")
+
     for pedidos in (1, 3, 8):
-        efectivos = pedidos
-        for url in ("https://pawchive.pw/patreon/user/30500811",):
-            cls = find_template(url)
-            if cls and getattr(cls, "max_workers", None):
-                efectivos = min(efectivos, cls.max_workers)
-        chk(efectivos == 1, f"un perfil con workers={pedidos} baja de uno en uno")
+        n = site_workers(cls_paw, pedidos)
+        chk(n == 5,
+            f"perfil con workers={pedidos} → {n} simultáneas (el acuerdo son 5)")
+
+    # El tope vale en los dos sentidos: sube el ajuste general que se queda
+    # corto y recorta el que se pasa. Y no se le contagia a los demás sitios.
+    chk(site_workers(PatreonTemplate, 8) == 2,
+        "patreon sigue en 2: el 5 de pawchive no se le pega")
+    chk(site_workers(KemonoTemplate, 8) == 2,
+        "kemono sigue en 2 (su comentario ya era un tope)")
+    chk(site_workers(None, 3) == 3, "una URL sin template usa el ajuste general")
+
+    print("\n[8] El ritmo NO se multiplica por worker")
+    # Es el punto entero del pacer: con 5 workers pidiendo turno a la vez, la
+    # tasa agregada sigue siendo 1/s. Un delay por worker daría 5/s, que es
+    # justo lo que el administrador pidió no hacer. Se mide contra un reloj
+    # falso: el test no duerme ni un segundo de verdad.
+    reloj = {"t": 0.0}
+
+    async def _sleep_falso(d):
+        reloj["t"] += d
+
+    loop = asyncio.get_running_loop()
+    real_sleep, real_time = asyncio.sleep, loop.time
+    loop.time = lambda: reloj["t"]                      # type: ignore[method-assign]
+    asyncio.sleep = _sleep_falso                        # type: ignore[assignment]
+    try:
+        pacer  = _Pacer(1.0)
+        turnos = []
+        for _ in range(5):
+            await pacer.wait()
+            turnos.append(reloj["t"])
+    finally:
+        asyncio.sleep = real_sleep                      # type: ignore[assignment]
+        loop.time = real_time                           # type: ignore[method-assign]
+
+    chk(turnos == [0.0, 1.0, 2.0, 3.0, 4.0],
+        f"5 turnos consecutivos caen a 1 s exacto ({turnos})")
+    chk(turnos[-1] - turnos[0] >= 4.0,
+        "5 peticiones ocupan >= 4 s: no salen en ráfaga")
 
     print(f"\n{_ok} ok, {_fail} fallo(s)")
     return 1 if _fail else 0

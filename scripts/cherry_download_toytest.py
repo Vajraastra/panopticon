@@ -7,7 +7,9 @@ el motor tiene que sobrevivir: descarga limpia, conexión truncada a mitad
 distinguen un bloqueo real de Cloudflare de una denegación del origen.
 
 También mide el techo de memoria y el presupuesto de tiempo de los archivos
-grandes, que es donde el motor fallaba en silencio.
+grandes, que es donde el motor fallaba en silencio, y el ritmo agregado del
+pacer: que 5 descargas simultáneas sigan siendo una petición por segundo, que
+es la forma del acuerdo con el administrador de Pawchive.
 
 Por qué existe: `_do_download` reanuda descargas parciales con una máquina de
 estados delicada (`written`, `full_size`, descarte de lo acumulado) y aquí no
@@ -364,6 +366,28 @@ async def run() -> None:
             r = await eng.download(f"{base}/cf403", tmp, "nada.bin",
                                    total_timeout=0.001)
             check(not r.ok, "sigue fallando cuando no hay progreso que premiar")
+
+            # ── 11. El ritmo aguanta la concurrencia ─────────────────────
+            # Contra el motor de verdad y con descargas simultáneas reales:
+            # es la comprobación de que el acuerdo se cumple en ejecución, no
+            # solo en el pacer aislado. Sin el turno compartido, 5 descargas
+            # a la vez saldrían de golpe.
+            print("\n[11] El ritmo del sitio con 5 descargas a la vez")
+            eng.set_workers(5)
+            eng.set_pace(1.0)
+            try:
+                t0 = asyncio.get_running_loop().time()
+                rs = await asyncio.gather(*(
+                    eng.download(f"{base}/ok/1024", tmp, f"ritmo_{i}.bin")
+                    for i in range(5)
+                ))
+                dt = asyncio.get_running_loop().time() - t0
+            finally:
+                eng.set_pace(None)
+            check(all(x.ok for x in rs), "las 5 bajan bien")
+            check(dt >= 4.0,
+                  f"5 peticiones a 1/s tardan >= 4 s ({dt:.2f}s) — no en ráfaga")
+            check(dt < 12.0, f"y no se serializan de más ({dt:.2f}s)")
 
     finally:
         srv.shutdown()

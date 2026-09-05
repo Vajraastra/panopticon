@@ -90,6 +90,21 @@ class SiteTemplate(ABC):
     cooldown_threshold: int = 200
     cooldown_seconds: float = 10.0
 
+    # Tope rígido de descargas simultáneas del sitio. None = manda la config
+    # del usuario. Un perfil NUNCA puede subir de aquí: existe para límites que
+    # no son nuestros, sino de quien opera el sitio.
+    max_workers: int | None = None
+
+    # Segundos mínimos entre peticiones, AGREGADOS entre todos los workers.
+    # 0.0 = sin ritmo propio; manda el delay aleatorio global de la config.
+    #
+    # Distíngase de `scan_page_delay`, que solo espacia las páginas del scan y
+    # duerme dentro de un único generador. Esto es un contrato de tasa que el
+    # engine hace cumplir sobre TODA petición del sitio —scan, descarga y
+    # reintentos— con un turno compartido, así que subir los workers no lo
+    # multiplica. Se pone cuando el operador del sitio pide un ritmo concreto.
+    min_request_interval: float = 0.0
+
     def __init__(self, engine: "DownloadEngine") -> None:
         self.engine = engine
 

@@ -158,6 +158,25 @@ EmitFn = Callable[[DownloadEvent], None]
 AuthResolver = Callable[[str], Awaitable[bool]]
 
 
+def site_workers(cls, requested: int) -> int:
+    """
+    Descargas simultáneas para un sitio concreto.
+
+    El usuario fija el pool general; el template lo acota por arriba con
+    `max_workers`, que es un tope que no es nuestro sino del sitio. Y si el
+    template recomienda MÁS de lo que pide el ajuste general, ese sitio puede
+    usarlo: el template sabe del sitio lo que un número global no —el caso real
+    es Pawchive, cuyo administrador dio 5 por escrito—.
+
+    `cls` puede ser None (URL sin template): entonces manda lo pedido.
+    """
+    if cls is None:
+        return max(1, requested)
+    want = max(requested, getattr(cls, "workers", 0) or 0)
+    cap  = getattr(cls, "max_workers", None)
+    return max(1, min(want, cap) if cap else want)
+
+
 @dataclass
 class DownloadSummary:
     downloaded: int = 0
@@ -203,17 +222,19 @@ async def run_profile_download(
     config = config or load_config()
     folder = Path(profile["folder_path"])
 
-    # Cap de workers por el template más restrictivo del perfil.
-    for pu in profile.get("urls", []):
-        if pu.get("enabled") and pu.get("url"):
-            cls = find_template(pu["url"])
-            if cls and getattr(cls, "max_workers", None):
-                workers = min(workers, cls.max_workers)
-    emit(WorkersResolved(workers))
-
+    # (FileInfo, ArtistInfo, carpeta destino, ritmo del sitio de origen)
     deferred: list[tuple] = []
 
-    async with DownloadEngine(config, workers=workers) as engine:
+    # El engine arranca con el pool más grande que alguna fuente vaya a pedir;
+    # `set_workers` lo ajusta al entrar en cada una.
+    pool_max = max(
+        [site_workers(find_template(pu["url"]), workers)
+         for pu in profile.get("urls", [])
+         if pu.get("enabled") and pu.get("url")]
+        or [workers]
+    )
+
+    async with DownloadEngine(config, workers=pool_max) as engine:
         for pu in profile["urls"]:
             if not pu["enabled"] or not pu["url"]:
                 continue
@@ -222,6 +243,21 @@ async def run_profile_download(
             if not template:
                 emit(Log(f"Sin template para: {pu['url']}", "error"))
                 continue
+
+            # Ritmo y pool del SITIO, no del perfil. Se fijan por fuente y no
+            # una vez por engine: un perfil puede mezclar sitios con límites
+            # distintos, y este bucle es secuencial.
+            src_workers = site_workers(type(template), workers)
+            engine.set_workers(src_workers)
+            emit(WorkersResolved(src_workers))
+
+            pace = getattr(template, "min_request_interval", 0.0)
+            engine.set_pace(pace)
+            if pace:
+                emit(Log(
+                    f"⏱ {template.name}: 1 petición cada {pace:g}s, "
+                    f"compartida entre {src_workers} descargas", "dim",
+                ))
 
             # ── Resolver artista (puede disparar lazy auth / modal) ─────────
             try:
@@ -403,7 +439,7 @@ async def run_profile_download(
             resume_note = f" — retomando desde {batch_offset} / {batch_total}" if batch_offset else ""
             emit(Log(f"Descargando {len(pending_list)} archivo(s){resume_note}", "info"))
 
-            file_queue: asyncio.Queue = asyncio.Queue(maxsize=workers * 3)
+            file_queue: asyncio.Queue = asyncio.Queue(maxsize=src_workers * 3)
 
             async def producer() -> None:
                 """Alimenta la cola de workers; ext_filter se aplica aquí para
@@ -437,7 +473,7 @@ async def run_profile_download(
                     # los workers ya fueron cancelados por el gather padre y no
                     # consumen, así que un put() en cola llena se colgaría sin
                     # consumidor (deadlock). El except deja propagar el cancel.
-                    for _ in range(workers):
+                    for _ in range(src_workers):
                         await file_queue.put(None)
                 except asyncio.CancelledError:
                     raise
@@ -497,14 +533,14 @@ async def run_profile_download(
                         except asyncio.TimeoutError:
                             emit(WorkerDone(slot_id, fi.filename, "⏸"))
                             emit(Log(f"⏸ {fi.filename[:55]}  [timeout — diferido]", "warn"))
-                            deferred.append((fi, artist_info, folder))
+                            deferred.append((fi, artist_info, folder, pace))
                             summ.deferred += 1
                             _counters()
                             continue
 
                         if not result.ok:
                             if result.error_kind in ErrorKind.DEFERRABLE:
-                                deferred.append((fi, artist_info, folder))
+                                deferred.append((fi, artist_info, folder, pace))
                                 emit(WorkerDone(slot_id, fi.filename, "⏸"))
                                 emit(Log(f"⏸ {fi.filename[:55]}  [{result.error_kind}]", "warn"))
                             else:
@@ -596,7 +632,7 @@ async def run_profile_download(
             all_tasks = [
                 asyncio.create_task(producer(), name="producer"),
                 *[asyncio.create_task(worker_task(i), name=f"worker-{i}")
-                  for i in range(workers)],
+                  for i in range(src_workers)],
             ]
             try:
                 results = await asyncio.gather(*all_tasks, return_exceptions=True)
@@ -623,7 +659,12 @@ async def run_profile_download(
         # ── Cola diferida ───────────────────────────────────────────────────
         if deferred:
             emit(Log(f"⏭ Cola diferida: {len(deferred)} archivo(s)…", "warn"))
-            for file_info, a_info, dest_folder in deferred:
+            for file_info, a_info, dest_folder, src_pace in deferred:
+                # El ritmo se re-fija por archivo: los diferidos vienen de
+                # fuentes distintas y el pacer que quedó activo es el de la
+                # última, que puede ser más permisivo que el que este archivo
+                # debe respetar.
+                engine.set_pace(src_pace)
                 if await url_exists(dest_folder, file_info.dedup_key):
                     summ.skipped += 1
                     continue

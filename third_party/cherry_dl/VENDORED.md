@@ -108,11 +108,44 @@ Dos cosas que no se ven desde Kemono y hubo que averiguar en vivo:
   biblioteca una versión degradada que, al deduplicarse por hash del contenido, contaría como un
   archivo distinto del original y no se reemplazaría sola.
 
-**Un archivo a la vez, y no es una preferencia.** El host de archivos responde 403 con un mensaje
-escrito por su administrador: *«stop before I block every single one of your IPs, either download
-reasonably or contact me with your reasoning, but TBs a day is just abusive»*. De ahí
-`max_workers = 1` como tope rígido y `scan_page_delay = 2.0` (Kemono usa 1).
+**El ritmo lo puso su administrador.** El host de archivos empezó respondiendo 403 con un mensaje
+escrito a mano: *«stop before I block every single one of your IPs, either download reasonably or
+contact me with your reasoning, but TBs a day is just abusive»*. David le escribió, y contestó con
+cifras (ver más abajo, 2026-09-05): **1 petición por segundo y 5 descargas simultáneas**. También
+aclaró el origen del 403 — alguien martillando sus servidores desde múltiples IPs; el bloqueo era
+preventivo y no lo provocó este cliente, que en toda la investigación gastó 40 KB.
 
-Sin verificar todavía: una descarga real de punta a punta. El host devolvía ese 403 durante toda
-la investigación —la API, en otra infraestructura, seguía respondiendo 200— así que el bloqueo
-parece ser de IP y previo, no algo que provocara el sondeo: se bajaron 40 KB en total.
+Sin verificar todavía: una descarga real de punta a punta.
+
+### `engine.py` + `download_service.py` — ritmo y pool por sitio (2026-09-05)
+
+El acuerdo con Pawchive (1 petición/s, 5 simultáneas) no cabía en el motor tal como estaba, y las
+dos mitades fallaban por razones distintas.
+
+**El ritmo.** `_delay()` duerme DENTRO de cada worker, así que N workers a 1 s producen N
+peticiones por segundo, no una. Prometer «1 req/s» con 5 workers y un delay de 1 s habría dado 5
+req/s — exactamente lo que el administrador pidió no hacer. Se añade `_Pacer`: reparte turnos
+sobre un reloj único, bajo lock, y duerme fuera del lock (los workers esperan en paralelo y
+despiertan escalonados, en vez de hacer cola detrás del que duerme). El template lo declara con
+`min_request_interval` y `download_service` lo activa por fuente con `engine.set_pace()`. Con el
+pacer activo pasa por el turno TODA petición del sitio —scan, descarga, reintentos y
+continuaciones de rango—, porque un reintento cuesta una petición igual. Medido contra el motor
+real: 5 descargas simultáneas tardan 4,01 s, o sea 1/s clavado (`cherry_download_toytest.py`,
+bloque 11).
+
+**El pool.** El cap era `min(workers_del_usuario, max_workers)`, y con eso un sitio no podía subir
+de lo que dijera el ajuste general: Pawchive habría quedado en 3 aunque su operador autorizara 5.
+Ahora `site_workers(cls, requested)` toma el mayor entre lo pedido y lo que recomienda el template,
+y lo recorta con `max_workers`. Se saca a nivel de módulo a propósito: el selftest reproducía ese
+cálculo copiado y se quedó desfasado sin que ningún test fallara.
+
+El pool y el ritmo se fijan **por fuente**, no una vez por engine (`set_workers`/`set_pace` al
+entrar en cada una, y de nuevo por archivo en la cola diferida). Hace falta porque un perfil puede
+tener a la vez una fuente de Pawchive (5 simultáneas) y una de Kemono (2), y aplicar el mínimo de
+las dos a todo el perfil castigaría a la que sí puede correr. Es seguro exactamente ahí: el bucle
+de fuentes es secuencial, así que al reemplazar el semáforo no hay ninguna descarga esperándolo.
+
+Efectos colaterales, los dos deliberados: `templates/kemono.py` gana `max_workers = 2`, que es lo
+que su comentario ya decía de facto («>2 activa rate limiting agresivo») y que sin declarar habría
+dejado que Kemono subiera a 3; y `pawchive.scan_page_delay` baja a 0, porque el pacer ya espacia
+las páginas del scan y sumarle un sleep propio pagaba el peaje dos veces.

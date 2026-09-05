@@ -20,16 +20,26 @@ Verificado en vivo el 2026-09-05:
   - El host de archivos corre DDoS-Guard (el principal, Cloudflare), así que
     aplica el mismo bypass `Accept: text/css` y las cookies DDG del engine.
 
-## Por qué un solo worker
+## El ritmo lo puso su administrador
 
-El host de archivos responde 403 con un mensaje escrito a mano por su
-administrador: «stop before I block every single one of your IPs, either
-download reasonably or contact me with your reasoning, but TBs a day is just
-abusive». No es un límite automático: es una persona pidiendo moderación.
+El host de archivos empezó respondiendo 403 con un mensaje escrito a mano:
+«stop before I block every single one of your IPs, either download reasonably
+or contact me with your reasoning, but TBs a day is just abusive». No era un
+límite automático: era una persona pidiendo moderación.
 
-Por eso `max_workers = 1` es un tope rígido y los delays son más generosos que
-en Kemono. Un archivador público lo paga alguien; si el operador dice que el
-volumen le duele, el cliente se adapta.
+David le escribió, y el 2026-09-05 contestó con cifras concretas: **1 petición
+por segundo y 5 descargas simultáneas**. También explicó el origen del 403 —
+alguien estaba martillando sus servidores desde múltiples IPs; el bloqueo era
+preventivo y no lo provocó este cliente.
+
+Esas dos cifras son lo que declaran `min_request_interval` y `max_workers`, y
+no se suben. El ritmo lo hace cumplir el pacer del engine, que reparte turnos
+sobre un reloj único: por eso 5 workers siguen siendo 1 petición por segundo y
+no 5. `scan_page_delay` se queda en 0 a propósito — el pacer ya espacia las
+páginas del scan, y sumarle un sleep propio pagaría el peaje dos veces.
+
+Un archivador público lo paga alguien. Estas cifras son un acuerdo con quien
+lo paga, no un parámetro de rendimiento.
 
 ## `preview_only`
 
@@ -46,7 +56,6 @@ cada sync, el día que el original se importe entrará sin hacer nada.
 
 from __future__ import annotations
 
-import asyncio
 import re
 from typing import AsyncIterator
 
@@ -78,12 +87,13 @@ _PAGE_SIZE = 50  # la API devuelve 50 posts por página
 class PawchiveTemplate(SiteTemplate):
     name = "pawchive"
     base_url = _BASE
-    workers = 1                  # ver "Por qué un solo worker" arriba
-    max_workers = 1              # tope rígido: el perfil no puede subirlo
+    workers = 5                  # cifra dada por su administrador
+    max_workers = 5              # tope rígido: el perfil no puede subirlo
+    min_request_interval = 1.0   # 1 petición/s AGREGADA — ver cabecera
     provides_file_hashes = True  # el hash SHA-256 viene en el path
-    scan_page_delay = 2.0        # 2 s entre páginas de API (Kemono usa 1)
-    cooldown_threshold = 50      # con >50 URLs nuevas, enfriar antes de bajar
-    cooldown_seconds = 120.0     # enfriamiento largo, por lo mismo
+    scan_page_delay = 0.0        # lo espacia el pacer; sumar aquí sería doble
+    cooldown_threshold = 200     # el pacer ya evita el burst que esto enfriaba
+    cooldown_seconds = 30.0      # margen corto tras un scan grande
 
     # ── Detección ──────────────────────────────────────────────────────────────
 
@@ -163,9 +173,8 @@ class PawchiveTemplate(SiteTemplate):
                 f"/posts?o={offset}"
             )
 
-            if self.scan_page_delay > 0:
-                await asyncio.sleep(self.scan_page_delay)
-
+            # Sin sleep propio: `get_json` pasa por el pacer del engine, que
+            # ya impone el turno de 1 s. Ver `scan_page_delay = 0.0` arriba.
             try:
                 posts = await self.engine.get_json(url)
             except httpx.HTTPStatusError as e:

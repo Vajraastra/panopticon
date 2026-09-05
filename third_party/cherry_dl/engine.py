@@ -160,6 +160,41 @@ class DownloadResult:
         return self.error is None
 
 
+# ── Ritmo de peticiones ────────────────────────────────────────────────────────
+
+class _Pacer:
+    """
+    Espaciado mínimo entre peticiones, COMPARTIDO por todos los workers.
+
+    No es lo mismo que `_delay()`, y la diferencia es justo la que importa
+    cuando el operador de un sitio pide un ritmo concreto: `_delay()` duerme
+    dentro de cada worker, así que N workers a 1 s producen N peticiones por
+    segundo, no una. Este pacer reparte turnos sobre un reloj único, de modo
+    que la tasa agregada es 1/interval sin importar cuántos workers haya.
+
+    Cada llamada reserva su turno bajo el lock y duerme FUERA de él: los
+    workers esperan en paralelo y despiertan escalonados, en vez de hacer cola
+    serializada detrás del que duerme.
+    """
+
+    __slots__ = ("interval", "_lock", "_next")
+
+    def __init__(self, interval: float) -> None:
+        self.interval = interval
+        self._lock = asyncio.Lock()
+        self._next = 0.0
+
+    async def wait(self) -> None:
+        loop = asyncio.get_running_loop()
+        async with self._lock:
+            now  = loop.time()
+            slot = max(now, self._next)
+            self._next = slot + self.interval
+        remaining = slot - loop.time()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+
+
 # ── Engine ─────────────────────────────────────────────────────────────────────
 
 class DownloadEngine:
@@ -182,6 +217,8 @@ class DownloadEngine:
         self._session_cookies: dict[str, str] = {
             k: v for k, v in raw.items() if isinstance(v, str)
         }
+        # Ritmo pedido por el sitio activo; None = delay global del config.
+        self._pacer: _Pacer | None = None
 
     async def __aenter__(self) -> "DownloadEngine":
         # http2=False a propósito: con HTTP/2 todas las descargas se multiplexan
@@ -242,6 +279,41 @@ class DownloadEngine:
             save_session(data)
 
     # ── API pública ──────────────────────────────────────────────────────────
+
+    def set_workers(self, workers: int) -> None:
+        """
+        Cambia el tamaño del pool de descargas simultáneas.
+
+        Se llama al entrar en cada fuente, porque el pool correcto es el del
+        SITIO, no el del perfil: un perfil puede tener a la vez una fuente que
+        admite 5 simultáneas y otra que solo tolera 2. Reemplazar el semáforo
+        es seguro aquí y solo aquí — el bucle de fuentes es secuencial, así que
+        no hay ninguna descarga en vuelo esperando el semáforo viejo.
+        """
+        if workers < 1:
+            workers = 1
+        if workers == self._workers:
+            return
+        self._workers  = workers
+        self._semaphore = asyncio.Semaphore(workers)
+
+    def set_pace(self, interval: float | None) -> None:
+        """
+        Fija el ritmo del sitio que se está procesando: como mucho una petición
+        cada `interval` segundos entre TODOS los workers. `None` o 0 vuelve al
+        delay aleatorio global de la config.
+
+        Se llama al entrar en cada fuente, no una vez por engine: un perfil
+        puede tener fuentes de sitios con ritmos distintos, y el bucle de
+        fuentes es secuencial, así que el pacer activo siempre es el del sitio
+        que se está bajando.
+        """
+        self._pacer = _Pacer(interval) if interval and interval > 0 else None
+
+    @property
+    def paced(self) -> bool:
+        """True si hay un ritmo por sitio activo (en vez del delay global)."""
+        return self._pacer is not None
 
     async def get_json(self, url: str, retries: int | None = None) -> dict | list:
         """
@@ -527,7 +599,15 @@ class DownloadEngine:
                     # de pagar. Sumar los dos añadía 10-30 s por error, hasta
                     # ~2 min extra en un archivo que agota los reintentos.
                     # Entre range resumes, pausa mínima para no cerrar el flujo.
-                    if written == 0 and error_count == 0:
+                    if self._pacer is not None:
+                        # Ritmo de sitio: TODA petición pasa por el turno, sea
+                        # primer intento, reintento o continuación de rango. El
+                        # acuerdo con el operador es sobre peticiones por
+                        # segundo, y un reintento cuesta una petición igual.
+                        if on_status:
+                            on_status(f"⏳ turno ({self._pacer.interval:.0f}s/petición)…")
+                        await self._pacer.wait()
+                    elif written == 0 and error_count == 0:
                         if on_status:
                             d_min = self.config.network.delay_min
                             d_max = self.config.network.delay_max
@@ -791,7 +871,15 @@ class DownloadEngine:
             tmp_file.unlink(missing_ok=True)
 
     async def _delay(self) -> None:
-        """Espera aleatoria entre delay_min y delay_max segundos."""
+        """
+        Espaciado antes de una petición.
+
+        Con ritmo de sitio activo manda el pacer compartido (tasa agregada
+        exacta); si no, el delay aleatorio de la config, que es por worker.
+        """
+        if self._pacer is not None:
+            await self._pacer.wait()
+            return
         d = random.uniform(
             self.config.network.delay_min,
             self.config.network.delay_max,
