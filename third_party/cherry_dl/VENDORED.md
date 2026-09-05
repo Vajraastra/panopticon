@@ -92,3 +92,27 @@ condición miraba solo si había progreso. Ese delay es el espaciado que evita e
 peticiones distintas; en un reintento ese papel ya lo cumple el backoff. Sumar los dos añadía
 10-30 s por error, hasta ~2 min extra en un archivo que agota los reintentos. Ahora el delay
 completo se paga solo en el primer intento del archivo.
+
+### `templates/pawchive.py` — sitio nuevo, con Kemono técnicamente muerto (2026-09-05)
+
+Kemono sigue en pie pero ya no deja descargar nada (David, 2026-09-05), y `pawchive.pw` se
+declara «a public archiver based on Kemono». La API lo confirma: es la misma, campo por campo
+—`/api/v1/creators`, `/api/v1/{service}/user/{id}/posts?o=N`, 50 por página, hash SHA-256 en el
+path—. Solo dos servicios: patreon (68.947 creadores) y fanbox (24.625).
+
+Dos cosas que no se ven desde Kemono y hubo que averiguar en vivo:
+
+- **Los archivos van por otro host**, `https://file.pawchive.pw/data{path}?f={nombre}`, con Range.
+  El dominio principal devuelve 404 para esas rutas e `img.pawchive.pw` solo sirve miniaturas.
+- **`preview_only`** marca contenido indexado pero no importado. Se salta: bajarlo metería en la
+  biblioteca una versión degradada que, al deduplicarse por hash del contenido, contaría como un
+  archivo distinto del original y no se reemplazaría sola.
+
+**Un archivo a la vez, y no es una preferencia.** El host de archivos responde 403 con un mensaje
+escrito por su administrador: *«stop before I block every single one of your IPs, either download
+reasonably or contact me with your reasoning, but TBs a day is just abusive»*. De ahí
+`max_workers = 1` como tope rígido y `scan_page_delay = 2.0` (Kemono usa 1).
+
+Sin verificar todavía: una descarga real de punta a punta. El host devolvía ese 403 durante toda
+la investigación —la API, en otra infraestructura, seguía respondiendo 200— así que el bloqueo
+parece ser de IP y previo, no algo que provocara el sondeo: se bajaron 40 KB en total.

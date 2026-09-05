@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from .base import SiteTemplate
 from .kemono import KemonoTemplate
 from .patreon import PatreonTemplate
+from .pawchive import PawchiveTemplate
 from .pixiv import PixivTemplate
 
 if TYPE_CHECKING:
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
 # Lista de todos los templates disponibles (en orden de prioridad)
 _TEMPLATES: list[type[SiteTemplate]] = [
     KemonoTemplate,
+    PawchiveTemplate,
     PatreonTemplate,
     PixivTemplate,
 ]
