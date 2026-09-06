@@ -12,15 +12,16 @@ habernos dicho que no, que es exactamente la conducta que provocó el bloqueo.
 Lo que se verifica aquí, contra un servidor de verdad en 127.0.0.1 que responde
 403 a todo:
 
-  1. El motor para tras `_BLOCK_STREAK` rechazos y NO recorre la cola entera.
+  1. El motor para al recibir una petición explícita de detenerse, sin recorrer
+     la cola entera.
   2. Emite `SiteBlocked`, con el mensaje que el servidor puso en el cuerpo.
   3. Las fuentes siguientes del mismo sitio se saltan sin pedir nada.
   4. Los archivos siguen en la cola: se reintentan otro día, no se pierden.
-  5. Una racha que se rompe con un éxito NO bloquea: cuatro rechazos y una
-     descarga buena dejan la puerta abierta.
-  6. El techo de caudal se cumple de verdad, medido con un cronómetro contra
+  5. Una mezcla 50/50 de errores aislados y éxitos NO bloquea.
+  6. Un 403 también activa la pausa post-archivo antes del siguiente intento.
+  7. El techo de caudal se cumple de verdad, medido con un cronómetro contra
      bytes que viajan por un socket.
-  7. El presupuesto del día para la run al agotarse, sin perder nada.
+  8. El presupuesto del día para la run al agotarse, sin perder nada.
 
 Se llama al `run_profile_download` real, no a una copia de su lógica: el freno
 vive repartido entre el productor, los workers y el bucle de fuentes, y una
@@ -99,6 +100,7 @@ class Handler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
     hits: list[str] = []
+    hit_times: list[tuple[str, float]] = []
     lock = threading.Lock()
 
     def log_message(self, *_args) -> None:  # silencio
@@ -107,6 +109,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802  (nombre impuesto por la stdlib)
         with Handler.lock:
             Handler.hits.append(self.path)
+            Handler.hit_times.append((self.path, time.monotonic()))
 
         if self.path.startswith("/big/"):
             try:
@@ -125,6 +128,17 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.path.encode() + b"\0" * 1024
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        # 403 genérico: permite probar la ventana y la pausa sin activar el
+        # corte inmediato reservado al mensaje explícito del administrador.
+        if self.path.startswith("/generic/"):
+            payload = b"forbidden"
+            self.send_response(403)
+            self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -197,6 +211,8 @@ class ToyMixTemplate(ToyTemplate):
 
     name = "toymix"
     base_url = "toymix://"
+    workers = 1
+    max_workers = 1
 
     @classmethod
     def can_handle(cls, url: str) -> bool:
@@ -210,8 +226,66 @@ class ToyMixTemplate(ToyTemplate):
     async def iter_files(self, artist: ArtistInfo, since=None):
         for i in range(N_ARCHIVOS):
             yield FileInfo(
-                url=f"{BASE}/{'no' if i % 2 == 0 else 'si'}/{i}",
+                url=f"{BASE}/{'generic' if i % 2 == 0 else 'si'}/{i}",
                 filename=f"mix_{i}.bin",
+                artist_id=artist.artist_id,
+                artist_name=artist.name,
+                post_id=str(i),
+            )
+
+
+class ToyGapTemplate(ToyTemplate):
+    """Tres 403 genéricos; verifica la pausa incluso cuando no hubo éxito."""
+
+    name = "toygap"
+    base_url = "toygap://"
+    workers = 1
+    max_workers = 1
+    post_download_delay = 0.12
+    N = 3
+
+    @classmethod
+    def can_handle(cls, url: str) -> bool:
+        return url.startswith("toygap://")
+
+    async def get_artist_info(self, url: str) -> ArtistInfo:
+        return ArtistInfo(artist_id="g", name="gap", service="toy",
+                          site=self.name, url=url)
+
+    async def iter_files(self, artist: ArtistInfo, since=None):
+        for i in range(self.N):
+            yield FileInfo(
+                url=f"{BASE}/generic/{i}",
+                filename=f"gap_{i}.bin",
+                artist_id=artist.artist_id,
+                artist_name=artist.name,
+                post_id=str(i),
+            )
+
+
+class ToyWindowTemplate(ToyTemplate):
+    """Cinco rechazos de siete, con dos éxitos intercalados."""
+
+    name = "toywindow"
+    base_url = "toywindow://"
+    workers = 1
+    max_workers = 1
+    N = 7
+
+    @classmethod
+    def can_handle(cls, url: str) -> bool:
+        return url.startswith("toywindow://")
+
+    async def get_artist_info(self, url: str) -> ArtistInfo:
+        return ArtistInfo(artist_id="w", name="window", service="toy",
+                          site=self.name, url=url)
+
+    async def iter_files(self, artist: ArtistInfo, since=None):
+        for i in range(self.N):
+            accepted = i in {3, 5}
+            yield FileInfo(
+                url=f"{BASE}/{'si' if accepted else 'generic'}/{i}",
+                filename=f"window_{i}.bin",
                 artist_id=artist.artist_id,
                 artist_name=artist.name,
                 post_id=str(i),
@@ -325,7 +399,8 @@ async def run() -> None:
 
     # El índice va al temporal: ninguna prueba toca ~/.cherry-dl.
     ds.INDEX_DB = tmp / "index.db"
-    for t in (ToyTemplate, ToyMixTemplate, ToyRateTemplate, ToyBudgetTemplate):
+    for t in (ToyTemplate, ToyMixTemplate, ToyGapTemplate, ToyWindowTemplate,
+              ToyRateTemplate, ToyBudgetTemplate):
         _registry._TEMPLATES.insert(0, t)
     # El presupuesto va a un sidecar del temporal: ninguna prueba toca el real.
     sb.BUDGET_FILE = tmp / "site_budget.json"
@@ -379,7 +454,7 @@ async def run() -> None:
         check(len(saltadas) == 2, "las dos fuentes restantes se saltan",
               f"({len(saltadas)})")
 
-        # ── [4] Un éxito rompe la racha ──────────────────────────────────────
+        # ── [4] Una mezcla 50/50 no parece un bloqueo de sitio ───────────────
         print("\n[4] El servidor rechaza los pares y sirve los impares")
         summ, ev = await correr(
             tmp, [{"id": -1, "url": "toymix://a", "site": "toy",
@@ -387,20 +462,51 @@ async def run() -> None:
             "caso4",
         )
         bloqueos = [e for e in ev if isinstance(e, ds.SiteBlocked)]
-        check(not bloqueos, "NO bloquea: la racha se rompe con cada éxito",
+        check(not bloqueos, "NO bloquea: hay solo 4 rechazos en cada ventana de 8",
               f"({len(bloqueos)})")
         check(summ.downloaded == N_ARCHIVOS // 2,
               f"bajó los {N_ARCHIVOS // 2} impares", f"({summ.downloaded})")
         check(summ.errors == N_ARCHIVOS // 2,
               "y contó los pares como error", f"({summ.errors})")
 
-        # ── [5] El techo de caudal, cronometrado ─────────────────────────
-        print("\n[5] 6 archivos de 128 KiB con techo de 256 KiB/s")
+        # ── [5] La pausa también sigue a un rechazo ──────────────────────────
+        print("\n[5] Tres 403 genéricos con pausa post-archivo")
+        Handler.hit_times.clear()
+        summ, ev = await correr(
+            tmp, [{"id": -1, "url": "toygap://x", "site": "toy",
+                   "enabled": 1, "last_synced": None, "file_count": 0}],
+            "caso5_gap",
+        )
+        tiempos = [t for path, t in Handler.hit_times
+                   if path.startswith("/generic/")]
+        separaciones = [b - a for a, b in zip(tiempos, tiempos[1:])]
+        check(len(tiempos) == ToyGapTemplate.N,
+              f"hizo los {ToyGapTemplate.N} intentos genéricos", f"({len(tiempos)})")
+        check(all(dt >= ToyGapTemplate.post_download_delay * 0.9
+                  for dt in separaciones),
+              "cada 403 deja pasar la pausa antes del siguiente intento",
+              f"({separaciones})")
+
+        # ── [6] Los éxitos intercalados no esconden un rechazo dominante ────
+        print("\n[6] Cinco 403 de siete, con dos éxitos intercalados")
+        summ, ev = await correr(
+            tmp, [{"id": -1, "url": "toywindow://x", "site": "toy",
+                   "enabled": 1, "last_synced": None, "file_count": 0}],
+            "caso6_window",
+        )
+        bloqueos = [e for e in ev if isinstance(e, ds.SiteBlocked)]
+        check(len(bloqueos) == 1,
+              "la ventana activa un único SiteBlocked", f"({len(bloqueos)})")
+        check(bool(bloqueos) and bloqueos[0].streak == ds._BLOCK_STREAK,
+              "el corte conserva el conteo de cinco rechazos")
+
+        # ── [7] El techo de caudal, cronometrado ─────────────────────────
+        print("\n[7] 6 archivos de 128 KiB con techo de 256 KiB/s")
         t0 = time.monotonic()
         summ, ev = await correr(
             tmp, [{"id": -1, "url": "toyrate://x", "site": "toy",
                    "enabled": 1, "last_synced": None, "file_count": 0}],
-            "caso5",
+            "caso7_rate",
         )
         dt = time.monotonic() - t0
         traido = ToyRateTemplate.N * ToyRateTemplate.SIZE
@@ -413,12 +519,12 @@ async def run() -> None:
         check(dt < minimo + 5,
               f"y no se pasa de frenada ({dt:.2f}s)")
 
-        # ── [6] El presupuesto del día ───────────────────────────────────────
-        print("\n[6] 20 archivos de 1 KiB con 4 KiB de presupuesto diario")
+        # ── [8] El presupuesto del día ───────────────────────────────────────
+        print("\n[8] 20 archivos de 1 KiB con 4 KiB de presupuesto diario")
         summ, ev = await correr(
             tmp, [{"id": -1, "url": "toybudget://x", "site": "toy",
                    "enabled": 1, "last_synced": None, "file_count": 0}],
-            "caso6",
+            "caso8_budget",
         )
         bloqueos = [e for e in ev if isinstance(e, ds.SiteBlocked)]
         check(bool(bloqueos), "el presupuesto emite SiteBlocked")
@@ -435,7 +541,7 @@ async def run() -> None:
         summ, ev = await correr(
             tmp, [{"id": -1, "url": "toybudget://x", "site": "toy",
                    "enabled": 1, "last_synced": None, "file_count": 0}],
-            "caso6",
+            "caso8_budget",
         )
         check(not Handler.hits,
               "una segunda sync el mismo día no gasta ni una petición",

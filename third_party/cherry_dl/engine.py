@@ -488,7 +488,10 @@ class DownloadEngine:
                 url, dest_dir, filename, progress, task_id,
                 on_progress, extra_headers, total_timeout, on_status, max_retries,
             )
-            if result.ok and self._completion_gate is not None:
+            # Una respuesta fallida también termina un intento de archivo. Si
+            # el sitio acaba de decir 403/429, arrancar el siguiente al ritmo
+            # normal contradice precisamente la pausa de cortesía.
+            if self._completion_gate is not None:
                 self._completion_gate.completed()
             return result
 

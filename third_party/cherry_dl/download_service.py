@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -177,9 +178,18 @@ AuthResolver = Callable[[str], Awaitable[bool]]
 # cada 403 como problema de ESE archivo y pasaba al siguiente. Ningún archivo se
 # perdió —siguen en la cola— pero el servidor recibió 774 peticiones inútiles
 # después de habernos dicho que no, que es justo la conducta que provocó el
-# bloqueo. Cinco seguidas sin un solo éxito no son cinco archivos con problemas:
-# son el sitio hablando.
+# bloqueo. El aviso explícito del administrador corta al primero; sin ese texto,
+# cinco rechazos entre los últimos ocho resultados ya son el sitio hablando.
 _BLOCK_STREAK = 5
+_BLOCK_WINDOW = 8
+
+# Pawchive devuelve este texto cuando el bloqueo no es un fallo de un archivo,
+# sino una petición humana de detener toda la sesión. No se esperan otros cuatro
+# golpes después de leerlo.
+_HARD_STOP_MARKERS = (
+    "stop before i block every single one of your ips",
+    "tbs a day is just abusive",
+)
 
 # Qué cuenta como «el servidor nos dice que no». Un 404 no entra (el archivo ya
 # no existe, y eso no dice nada del resto), ni un timeout (puede ser la red de
@@ -549,19 +559,19 @@ async def run_profile_download(
 
             file_queue: asyncio.Queue = asyncio.Queue(maxsize=src_workers * 3)
 
-            # Racha de rechazos y su motivo. Un dict y no un `nonlocal` porque
+            # Ventana de rechazos y su motivo. Un dict y no un `nonlocal` porque
             # lo comparten el productor y N workers, todos closures de aquí.
-            reject = {"streak": 0, "detail": ""}
+            reject = {
+                "recent": deque(maxlen=_BLOCK_WINDOW),
+                "detail": "",
+            }
 
             def _blocked() -> bool:
-                # `blocked_sites` manda, y la racha solo DETECTA. Si el bloqueo
-                # viviera únicamente en el contador, el worker de al lado lo
-                # borraría al terminar bien un archivo que ya venía en vuelo
-                # —su `reject["streak"] = 0`— y la run seguiría como si nada.
-                # Se vio en el banco de pruebas: 20 de 20 archivos bajados con
-                # el sitio ya marcado, de forma intermitente.
+                # `blocked_sites` manda. Si el bloqueo viviera únicamente en la
+                # ventana, otro worker podría alterarla con un resultado que ya
+                # venía en vuelo y la run seguiría como si nada.
                 return (template.name in blocked_sites
-                        or reject["streak"] >= _BLOCK_STREAK)
+                        or sum(reject["recent"]) >= _BLOCK_STREAK)
 
             async def producer() -> None:
                 """Alimenta la cola de workers; ext_filter se aplica aquí para
@@ -674,21 +684,31 @@ async def run_profile_download(
                             continue
 
                         if not result.ok:
-                            if result.error_kind in _REJECTIONS:
-                                reject["streak"] += 1
+                            is_rejection = result.error_kind in _REJECTIONS
+                            reject["recent"].append(is_rejection)
+                            if is_rejection:
                                 reject["detail"] = result.error or ""
-                                if reject["streak"] == _BLOCK_STREAK:
-                                    blocked_sites[template.name] = (
-                                        f"{template.name} rechazó "
-                                        f"{_BLOCK_STREAK} veces seguidas"
+                                rejection_count = sum(reject["recent"])
+                                hard_stop = any(
+                                    marker in reject["detail"].casefold()
+                                    for marker in _HARD_STOP_MARKERS
+                                )
+                                if (template.name not in blocked_sites
+                                        and (hard_stop
+                                             or rejection_count >= _BLOCK_STREAK)):
+                                    reason = (
+                                        f"{template.name} pidió detener las peticiones"
+                                        if hard_stop else
+                                        f"{template.name} rechazó {rejection_count} de "
+                                        f"las últimas {len(reject['recent'])} descargas"
                                     )
+                                    blocked_sites[template.name] = reason
                                     emit(SiteBlocked(
-                                        template.name, _BLOCK_STREAK,
+                                        template.name, rejection_count,
                                         reject["detail"],
                                     ))
                                     emit(Log(
-                                        f"⛔ {template.name}: {_BLOCK_STREAK} rechazos "
-                                        f"seguidos — se abandona el sitio en esta run. "
+                                        f"⛔ {reason} — se abandona el sitio en esta run. "
                                         f"Los archivos siguen en la cola.", "error",
                                     ))
                                     if reject["detail"]:
@@ -726,9 +746,10 @@ async def run_profile_download(
                             _counters()
                             continue
 
-                        # La racha cuenta rechazos SEGUIDOS: cualquier archivo
-                        # que sí bajó prueba que la puerta sigue abierta.
-                        reject["streak"] = 0
+                        # Un éxito pesa en la ventana, pero no borra de golpe lo
+                        # que acaba de decir el sitio. En la prueba real hubo 6
+                        # rechazos de 8 con dos éxitos intercalados.
+                        reject["recent"].append(False)
 
                         # Lo traído se anota aunque el archivo acabe siendo un
                         # duplicado que se borra: el ancho de banda del sitio ya
