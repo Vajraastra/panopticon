@@ -191,3 +191,42 @@ Banco de pruebas: `scripts/cherry_block_toytest.py`, 11 asserts contra un servid
 localhost que responde 403 a todo. Mide lo que importa —cuántas peticiones llegan de verdad al
 servidor— y no una reimplementación de la lógica: 6 en vez de 40 con una fuente, 6 en vez de 120
 con tres.
+
+### `engine.py` + `download_service.py` — un techo de caudal y un presupuesto diario (2026-09-05)
+
+El acuerdo con el administrador de Pawchive está escrito en peticiones por segundo, y el motor lo
+cumplía al pie de la letra mientras traía **10,7 MB/s**: una petición por segundo con archivos de
+130 MB da eso, y sostenido son casi un tera al día. La unidad en la que se quejó él era otra —«TBs
+a day is just abusive»— y el motor no tenía forma de expresarla.
+
+**`_ByteBucket`** (engine): cubo de fichas compartido por todos los workers, que se paga con cada
+chunk recibido dentro del stream. Se declara por template (`max_bytes_per_sec`) y se fija por
+fuente, como el pacer. Un archivo grande vacía el cubo, así que la descarga siguiente arranca
+esperando a que se rellene: **el espaciado proporcional al tamaño sale solo**, y por eso NO hay
+además un delay por peso del archivo anterior — sería el mismo peaje cobrado dos veces, el error
+que ya costó una sesión con `scan_page_delay`.
+
+Dos detalles que no son cosméticos. El cubo se paga **antes** de reprogramar el watchdog de stall:
+lo que se duerme adrede no es falta de datos, y contarlo como stall abortaría la descarga por ir
+despacio a propósito. Y el presupuesto de tiempo total (`total_timeout + written / _MIN_RATE`) baja
+su suelo al caudal cuando hay techo: si no, el motor mataría descargas que van lentas porque se lo
+pedimos nosotros.
+
+**`site_budget.py`** (nuevo): tope de bytes por sitio y día natural, en un sidecar propio
+`~/.cherry-dl/site_budget.json`. No toca `index.db` ni ningún `catalog.db`, y perderlo no corrompe
+nada. Al agotarse, el sitio se abandona en esa run por la misma vía que el freno por rechazos
+—`blocked_sites`, `SiteBlocked` con racha 0— y una segunda sync el mismo día no gasta ni una
+petición. Un archivo empezado se termina: cortarlo a la mitad gastaría el ancho de banda igual y
+encima no dejaría nada.
+
+**Carrera arreglada de paso.** El bloqueo vivía en el contador de racha, y un worker que terminaba
+bien un archivo ya en vuelo lo reiniciaba —correcto para lo que la racha mide— **levantando el
+bloqueo que otro acababa de poner**. Se veía de forma intermitente como una run que se bloqueaba
+y aun así bajaba los 20 archivos. Ahora la verdad es `blocked_sites` y la racha solo detecta.
+
+`set_pace` y `set_rate` conservan el objeto cuando el valor no cambia entre fuentes: rehacerlos
+regalaba un turno y un burst enteros por fuente, y un perfil con 43 de Pawchive son 172 MB fuera
+de todo límite.
+
+Cifras de Pawchive, que **no** son un acuerdo sino nuestra estimación de lo razonable: 2 MB/s y
+25 GB/día. A diferencia de las suyas, estas se pueden mover — hacia abajo sin preguntar.

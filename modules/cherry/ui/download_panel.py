@@ -275,14 +275,20 @@ class DownloadPanel(QWidget):
         """El sitio cerró la puerta. Se dice fuerte y se dice entero: lo que el
         servidor haya escrito en el cuerpo del rechazo es la única pista de por
         qué, y antes se descartaba sin leerlo."""
-        self.set_phase(self.tr(
-            "cherry.dl_site_blocked", "⛔ {site} refused {n} times — abandoned"
-        ).format(site=site, n=streak))
-        self.append_log(self.tr(
-            "cherry.dl_site_blocked_log",
-            "⛔ {site} refused {n} downloads in a row. The site is abandoned for "
-            "this run; the files stay queued for another day."
-        ).format(site=site, n=streak), "error")
+        if streak:
+            self.set_phase(self.tr(
+                "cherry.dl_site_blocked", "⛔ {site} refused {n} times — abandoned"
+            ).format(site=site, n=streak))
+            self.append_log(self.tr(
+                "cherry.dl_site_blocked_log",
+                "⛔ {site} refused {n} downloads in a row. The site is abandoned "
+                "for this run; the files stay queued for another day."
+            ).format(site=site, n=streak), "error")
+        else:
+            # streak 0 = no nos rechazaron: paramos nosotros (presupuesto).
+            self.set_phase(self.tr(
+                "cherry.dl_site_budget", "⏸ {site} — daily budget spent"
+            ).format(site=site))
         if detail:
             self.append_log(detail, "warn")
 

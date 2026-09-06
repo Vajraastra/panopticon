@@ -105,6 +105,23 @@ class SiteTemplate(ABC):
     # multiplica. Se pone cuando el operador del sitio pide un ritmo concreto.
     min_request_interval: float = 0.0
 
+    # Techo de bytes por segundo, AGREGADO entre todos los workers.
+    # 0.0 = sin techo.
+    #
+    # Distíngase de `min_request_interval`, que limita cuántas VECES se pide;
+    # esto limita cuánto se trae. Una petición por segundo con archivos de
+    # 130 MB son ~10 MB/s, casi un tera al día: cumplir un ritmo de peticiones
+    # no dice nada del caudal, y es el caudal lo que le cuesta dinero a quien
+    # paga el servidor. Se pone cuando el sitio es un archivo público con un
+    # operador detrás.
+    max_bytes_per_sec: float = 0.0
+
+    # Tope de bytes a traer del sitio en un día natural. 0 = sin tope.
+    # El caudal limita el pico; esto limita el total, que es la cifra en la que
+    # piensa quien paga el ancho de banda. Se lleva en un sidecar propio
+    # (`~/.cherry-dl/site_budget.json`), fuera de las bases del motor.
+    daily_byte_budget: int = 0
+
     def __init__(self, engine: "DownloadEngine") -> None:
         self.engine = engine
 

@@ -53,6 +53,7 @@ from .index import (
     update_profile_last_checked,
     update_profile_url_sync,
 )
+from .site_budget import add as budget_add, remaining as budget_remaining
 from .templates._registry import find_template, get_template
 from .templates.base import FileInfo, parse_date_utc
 from .auth.patreon import NeedsManualAuth
@@ -265,10 +266,11 @@ async def run_profile_download(
         or [workers]
     )
 
-    # Sitios que nos cerraron la puerta durante ESTA run. El bucle de fuentes
-    # es secuencial, así que basta un set: en cuanto uno entra, las fuentes
+    # Sitios que se abandonan durante ESTA run, y por qué: o nos cerraron la
+    # puerta, o se acabó su presupuesto del día. El bucle de fuentes es
+    # secuencial, así que basta un dict: en cuanto uno entra, las fuentes
     # siguientes del mismo sitio se saltan sin gastar una sola petición.
-    blocked_sites: set[str] = set()
+    blocked_sites: dict[str, str] = {}
 
     async with DownloadEngine(config, workers=pool_max) as engine:
         for pu in profile["urls"]:
@@ -282,7 +284,24 @@ async def run_profile_download(
 
             if template.name in blocked_sites:
                 emit(Log(
-                    f"⏭ {pu['url']}  [{template.name} bloqueado — se salta]", "warn",
+                    f"⏭ {pu['url']}  [{blocked_sites[template.name]} — se salta]",
+                    "warn",
+                ))
+                continue
+
+            # Presupuesto del día. Se mira ANTES de escanear: un scan que
+            # encola trabajo que no se va a hacer gasta peticiones para nada.
+            day_budget = getattr(template, "daily_byte_budget", 0) or 0
+            left = budget_remaining(template.name, day_budget)
+            if left == 0:
+                blocked_sites[template.name] = (
+                    f"{template.name}: presupuesto de hoy agotado "
+                    f"({day_budget / 2**30:.0f} GB)"
+                )
+                emit(SiteBlocked(template.name, 0, blocked_sites[template.name]))
+                emit(Log(
+                    f"⛔ {template.name}: se llegó al tope de hoy "
+                    f"({day_budget / 2**30:.0f} GB). Sigue mañana.", "warn",
                 ))
                 continue
 
@@ -299,6 +318,16 @@ async def run_profile_download(
                 emit(Log(
                     f"⏱ {template.name}: 1 petición cada {pace:g}s, "
                     f"compartida entre {src_workers} descargas", "dim",
+                ))
+
+            rate = getattr(template, "max_bytes_per_sec", 0.0) or 0.0
+            engine.set_rate(rate)
+            if rate:
+                queda = (f", {left / 2**30:.1f} GB de presupuesto hoy"
+                         if left >= 0 else "")
+                emit(Log(
+                    f"⏱ {template.name}: techo de {rate / 2**20:.1f} MB/s "
+                    f"entre todas las descargas{queda}", "dim",
                 ))
 
             # ── Resolver artista (puede disparar lazy auth / modal) ─────────
@@ -488,7 +517,14 @@ async def run_profile_download(
             reject = {"streak": 0, "detail": ""}
 
             def _blocked() -> bool:
-                return reject["streak"] >= _BLOCK_STREAK
+                # `blocked_sites` manda, y la racha solo DETECTA. Si el bloqueo
+                # viviera únicamente en el contador, el worker de al lado lo
+                # borraría al terminar bien un archivo que ya venía en vuelo
+                # —su `reject["streak"] = 0`— y la run seguiría como si nada.
+                # Se vio en el banco de pruebas: 20 de 20 archivos bajados con
+                # el sitio ya marcado, de forma intermitente.
+                return (template.name in blocked_sites
+                        or reject["streak"] >= _BLOCK_STREAK)
 
             async def producer() -> None:
                 """Alimenta la cola de workers; ext_filter se aplica aquí para
@@ -592,7 +628,7 @@ async def run_profile_download(
                         except asyncio.TimeoutError:
                             emit(WorkerDone(slot_id, fi.filename, "⏸"))
                             emit(Log(f"⏸ {fi.filename[:55]}  [timeout — diferido]", "warn"))
-                            deferred.append((fi, artist_info, folder, pace, template.name))
+                            deferred.append((fi, artist_info, folder, pace, rate, template.name))
                             summ.deferred += 1
                             _counters()
                             continue
@@ -602,7 +638,10 @@ async def run_profile_download(
                                 reject["streak"] += 1
                                 reject["detail"] = result.error or ""
                                 if reject["streak"] == _BLOCK_STREAK:
-                                    blocked_sites.add(template.name)
+                                    blocked_sites[template.name] = (
+                                        f"{template.name} rechazó "
+                                        f"{_BLOCK_STREAK} veces seguidas"
+                                    )
                                     emit(SiteBlocked(
                                         template.name, _BLOCK_STREAK,
                                         reject["detail"],
@@ -616,7 +655,7 @@ async def run_profile_download(
                                         emit(Log(f"   {reject['detail']}", "warn"))
 
                             if result.error_kind in ErrorKind.DEFERRABLE:
-                                deferred.append((fi, artist_info, folder, pace, template.name))
+                                deferred.append((fi, artist_info, folder, pace, rate, template.name))
                                 emit(WorkerDone(slot_id, fi.filename, "⏸"))
                                 emit(Log(f"⏸ {fi.filename[:55]}  [{result.error_kind}]", "warn"))
                             elif result.error_kind == ErrorKind.NOT_FOUND:
@@ -647,6 +686,25 @@ async def run_profile_download(
                         # La racha cuenta rechazos SEGUIDOS: cualquier archivo
                         # que sí bajó prueba que la puerta sigue abierta.
                         reject["streak"] = 0
+
+                        # Lo traído se anota aunque el archivo acabe siendo un
+                        # duplicado que se borra: el ancho de banda del sitio ya
+                        # se gastó, que es lo que el presupuesto cuenta.
+                        if day_budget and result.file_size:
+                            gastado = budget_add(template.name, result.file_size)
+                            if gastado >= day_budget and template.name not in blocked_sites:
+                                blocked_sites[template.name] = (
+                                    f"{template.name}: presupuesto de hoy agotado "
+                                    f"({day_budget / 2**30:.0f} GB)"
+                                )
+                                emit(SiteBlocked(
+                                    template.name, 0, blocked_sites[template.name],
+                                ))
+                                emit(Log(
+                                    f"⛔ {template.name}: {gastado / 2**30:.1f} GB hoy, "
+                                    f"tope {day_budget / 2**30:.0f} GB. Sigue mañana; "
+                                    f"lo que falta se queda en la cola.", "warn",
+                                ))
 
                         if result.file_hash is None:
                             summ.errors += 1
@@ -757,7 +815,7 @@ async def run_profile_download(
         # ── Cola diferida ───────────────────────────────────────────────────
         if deferred:
             emit(Log(f"⏭ Cola diferida: {len(deferred)} archivo(s)…", "warn"))
-            for file_info, a_info, dest_folder, src_pace, src_site in deferred:
+            for file_info, a_info, dest_folder, src_pace, src_rate, src_site in deferred:
                 # Un sitio que cerró la puerta no se reintenta aquí: la cola
                 # diferida es el otro camino por el que se le volvía a pedir.
                 if src_site in blocked_sites:
@@ -765,8 +823,9 @@ async def run_profile_download(
                 # El ritmo se re-fija por archivo: los diferidos vienen de
                 # fuentes distintas y el pacer que quedó activo es el de la
                 # última, que puede ser más permisivo que el que este archivo
-                # debe respetar.
+                # debe respetar. Con el caudal, igual.
                 engine.set_pace(src_pace)
+                engine.set_rate(src_rate)
                 if await url_exists(dest_folder, file_info.dedup_key):
                     summ.skipped += 1
                     continue

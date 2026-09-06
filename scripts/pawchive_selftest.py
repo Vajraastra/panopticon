@@ -20,7 +20,9 @@ Uso:  venv/Scripts/python.exe scripts/pawchive_selftest.py
 from __future__ import annotations
 
 import asyncio
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,8 +35,9 @@ for _s in (sys.stdout, sys.stderr):
     except (AttributeError, OSError):
         pass
 
+from cherry_dl import site_budget as sb
 from cherry_dl.download_service import site_workers                       # noqa: E402
-from cherry_dl.engine import _Pacer                                       # noqa: E402
+from cherry_dl.engine import _ByteBucket, _Pacer                                       # noqa: E402
 from cherry_dl.templates._registry import find_template, list_templates   # noqa: E402
 from cherry_dl.templates.kemono import KemonoTemplate                     # noqa: E402
 from cherry_dl.templates.patreon import PatreonTemplate                   # noqa: E402
@@ -227,6 +230,60 @@ async def main() -> int:
         f"5 turnos consecutivos caen a 1 s exacto ({turnos})")
     chk(turnos[-1] - turnos[0] >= 4.0,
         "5 peticiones ocupan >= 4 s: no salen en ráfaga")
+
+    print("\n[9] El caudal, que es lo que el acuerdo no cubría")
+    chk(PawchiveTemplate.max_bytes_per_sec == 2 * 1024**2,
+        "techo de 2 MB/s agregado")
+    chk(PawchiveTemplate.daily_byte_budget == 25 * 1024**3,
+        "presupuesto de 25 GB por día")
+    # La aritmética que justifica que existan: cumplir 1 petición/s con los
+    # archivos de esa tarde daba diez veces el caudal que ahora se permite.
+    medido = 3854 * 2**20 / 360          # 3.854 MB en 6 minutos, medidos en disco
+    chk(medido / PawchiveTemplate.max_bytes_per_sec > 5,
+        f"lo medido el 2026-09-05 ({medido / 2**20:.1f} MB/s) es >5x el techo")
+    chk(PawchiveTemplate.daily_byte_budget < 86400 * PawchiveTemplate.max_bytes_per_sec,
+        "el tope diario muerde antes que el caudal: 25 GB < los 172 GB de un día")
+
+    print("\n[10] El cubo de fichas reparte, no reserva")
+    # Mismo reloj falso: se mide el tiempo devengado, no se duerme de verdad.
+    reloj["t"] = 0.0
+    loop.time = lambda: reloj["t"]                      # type: ignore[method-assign]
+    asyncio.sleep = _sleep_falso                        # type: ignore[assignment]
+    try:
+        # 1 MB/s con cubo de 2 MB: los dos primeros megas salen gratis (es el
+        # burst) y a partir de ahí se paga un segundo por mega.
+        cubo = _ByteBucket(1024**2, burst=2 * 1024**2)
+        await cubo.take(2 * 1024**2)
+        libre = reloj["t"]
+        await cubo.take(3 * 1024**2)
+        tras_3mb = reloj["t"]
+    finally:
+        asyncio.sleep = real_sleep                      # type: ignore[assignment]
+        loop.time = real_time                           # type: ignore[method-assign]
+
+    chk(libre == 0.0, f"el burst inicial no espera ({libre}s)")
+    chk(abs(tras_3mb - 3.0) < 0.01,
+        f"3 MB más cuestan 3 s a 1 MB/s ({tras_3mb:.2f}s)")
+
+    print("\n[11] El presupuesto diario cuenta por día y por sitio")
+    tmp = Path(tempfile.mkdtemp(prefix="paw_budget_")) / "b.json"
+    try:
+        chk(sb.spent_today("pawchive", tmp) == 0, "empieza en cero")
+        sb.add("pawchive", 1024**3, tmp)
+        sb.add("pawchive", 1024**3, tmp)
+        chk(sb.spent_today("pawchive", tmp) == 2 * 1024**3, "suma entre llamadas")
+        chk(sb.spent_today("kemono", tmp) == 0, "cada sitio lleva el suyo")
+        chk(sb.remaining("pawchive", 3 * 1024**3, tmp) == 1024**3,
+            "lo que queda es el tope menos lo gastado")
+        chk(sb.remaining("pawchive", 2 * 1024**3, tmp) == 0,
+            "agotado da 0, no un negativo")
+        chk(sb.remaining("pawchive", 0, tmp) == -1,
+            "sin tope da -1, que no es lo mismo que agotado")
+        tmp.write_text("{ esto no es json", encoding="utf-8")
+        chk(sb.spent_today("pawchive", tmp) == 0,
+            "un sidecar corrupto no tumba la descarga: se empieza de cero")
+    finally:
+        shutil.rmtree(tmp.parent, ignore_errors=True)
 
     print(f"\n{_ok} ok, {_fail} fallo(s)")
     return 1 if _fail else 0

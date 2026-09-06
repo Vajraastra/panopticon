@@ -1018,5 +1018,6 @@
   "gallery.page_prev_tip": "Previous page of images.",
   "gallery.page_next_tip": "Next page of images.",
   "cherry.dl_site_blocked": "⛔ {site} refused {n} times — abandoned",
-  "cherry.dl_site_blocked_log": "⛔ {site} refused {n} downloads in a row. The site is abandoned for this run; the files stay queued for another day."
+  "cherry.dl_site_blocked_log": "⛔ {site} refused {n} downloads in a row. The site is abandoned for this run; the files stay queued for another day.",
+  "cherry.dl_site_budget": "⏸ {site} — daily budget spent"
 }

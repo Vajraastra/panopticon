@@ -61,8 +61,21 @@ administrador llamó abusivo la primera vez. El servidor devolvía `Server:
 ddos-guard` y un cuerpo de 143 bytes en texto plano, del largo de un mensaje
 escrito a mano, que el motor tiraba sin leer.
 
-Por eso los workers bajan a 2 (decisión de David): con la misma cadencia de
-peticiones, el caudal en vuelo se reduce a la mitad larga.
+Por eso los workers bajan a 2 (decisión de David) y aparecen dos límites que el
+acuerdo no cubría, porque estaba escrito en peticiones y el problema estaba en
+bytes:
+
+  - `max_bytes_per_sec = 2 MB/s` agregado. Las 3.854 MB de esa tarde habrían
+    tardado 32 minutos en vez de 6, y el día entero no pasaría de 172 GB en vez
+    de proyectar casi un tera.
+  - `daily_byte_budget = 25 GB`. El caudal acota el pico; esto acota el total,
+    que es la unidad en la que se quejó él («TBs a day»). Al agotarse, la sync
+    de este sitio para y sigue al día siguiente; lo que falte se queda en la
+    cola. Se lleva la cuenta en `~/.cherry-dl/site_budget.json`.
+
+Ninguna de las dos es un acuerdo: son nuestra estimación de lo que es
+razonable, a la espera de que él diga una cifra. Por eso, a diferencia de las
+suyas, estas SÍ se pueden mover — hacia abajo sin preguntar.
 
 ## `preview_only`
 
@@ -113,6 +126,8 @@ class PawchiveTemplate(SiteTemplate):
     workers = 2                  # ver «Lo que 5 workers midió en vivo»
     max_workers = 2              # tope rígido: el perfil no puede subirlo
     min_request_interval = 1.0   # 1 petición/s AGREGADA — ver cabecera
+    max_bytes_per_sec = 2 * 1024**2      # 2 MB/s entre todas las descargas
+    daily_byte_budget = 25 * 1024**3     # 25 GB por día natural
     provides_file_hashes = True  # el hash SHA-256 viene en el path
     scan_page_delay = 0.0        # lo espacia el pacer; sumar aquí sería doble
     cooldown_threshold = 200     # el pacer ya evita el burst que esto enfriaba

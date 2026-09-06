@@ -195,6 +195,58 @@ class _Pacer:
             await asyncio.sleep(remaining)
 
 
+class _ByteBucket:
+    """
+    Techo de bytes por segundo, COMPARTIDO por todos los workers.
+
+    El pacer limita cuántas VECES se pide; esto limita cuánto se trae. Son
+    cosas distintas y hacen falta las dos: una petición por segundo con
+    archivos de 130 MB da 10 MB/s, que sostenidos son casi un tera al día. Eso
+    fue exactamente lo que bloqueó a Pawchive el 2026-09-05, cumpliendo su
+    ritmo de peticiones al pie de la letra.
+
+    Es un cubo de fichas clásico: se rellena a `rate` fichas por segundo hasta
+    un tope de `burst`, y cada chunk recibido paga su tamaño. Un archivo grande
+    lo vacía, así que la descarga siguiente arranca esperando a que se rellene:
+    el espaciado proporcional al tamaño sale solo, sin un segundo sleep que
+    pagar. Por eso no hay «delay según el peso del archivo anterior» aparte —
+    sería el mismo peaje cobrado dos veces, el error que ya costó una sesión
+    con `scan_page_delay`.
+
+    `burst` decide cuánto puede correr una descarga que llega con el cubo
+    lleno. Un cubo del tamaño de dos segundos de caudal deja arrancar rápido
+    sin que el pico signifique nada en el promedio.
+    """
+
+    __slots__ = ("rate", "burst", "_lock", "_tokens", "_last")
+
+    def __init__(self, rate: float, burst: float | None = None) -> None:
+        self.rate = rate
+        self.burst = burst if burst is not None else rate * 2
+        self._lock = asyncio.Lock()
+        self._tokens = self.burst
+        self._last = 0.0
+
+    async def take(self, n: int) -> float:
+        """Paga `n` bytes; devuelve los segundos que hubo que esperar."""
+        loop = asyncio.get_running_loop()
+        async with self._lock:
+            now = loop.time()
+            if self._last:
+                self._tokens = min(self.burst,
+                                   self._tokens + (now - self._last) * self.rate)
+            self._last = now
+            self._tokens -= n
+            debt = -self._tokens
+        if debt <= 0:
+            return 0.0
+        # Se duerme FUERA del lock: los workers esperan en paralelo. El cubo ya
+        # quedó en descubierto, así que el que venga detrás esperará su parte.
+        wait = debt / self.rate
+        await asyncio.sleep(wait)
+        return wait
+
+
 # ── Engine ─────────────────────────────────────────────────────────────────────
 
 class DownloadEngine:
@@ -219,6 +271,7 @@ class DownloadEngine:
         }
         # Ritmo pedido por el sitio activo; None = delay global del config.
         self._pacer: _Pacer | None = None
+        self._bucket: _ByteBucket | None = None
 
     async def __aenter__(self) -> "DownloadEngine":
         # http2=False a propósito: con HTTP/2 todas las descargas se multiplexan
@@ -308,12 +361,40 @@ class DownloadEngine:
         fuentes es secuencial, así que el pacer activo siempre es el del sitio
         que se está bajando.
         """
-        self._pacer = _Pacer(interval) if interval and interval > 0 else None
+        if not interval or interval <= 0:
+            self._pacer = None
+        elif self._pacer is None or self._pacer.interval != interval:
+            self._pacer = _Pacer(interval)
+        # Mismo ritmo que la fuente anterior: se conserva el pacer con su turno
+        # ya devengado. Recrearlo por fuente regalaba una petición inmediata
+        # cada vez, y un perfil con 43 fuentes del mismo sitio son 43 turnos
+        # que nadie esperó.
+
+    def set_rate(self, bytes_per_sec: float | None) -> None:
+        """
+        Fija el caudal máximo del sitio que se está procesando, agregado entre
+        todos los workers. `None` o 0 lo quita.
+
+        Se llama junto a `set_pace`, y por el mismo motivo: es un límite del
+        sitio, no del perfil, y el bucle de fuentes es secuencial.
+        """
+        if not bytes_per_sec or bytes_per_sec <= 0:
+            self._bucket = None
+        elif self._bucket is None or self._bucket.rate != bytes_per_sec:
+            self._bucket = _ByteBucket(bytes_per_sec)
+        # Igual que el pacer, y aquí importa más: el cubo arranca lleno, así
+        # que rehacerlo en cada fuente regalaría un burst entero por fuente
+        # —con 43 de Pawchive, 172 MB fuera de todo límite—.
 
     @property
     def paced(self) -> bool:
         """True si hay un ritmo por sitio activo (en vez del delay global)."""
         return self._pacer is not None
+
+    @property
+    def rate_limited(self) -> bool:
+        """True si hay un techo de caudal por sitio activo."""
+        return self._bucket is not None
 
     async def get_json(self, url: str, retries: int | None = None) -> dict | list:
         """
@@ -584,7 +665,14 @@ class DownloadEngine:
                 # en la cola diferida se le vuelven a dar 300 s: nunca termina.
                 # Lo que sigue cortando en seco es lo que NO progresa.
                 if total_timeout:
-                    budget = total_timeout + written / _MIN_RATE
+                    # Con un techo de caudal, el suelo de velocidad esperada no
+                    # puede estar por encima de lo que nosotros mismos dejamos
+                    # correr: si no, el presupuesto mataría descargas que van
+                    # despacio porque se lo pedimos.
+                    floor = _MIN_RATE
+                    if self._bucket is not None:
+                        floor = min(floor, self._bucket.rate)
+                    budget = total_timeout + written / floor
                     if asyncio.get_running_loop().time() - _t_start >= budget:
                         return DownloadResult(
                             url=url, filename=filename,
@@ -760,6 +848,13 @@ class DownloadEngine:
                         _next_resched = _loop.time() + _resched_every
                         async with asyncio.timeout(_stall) as _wd:
                             async for chunk in resp.aiter_bytes(chunk_size=65536):
+                                # Techo de caudal del sitio, si lo hay. Va antes
+                                # de reprogramar el watchdog a propósito: lo que
+                                # se duerme aquí es decisión nuestra, no falta de
+                                # datos, y contarlo como stall abortaría la
+                                # descarga por ir despacio adrede.
+                                if self._bucket is not None:
+                                    await self._bucket.take(len(chunk))
                                 _now = _loop.time()
                                 if _now >= _next_resched:
                                     _wd.reschedule(_now + _stall)

@@ -1018,5 +1018,6 @@
   "gallery.page_prev_tip": "Página anterior de imágenes.",
   "gallery.page_next_tip": "Página siguiente de imágenes.",
   "cherry.dl_site_blocked": "⛔ {site} rechazó {n} veces — se abandona",
-  "cherry.dl_site_blocked_log": "⛔ {site} rechazó {n} descargas seguidas. Se abandona el sitio en esta pasada; los archivos siguen en la cola para otro día."
+  "cherry.dl_site_blocked_log": "⛔ {site} rechazó {n} descargas seguidas. Se abandona el sitio en esta pasada; los archivos siguen en la cola para otro día.",
+  "cherry.dl_site_budget": "⏸ {site} — presupuesto del día agotado"
 }
