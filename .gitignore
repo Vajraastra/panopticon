@@ -76,6 +76,7 @@ handoff_*.md
 # Informe de la migracion kemono -> pawchive: trabajo pendiente de
 # revisar a mano, se regenera con scripts/cherry_kemono_to_pawchive.py
 MIGRACION_PAWCHIVE.txt
+MENSAJE_PAWCHIVE.md
 MODULE_DEVELOPMENT_BIBLE.md
 
 # Local Claude Code config (never committed — regla global 6b)
