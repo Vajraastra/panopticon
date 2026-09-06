@@ -36,7 +36,11 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 from cherry_dl import site_budget as sb
-from cherry_dl.download_service import site_workers                       # noqa: E402
+from cherry_dl.download_service import (                                 # noqa: E402
+    ordered_sources,
+    site_workers,
+    source_priority,
+)
 from cherry_dl.engine import _ByteBucket, _CompletionGate, _Pacer        # noqa: E402
 from cherry_dl.templates._registry import find_template, list_templates   # noqa: E402
 from cherry_dl.templates.kemono import KemonoTemplate                     # noqa: E402
@@ -125,13 +129,33 @@ async def main() -> int:
     chk(find_template("https://kemono.cr/patreon/user/1").name == "kemono",
         "kemono sigue quedándose con lo suyo")
 
-    print("\n[2] Hash desde el path")
+    print("\n[2] Orden de fuentes: oficiales antes que archivos")
+    fuentes = [
+        {"id": "paw", "url": "https://pawchive.pw/patreon/user/1"},
+        {"id": "patreon-a", "url": "https://www.patreon.com/autor-a"},
+        {"id": "kemono", "url": "https://kemono.cr/patreon/user/1"},
+        {"id": "pixiv", "url": "https://www.pixiv.net/users/1"},
+        {"id": "patreon-b", "url": "https://www.patreon.com/autor-b"},
+    ]
+    orden = [f["id"] for f in ordered_sources(fuentes)]
+    chk(source_priority(fuentes[1]["url"]) == 0,
+        "Patreon directo tiene prioridad oficial")
+    chk(source_priority(fuentes[3]["url"]) == 0,
+        "Pixiv directo tiene prioridad oficial")
+    chk(source_priority(fuentes[0]["url"]) < source_priority(fuentes[2]["url"]),
+        "Pawchive queda antes que el legado de Kemono")
+    chk(find_template(fuentes[2]["url"]).download_enabled is False,
+        "Kemono se reconoce, pero queda fuera del circuito de descarga")
+    chk(orden == ["patreon-a", "pixiv", "patreon-b", "paw", "kemono"],
+        f"orden global correcto y estable ({orden})")
+
+    print("\n[3] Hash desde el path")
     chk(_hash_from_path(f"/51/bf/{H1}.png") == H1,
         "extrae el sha256 con la extensión pegada (formato de pawchive)")
     chk(_hash_from_path("/ad/93/no-es-un-hash.jpg") is None, "rechaza lo que no es hash")
     chk(_hash_from_path("/data/ab/cd/xyz") is None, "rechaza un path con otra forma")
 
-    print("\n[3] Los límites del sitio")
+    print("\n[4] Los límites del sitio")
     # El intervalo viene de su respuesta del 2026-09-05, no de afinar
     # rendimiento. Los workers bajaron de 5 a 2 esa misma tarde, después de que
     # la primera descarga real acabara en 774 respuestas 403 seguidas: 5 en
@@ -152,13 +176,13 @@ async def main() -> int:
     eng = EngineFalso()
     t = PawchiveTemplate(eng)
 
-    print("\n[4] Info del artista")
+    print("\n[5] Info del artista")
     a = await t.get_artist_info("https://pawchive.pw/patreon/user/30500811")
     chk(a.artist_id == "30500811", "id correcto")
     chk(a.name == "BOKABA", f"resuelve el nombre real desde el índice ({a.name})")
     chk(a.service == "patreon" and a.site == "pawchive", "service y site correctos")
 
-    print("\n[5] Archivos del artista")
+    print("\n[6] Archivos del artista")
     files = [f async for f in t.iter_files(a)]
     chk(len(files) == 3, f"salen 3 de 6: los preview_only se saltan (fueron {len(files)})")
     nombres = [f.filename for f in files]
@@ -177,7 +201,7 @@ async def main() -> int:
     raro = next(f for f in files if f.filename.startswith("y"))
     chk(raro.filename == "y_ raro_.png", f"sanea el nombre ({raro.filename})")
 
-    print("\n[6] Paginación")
+    print("\n[7] Paginación")
     paginas = [u for u in eng.llamadas if "/posts?o=" in u]
     chk(len(paginas) == 2, f"pide páginas hasta la vacía ({len(paginas)})")
     chk(paginas[0].endswith("o=0") and paginas[1].endswith("o=50"),
@@ -185,7 +209,7 @@ async def main() -> int:
     chk(sum(1 for u in eng.llamadas if u.endswith("/creators")) == 1,
         "el índice de creadores (12,8 MB) se pide UNA sola vez por sesión")
 
-    print("\n[7] El pool llega al servicio de descarga")
+    print("\n[8] El pool llega al servicio de descarga")
     # Se llama a la función REAL de download_service, no a una copia del
     # cálculo: la copia ya se quedó desfasada una vez y el test pasó igual.
     cls_paw = find_template("https://pawchive.pw/patreon/user/30500811")
@@ -204,7 +228,7 @@ async def main() -> int:
         "kemono sigue en 2 (su comentario ya era un tope)")
     chk(site_workers(None, 3) == 3, "una URL sin template usa el ajuste general")
 
-    print("\n[8] El ritmo NO se multiplica por worker")
+    print("\n[9] El ritmo NO se multiplica por worker")
     # Es el punto entero del pacer: con 5 workers pidiendo turno a la vez, la
     # tasa agregada sigue siendo 1/s. Un delay por worker daría 5/s, que es
     # justo lo que el administrador pidió no hacer. Se mide contra un reloj
@@ -233,7 +257,7 @@ async def main() -> int:
     chk(turnos[-1] - turnos[0] >= 4.0,
         "5 peticiones ocupan >= 4 s: no salen en ráfaga")
 
-    print("\n[9] La pausa entre archivos pequeños")
+    print("\n[10] La pausa entre archivos pequeños")
     reloj["t"] = 10.0
     loop.time = lambda: reloj["t"]                      # type: ignore[method-assign]
     asyncio.sleep = _sleep_falso                        # type: ignore[assignment]
@@ -249,7 +273,7 @@ async def main() -> int:
     chk(apertura == 15.0, f"la compuerta abre 5 s después ({apertura:.1f}s)")
     chk(gate.ready(), "al abrir, el siguiente archivo ya puede pedir turno")
 
-    print("\n[10] El caudal, que es lo que el acuerdo no cubría")
+    print("\n[11] El caudal, que es lo que el acuerdo no cubría")
     chk(PawchiveTemplate.max_bytes_per_sec == 2 * 1024**2,
         "techo de 2 MB/s agregado")
     chk(PawchiveTemplate.daily_byte_budget == 25 * 1024**3,
@@ -262,7 +286,7 @@ async def main() -> int:
     chk(PawchiveTemplate.daily_byte_budget < 86400 * PawchiveTemplate.max_bytes_per_sec,
         "el tope diario muerde antes que el caudal: 25 GB < los 172 GB de un día")
 
-    print("\n[11] El cubo de fichas reparte, no reserva")
+    print("\n[12] El cubo de fichas reparte, no reserva")
     # Mismo reloj falso: se mide el tiempo devengado, no se duerme de verdad.
     reloj["t"] = 0.0
     loop.time = lambda: reloj["t"]                      # type: ignore[method-assign]
@@ -283,7 +307,7 @@ async def main() -> int:
     chk(abs(tras_3mb - 3.0) < 0.01,
         f"3 MB más cuestan 3 s a 1 MB/s ({tras_3mb:.2f}s)")
 
-    print("\n[12] El presupuesto diario cuenta por día y por sitio")
+    print("\n[13] El presupuesto diario cuenta por día y por sitio")
     tmp = Path(tempfile.mkdtemp(prefix="paw_budget_")) / "b.json"
     try:
         chk(sb.spent_today("pawchive", tmp) == 0, "empieza en cero")

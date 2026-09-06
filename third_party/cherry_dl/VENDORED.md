@@ -27,6 +27,23 @@
 
 ## Divergencias respecto a `befa56d`
 
+### `download_service.py` + templates — fuentes oficiales antes que archivos (2026-09-06)
+
+Cuando un perfil tiene varias URLs, el orden de alta deja de decidir el orden
+de descarga. Los templates oficiales conservan `source_priority = 0` y
+Pawchive declara 100 como respaldo. El sort es estable dentro de cada categoría.
+
+Así Patreon, Pixiv y un futuro Fanbox directo llenan primero el catálogo. Los
+archivos se procesan después para completar huecos, con Pawchive al final:
+como expone SHA-256 antes de descargar, todo contenido que la fuente oficial ya
+trajo se descarta contra `catalog.db` sin pedir otra vez el archivo. No se omite
+el scan del respaldo por una respuesta oficial aparentemente correcta, porque
+otro nivel de membresía o el histórico pueden seguir teniendo huecos.
+
+Kemono queda fuera del circuito: `download_enabled = False`. El template se
+conserva para reconocer URLs y catálogos antiguos, pero `download_service` no
+le hace scan ni peticiones. Sus filas no se borran ni se modifican.
+
 ### `engine.py` + `download_service.py` — pausa entre archivos de Pawchive (2026-09-06)
 
 Una prueba real con 2 workers y caudal reducido volvió a recibir 403 al pasar

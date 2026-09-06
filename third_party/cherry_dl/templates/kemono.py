@@ -49,6 +49,8 @@ _PAGE_SIZE = 50  # Kemono retorna 50 posts por página
 class KemonoTemplate(SiteTemplate):
     name = "kemono"
     base_url = _BASE
+    source_priority = 200         # legado: incluso después del respaldo activo
+    download_enabled = False      # conservar URLs, pero no tocar el servicio
     workers = 2                  # >2 workers activa rate limiting agresivo en Kemono
     max_workers = 2              # el de arriba era un tope de facto; explícito
     provides_file_hashes = True  # Kemono expone SHA-256 en el path del CDN

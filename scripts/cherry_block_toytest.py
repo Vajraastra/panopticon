@@ -441,6 +441,24 @@ async def run() -> None:
               "una segunda sync el mismo día no gasta ni una petición",
               f"({len(Handler.hits)})")
 
+        # ── [7] Una fuente retirada se conserva, pero no se consulta ────────
+        print("\n[7] Kemono queda fuera del circuito sin borrar su URL")
+        summ, ev = await correr(
+            tmp, [{"id": -1,
+                   "url": "https://kemono.cr/patreon/user/30500811",
+                   "site": "kemono", "enabled": 1,
+                   "last_synced": None, "file_count": 0}],
+            "caso7",
+        )
+        retiradas = [
+            e for e in ev
+            if isinstance(e, ds.Log) and "fuera de servicio" in e.msg
+        ]
+        check(not Handler.hits, "no abre ninguna conexión")
+        check(bool(retiradas), "explica que la URL se conserva sin consultarla")
+        check(summ.downloaded == 0 and summ.errors == 0,
+              "omitir una fuente retirada no cuenta como error")
+
     finally:
         srv.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)

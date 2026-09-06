@@ -75,6 +75,17 @@ class SiteTemplate(ABC):
     name: str = ""
     base_url: str = ""
     workers: int = 3
+
+    # Orden entre varias fuentes de un mismo perfil. Los sitios oficiales usan
+    # el default; los archivos/mirrors declaran un número mayor para funcionar
+    # como respaldo. El sort es estable, así que dentro de la misma categoría
+    # se conserva el orden en que el usuario agregó las URLs.
+    source_priority: int = 0
+
+    # False conserva el reconocimiento de URLs y catálogos históricos, pero
+    # impide que el servicio programe scans o descargas contra ese sitio.
+    download_enabled: bool = True
+
     # True si el sitio expone el hash del archivo antes de descargar (ej. Kemono).
     # False obliga a descargar todo en el primer scan y deduplicar por hash local.
     provides_file_hashes: bool = False

@@ -208,6 +208,20 @@ def site_workers(cls, requested: int) -> int:
     return max(1, min(want, cap) if cap else want)
 
 
+def source_priority(url: str) -> int:
+    """Prioridad de una URL: oficiales primero, archivos al final."""
+    cls = find_template(url) if url else None
+    return getattr(cls, "source_priority", 0) if cls else 0
+
+
+def ordered_sources(sources: list[dict]) -> list[dict]:
+    """Orden estable para que los mirrors solo rellenen lo que falte."""
+    return sorted(
+        sources,
+        key=lambda source: source_priority(source.get("url") or ""),
+    )
+
+
 @dataclass
 class DownloadSummary:
     downloaded: int = 0
@@ -272,14 +286,29 @@ async def run_profile_download(
     # siguientes del mismo sitio se saltan sin gastar una sola petición.
     blocked_sites: dict[str, str] = {}
 
+    sources = ordered_sources(profile["urls"])
+    if sources != profile["urls"]:
+        emit(Log(
+            "↕ Fuentes reordenadas: oficiales primero; Pawchive como respaldo",
+            "dim",
+        ))
+
     async with DownloadEngine(config, workers=pool_max) as engine:
-        for pu in profile["urls"]:
+        for pu in sources:
             if not pu["enabled"] or not pu["url"]:
                 continue
 
             template = get_template(pu["url"], engine)
             if not template:
                 emit(Log(f"Sin template para: {pu['url']}", "error"))
+                continue
+
+            if not getattr(template, "download_enabled", True):
+                emit(Log(
+                    f"⏭ {template.name}: fuera de servicio; se conserva la URL "
+                    f"pero no se consulta",
+                    "warn",
+                ))
                 continue
 
             if template.name in blocked_sites:

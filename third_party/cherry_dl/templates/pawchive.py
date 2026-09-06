@@ -123,6 +123,7 @@ _PAGE_SIZE = 50  # la API devuelve 50 posts por página
 class PawchiveTemplate(SiteTemplate):
     name = "pawchive"
     base_url = _BASE
+    source_priority = 100         # respaldo después de las fuentes oficiales
     workers = 2                  # ver «Lo que 5 workers midió en vivo»
     max_workers = 2              # tope rígido: el perfil no puede subirlo
     min_request_interval = 1.0   # 1 petición/s AGREGADA — ver cabecera
