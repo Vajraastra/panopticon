@@ -162,3 +162,32 @@ Solo `NOT_FOUND`. Un `AUTH` (403) puede ser una sesión caducada y un `URL_EXPIR
 en el siguiente scan; retirar cualquiera de esos sí perdería el archivo de verdad. Y lo que se
 borra es una fila de cola, nunca un archivo en disco: si el origen lo repone, el próximo scan lo
 vuelve a descubrir.
+
+### `download_service.py` + `engine.py` — el motor deja de insistir cuando le dicen que no (2026-09-05)
+
+La primera descarga real de Pawchive encadenó **774 respuestas 403 en trece minutos**, a una
+petición por segundo, hasta agotar la cola. El motor trataba cada 403 como problema de ESE archivo
+—lo cual es correcto para una sesión caducada— y pasaba al siguiente, así que el rechazo del sitio
+no tenía forma de detener nada. Ningún archivo se perdió, pero el servidor recibió 774 peticiones
+inútiles después de habernos dicho que no: justo la conducta que provoca el bloqueo siguiente.
+
+Ahora `_BLOCK_STREAK = 5` rechazos **seguidos** (`AUTH`, `CLOUDFLARE` o `RATE_LIMIT`; un 404 no
+cuenta, ni un timeout, ni una firma vencida) se leen como «el sitio cerró la puerta»: se emite el
+evento nuevo `SiteBlocked`, se abandona el sitio en esa run y las fuentes que queden de él se
+saltan sin gastar una petición. La racha se reinicia con **cualquier** descarga exitosa, que es lo
+que distingue un sitio caído de cinco archivos con problemas.
+
+Detalle de implementación que no es cosmético: cuando el freno salta, los workers **siguen
+vaciando la cola sin tocar la red** en vez de salir del bucle. Salir dejaría al productor colgado
+en un `put()` sobre una cola llena sin consumidor, y el cierre —que ya es delicado por los
+centinelas— dejaría de funcionar. Los archivos no se tocan: siguen en `pending_queue`.
+
+En `engine.py`, el 403 sin cabeceras de Cloudflare ahora **lee los primeros 300 bytes del cuerpo**
+(`read_short_body`) y los adjunta al mensaje de error. El de Pawchive eran 143 bytes de
+`text/plain` escritos por una persona, y el motor los descartaba sin mirarlos: era la única
+explicación disponible de por qué nos rechazaban.
+
+Banco de pruebas: `scripts/cherry_block_toytest.py`, 11 asserts contra un servidor propio en
+localhost que responde 403 a todo. Mide lo que importa —cuántas peticiones llegan de verdad al
+servidor— y no una reimplementación de la lógica: 6 en vez de 40 con una fuente, 6 en vez de 120
+con tres.

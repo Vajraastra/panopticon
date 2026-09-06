@@ -41,6 +41,29 @@ páginas del scan, y sumarle un sleep propio pagaría el peaje dos veces.
 Un archivador público lo paga alguien. Estas cifras son un acuerdo con quien
 lo paga, no un parámetro de rendimiento.
 
+## Lo que 5 workers midieron en vivo (2026-09-05, tarde)
+
+La primera descarga real con estas cifras terminó bloqueada. La secuencia,
+tomada del log y de las fechas de los archivos en disco:
+
+  - 17:52-17:58 — 78 archivos, **3.854 MB en 6 minutos: 10,7 MB/s**. Casi todos
+    de 60-140 MB, cinco en vuelo a la vez.
+  - 17:58-18:09 — el goteo: 20 archivos, 254 MB, 0,4 MB/s. La numeración del
+    catálogo salta 124 posiciones en dos minutos con un solo archivo guardado,
+    o sea que ya casi todo era 403.
+  - 18:09-18:25 — **774 peticiones, 774 respuestas 403**, exactamente 60 por
+    minuto durante 13 minutos, hasta que se acabó la cola.
+
+El pacer cumplió su parte: 60 peticiones/minuto clavadas. Lo que no cubre el
+acuerdo es el **volumen**: 1 petición por segundo a 130 MB por archivo son
+~10 MB/s, que sostenidos son casi un tera al día — justo lo que su
+administrador llamó abusivo la primera vez. El servidor devolvía `Server:
+ddos-guard` y un cuerpo de 143 bytes en texto plano, del largo de un mensaje
+escrito a mano, que el motor tiraba sin leer.
+
+Por eso los workers bajan a 2 (decisión de David): con la misma cadencia de
+peticiones, el caudal en vuelo se reduce a la mitad larga.
+
 ## `preview_only`
 
 Algunos posts traen `preview_only: true` en su `file` o en sus `attachments`.
@@ -87,8 +110,8 @@ _PAGE_SIZE = 50  # la API devuelve 50 posts por página
 class PawchiveTemplate(SiteTemplate):
     name = "pawchive"
     base_url = _BASE
-    workers = 5                  # cifra dada por su administrador
-    max_workers = 5              # tope rígido: el perfil no puede subirlo
+    workers = 2                  # ver «Lo que 5 workers midió en vivo»
+    max_workers = 2              # tope rígido: el perfil no puede subirlo
     min_request_interval = 1.0   # 1 petición/s AGREGADA — ver cabecera
     provides_file_hashes = True  # el hash SHA-256 viene en el path
     scan_page_delay = 0.0        # lo espacia el pacer; sumar aquí sería doble

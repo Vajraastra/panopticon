@@ -128,11 +128,15 @@ async def main() -> int:
     chk(_hash_from_path("/ad/93/no-es-un-hash.jpg") is None, "rechaza lo que no es hash")
     chk(_hash_from_path("/data/ab/cd/xyz") is None, "rechaza un path con otra forma")
 
-    print("\n[3] Los límites que pidió su administrador")
-    # Las dos cifras vienen de su respuesta del 2026-09-05, no de afinar
-    # rendimiento. Si alguien las sube, que sea contra un test que falle.
-    chk(PawchiveTemplate.max_workers == 5, "max_workers = 5 (tope rígido)")
-    chk(PawchiveTemplate.workers == 5, "workers = 5 por defecto")
+    print("\n[3] Los límites del sitio")
+    # El intervalo viene de su respuesta del 2026-09-05, no de afinar
+    # rendimiento. Los workers bajaron de 5 a 2 esa misma tarde, después de que
+    # la primera descarga real acabara en 774 respuestas 403 seguidas: 5 en
+    # vuelo con archivos de 130 MB daban 10,7 MB/s, y el acuerdo no habla de
+    # caudal. Si alguien sube cualquiera de las tres, que sea contra un test
+    # que falle.
+    chk(PawchiveTemplate.max_workers == 2, "max_workers = 2 (tope rígido)")
+    chk(PawchiveTemplate.workers == 2, "workers = 2 por defecto")
     chk(PawchiveTemplate.min_request_interval == 1.0,
         "min_request_interval = 1 s (1 petición/s)")
     chk(PawchiveTemplate.scan_page_delay == 0.0,
@@ -184,8 +188,8 @@ async def main() -> int:
 
     for pedidos in (1, 3, 8):
         n = site_workers(cls_paw, pedidos)
-        chk(n == 5,
-            f"perfil con workers={pedidos} → {n} simultáneas (el acuerdo son 5)")
+        chk(n == 2,
+            f"perfil con workers={pedidos} → {n} simultáneas (el tope son 2)")
 
     # El tope vale en los dos sentidos: sube el ajuste general que se queda
     # corto y recorta el que se pasa. Y no se le contagia a los demás sitios.

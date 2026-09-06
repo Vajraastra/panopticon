@@ -671,9 +671,14 @@ class DownloadEngine:
                                            f"- se re-resuelve en la proxima sync"),
                                     error_kind=ErrorKind.URL_EXPIRED,
                                 )
+                            # El cuerpo puede ser un mensaje escrito a mano por
+                            # el operador del sitio. Cuesta unos cientos de
+                            # bytes de una respuesta que ya llegó.
+                            detail = await read_short_body(resp)
                             return DownloadResult(
                                 url=url, filename=filename,
-                                error="Acceso denegado (403) - la sesión no da acceso a este archivo",
+                                error=("Acceso denegado (403) - la sesión no da acceso "
+                                       "a este archivo" + detail),
                                 error_kind=ErrorKind.AUTH,
                             )
 
@@ -929,6 +934,28 @@ def _signed_url_expiry(url: str) -> float | None:
         return None
     elapsed = time.time() - expiry
     return elapsed if elapsed > 0 else None
+
+
+async def read_short_body(resp: httpx.Response, limit: int = 300) -> str:
+    """
+    Los primeros bytes del cuerpo de un rechazo, si son texto legible.
+
+    Un 403 puede traer un mensaje escrito por una persona: el de Pawchive eran
+    143 bytes de `text/plain` y el motor los descartaba sin leerlos, tirando
+    justo la información que explicaba el bloqueo. Se devuelve ya formateado
+    para concatenar a un mensaje de error, o cadena vacía.
+
+    No levanta nunca: un cuerpo ilegible no es motivo para perder el error real.
+    """
+    ctype = resp.headers.get("content-type", "")
+    if "text/" not in ctype and "json" not in ctype:
+        return ""
+    try:
+        raw = await resp.aread()
+    except Exception:
+        return ""
+    txt = " ".join(raw[:limit].decode("utf-8", "replace").split())
+    return f" — el servidor dice: «{txt}»" if txt else ""
 
 
 def _is_cloudflare_block(resp: httpx.Response) -> bool:

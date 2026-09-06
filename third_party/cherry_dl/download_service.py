@@ -147,15 +147,45 @@ class ScanProgress:
     queued: int   # nuevos encolados en pending_queue hasta ahora
 
 
+@dataclass(frozen=True)
+class SiteBlocked:
+    """El sitio cerró la puerta: se abandona, no se insiste.
+
+    `detail` es lo que dijera el servidor en el cuerpo del rechazo, cuando
+    dijo algo. Los archivos siguen en la cola: no se pierde ninguno."""
+    site: str
+    streak: int
+    detail: str = ""
+
+
 DownloadEvent = Union[
     Log, WorkersResolved, SourceStarted, Cooldown, BatchInfo,
     WorkerStart, WorkerProgress, WorkerDone, WorkerIdle,
-    Counters, SourceDone, ScanComplete, ScanProgress,
+    Counters, SourceDone, ScanComplete, ScanProgress, SiteBlocked,
 ]
 
 EmitFn = Callable[[DownloadEvent], None]
 # resolve_auth(site) -> True si el usuario se autenticó y se puede reintentar.
 AuthResolver = Callable[[str], Awaitable[bool]]
+
+
+# Rechazos seguidos que se toman por «este sitio nos cerró la puerta».
+#
+# El 2026-09-05 una descarga de Pawchive encadenó 774 respuestas 403 en trece
+# minutos, a una petición por segundo, hasta agotar la cola: el motor trataba
+# cada 403 como problema de ESE archivo y pasaba al siguiente. Ningún archivo se
+# perdió —siguen en la cola— pero el servidor recibió 774 peticiones inútiles
+# después de habernos dicho que no, que es justo la conducta que provocó el
+# bloqueo. Cinco seguidas sin un solo éxito no son cinco archivos con problemas:
+# son el sitio hablando.
+_BLOCK_STREAK = 5
+
+# Qué cuenta como «el servidor nos dice que no». Un 404 no entra (el archivo ya
+# no existe, y eso no dice nada del resto), ni un timeout (puede ser la red de
+# aquí), ni una firma vencida (es legítima y llega en masa tras un scan viejo).
+_REJECTIONS = frozenset({
+    ErrorKind.AUTH, ErrorKind.CLOUDFLARE, ErrorKind.RATE_LIMIT,
+})
 
 
 def site_workers(cls, requested: int) -> int:
@@ -235,6 +265,11 @@ async def run_profile_download(
         or [workers]
     )
 
+    # Sitios que nos cerraron la puerta durante ESTA run. El bucle de fuentes
+    # es secuencial, así que basta un set: en cuanto uno entra, las fuentes
+    # siguientes del mismo sitio se saltan sin gastar una sola petición.
+    blocked_sites: set[str] = set()
+
     async with DownloadEngine(config, workers=pool_max) as engine:
         for pu in profile["urls"]:
             if not pu["enabled"] or not pu["url"]:
@@ -243,6 +278,12 @@ async def run_profile_download(
             template = get_template(pu["url"], engine)
             if not template:
                 emit(Log(f"Sin template para: {pu['url']}", "error"))
+                continue
+
+            if template.name in blocked_sites:
+                emit(Log(
+                    f"⏭ {pu['url']}  [{template.name} bloqueado — se salta]", "warn",
+                ))
                 continue
 
             # Ritmo y pool del SITIO, no del perfil. Se fijan por fuente y no
@@ -442,11 +483,20 @@ async def run_profile_download(
 
             file_queue: asyncio.Queue = asyncio.Queue(maxsize=src_workers * 3)
 
+            # Racha de rechazos y su motivo. Un dict y no un `nonlocal` porque
+            # lo comparten el productor y N workers, todos closures de aquí.
+            reject = {"streak": 0, "detail": ""}
+
+            def _blocked() -> bool:
+                return reject["streak"] >= _BLOCK_STREAK
+
             async def producer() -> None:
                 """Alimenta la cola de workers; ext_filter se aplica aquí para
                 dejar lo no-coincidente en pending_queue para futuras sesiones."""
                 try:
                     for pf in pending_list:
+                        if _blocked():
+                            break
                         if ext_filter and not _passes_ext_filter(
                             pf.get("filename_hint") or "", ext_filter, exclude_mode
                         ):
@@ -487,6 +537,14 @@ async def run_profile_download(
                     if fi is None:
                         emit(WorkerIdle(slot_id))
                         break
+
+                    # Sitio bloqueado: se vacía la cola SIN tocar la red. Salir
+                    # del bucle aquí dejaría al productor colgado en un put()
+                    # sobre una cola llena sin consumidor; drenarla lo deja
+                    # terminar y el cierre sigue siendo el normal. Los archivos
+                    # no se tocan: siguen en pending_queue para la próxima sync.
+                    if _blocked():
+                        continue
 
                     if fi.remote_hash and fi.remote_hash in in_progress_hashes:
                         summ.skipped += 1
@@ -534,14 +592,31 @@ async def run_profile_download(
                         except asyncio.TimeoutError:
                             emit(WorkerDone(slot_id, fi.filename, "⏸"))
                             emit(Log(f"⏸ {fi.filename[:55]}  [timeout — diferido]", "warn"))
-                            deferred.append((fi, artist_info, folder, pace))
+                            deferred.append((fi, artist_info, folder, pace, template.name))
                             summ.deferred += 1
                             _counters()
                             continue
 
                         if not result.ok:
+                            if result.error_kind in _REJECTIONS:
+                                reject["streak"] += 1
+                                reject["detail"] = result.error or ""
+                                if reject["streak"] == _BLOCK_STREAK:
+                                    blocked_sites.add(template.name)
+                                    emit(SiteBlocked(
+                                        template.name, _BLOCK_STREAK,
+                                        reject["detail"],
+                                    ))
+                                    emit(Log(
+                                        f"⛔ {template.name}: {_BLOCK_STREAK} rechazos "
+                                        f"seguidos — se abandona el sitio en esta run. "
+                                        f"Los archivos siguen en la cola.", "error",
+                                    ))
+                                    if reject["detail"]:
+                                        emit(Log(f"   {reject['detail']}", "warn"))
+
                             if result.error_kind in ErrorKind.DEFERRABLE:
-                                deferred.append((fi, artist_info, folder, pace))
+                                deferred.append((fi, artist_info, folder, pace, template.name))
                                 emit(WorkerDone(slot_id, fi.filename, "⏸"))
                                 emit(Log(f"⏸ {fi.filename[:55]}  [{result.error_kind}]", "warn"))
                             elif result.error_kind == ErrorKind.NOT_FOUND:
@@ -568,6 +643,10 @@ async def run_profile_download(
                                 emit(Log(f"✗ {fi.filename[:45]}:  {result.error}", "error"))
                             _counters()
                             continue
+
+                        # La racha cuenta rechazos SEGUIDOS: cualquier archivo
+                        # que sí bajó prueba que la puerta sigue abierta.
+                        reject["streak"] = 0
 
                         if result.file_hash is None:
                             summ.errors += 1
@@ -678,7 +757,11 @@ async def run_profile_download(
         # ── Cola diferida ───────────────────────────────────────────────────
         if deferred:
             emit(Log(f"⏭ Cola diferida: {len(deferred)} archivo(s)…", "warn"))
-            for file_info, a_info, dest_folder, src_pace in deferred:
+            for file_info, a_info, dest_folder, src_pace, src_site in deferred:
+                # Un sitio que cerró la puerta no se reintenta aquí: la cola
+                # diferida es el otro camino por el que se le volvía a pedir.
+                if src_site in blocked_sites:
+                    continue
                 # El ritmo se re-fija por archivo: los diferidos vienen de
                 # fuentes distintas y el pacer que quedó activo es el de la
                 # última, que puede ser más permisivo que el que este archivo

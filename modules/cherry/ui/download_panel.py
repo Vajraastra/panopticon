@@ -159,6 +159,7 @@ class DownloadPanel(QWidget):
         bridge.worker_idle.connect(self._on_worker_idle)
         bridge.counters.connect(self._on_counters)
         bridge.source_done.connect(self._on_source_done)
+        bridge.site_blocked.connect(self._on_site_blocked)
         if queue is not None:
             queue.profile_started.connect(self._on_profile_started)
 
@@ -269,6 +270,21 @@ class DownloadPanel(QWidget):
         self.append_log(self.tr(
             "cherry.dl_source_done", "Source finished · {n} files in catalog"
         ).format(n=file_count), "dim")
+
+    def _on_site_blocked(self, site: str, streak: int, detail: str) -> None:
+        """El sitio cerró la puerta. Se dice fuerte y se dice entero: lo que el
+        servidor haya escrito en el cuerpo del rechazo es la única pista de por
+        qué, y antes se descartaba sin leerlo."""
+        self.set_phase(self.tr(
+            "cherry.dl_site_blocked", "⛔ {site} refused {n} times — abandoned"
+        ).format(site=site, n=streak))
+        self.append_log(self.tr(
+            "cherry.dl_site_blocked_log",
+            "⛔ {site} refused {n} downloads in a row. The site is abandoned for "
+            "this run; the files stay queued for another day."
+        ).format(site=site, n=streak), "error")
+        if detail:
+            self.append_log(detail, "warn")
 
     # ── Enfriamiento ──────────────────────────────────────────────────────
     def _on_cooldown(self, seconds: float) -> None:

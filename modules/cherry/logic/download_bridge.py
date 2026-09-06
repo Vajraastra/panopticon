@@ -60,6 +60,7 @@ class DownloadBridge(QObject):
     worker_idle      = Signal(int)             # slot
     counters         = Signal(int, int, int, int)  # bajados, saltados, err, difer.
     source_done      = Signal(int, int)        # url_id, file_count
+    site_blocked     = Signal(str, int, str)   # sitio, racha, lo que dijo el server
     unknown_event    = Signal(object)          # evento que el upstream añadió
 
     # ── autenticación interactiva ───────────────────────────────────────────
@@ -235,8 +236,8 @@ class DownloadBridge(QObject):
         solo se emiten señales (que Qt entrega en cola al hilo receptor)."""
         from third_party.cherry_dl.download_service import (
             BatchInfo, Cooldown, Counters, Log, ScanComplete, ScanProgress,
-            SourceDone, SourceStarted, WorkerDone, WorkerIdle, WorkerProgress,
-            WorkerStart, WorkersResolved,
+            SiteBlocked, SourceDone, SourceStarted, WorkerDone, WorkerIdle,
+            WorkerProgress, WorkerStart, WorkersResolved,
         )
 
         cls = type(ev)
@@ -273,6 +274,8 @@ class DownloadBridge(QObject):
             self.cooldown.emit(float(ev.seconds))
         elif cls is ScanComplete:
             self.scan_complete.emit(ev.pending)
+        elif cls is SiteBlocked:
+            self.site_blocked.emit(ev.site, ev.streak, ev.detail)
         else:
             # El motor es vendorizado: si upstream añade un evento, se ve aquí
             # en vez de desaparecer en silencio.
