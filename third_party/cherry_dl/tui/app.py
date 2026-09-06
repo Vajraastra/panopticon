@@ -2596,6 +2596,12 @@ class ArtistScreen(Screen):
                                         on_progress=make_cb(slot_id),
                                         extra_headers=fi.extra_headers or None,
                                         total_timeout=300.0,
+                                        transport=getattr(
+                                            template, "download_transport", "http"
+                                        ),
+                                        browser_origin=getattr(
+                                            template, "browser_origin", ""
+                                        ),
                                     ),
                                     timeout=7200.0,
                                 )
@@ -2603,7 +2609,11 @@ class ArtistScreen(Screen):
                                 if slot_id < len(self._worker_rows):
                                     self._worker_rows[slot_id].done(fi.filename, "⏸")
                                 self._log(f"  [yellow]⏸ {fi.filename[:55]}  [timeout total — diferido][/]")
-                                deferred.append((fi, artist_info, folder))
+                                deferred.append((
+                                    fi, artist_info, folder,
+                                    getattr(template, "download_transport", "http"),
+                                    getattr(template, "browser_origin", ""),
+                                ))
                                 deferred_count_ref[0] += 1
                                 self._update_counters(
                                     downloaded_ref[0], skipped_ref[0],
@@ -2613,7 +2623,11 @@ class ArtistScreen(Screen):
 
                             if not result.ok:
                                 if result.error_kind in ErrorKind.DEFERRABLE:
-                                    deferred.append((fi, artist_info, folder))
+                                    deferred.append((
+                                        fi, artist_info, folder,
+                                        getattr(template, "download_transport", "http"),
+                                        getattr(template, "browser_origin", ""),
+                                    ))
                                     if slot_id < len(self._worker_rows):
                                         self._worker_rows[slot_id].done(fi.filename, "⏸")
                                     self._log(
@@ -2779,7 +2793,8 @@ class ArtistScreen(Screen):
                 self._log(f"\n[yellow]⏭ Cola diferida: {len(deferred)} archivo(s)…[/]")
                 _slot0 = self._worker_rows[0] if self._worker_rows else None
                 import hashlib as _hl
-                for file_info, a_info, dest_folder in deferred:
+                for (file_info, a_info, dest_folder, src_transport,
+                     src_browser_origin) in deferred:
                     if await url_exists(dest_folder, file_info.dedup_key):
                         skipped_ref[0] += 1
                         continue
@@ -2799,6 +2814,8 @@ class ArtistScreen(Screen):
                                 filename=_tmp_name,
                                 extra_headers=file_info.extra_headers or None,
                                 total_timeout=300.0,
+                                transport=src_transport,
+                                browser_origin=src_browser_origin,
                             ),
                             timeout=7200.0,
                         )
@@ -3724,6 +3741,8 @@ class BatchScreen(Screen):
                     total_timeout=self.ENGINE_TIMEOUT,
                     on_status=_on_status,
                     max_retries=1,   # falla rápido; el batch reintenta en siguiente iteración
+                    transport=getattr(template, "download_transport", "http"),
+                    browser_origin=getattr(template, "browser_origin", ""),
                 )
             )
             # Habilitar botón saltar

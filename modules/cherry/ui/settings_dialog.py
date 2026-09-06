@@ -1,8 +1,7 @@
 """
 Ajustes de cherry-dl (A5).
 
-Tres valores: dónde se descarga, cuántos workers y el timeout. Es todo lo que
-la GUI clásica dejaba tocar y todo lo que tiene sentido tocar a ojo — los frenos
+Incluye carpeta, workers, timeout y un límite diario global opcional. Los frenos
 de red (`delay_min`, reintentos, `stall_timeout`) y los workers por template
 siguen en el TOML a mano, porque son lo que evita que el motor martillee un
 sitio hasta que lo bloqueen.
@@ -18,8 +17,9 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox,
+    QVBoxLayout, QWidget,
 )
 
 from ..logic import settings as settings_logic
@@ -66,6 +66,35 @@ class SettingsDialog(QDialog):
         self._timeout.setSuffix(" s")
         self._timeout.setValue(current["timeout"])
         form.addRow(self.tr("cherry.settings_timeout", "Timeout"), self._timeout)
+
+        limit_row = QHBoxLayout()
+        self._daily_limit_enabled = QCheckBox(self.tr(
+            "cherry.settings_daily_limit_enabled", "Enable",
+        ))
+        self._daily_limit_enabled.setChecked(current["daily_limit_enabled"])
+        self._daily_limit_gb = QDoubleSpinBox()
+        self._daily_limit_gb.setRange(0.1, 100000.0)
+        self._daily_limit_gb.setDecimals(1)
+        self._daily_limit_gb.setSingleStep(10.0)
+        self._daily_limit_gb.setSuffix(" GB")
+        self._daily_limit_gb.setValue(current["daily_limit_gb"])
+        self._daily_limit_gb.setEnabled(current["daily_limit_enabled"])
+        self._daily_limit_enabled.toggled.connect(self._daily_limit_gb.setEnabled)
+        limit_tip = self.tr(
+            "cherry.settings_daily_limit_tip",
+            "Combined total across all servers. Files already downloading finish, "
+            "so the final total may be slightly higher.",
+        )
+        self._daily_limit_enabled.setToolTip(limit_tip)
+        self._daily_limit_gb.setToolTip(limit_tip)
+        limit_row.addWidget(self._daily_limit_enabled)
+        limit_row.addWidget(self._daily_limit_gb)
+        limit_row.addStretch()
+        limit_holder = QWidget()
+        limit_holder.setLayout(limit_row)
+        form.addRow(self.tr(
+            "cherry.settings_daily_limit", "Daily download limit",
+        ), limit_holder)
 
         lay.addLayout(form)
 
@@ -120,7 +149,13 @@ class SettingsDialog(QDialog):
             ).format(f=folder))
             return
         try:
-            settings_logic.save(folder, self._workers.value(), self._timeout.value())
+            settings_logic.save(
+                folder,
+                self._workers.value(),
+                self._timeout.value(),
+                self._daily_limit_enabled.isChecked(),
+                self._daily_limit_gb.value(),
+            )
         except Exception as exc:
             self._error.setText(self.tr(
                 "cherry.settings_failed", "Could not save: {msg}",

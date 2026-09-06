@@ -276,15 +276,20 @@ async def main() -> int:
     print("\n[11] El caudal, que es lo que el acuerdo no cubría")
     chk(PawchiveTemplate.max_bytes_per_sec == 2 * 1024**2,
         "techo de 2 MB/s agregado")
-    chk(PawchiveTemplate.daily_byte_budget == 25 * 1024**3,
-        "presupuesto de 25 GB por día")
+    chk(PawchiveTemplate.daily_byte_budget == 0,
+        "sin presupuesto diario; mandan caudal, pool y pausa")
+    chk(PawchiveTemplate.download_transport == "browser_image",
+        "los archivos usan el transporte de subrecurso de navegador")
+    chk(PawchiveTemplate.browser_origin == "https://pawchive.pw/",
+        "el navegador nace en la raíz de Pawchive")
     # La aritmética que justifica que existan: cumplir 1 petición/s con los
     # archivos de esa tarde daba diez veces el caudal que ahora se permite.
     medido = 3854 * 2**20 / 360          # 3.854 MB en 6 minutos, medidos en disco
     chk(medido / PawchiveTemplate.max_bytes_per_sec > 5,
         f"lo medido el 2026-09-05 ({medido / 2**20:.1f} MB/s) es >5x el techo")
-    chk(PawchiveTemplate.daily_byte_budget < 86400 * PawchiveTemplate.max_bytes_per_sec,
-        "el tope diario muerde antes que el caudal: 25 GB < los 172 GB de un día")
+    daily_gib = 86400 * PawchiveTemplate.max_bytes_per_sec / 1024**3
+    chk(abs(daily_gib - 168.75) < 0.01,
+        "el techo continuo equivale a 168.75 GiB/día, sin corte artificial")
 
     print("\n[12] El cubo de fichas reparte, no reserva")
     # Mismo reloj falso: se mide el tiempo devengado, no se duerme de verdad.

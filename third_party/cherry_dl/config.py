@@ -6,6 +6,7 @@ Lee/escribe ~/.cherry-dl/config.toml y administra rutas del sistema.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,8 @@ class UserConfig(BaseModel):
     download_dir: str = str(Path.home() / "cherry-dl-collections")
     workers: int = Field(3, ge=1)
     timeout: int = Field(30, ge=5)
+    daily_limit_enabled: bool = False
+    daily_limit_gb: float = Field(100.0, gt=0)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     templates: dict[str, TemplateConfig] = Field(default_factory=dict)
 
@@ -105,6 +108,8 @@ def save_config(config: UserConfig) -> None:
         f"download_dir = '{config.download_dir}'\n",
         f"workers = {config.workers}\n",
         f"timeout = {config.timeout}\n",
+        f"daily_limit_enabled = {str(config.daily_limit_enabled).lower()}\n",
+        f"daily_limit_gb = {config.daily_limit_gb}\n",
         "\n[network]\n",
         f"delay_min = {config.network.delay_min}\n",
         f"delay_max = {config.network.delay_max}\n",
@@ -131,8 +136,23 @@ def set_config_value(key: str, value: str) -> UserConfig:
             config = config.model_copy(update={"workers": int(value)})
         case "timeout":
             config = config.model_copy(update={"timeout": int(value)})
+        case "daily_limit_enabled":
+            enabled = value.strip().casefold()
+            if enabled not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+                raise ValueError("daily_limit_enabled debe ser true o false")
+            config = config.model_copy(update={
+                "daily_limit_enabled": enabled in {"true", "1", "yes", "on"},
+            })
+        case "daily_limit_gb":
+            amount = float(value)
+            if not math.isfinite(amount) or amount <= 0:
+                raise ValueError("daily_limit_gb debe ser mayor que cero")
+            config = config.model_copy(update={"daily_limit_gb": amount})
         case _:
-            raise ValueError(f"Clave desconocida: '{key}'. Válidas: download_dir, workers, timeout")
+            raise ValueError(
+                f"Clave desconocida: '{key}'. Válidas: download_dir, workers, "
+                "timeout, daily_limit_enabled, daily_limit_gb"
+            )
 
     save_config(config)
     return config

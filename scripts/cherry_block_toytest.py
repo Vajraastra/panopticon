@@ -22,6 +22,7 @@ Lo que se verifica aquí, contra un servidor de verdad en 127.0.0.1 que responde
   7. El techo de caudal se cumple de verdad, medido con un cronómetro contra
      bytes que viajan por un socket.
   8. El presupuesto del día para la run al agotarse, sin perder nada.
+  9. El límite diario global es opcional y corta antes de consultar otra vez.
 
 Se llama al `run_profile_download` real, no a una copia de su lógica: el freno
 vive repartido entre el productor, los workers y el bucle de fuentes, y una
@@ -375,7 +376,12 @@ def toy_config(tmp: Path) -> UserConfig:
     )
 
 
-async def correr(tmp: Path, urls: list[dict], nombre: str):
+async def correr(
+    tmp: Path,
+    urls: list[dict],
+    nombre: str,
+    config: UserConfig | None = None,
+):
     """Una run completa; devuelve (summary, eventos)."""
     Handler.hits.clear()
     eventos: list = []
@@ -384,7 +390,7 @@ async def correr(tmp: Path, urls: list[dict], nombre: str):
         workers=2,
         ext_filter=set(),
         emit=eventos.append,
-        config=toy_config(tmp),
+        config=config or toy_config(tmp),
     )
     return summ, eventos
 
@@ -547,8 +553,45 @@ async def run() -> None:
               "una segunda sync el mismo día no gasta ni una petición",
               f"({len(Handler.hits)})")
 
-        # ── [7] Una fuente retirada se conserva, pero no se consulta ────────
-        print("\n[7] Kemono queda fuera del circuito sin borrar su URL")
+        # ── [9] Límite diario global opcional ──────────────────────────────
+        print("\n[9] Límite global de 4 KiB, desactivado por defecto")
+        check(sb.spent_today(sb.GLOBAL_BUDGET_KEY) == 0,
+              "desactivado no cuenta ni limita las descargas anteriores")
+        global_cap = 4 * 1024
+        global_cfg = toy_config(tmp).model_copy(update={
+            "daily_limit_enabled": True,
+            "daily_limit_gb": global_cap / 2**30,
+        })
+        summ, ev = await correr(
+            tmp, [{"id": -1, "url": "toy://si", "site": "toy",
+                   "enabled": 1, "last_synced": None, "file_count": 0}],
+            "caso9_global",
+            global_cfg,
+        )
+        bloqueos = [e for e in ev if isinstance(e, ds.SiteBlocked)]
+        check(bool(bloqueos) and bloqueos[0].site == "global",
+              "el tope combinado emite un bloqueo global")
+        check(bool(bloqueos) and bloqueos[0].streak == 0,
+              "el corte global no se confunde con un rechazo del servidor")
+        check(summ.downloaded < N_ARCHIVOS,
+              f"detiene archivos nuevos ({summ.downloaded} de {N_ARCHIVOS})")
+        check(sb.spent_today(sb.GLOBAL_BUDGET_KEY) >= global_cap,
+              "el total combinado queda registrado",
+              f"({sb.spent_today(sb.GLOBAL_BUDGET_KEY)} B)")
+
+        Handler.hits.clear()
+        summ, ev = await correr(
+            tmp, [{"id": -1, "url": "toy://si", "site": "toy",
+                   "enabled": 1, "last_synced": None, "file_count": 0}],
+            "caso9_global",
+            global_cfg,
+        )
+        check(not Handler.hits,
+              "otra sync no consulta ningún servidor con el tope agotado",
+              f"({len(Handler.hits)})")
+
+        # ── [10] Una fuente retirada se conserva, pero no se consulta ───────
+        print("\n[10] Kemono queda fuera del circuito sin borrar su URL")
         summ, ev = await correr(
             tmp, [{"id": -1,
                    "url": "https://kemono.cr/patreon/user/30500811",

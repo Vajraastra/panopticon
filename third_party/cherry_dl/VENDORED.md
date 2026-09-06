@@ -259,5 +259,38 @@ y aun así bajaba los 20 archivos. Ahora la verdad es `blocked_sites` y la racha
 regalaba un turno y un burst enteros por fuente, y un perfil con 43 de Pawchive son 172 MB fuera
 de todo límite.
 
-Cifras de Pawchive, que **no** son un acuerdo sino nuestra estimación de lo razonable: 2 MB/s y
-25 GB/día. A diferencia de las suyas, estas se pueden mover — hacia abajo sin preguntar.
+Cifra de Pawchive que **no** es un acuerdo sino nuestra estimación de lo razonable: 2 MB/s. Puede
+moverse hacia abajo sin preguntar. El presupuesto diario quedó desactivado después de validar el
+transporte conservador; si el volumen acumulado resulta problemático se reactivará con evidencia.
+
+### `browser_transport.py` — Pawchive descarga como subrecurso real (2026-09-06)
+
+La observación manual y una prueba CDP aislaron la diferencia del 403: no eran cookies. El mismo
+archivo daba 200 cuando nacía como imagen desde `https://pawchive.pw/`, con HTTP/2, `Referer` y
+`Sec-Fetch-Dest: image`; el GET directo de `httpx` no tenía ese contexto. Una tanda deliberada de
+20 imágenes, máximo 2 simultáneas, 2 MB/s y pausa entre parejas dio 20/20 sin rechazo.
+
+Pawchive declara `download_transport = "browser_image"`. El engine abre de forma perezosa Brave
+(Edge/Chrome como respaldo) con un perfil temporal vacío, navega una vez al origen y crea un
+`<img>` por archivo. No copia cookies, no usa stealth, no cambia de IP y no reintenta dentro del
+archivo. La sesión Chromium se comparte entre workers y se cierra con el engine.
+
+El archivo no se recupera con `Network.getResponseBody`: eso lo acumularía entero en RAM. CDP lo
+pausa al recibir cabeceras, `Fetch.takeResponseBodyAsStream` entrega el cuerpo e `IO.read` lo
+escribe al `.tmp` en fragmentos mientras calcula SHA-256. Conserva el semáforo, pacer, cubo de
+bytes, compuerta de 5 s, callbacks de progreso, clasificación de 403/404/429/5xx y limpieza por
+cancelación. `websockets` queda declarado directamente en `requirements.txt`.
+
+Banco propio: `scripts/cherry_browser_toytest.py`, servidor localhost y Chromium real. Comprueba
+dos streams, bytes y hashes exactos, contexto `image`/referer, límite máximo de dos, cuerpo humano
+de un 403, ausencia de retry y limpieza del parcial al cancelar.
+
+### Límite diario global opcional (2026-09-06)
+
+`UserConfig.daily_limit_enabled` está apagado por defecto; `daily_limit_gb` conserva una cifra
+configurable (100 GB inicialmente). Ambas GUIs exponen casilla y cantidad, y la CLI comparte el
+mismo TOML. El contador `__global__` de `site_budget.json` suma bytes entre todos los servidores y
+perfiles. Cuando se agota, el servicio no inicia otro archivo ni escanea la siguiente fuente; una
+sync posterior tampoco toca la red hasta el siguiente día. Los archivos ya en curso terminan y
+pueden producir un rebase pequeño. Los topes internos por sitio siguen disponibles, pero Pawchive
+declara cero: el único tope diario que el usuario puede activar es el global.

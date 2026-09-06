@@ -425,12 +425,20 @@ def test_a5() -> None:
 
     # ── ajustes ────────────────────────────────────────────────────────────
     cfg = settings.load()
-    check("los ajustes traen las tres claves",
-          set(cfg) == {"download_dir", "workers", "timeout"}, f"({sorted(cfg)})")
+    check("los ajustes traen las cinco claves",
+          set(cfg) == {
+              "download_dir", "workers", "timeout",
+              "daily_limit_enabled", "daily_limit_gb",
+          }, f"({sorted(cfg)})")
     check("workers es un entero >= 1",
           isinstance(cfg["workers"], int) and cfg["workers"] >= 1, f"({cfg['workers']})")
     check("timeout es un entero >= 5",
           isinstance(cfg["timeout"], int) and cfg["timeout"] >= 5, f"({cfg['timeout']})")
+    check("el límite diario es opcional y tiene una cantidad válida",
+          isinstance(cfg["daily_limit_enabled"], bool)
+          and isinstance(cfg["daily_limit_gb"], float)
+          and cfg["daily_limit_gb"] > 0,
+          f"({cfg['daily_limit_enabled']=}, {cfg['daily_limit_gb']=})")
     check("la carpeta de descargas coincide con la del motor",
           settings.download_root() == Path(cfg["download_dir"]),
           f"({settings.download_root()} vs {cfg['download_dir']})")

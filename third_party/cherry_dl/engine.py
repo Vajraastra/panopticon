@@ -20,6 +20,7 @@ import re
 import time
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Callable
+from urllib.parse import urlsplit
 
 import httpx
 from rich.progress import (
@@ -309,6 +310,8 @@ class DownloadEngine:
         self._pacer: _Pacer | None = None
         self._bucket: _ByteBucket | None = None
         self._completion_gate: _CompletionGate | None = None
+        self._browser_transport = None
+        self._browser_key: tuple[str, str] | None = None
 
     async def __aenter__(self) -> "DownloadEngine":
         # http2=False a propósito: con HTTP/2 todas las descargas se multiplexan
@@ -343,6 +346,10 @@ class DownloadEngine:
         return self
 
     async def __aexit__(self, *_) -> None:
+        if self._browser_transport is not None:
+            await self._browser_transport.close()
+            self._browser_transport = None
+            self._browser_key = None
         if self._client:
             # Persistir cookies DDG actualizadas antes de cerrar
             self._persist_ddg_cookies()
@@ -464,6 +471,8 @@ class DownloadEngine:
         total_timeout: float | None = None,
         on_status: Callable[[str], None] | None = None,
         max_retries: int | None = None,
+        transport: str = "http",
+        browser_origin: str | None = None,
     ) -> DownloadResult:
         """
         Descarga un archivo al directorio destino.
@@ -482,18 +491,133 @@ class DownloadEngine:
         max_retries:  sobreescribe config.network.retries_file para esta llamada.
                       Útil en batch (max_retries=1) para falla rápida —
                       el loop de iteraciones del batch es el mecanismo de reintento.
+        transport:    ``http`` por defecto; ``browser_image`` carga el archivo
+                      como subrecurso desde ``browser_origin`` y lo extrae por CDP.
         """
         async with self._semaphore:
-            result = await self._do_download(
-                url, dest_dir, filename, progress, task_id,
-                on_progress, extra_headers, total_timeout, on_status, max_retries,
-            )
+            if transport == "browser_image":
+                result = await self._do_browser_download(
+                    url, dest_dir, filename, browser_origin or "",
+                    progress, task_id, on_progress, on_status,
+                )
+            else:
+                result = await self._do_download(
+                    url, dest_dir, filename, progress, task_id,
+                    on_progress, extra_headers, total_timeout, on_status, max_retries,
+                )
             # Una respuesta fallida también termina un intento de archivo. Si
             # el sitio acaba de decir 403/429, arrancar el siguiente al ritmo
             # normal contradice precisamente la pausa de cortesía.
             if self._completion_gate is not None:
                 self._completion_gate.completed()
             return result
+
+    async def _do_browser_download(
+        self,
+        url: str,
+        dest_dir: Path,
+        filename: str,
+        browser_origin: str,
+        progress: Progress | None,
+        task_id: TaskID | None,
+        on_progress: Callable[[int, int], None] | None,
+        on_status: Callable[[str], None] | None,
+    ) -> DownloadResult:
+        """Descarga una vez mediante Chromium; no reintenta dentro del archivo."""
+        if not browser_origin:
+            return DownloadResult(
+                url=url, filename=filename,
+                error="El transporte de navegador no tiene página de origen",
+                error_kind=ErrorKind.UNKNOWN,
+            )
+        try:
+            from .browser_transport import BrowserImageTransport
+
+            browser_key = (browser_origin, urlsplit(url).netloc)
+            if (self._browser_transport is None
+                    or self._browser_key != browser_key):
+                if self._browser_transport is not None:
+                    await self._browser_transport.close()
+                self._browser_transport = BrowserImageTransport(browser_origin, url)
+                self._browser_key = browser_key
+
+            rate = self._bucket.rate if self._bucket is not None else 0.0
+            if on_status:
+                on_status("◉ preparando navegador…")
+            await self._browser_transport.start(rate)
+            await self._wait_browser_turn(on_status)
+
+            def report(done: int, total: int) -> None:
+                if progress and task_id is not None:
+                    progress.update(task_id, completed=done, total=total or None)
+                if on_progress:
+                    on_progress(done, total)
+
+            outcome = await self._browser_transport.download(
+                url, dest_dir, filename,
+                take_bytes=(self._bucket.take if self._bucket is not None else None),
+                on_progress=report,
+                on_status=on_status,
+                stall_timeout=self.config.network.stall_timeout,
+            )
+        except Exception as exc:
+            if self._browser_transport is not None:
+                await self._browser_transport.close()
+                self._browser_transport = None
+                self._browser_key = None
+            return DownloadResult(
+                url=url, filename=filename,
+                error=f"No se pudo usar el navegador: {type(exc).__name__}: {exc}",
+                error_kind=ErrorKind.NETWORK,
+            )
+
+        if outcome.error is None:
+            return DownloadResult(
+                url=url, filename=filename, dest=outcome.dest,
+                file_hash=outcome.file_hash, file_size=outcome.file_size,
+            )
+
+        code = outcome.status
+        if code == 404:
+            kind = ErrorKind.NOT_FOUND
+        elif code in (401, 403):
+            kind = ErrorKind.AUTH
+        elif code == 429:
+            kind = ErrorKind.RATE_LIMIT
+        elif code is not None and code >= 500:
+            kind = ErrorKind.SERVER
+        elif "recibir datos" in outcome.error or "cabeceras" in outcome.error:
+            kind = ErrorKind.TIMEOUT
+        else:
+            kind = ErrorKind.NETWORK
+        return DownloadResult(
+            url=url, filename=filename,
+            error=outcome.error, error_kind=kind,
+        )
+
+    async def _wait_browser_turn(
+        self, on_status: Callable[[str], None] | None,
+    ) -> None:
+        """Aplica la misma compuerta global y pacer antes de crear el ``<img>``."""
+        while True:
+            if self._completion_gate is not None:
+                if on_status and not self._completion_gate.ready():
+                    on_status(
+                        f"⏳ pausa entre archivos "
+                        f"({self._completion_gate.interval:.0f}s)…"
+                    )
+                await self._completion_gate.wait()
+            if self._pacer is not None:
+                if on_status:
+                    on_status(f"⏳ turno ({self._pacer.interval:.0f}s/petición)…")
+                await self._pacer.wait()
+            else:
+                await asyncio.sleep(random.uniform(
+                    self.config.network.delay_min,
+                    self.config.network.delay_max,
+                ))
+            if self._completion_gate is None or self._completion_gate.ready():
+                return
 
     async def run_queue(
         self,

@@ -1,5 +1,5 @@
 """
-Ajustes de cherry-dl: `download_dir`, workers y timeout (A5).
+Ajustes editables de cherry-dl (A5).
 
 Viven en `~/.cherry-dl/config.toml`, no en el `config.json` de Panopticon: son
 del motor, los lee él en cada descarga y los comparte con el standalone. Por eso
@@ -40,11 +40,19 @@ def load() -> dict:
         "download_dir": str(cfg.download_dir),
         "workers": int(cfg.workers),
         "timeout": int(cfg.timeout),
+        "daily_limit_enabled": bool(cfg.daily_limit_enabled),
+        "daily_limit_gb": float(cfg.daily_limit_gb),
     }
 
 
-def save(download_dir: str, workers: int, timeout: int) -> dict:
-    """Guarda los tres ajustes conservando el resto del TOML.
+def save(
+    download_dir: str,
+    workers: int,
+    timeout: int,
+    daily_limit_enabled: bool = False,
+    daily_limit_gb: float = 100.0,
+) -> dict:
+    """Guarda los ajustes conservando el resto del TOML.
 
     Se parte de `load_config()` y se modifica por encima con `model_copy`: así
     `network` y los `templates` que el usuario tenga puestos sobreviven a un
@@ -52,10 +60,14 @@ def save(download_dir: str, workers: int, timeout: int) -> dict:
     """
     from third_party.cherry_dl.config import load_config, save_config
 
+    if float(daily_limit_gb) <= 0:
+        raise ValueError("El límite diario debe ser mayor que cero")
     cfg = load_config().model_copy(update={
         "download_dir": str(download_dir).strip(),
         "workers": int(workers),
         "timeout": int(timeout),
+        "daily_limit_enabled": bool(daily_limit_enabled),
+        "daily_limit_gb": float(daily_limit_gb),
     })
     save_config(cfg)
     log.info("cherry: ajustes guardados en %s", config_file())

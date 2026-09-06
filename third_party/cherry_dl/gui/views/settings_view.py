@@ -18,6 +18,7 @@ from typing import Callable
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -120,6 +121,26 @@ class SettingsView(QWidget):
         self._timeout.setFixedWidth(_SPIN_W)
         self._timeout.setToolTip("Tiempo máximo de espera por request HTTP.")
         form_gen.addRow("Timeout HTTP:", self._timeout)
+
+        limit_row = QHBoxLayout()
+        self._daily_limit_enabled = QCheckBox("Activar")
+        self._daily_limit_gb = QDoubleSpinBox()
+        self._daily_limit_gb.setRange(0.1, 100000.0)
+        self._daily_limit_gb.setDecimals(1)
+        self._daily_limit_gb.setSingleStep(10.0)
+        self._daily_limit_gb.setSuffix(" GB/día")
+        self._daily_limit_gb.setFixedWidth(_SPIN_W)
+        self._daily_limit_enabled.toggled.connect(self._daily_limit_gb.setEnabled)
+        limit_tip = (
+            "Total combinado entre todos los servidores. Los archivos que ya "
+            "estén descargándose terminan, así que puede rebasarse ligeramente."
+        )
+        self._daily_limit_enabled.setToolTip(limit_tip)
+        self._daily_limit_gb.setToolTip(limit_tip)
+        limit_row.addWidget(self._daily_limit_enabled)
+        limit_row.addWidget(self._daily_limit_gb)
+        limit_row.addStretch()
+        form_gen.addRow("Límite diario global:", limit_row)
 
         root.addLayout(form_gen)
 
@@ -291,6 +312,9 @@ class SettingsView(QWidget):
         self._download_dir.setText(cfg.download_dir)
         self._workers.setValue(cfg.workers)
         self._timeout.setValue(cfg.timeout)
+        self._daily_limit_enabled.setChecked(cfg.daily_limit_enabled)
+        self._daily_limit_gb.setValue(cfg.daily_limit_gb)
+        self._daily_limit_gb.setEnabled(cfg.daily_limit_enabled)
         self._delay_min.setValue(cfg.network.delay_min)
         self._delay_max.setValue(cfg.network.delay_max)
         self._retries_api.setValue(cfg.network.retries_api)
@@ -354,6 +378,9 @@ class SettingsView(QWidget):
         self._download_dir.setText(defaults.download_dir)
         self._workers.setValue(defaults.workers)
         self._timeout.setValue(defaults.timeout)
+        self._daily_limit_enabled.setChecked(defaults.daily_limit_enabled)
+        self._daily_limit_gb.setValue(defaults.daily_limit_gb)
+        self._daily_limit_gb.setEnabled(defaults.daily_limit_enabled)
         self._delay_min.setValue(defaults.network.delay_min)
         self._delay_max.setValue(defaults.network.delay_max)
         self._retries_api.setValue(defaults.network.retries_api)
@@ -378,6 +405,8 @@ class SettingsView(QWidget):
                 "download_dir": self._download_dir.text().strip(),
                 "workers":      self._workers.value(),
                 "timeout":      self._timeout.value(),
+                "daily_limit_enabled": self._daily_limit_enabled.isChecked(),
+                "daily_limit_gb": self._daily_limit_gb.value(),
                 "network": NetworkConfig(
                     delay_min=delay_min,
                     delay_max=delay_max,

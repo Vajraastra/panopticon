@@ -59,9 +59,20 @@ async def _download(url: str, workers: int | None, prescan: str | None = None) -
     from .catalog import init_catalog, hash_exists, add_file, next_counter
     from .downloads import build_filename
     from .index import init_index, get_or_create_site, get_or_create_artist
+    from .site_budget import GLOBAL_BUDGET_KEY, add as budget_add, remaining as budget_remaining
 
     config = load_config()
     ensure_dirs(config)
+    global_budget = (
+        int(config.daily_limit_gb * 2**30)
+        if config.daily_limit_enabled else 0
+    )
+    if budget_remaining(GLOBAL_BUDGET_KEY, global_budget) == 0:
+        console.print(
+            f"[yellow]Límite diario global agotado "
+            f"({config.daily_limit_gb:g} GB). Sigue mañana.[/yellow]"
+        )
+        raise typer.Exit(0)
 
     # Detectar template
     engine_workers = workers or config.workers
@@ -145,12 +156,19 @@ async def _download(url: str, workers: int | None, prescan: str | None = None) -
                     dest_dir=artist_dir,
                     filename=final_name,
                     progress=progress,
+                    transport=getattr(template, "download_transport", "http"),
+                    browser_origin=getattr(template, "browser_origin", ""),
                 )
 
                 if not result.ok:
                     errors += 1
                     console.print(f"[red]  ✗ {file_info.filename}:[/red] {result.error}")
                     continue
+
+                global_spent = (
+                    budget_add(GLOBAL_BUDGET_KEY, result.file_size)
+                    if global_budget else 0
+                )
 
                 # Cuando ok=True el engine garantiza file_hash no-None
                 assert result.file_hash is not None
@@ -174,6 +192,13 @@ async def _download(url: str, workers: int | None, prescan: str | None = None) -
                     downloaded += 1
 
                 progress.advance(overall)
+                if global_budget and global_spent >= global_budget:
+                    console.print(
+                        f"[yellow]  Límite diario global alcanzado "
+                        f"({config.daily_limit_gb:g} GB); se detienen archivos nuevos."
+                        "[/yellow]"
+                    )
+                    break
 
     # Resumen final
     console.print()
@@ -345,6 +370,8 @@ def config_show():
     table.add_row("download_dir", str(config.download_dir))
     table.add_row("workers", str(config.workers))
     table.add_row("timeout", f"{config.timeout}s")
+    table.add_row("daily_limit_enabled", str(config.daily_limit_enabled).lower())
+    table.add_row("daily_limit_gb", f"{config.daily_limit_gb:g} GB")
     table.add_row("delay_min", f"{config.network.delay_min}s")
     table.add_row("delay_max", f"{config.network.delay_max}s")
     table.add_row("retries_api", str(config.network.retries_api))
@@ -356,7 +383,13 @@ def config_show():
 
 @config_app.command("set")
 def config_set(
-    key: str = typer.Argument(..., help="Clave a modificar (download_dir, workers, timeout)"),
+    key: str = typer.Argument(
+        ...,
+        help=(
+            "Clave a modificar (download_dir, workers, timeout, "
+            "daily_limit_enabled, daily_limit_gb)"
+        ),
+    ),
     value: str = typer.Argument(..., help="Nuevo valor"),
 ):
     """Modifica una clave de configuración."""

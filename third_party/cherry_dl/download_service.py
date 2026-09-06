@@ -54,7 +54,12 @@ from .index import (
     update_profile_last_checked,
     update_profile_url_sync,
 )
-from .site_budget import add as budget_add, remaining as budget_remaining
+from .site_budget import (
+    GLOBAL_BUDGET_KEY,
+    add as budget_add,
+    remaining as budget_remaining,
+    spent_today as budget_spent_today,
+)
 from .templates._registry import find_template, get_template
 from .templates.base import FileInfo, parse_date_utc
 from .auth.patreon import NeedsManualAuth
@@ -278,6 +283,37 @@ async def run_profile_download(
     config = config or load_config()
     folder = Path(profile["folder_path"])
 
+    global_budget = (
+        int(config.daily_limit_gb * 2**30)
+        if config.daily_limit_enabled else 0
+    )
+    global_state = {
+        "reached": budget_remaining(GLOBAL_BUDGET_KEY, global_budget) == 0,
+        "notified": False,
+    }
+
+    def _record_global_download(nbytes: int) -> None:
+        """Cuenta bytes combinados y cierra la llave al llegar al tope."""
+        if not global_budget or nbytes <= 0:
+            return
+        spent = budget_add(GLOBAL_BUDGET_KEY, nbytes)
+        if spent < global_budget:
+            return
+        global_state["reached"] = True
+        if global_state["notified"]:
+            return
+        global_state["notified"] = True
+        detail = (
+            f"límite diario global agotado ({config.daily_limit_gb:g} GB)"
+        )
+        emit(SiteBlocked("global", 0, detail))
+        emit(Log(
+            f"⛔ Límite diario global: {spent / 2**30:.1f} GB hoy, "
+            f"tope {config.daily_limit_gb:g} GB. Sigue mañana; los archivos "
+            "que ya estaban en curso terminarán.",
+            "warn",
+        ))
+
     # FileInfo, ArtistInfo, carpeta, ritmo, caudal, pausa post-descarga, sitio.
     deferred: list[tuple] = []
 
@@ -307,6 +343,23 @@ async def run_profile_download(
         for pu in sources:
             if not pu["enabled"] or not pu["url"]:
                 continue
+
+            if global_state["reached"]:
+                if not global_state["notified"]:
+                    global_state["notified"] = True
+                    spent = budget_spent_today(GLOBAL_BUDGET_KEY)
+                    detail = (
+                        f"límite diario global agotado "
+                        f"({config.daily_limit_gb:g} GB)"
+                    )
+                    emit(SiteBlocked("global", 0, detail))
+                    emit(Log(
+                        f"⛔ Límite diario global agotado: "
+                        f"{spent / 2**30:.1f} de {config.daily_limit_gb:g} GB "
+                        "hoy. No se consultarán servidores hasta mañana.",
+                        "warn",
+                    ))
+                break
 
             template = get_template(pu["url"], engine)
             if not template:
@@ -376,6 +429,9 @@ async def run_profile_download(
                     f"⏳ {template.name}: {completion_gap:.0f}s entre terminar "
                     f"un archivo y empezar el siguiente", "dim",
                 ))
+
+            download_transport = getattr(template, "download_transport", "http")
+            browser_origin = getattr(template, "browser_origin", "")
 
             # ── Resolver artista (puede disparar lazy auth / modal) ─────────
             try:
@@ -570,7 +626,8 @@ async def run_profile_download(
                 # `blocked_sites` manda. Si el bloqueo viviera únicamente en la
                 # ventana, otro worker podría alterarla con un resultado que ya
                 # venía en vuelo y la run seguiría como si nada.
-                return (template.name in blocked_sites
+                return (global_state["reached"]
+                        or template.name in blocked_sites
                         or sum(reject["recent"]) >= _BLOCK_STREAK)
 
             async def producer() -> None:
@@ -669,6 +726,8 @@ async def run_profile_download(
                                     on_progress=make_cb(slot_id),
                                     extra_headers=fi.extra_headers or None,
                                     total_timeout=300.0,
+                                    transport=download_transport,
+                                    browser_origin=browser_origin,
                                 ),
                                 timeout=7200.0,
                             )
@@ -678,6 +737,7 @@ async def run_profile_download(
                             deferred.append((
                                 fi, artist_info, folder, pace, rate,
                                 completion_gap, template.name,
+                                download_transport, browser_origin,
                             ))
                             summ.deferred += 1
                             _counters()
@@ -718,6 +778,7 @@ async def run_profile_download(
                                 deferred.append((
                                     fi, artist_info, folder, pace, rate,
                                     completion_gap, template.name,
+                                    download_transport, browser_origin,
                                 ))
                                 emit(WorkerDone(slot_id, fi.filename, "⏸"))
                                 emit(Log(f"⏸ {fi.filename[:55]}  [{result.error_kind}]", "warn"))
@@ -754,6 +815,7 @@ async def run_profile_download(
                         # Lo traído se anota aunque el archivo acabe siendo un
                         # duplicado que se borra: el ancho de banda del sitio ya
                         # se gastó, que es lo que el presupuesto cuenta.
+                        _record_global_download(result.file_size)
                         if day_budget and result.file_size:
                             gastado = budget_add(template.name, result.file_size)
                             if gastado >= day_budget and template.name not in blocked_sites:
@@ -875,12 +937,15 @@ async def run_profile_download(
             new_count = (pu["file_count"] or 0) + source_dl
             await update_profile_url_sync(INDEX_DB, pu["id"], file_count=new_count)
             emit(SourceDone(pu["id"], new_count))
+            if global_state["reached"]:
+                break
 
         # ── Cola diferida ───────────────────────────────────────────────────
-        if deferred:
+        if deferred and not global_state["reached"]:
             emit(Log(f"⏭ Cola diferida: {len(deferred)} archivo(s)…", "warn"))
             for (file_info, a_info, dest_folder, src_pace, src_rate,
-                 src_completion_gap, src_site) in deferred:
+                 src_completion_gap, src_site, src_transport,
+                 src_browser_origin) in deferred:
                 # Un sitio que cerró la puerta no se reintenta aquí: la cola
                 # diferida es el otro camino por el que se le volvía a pedir.
                 if src_site in blocked_sites:
@@ -904,6 +969,8 @@ async def run_profile_download(
                             url=file_info.url, dest_dir=dest_folder, filename=tmp_name,
                             extra_headers=file_info.extra_headers or None,
                             total_timeout=300.0,
+                            transport=src_transport,
+                            browser_origin=src_browser_origin,
                         ),
                         timeout=7200.0,
                     )
@@ -914,6 +981,7 @@ async def run_profile_download(
                     _counters()
                     continue
                 if result.ok and result.file_hash:
+                    _record_global_download(result.file_size)
                     counter = await next_counter(dest_folder)
                     final_name = build_filename(a_info.name, counter, file_info.filename)
                     if result.dest and result.dest.exists():
@@ -930,6 +998,9 @@ async def run_profile_download(
                     summ.downloaded += 1
                     emit(WorkerDone(0, final_name, "✓"))
                     emit(Log(f"✓ {final_name} (reintento)", "ok"))
+                    if global_state["reached"]:
+                        _counters()
+                        break
                 else:
                     if result.dest and result.dest.exists():
                         result.dest.unlink(missing_ok=True)

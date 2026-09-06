@@ -1,5 +1,5 @@
 """
-Presupuesto diario de bytes por sitio.
+Presupuesto diario de bytes por sitio y total global.
 
 Por qué existe
 --------------
@@ -18,9 +18,9 @@ archivo no corrompe nada — el peor caso es un día con el contador a cero.
 
 Forma del archivo, deliberadamente aburrida::
 
-    {"pawchive": {"day": "2026-09-05", "bytes": 4038201344}}
+    {"__global__": {"day": "2026-09-05", "bytes": 4038201344}}
 
-Un solo día por sitio: al cambiar la fecha, el contador se reemplaza. No se
+Un solo día por clave: al cambiar la fecha, el contador se reemplaza. No se
 guarda histórico porque nadie lo consultaría, y un archivo que solo crece
 acabaría siendo un problema propio.
 
@@ -41,6 +41,7 @@ from pathlib import Path
 from .config import CHERRY_DIR
 
 BUDGET_FILE = CHERRY_DIR / "site_budget.json"
+GLOBAL_BUDGET_KEY = "__global__"
 
 
 def _load(path: Path) -> dict:

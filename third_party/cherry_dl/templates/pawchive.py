@@ -68,14 +68,14 @@ bytes:
   - `max_bytes_per_sec = 2 MB/s` agregado. Las 3.854 MB de esa tarde habrían
     tardado 32 minutos en vez de 6, y el día entero no pasaría de 172 GB en vez
     de proyectar casi un tera.
-  - `daily_byte_budget = 25 GB`. El caudal acota el pico; esto acota el total,
-    que es la unidad en la que se quejó él («TBs a day»). Al agotarse, la sync
-    de este sitio para y sigue al día siguiente; lo que falte se queda en la
-    cola. Se lleva la cuenta en `~/.cherry-dl/site_budget.json`.
+  - Sin presupuesto diario. David decidió retirarlo después de comprobar que
+    20 archivos cargaban sin rechazo con 2 workers, 2 MB/s y pausa entre tandas.
+    Si una prueba viva muestra que el volumen acumulado también molesta, se
+    vuelve a activar con una cifra basada en evidencia.
 
-Ninguna de las dos es un acuerdo: son nuestra estimación de lo que es
-razonable, a la espera de que él diga una cifra. Por eso, a diferencia de las
-suyas, estas SÍ se pueden mover — hacia abajo sin preguntar.
+El techo de caudal es nuestra estimación de lo razonable, no una cifra dada por
+el administrador. Puede moverse hacia abajo sin preguntar; subirlo requiere una
+nueva prueba deliberada.
 
 ## `preview_only`
 
@@ -129,7 +129,9 @@ class PawchiveTemplate(SiteTemplate):
     min_request_interval = 1.0   # 1 petición/s AGREGADA — ver cabecera
     post_download_delay = 5.0    # 5 s desde el último archivo terminado
     max_bytes_per_sec = 2 * 1024**2      # 2 MB/s entre todas las descargas
-    daily_byte_budget = 25 * 1024**3     # 25 GB por día natural
+    daily_byte_budget = 0                 # sin tope diario; conservan caudal/pausa
+    download_transport = "browser_image"
+    browser_origin = _BASE + "/"
     provides_file_hashes = True  # el hash SHA-256 viene en el path
     scan_page_delay = 0.0        # lo espacia el pacer; sumar aquí sería doble
     cooldown_threshold = 200     # el pacer ya evita el burst que esto enfriaba

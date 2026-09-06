@@ -139,6 +139,11 @@ class SiteTemplate(ABC):
     # (`~/.cherry-dl/site_budget.json`), fuera de las bases del motor.
     daily_byte_budget: int = 0
 
+    # Transporte de archivos. ``http`` usa el cliente normal; ``browser_image``
+    # crea un subrecurso desde ``browser_origin`` y extrae su respuesta por CDP.
+    download_transport: str = "http"
+    browser_origin: str = ""
+
     def __init__(self, engine: "DownloadEngine") -> None:
         self.engine = engine
 
