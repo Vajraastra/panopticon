@@ -126,6 +126,7 @@ class PawchiveTemplate(SiteTemplate):
     workers = 2                  # ver «Lo que 5 workers midió en vivo»
     max_workers = 2              # tope rígido: el perfil no puede subirlo
     min_request_interval = 1.0   # 1 petición/s AGREGADA — ver cabecera
+    post_download_delay = 5.0    # 5 s desde el último archivo terminado
     max_bytes_per_sec = 2 * 1024**2      # 2 MB/s entre todas las descargas
     daily_byte_budget = 25 * 1024**3     # 25 GB por día natural
     provides_file_hashes = True  # el hash SHA-256 viene en el path

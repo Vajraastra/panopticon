@@ -37,7 +37,7 @@ for _s in (sys.stdout, sys.stderr):
 
 from cherry_dl import site_budget as sb
 from cherry_dl.download_service import site_workers                       # noqa: E402
-from cherry_dl.engine import _ByteBucket, _Pacer                                       # noqa: E402
+from cherry_dl.engine import _ByteBucket, _CompletionGate, _Pacer        # noqa: E402
 from cherry_dl.templates._registry import find_template, list_templates   # noqa: E402
 from cherry_dl.templates.kemono import KemonoTemplate                     # noqa: E402
 from cherry_dl.templates.patreon import PatreonTemplate                   # noqa: E402
@@ -142,6 +142,8 @@ async def main() -> int:
     chk(PawchiveTemplate.workers == 2, "workers = 2 por defecto")
     chk(PawchiveTemplate.min_request_interval == 1.0,
         "min_request_interval = 1 s (1 petición/s)")
+    chk(PawchiveTemplate.post_download_delay == 5.0,
+        "espera 5 s desde el final de un archivo antes de iniciar otro")
     chk(PawchiveTemplate.scan_page_delay == 0.0,
         "scan_page_delay = 0: lo espacia el pacer, no un sleep propio")
     chk(PawchiveTemplate.provides_file_hashes is True,
@@ -231,7 +233,23 @@ async def main() -> int:
     chk(turnos[-1] - turnos[0] >= 4.0,
         "5 peticiones ocupan >= 4 s: no salen en ráfaga")
 
-    print("\n[9] El caudal, que es lo que el acuerdo no cubría")
+    print("\n[9] La pausa entre archivos pequeños")
+    reloj["t"] = 10.0
+    loop.time = lambda: reloj["t"]                      # type: ignore[method-assign]
+    asyncio.sleep = _sleep_falso                        # type: ignore[assignment]
+    try:
+        gate = _CompletionGate(5.0)
+        gate.completed()
+        await gate.wait()
+        apertura = reloj["t"]
+    finally:
+        asyncio.sleep = real_sleep                      # type: ignore[assignment]
+        loop.time = real_time                           # type: ignore[method-assign]
+
+    chk(apertura == 15.0, f"la compuerta abre 5 s después ({apertura:.1f}s)")
+    chk(gate.ready(), "al abrir, el siguiente archivo ya puede pedir turno")
+
+    print("\n[10] El caudal, que es lo que el acuerdo no cubría")
     chk(PawchiveTemplate.max_bytes_per_sec == 2 * 1024**2,
         "techo de 2 MB/s agregado")
     chk(PawchiveTemplate.daily_byte_budget == 25 * 1024**3,
@@ -244,7 +262,7 @@ async def main() -> int:
     chk(PawchiveTemplate.daily_byte_budget < 86400 * PawchiveTemplate.max_bytes_per_sec,
         "el tope diario muerde antes que el caudal: 25 GB < los 172 GB de un día")
 
-    print("\n[10] El cubo de fichas reparte, no reserva")
+    print("\n[11] El cubo de fichas reparte, no reserva")
     # Mismo reloj falso: se mide el tiempo devengado, no se duerme de verdad.
     reloj["t"] = 0.0
     loop.time = lambda: reloj["t"]                      # type: ignore[method-assign]
@@ -265,7 +283,7 @@ async def main() -> int:
     chk(abs(tras_3mb - 3.0) < 0.01,
         f"3 MB más cuestan 3 s a 1 MB/s ({tras_3mb:.2f}s)")
 
-    print("\n[11] El presupuesto diario cuenta por día y por sitio")
+    print("\n[12] El presupuesto diario cuenta por día y por sitio")
     tmp = Path(tempfile.mkdtemp(prefix="paw_budget_")) / "b.json"
     try:
         chk(sb.spent_today("pawchive", tmp) == 0, "empieza en cero")

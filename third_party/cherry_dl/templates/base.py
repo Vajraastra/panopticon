@@ -105,6 +105,12 @@ class SiteTemplate(ABC):
     # multiplica. Se pone cuando el operador del sitio pide un ritmo concreto.
     min_request_interval: float = 0.0
 
+    # Pausa mínima desde que termina una descarga hasta que puede empezar
+    # otro archivo, compartida por todos los workers. 0.0 = sin pausa extra.
+    # Es distinta del ritmo de peticiones: evita la rotación rápida de muchos
+    # archivos pequeños aunque el caudal y la concurrencia estén limitados.
+    post_download_delay: float = 0.0
+
     # Techo de bytes por segundo, AGREGADO entre todos los workers.
     # 0.0 = sin techo.
     #

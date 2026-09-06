@@ -195,6 +195,42 @@ class _Pacer:
             await asyncio.sleep(remaining)
 
 
+class _CompletionGate:
+    """Pausa global entre terminar un archivo y empezar el siguiente.
+
+    Es compartida por todos los workers. El bucle de ``wait`` vuelve a mirar
+    el reloj al despertar porque otro worker puede completar un archivo
+    mientras este esperaba y, por tanto, desplazar de nuevo la apertura.
+    """
+
+    __slots__ = ("interval", "_lock", "_last_completed")
+
+    def __init__(self, interval: float) -> None:
+        self.interval = interval
+        self._lock = asyncio.Lock()
+        self._last_completed: float | None = None
+
+    def completed(self) -> None:
+        self._last_completed = asyncio.get_running_loop().time()
+
+    def ready(self) -> bool:
+        if self._last_completed is None:
+            return True
+        return (asyncio.get_running_loop().time() - self._last_completed
+                >= self.interval)
+
+    async def wait(self) -> None:
+        async with self._lock:
+            while self._last_completed is not None:
+                remaining = (
+                    self._last_completed + self.interval
+                    - asyncio.get_running_loop().time()
+                )
+                if remaining <= 0:
+                    return
+                await asyncio.sleep(remaining)
+
+
 class _ByteBucket:
     """
     Techo de bytes por segundo, COMPARTIDO por todos los workers.
@@ -272,6 +308,7 @@ class DownloadEngine:
         # Ritmo pedido por el sitio activo; None = delay global del config.
         self._pacer: _Pacer | None = None
         self._bucket: _ByteBucket | None = None
+        self._completion_gate: _CompletionGate | None = None
 
     async def __aenter__(self) -> "DownloadEngine":
         # http2=False a propósito: con HTTP/2 todas las descargas se multiplexan
@@ -386,6 +423,17 @@ class DownloadEngine:
         # que rehacerlo en cada fuente regalaría un burst entero por fuente
         # —con 43 de Pawchive, 172 MB fuera de todo límite—.
 
+    def set_completion_gap(self, seconds: float | None) -> None:
+        """Fija la pausa tras completar un archivo, agregada entre workers."""
+        if not seconds or seconds <= 0:
+            self._completion_gate = None
+        elif (self._completion_gate is None
+              or self._completion_gate.interval != seconds):
+            self._completion_gate = _CompletionGate(seconds)
+        # Se conserva si el valor no cambia entre fuentes del mismo sitio: la
+        # última descarga de una fuente también debe separar la primera de la
+        # siguiente.
+
     @property
     def paced(self) -> bool:
         """True si hay un ritmo por sitio activo (en vez del delay global)."""
@@ -436,10 +484,13 @@ class DownloadEngine:
                       el loop de iteraciones del batch es el mecanismo de reintento.
         """
         async with self._semaphore:
-            return await self._do_download(
+            result = await self._do_download(
                 url, dest_dir, filename, progress, task_id,
                 on_progress, extra_headers, total_timeout, on_status, max_retries,
             )
+            if result.ok and self._completion_gate is not None:
+                self._completion_gate.completed()
+            return result
 
     async def run_queue(
         self,
@@ -687,24 +738,49 @@ class DownloadEngine:
                     # de pagar. Sumar los dos añadía 10-30 s por error, hasta
                     # ~2 min extra en un archivo que agota los reintentos.
                     # Entre range resumes, pausa mínima para no cerrar el flujo.
-                    if self._pacer is not None:
-                        # Ritmo de sitio: TODA petición pasa por el turno, sea
-                        # primer intento, reintento o continuación de rango. El
-                        # acuerdo con el operador es sobre peticiones por
-                        # segundo, y un reintento cuesta una petición igual.
-                        if on_status:
-                            on_status(f"⏳ turno ({self._pacer.interval:.0f}s/petición)…")
-                        await self._pacer.wait()
-                    elif written == 0 and error_count == 0:
-                        if on_status:
-                            d_min = self.config.network.delay_min
-                            d_max = self.config.network.delay_max
-                            on_status(f"⏳ esperando ({d_min:.0f}–{d_max:.0f}s)…")
-                        await self._delay()
-                    else:
-                        if on_status:
-                            on_status("↺ continuando rango…" if written else "↺ reintentando…")
-                        await asyncio.sleep(random.uniform(0.5, 2.0))
+                    first_request = written == 0 and error_count == 0
+                    while True:
+                        if first_request and self._completion_gate is not None:
+                            if on_status and not self._completion_gate.ready():
+                                on_status(
+                                    f"⏳ pausa entre archivos "
+                                    f"({self._completion_gate.interval:.0f}s)…"
+                                )
+                            await self._completion_gate.wait()
+
+                        if self._pacer is not None:
+                            # Ritmo de sitio: TODA petición pasa por el turno,
+                            # sea primer intento, reintento o continuación de
+                            # rango. Un reintento cuesta una petición igual.
+                            if on_status:
+                                on_status(
+                                    f"⏳ turno "
+                                    f"({self._pacer.interval:.0f}s/petición)…"
+                                )
+                            await self._pacer.wait()
+                        elif first_request:
+                            if on_status:
+                                d_min = self.config.network.delay_min
+                                d_max = self.config.network.delay_max
+                                on_status(
+                                    f"⏳ esperando ({d_min:.0f}–{d_max:.0f}s)…"
+                                )
+                            await self._delay()
+                        else:
+                            if on_status:
+                                on_status(
+                                    "↺ continuando rango…"
+                                    if written else "↺ reintentando…"
+                                )
+                            await asyncio.sleep(random.uniform(0.5, 2.0))
+
+                        # Otro worker pudo terminar mientras este esperaba su
+                        # turno del pacer. En ese caso el turno se descarta y se
+                        # vuelve a esperar: la pausa post-descarga manda.
+                        if (not first_request
+                                or self._completion_gate is None
+                                or self._completion_gate.ready()):
+                            break
 
                     # Añadir Range header si estamos resumiendo un archivo parcial.
                     req_headers = dict(extra_headers or {})

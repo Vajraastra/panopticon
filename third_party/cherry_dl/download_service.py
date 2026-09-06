@@ -254,7 +254,7 @@ async def run_profile_download(
     config = config or load_config()
     folder = Path(profile["folder_path"])
 
-    # (FileInfo, ArtistInfo, carpeta destino, ritmo del sitio de origen)
+    # FileInfo, ArtistInfo, carpeta, ritmo, caudal, pausa post-descarga, sitio.
     deferred: list[tuple] = []
 
     # El engine arranca con el pool más grande que alguna fuente vaya a pedir;
@@ -328,6 +328,14 @@ async def run_profile_download(
                 emit(Log(
                     f"⏱ {template.name}: techo de {rate / 2**20:.1f} MB/s "
                     f"entre todas las descargas{queda}", "dim",
+                ))
+
+            completion_gap = getattr(template, "post_download_delay", 0.0) or 0.0
+            engine.set_completion_gap(completion_gap)
+            if completion_gap:
+                emit(Log(
+                    f"⏳ {template.name}: {completion_gap:.0f}s entre terminar "
+                    f"un archivo y empezar el siguiente", "dim",
                 ))
 
             # ── Resolver artista (puede disparar lazy auth / modal) ─────────
@@ -628,7 +636,10 @@ async def run_profile_download(
                         except asyncio.TimeoutError:
                             emit(WorkerDone(slot_id, fi.filename, "⏸"))
                             emit(Log(f"⏸ {fi.filename[:55]}  [timeout — diferido]", "warn"))
-                            deferred.append((fi, artist_info, folder, pace, rate, template.name))
+                            deferred.append((
+                                fi, artist_info, folder, pace, rate,
+                                completion_gap, template.name,
+                            ))
                             summ.deferred += 1
                             _counters()
                             continue
@@ -655,7 +666,10 @@ async def run_profile_download(
                                         emit(Log(f"   {reject['detail']}", "warn"))
 
                             if result.error_kind in ErrorKind.DEFERRABLE:
-                                deferred.append((fi, artist_info, folder, pace, rate, template.name))
+                                deferred.append((
+                                    fi, artist_info, folder, pace, rate,
+                                    completion_gap, template.name,
+                                ))
                                 emit(WorkerDone(slot_id, fi.filename, "⏸"))
                                 emit(Log(f"⏸ {fi.filename[:55]}  [{result.error_kind}]", "warn"))
                             elif result.error_kind == ErrorKind.NOT_FOUND:
@@ -815,7 +829,8 @@ async def run_profile_download(
         # ── Cola diferida ───────────────────────────────────────────────────
         if deferred:
             emit(Log(f"⏭ Cola diferida: {len(deferred)} archivo(s)…", "warn"))
-            for file_info, a_info, dest_folder, src_pace, src_rate, src_site in deferred:
+            for (file_info, a_info, dest_folder, src_pace, src_rate,
+                 src_completion_gap, src_site) in deferred:
                 # Un sitio que cerró la puerta no se reintenta aquí: la cola
                 # diferida es el otro camino por el que se le volvía a pedir.
                 if src_site in blocked_sites:
@@ -826,6 +841,7 @@ async def run_profile_download(
                 # debe respetar. Con el caudal, igual.
                 engine.set_pace(src_pace)
                 engine.set_rate(src_rate)
+                engine.set_completion_gap(src_completion_gap)
                 if await url_exists(dest_folder, file_info.dedup_key):
                     summ.skipped += 1
                     continue

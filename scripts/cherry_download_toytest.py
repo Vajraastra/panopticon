@@ -416,6 +416,29 @@ async def run() -> None:
                   f"5 peticiones a 1/s tardan >= 4 s ({dt:.2f}s) — no en ráfaga")
             check(dt < 12.0, f"y no se serializan de más ({dt:.2f}s)")
 
+            # Dos workers pueden terminar casi juntos. La pausa post-descarga
+            # es global: los archivos siguientes no deben arrancar hasta que
+            # hayan pasado 250 ms desde la finalización más reciente. El pacer
+            # sigue separando sus peticiones después de abrirse la compuerta.
+            print("\n[12] Pausa global después de completar un archivo")
+            eng.set_workers(2)
+            eng.set_pace(0.05)
+            eng.set_completion_gap(0.25)
+            try:
+                t0 = asyncio.get_running_loop().time()
+                rs = await asyncio.gather(*(
+                    eng.download(f"{base}/ok/1024", tmp, f"pausa_{i}.bin")
+                    for i in range(4)
+                ))
+                dt = asyncio.get_running_loop().time() - t0
+            finally:
+                eng.set_completion_gap(None)
+                eng.set_pace(None)
+            check(all(x.ok for x in rs), "las 4 descargas terminan")
+            check(dt >= 0.30,
+                  f"la segunda pareja espera al último final ({dt:.2f}s)")
+            check(dt < 2.0, f"la compuerta no bloquea de más ({dt:.2f}s)")
+
     finally:
         srv.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)

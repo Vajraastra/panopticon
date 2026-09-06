@@ -27,6 +27,20 @@
 
 ## Divergencias respecto a `befa56d`
 
+### `engine.py` + `download_service.py` — pausa entre archivos de Pawchive (2026-09-06)
+
+Una prueba real con 2 workers y caudal reducido volvió a recibir 403 al pasar
+de archivos grandes a muchas imágenes pequeñas. Eso separa el problema del
+ancho de banda sostenido: la rotación rápida de archivos seguía abriendo una
+conexión nueva cada segundo. Pawchive declara ahora `post_download_delay = 5.0`.
+
+La compuerta es global entre workers y se coordina con el pacer: desde la
+última descarga completada deben pasar cinco segundos antes de iniciar otro
+archivo, y después sigue aplicándose el turno de una petición por segundo. Si
+otro worker termina mientras uno esperaba turno, el turno se descarta y la
+pausa vuelve a contarse desde esa finalización. Se mantienen además 2 workers,
+2 MB/s agregados y 25 GB/día.
+
 ### `engine.py` — un 403 del CDN ya no se toma por bloqueo de Cloudflare (2026-09-05)
 
 `_is_cloudflare()` daba True con solo ver `cf-ray` o `server: cloudflare`, cabeceras que
