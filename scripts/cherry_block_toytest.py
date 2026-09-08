@@ -437,11 +437,17 @@ async def run() -> None:
 
         # ── [2] Los archivos siguen en la cola ───────────────────────────────
         print("\n[2] Lo que quedó en la cola")
-        from cherry_dl.catalog import pending_count
+        from cherry_dl.catalog import get_pending_files, pending_count
         quedan = await pending_count(tmp / "caso1", -1)
         check(quedan == N_ARCHIVOS,
               f"los {N_ARCHIVOS} archivos siguen pendientes: no se pierde ninguno",
               f"({quedan})")
+        orden = await get_pending_files(tmp / "caso1", -1)
+        fallidos = {f"{BASE}{path}" for path in peticiones}
+        cola = [row["url_source"] for row in orden]
+        check(set(cola[-len(fallidos):]) == fallidos,
+              "cada archivo fallido queda al fondo de la cola persistente",
+              f"(fallidos={len(fallidos)})")
 
         # ── [3] Las demás fuentes del sitio se saltan ────────────────────────
         print("\n[3] Un perfil con tres fuentes del mismo sitio")

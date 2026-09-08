@@ -39,7 +39,8 @@ log = logging.getLogger(__name__)
 # Margen para que el loop arranque; si no lo hace, algo está muy roto.
 _START_TIMEOUT = 10.0
 # Margen para que el loop drene sus tasks al parar.
-_STOP_TIMEOUT = 15.0
+_STOP_TIMEOUT = 6.0
+_DRAIN_TIMEOUT = 4.0
 
 
 class _LoopThread(QThread):
@@ -81,10 +82,20 @@ class _LoopThread(QThread):
         for task in pending:
             task.cancel()
         if pending:
-            loop.run_until_complete(
-                asyncio.gather(*pending, return_exceptions=True)
+            _, stubborn = loop.run_until_complete(
+                asyncio.wait(pending, timeout=_DRAIN_TIMEOUT)
             )
-        loop.run_until_complete(loop.shutdown_asyncgens())
+            if stubborn:
+                log.error(
+                    "cherry: %d task(s) no cerraron en %.0fs; se abandona el drenaje",
+                    len(stubborn), _DRAIN_TIMEOUT,
+                )
+        try:
+            loop.run_until_complete(asyncio.wait_for(
+                loop.shutdown_asyncgens(), timeout=1.0,
+            ))
+        except asyncio.TimeoutError:
+            log.warning("cherry: los generadores async no cerraron en 1s")
 
 
 class CherryRuntime(QObject):
@@ -147,7 +158,7 @@ class CherryRuntime(QObject):
         if not thread.wait(int(timeout * 1000)):
             log.warning("cherry: el hilo del loop no terminó en %.0fs", timeout)
             thread.terminate()
-            thread.wait(2000)
+            thread.wait(1000)
         self._thread = None
         log.info("cherry: event loop asyncio detenido")
         self.stopped_signal.emit()

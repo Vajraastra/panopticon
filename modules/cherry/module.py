@@ -40,5 +40,8 @@ class CherryModule(BaseModule):
         return self.view
 
     def on_unload(self):
-        """Cierre ordenado: para el loop y espera a que muera su hilo."""
-        self.runtime.stop()
+        """Cancela el trabajo visible antes de parar su loop propietario."""
+        if self.view is not None:
+            self.view.shutdown()
+        else:
+            self.runtime.stop()

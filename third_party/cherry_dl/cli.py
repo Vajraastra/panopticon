@@ -372,6 +372,11 @@ def config_show():
     table.add_row("timeout", f"{config.timeout}s")
     table.add_row("daily_limit_enabled", str(config.daily_limit_enabled).lower())
     table.add_row("daily_limit_gb", f"{config.daily_limit_gb:g} GB")
+    table.add_row(
+        "pawchive_downloads_per_window",
+        str(config.pawchive.downloads_per_window),
+    )
+    table.add_row("pawchive_window_hours", f"{config.pawchive.window_hours:g} h")
     table.add_row("delay_min", f"{config.network.delay_min}s")
     table.add_row("delay_max", f"{config.network.delay_max}s")
     table.add_row("retries_api", str(config.network.retries_api))
@@ -387,7 +392,8 @@ def config_set(
         ...,
         help=(
             "Clave a modificar (download_dir, workers, timeout, "
-            "daily_limit_enabled, daily_limit_gb)"
+            "daily_limit_enabled, daily_limit_gb, "
+            "pawchive_downloads_per_window, pawchive_window_hours)"
         ),
     ),
     value: str = typer.Argument(..., help="Nuevo valor"),

@@ -725,6 +725,63 @@ async def set_profile_url_enabled(
         await sync_profile_meta(db_path, pid)
 
 
+async def delete_profile_url(
+    db_path: Path, url_id: int, *, expected_profile_id: int | None = None,
+) -> int:
+    """Elimina una fuente sin tocar el proyecto ni sus archivos descargados.
+
+    También retira la fila legacy de ``artists`` que haría que ``init_index``
+    reconstruyera la fuente en el siguiente arranque, y elige una nueva fuente
+    primaria para que los filtros de la tabla no conserven el sitio eliminado.
+    Retorna el id del perfil propietario.
+    """
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("PRAGMA foreign_keys = ON")
+        async with db.execute(
+            """
+            SELECT pu.profile_id, pu.site, pu.artist_id, p.folder_path
+            FROM profile_urls pu
+            JOIN profiles p ON p.id = pu.profile_id
+            WHERE pu.id = ?
+            """,
+            (url_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            raise ValueError(f"La fuente {url_id} ya no existe")
+        profile_id, site, artist_id, folder_path = row
+        if expected_profile_id is not None and profile_id != expected_profile_id:
+            raise ValueError("La fuente ya no pertenece al proyecto seleccionado")
+
+        await db.execute("DELETE FROM profile_urls WHERE id = ?", (url_id,))
+        if artist_id:
+            await db.execute(
+                """
+                DELETE FROM artists
+                WHERE folder_path = ? AND artist_id = ?
+                  AND site_id = (SELECT id FROM sites WHERE name = ?)
+                """,
+                (folder_path, artist_id, site),
+            )
+        await db.execute(
+            """
+            UPDATE profiles
+            SET primary_site = COALESCE((
+                SELECT site FROM profile_urls
+                WHERE profile_id = ?
+                ORDER BY enabled DESC, id
+                LIMIT 1
+            ), 'unknown')
+            WHERE id = ?
+            """,
+            (profile_id, profile_id),
+        )
+        await db.commit()
+
+    await sync_profile_meta(db_path, profile_id)
+    return profile_id
+
+
 async def add_exclusion(db_path: Path, id_a: int, id_b: int) -> None:
     """
     Marca el par (id_a, id_b) como "perfiles confirmados distintos".

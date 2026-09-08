@@ -168,6 +168,18 @@ async def main() -> int:
         "min_request_interval = 1 s (1 petición/s)")
     chk(PawchiveTemplate.post_download_delay == 5.0,
         "espera 5 s desde el final de un archivo antes de iniciar otro")
+    chk(PawchiveTemplate.download_window_limit == 300,
+        "máximo de 300 transferencias por ventana")
+    chk(PawchiveTemplate.download_window_seconds == 3 * 60 * 60,
+        "la ventana móvil dura 3 horas")
+    chk(PawchiveTemplate.throttle_failure_codes
+        == frozenset({"no_http_failed"}),
+        "sólo Failed sin HTTP arma el cortacircuitos")
+    chk(PawchiveTemplate.throttle_failure_streak == 5,
+        "cinco fallos consecutivos; uno aislado no pausa")
+    chk(PawchiveTemplate.throttle_cooldowns
+        == (15 * 60, 30 * 60, 60 * 60, 3 * 60 * 60),
+        "enfriamiento progresivo 15/30/60/180 min")
     chk(PawchiveTemplate.scan_page_delay == 0.0,
         "scan_page_delay = 0: lo espacia el pacer, no un sleep propio")
     chk(PawchiveTemplate.provides_file_hashes is True,

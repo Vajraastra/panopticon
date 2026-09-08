@@ -244,6 +244,37 @@ def test_cancel_mechanics(app, runtime) -> None:
     check("cancelar dos veces no rompe", runtime.cancel_task(task) is False)
 
 
+def test_shutdown_contract() -> None:
+    print("\n[cierre] Descarga activa y descarga del módulo")
+    runtime = CherryRuntime()
+    check("el runtime auxiliar arranca", runtime.start())
+    future = runtime.submit(asyncio.sleep(30))
+    started = time.monotonic()
+    runtime.stop()
+    elapsed = time.monotonic() - started
+    check("stop() cancela trabajo activo", future.cancelled() or future.done())
+    check("stop() no deja el hilo vivo", not runtime.is_running)
+    check("stop() vuelve dentro del límite", elapsed < 6.0, f"({elapsed:.2f}s)")
+
+    from modules.cherry.module import CherryModule
+
+    class Probe:
+        def __init__(self):
+            self.called = 0
+
+        def shutdown(self):
+            self.called += 1
+
+    view = Probe()
+    stopped = Probe()
+    stopped.stop = stopped.shutdown
+    CherryModule.on_unload(type("ModuleProbe", (), {
+        "view": view, "runtime": stopped,
+    })())
+    check("on_unload() cancela primero desde la vista", view.called == 1)
+    check("on_unload() no duplica el cierre del runtime", stopped.called == 0)
+
+
 def test_auth_roundtrip(app, runtime, bridge, rec) -> None:
     print("\n[6] resolve_auth: worker espera al diálogo del hilo GUI")
     import asyncio
@@ -425,10 +456,11 @@ def test_a5() -> None:
 
     # ── ajustes ────────────────────────────────────────────────────────────
     cfg = settings.load()
-    check("los ajustes traen las cinco claves",
+    check("los ajustes traen las siete claves",
           set(cfg) == {
               "download_dir", "workers", "timeout",
               "daily_limit_enabled", "daily_limit_gb",
+              "pawchive_downloads_per_window", "pawchive_window_hours",
           }, f"({sorted(cfg)})")
     check("workers es un entero >= 1",
           isinstance(cfg["workers"], int) and cfg["workers"] >= 1, f"({cfg['workers']})")
@@ -439,6 +471,13 @@ def test_a5() -> None:
           and isinstance(cfg["daily_limit_gb"], float)
           and cfg["daily_limit_gb"] > 0,
           f"({cfg['daily_limit_enabled']=}, {cfg['daily_limit_gb']=})")
+    check("Pawchive conserva la recomendación 300/3 como valores válidos",
+          isinstance(cfg["pawchive_downloads_per_window"], int)
+          and cfg["pawchive_downloads_per_window"] > 0
+          and isinstance(cfg["pawchive_window_hours"], float)
+          and cfg["pawchive_window_hours"] > 0,
+          f"({cfg['pawchive_downloads_per_window']=}, "
+          f"{cfg['pawchive_window_hours']=})")
     check("la carpeta de descargas coincide con la del motor",
           settings.download_root() == Path(cfg["download_dir"]),
           f"({settings.download_root()} vs {cfg['download_dir']})")
@@ -545,6 +584,9 @@ def test_ext_filter() -> None:
     check("cada grupo tiene traducción",
           all(g in ef.GROUP_KEYS for g in gids),
           f"(sin clave: {[g for g in gids if g not in ef.GROUP_KEYS]})")
+    project_exts = next(exts for gid, _label, exts in ef.groups() if gid == "project")
+    check("proyectos incluye PSD/PSB/CLIP/LIP",
+          {"psd", "psb", "clip", "lip"} <= set(project_exts), f"({project_exts})")
 
     enc = ef.encode(["images", "zip"], "psd, clip")
     groups, custom = ef.decode(enc)
@@ -622,6 +664,9 @@ def main() -> int:
         print("\n[fin] apagando el runtime")
         runtime.stop()
         check("el loop se apagó", not runtime.is_running)
+
+    if args.scan is None and args.download is None and not args.list:
+        test_shutdown_contract()
 
     print(f"\n{_ok} ok, {_fail} fallo(s)")
     return 1 if _fail else 0

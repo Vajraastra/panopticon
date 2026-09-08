@@ -130,6 +130,16 @@ class PawchiveTemplate(SiteTemplate):
     post_download_delay = 5.0    # 5 s desde el último archivo terminado
     max_bytes_per_sec = 2 * 1024**2      # 2 MB/s entre todas las descargas
     daily_byte_budget = 0                 # sin tope diario; conservan caudal/pausa
+    # Fallbacks documentales. download_service toma los valores efectivos de
+    # config.pawchive; 300 / 3 h siguen siendo el default recomendado.
+    download_window_limit = 300
+    download_window_seconds = 3 * 60 * 60
+    # `headers_timeout` no entra: también puede ser una caída momentánea de la
+    # red local. La firma observada del límite remoto fue CDP Failed sin HTTP.
+    throttle_failure_codes = frozenset({"no_http_failed"})
+    throttle_failure_streak = 5           # un archivo aislado no enfría el sitio
+    throttle_failure_window = 120.0
+    throttle_cooldowns = (15 * 60, 30 * 60, 60 * 60, 3 * 60 * 60)
     download_transport = "browser_image"
     browser_origin = _BASE + "/"
     provides_file_hashes = True  # el hash SHA-256 viene en el path

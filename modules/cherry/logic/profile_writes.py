@@ -101,6 +101,23 @@ async def set_url_enabled(url_id: int, enabled: bool) -> None:
     await set_profile_url_enabled(INDEX_DB, url_id, enabled)
 
 
+async def remove_url(profile_id: int, folder: Path, url_id: int) -> int:
+    """Borra una fuente y sus pendientes, nunca los archivos descargados."""
+    from third_party.cherry_dl.catalog import remove_pending_for_profile_url
+    from third_party.cherry_dl.config import INDEX_DB
+    from third_party.cherry_dl.index import delete_profile_url
+
+    removed_pending = await remove_pending_for_profile_url(folder, url_id)
+    await delete_profile_url(
+        INDEX_DB, url_id, expected_profile_id=profile_id,
+    )
+    log.info(
+        "cherry: fuente %s borrada del perfil %s; %s pendientes retirados",
+        url_id, profile_id, removed_pending,
+    )
+    return removed_pending
+
+
 async def delete_profile(profile_id: int) -> None:
     """Borra un proyecto del índice: sus fuentes (CASCADE) y su artista.
 

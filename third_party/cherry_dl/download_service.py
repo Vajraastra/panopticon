@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,6 +41,7 @@ from .catalog import (
     get_pending_files,
     hash_exists,
     init_catalog,
+    move_pending_to_back,
     next_counter,
     pending_count,
     pending_url_exists,
@@ -60,10 +62,20 @@ from .site_budget import (
     remaining as budget_remaining,
     spent_today as budget_spent_today,
 )
+from .site_throttle import SiteThrottle
 from .templates._registry import find_template, get_template
 from .templates.base import FileInfo, parse_date_utc
 from .auth.patreon import NeedsManualAuth
 from .auth.pixiv import NeedsPixivAuth
+
+
+log = logging.getLogger(__name__)
+
+
+def _failure_detail(error: str | None, limit: int = 320) -> str:
+    """Una línea legible para UI y log, sin esconder la causa concreta."""
+    compact = " ".join((error or "sin detalle").split())
+    return compact if len(compact) <= limit else compact[:limit - 1] + "…"
 
 
 # ── Eventos ─────────────────────────────────────────────────────────────────────
@@ -331,6 +343,35 @@ async def run_profile_download(
     # secuencial, así que basta un dict: en cuanto uno entra, las fuentes
     # siguientes del mismo sitio se saltan sin gastar una sola petición.
     blocked_sites: dict[str, str] = {}
+    throttles: dict[str, SiteThrottle] = {}
+    throttle_meta: dict[str, dict] = {}
+
+    def _throttle_wait(site: str, kind: str, seconds: float) -> None:
+        meta = throttle_meta[site]
+        emit(Cooldown(seconds))
+        if kind == "quota":
+            msg = (
+                f"⏸ {site}: cuota de {meta['limit']} descargas en "
+                f"{meta['window'] / 3600:g} h alcanzada; reanuda "
+                f"automáticamente en {seconds / 60:.0f} min"
+            )
+        else:
+            msg = (
+                f"⏸ {site}: servidor de archivos aún sin respuesta; "
+                f"nueva prueba en {seconds / 60:.0f} min"
+            )
+        log.warning(msg)
+        emit(Log(msg, "warn"))
+
+    def _report_throttle_trip(site: str, seconds: float) -> None:
+        meta = throttle_meta[site]
+        msg = (
+            f"⏸ {site}: {meta['streak']} fallos consecutivos sin respuesta "
+            "HTTP; descargas pausadas. "
+            f"Se probará un solo archivo en {seconds / 60:.0f} min"
+        )
+        log.warning(msg)
+        emit(Log(msg, "warn"))
 
     sources = ordered_sources(profile["urls"])
     if sources != profile["urls"]:
@@ -432,6 +473,36 @@ async def run_profile_download(
 
             download_transport = getattr(template, "download_transport", "http")
             browser_origin = getattr(template, "browser_origin", "")
+            window_limit = getattr(template, "download_window_limit", 0) or 0
+            window_seconds = getattr(template, "download_window_seconds", 0) or 0
+            if template.name == "pawchive":
+                window_limit = config.pawchive.downloads_per_window
+                window_seconds = config.pawchive.window_hours * 60 * 60
+            failure_codes = getattr(template, "throttle_failure_codes", frozenset())
+            throttle = None
+            if window_limit or failure_codes:
+                throttle_meta[template.name] = {
+                    "limit": window_limit,
+                    "window": window_seconds,
+                    "streak": getattr(template, "throttle_failure_streak", 5),
+                    "codes": failure_codes,
+                }
+                throttle = throttles.get(template.name)
+                if throttle is None:
+                    throttle = SiteThrottle(
+                        template.name,
+                        limit=window_limit,
+                        window_seconds=window_seconds,
+                        failure_threshold=getattr(template, "throttle_failure_streak", 5),
+                        failure_window_seconds=getattr(
+                            template, "throttle_failure_window", 120.0,
+                        ),
+                        cooldowns=getattr(
+                            template, "throttle_cooldowns",
+                            (900.0, 1800.0, 3600.0, 10800.0),
+                        ),
+                    )
+                    throttles[template.name] = throttle
 
             # ── Resolver artista (puede disparar lazy auth / modal) ─────────
             try:
@@ -695,6 +766,7 @@ async def run_profile_download(
                         in_progress_hashes.add(fi.remote_hash)
 
                     try:
+                        throttle_permit = None
                         if await url_exists(folder, fi.dedup_key):
                             summ.skipped += 1
                             emit(Log(f"— {fi.filename[:60]}  [URL en catálogo]", "dim"))
@@ -717,6 +789,13 @@ async def run_profile_download(
                                 emit(WorkerProgress(s, done, total))
                             return cb
 
+                        if throttle is not None:
+                            throttle_permit = await throttle.acquire(
+                                lambda kind, seconds: _throttle_wait(
+                                    template.name, kind, seconds,
+                                )
+                            )
+
                         try:
                             result = await asyncio.wait_for(
                                 engine.download(
@@ -732,8 +811,14 @@ async def run_profile_download(
                                 timeout=7200.0,
                             )
                         except asyncio.TimeoutError:
+                            if throttle is not None:
+                                await throttle.finish(
+                                    throttle_permit, success=False,
+                                    throttle_failure=False,
+                                )
                             emit(WorkerDone(slot_id, fi.filename, "⏸"))
                             emit(Log(f"⏸ {fi.filename[:55]}  [timeout — diferido]", "warn"))
+                            await move_pending_to_back(folder, fi.dedup_key)
                             deferred.append((
                                 fi, artist_info, folder, pace, rate,
                                 completion_gap, template.name,
@@ -743,7 +828,29 @@ async def run_profile_download(
                             _counters()
                             continue
 
+                        if throttle is not None:
+                            trip = await throttle.finish(
+                                throttle_permit,
+                                success=result.ok,
+                                throttle_failure=(
+                                    not result.ok
+                                    and getattr(result, "failure_code", None)
+                                    in failure_codes
+                                ),
+                            )
+                            if trip is not None:
+                                _report_throttle_trip(template.name, trip.seconds)
+
                         if not result.ok:
+                            failure_detail = _failure_detail(result.error)
+                            log.warning(
+                                "cherry: descarga fallida | sitio=%s | archivo=%r "
+                                "| tipo=%s | detalle=%s",
+                                template.name, fi.filename, result.error_kind,
+                                failure_detail,
+                            )
+                            if result.error_kind != ErrorKind.NOT_FOUND:
+                                await move_pending_to_back(folder, fi.dedup_key)
                             is_rejection = result.error_kind in _REJECTIONS
                             reject["recent"].append(is_rejection)
                             if is_rejection:
@@ -781,7 +888,10 @@ async def run_profile_download(
                                     download_transport, browser_origin,
                                 ))
                                 emit(WorkerDone(slot_id, fi.filename, "⏸"))
-                                emit(Log(f"⏸ {fi.filename[:55]}  [{result.error_kind}]", "warn"))
+                                emit(Log(
+                                    f"⏸ {fi.filename[:55]}  [{result.error_kind}] "
+                                    f"{failure_detail}", "warn",
+                                ))
                             elif result.error_kind == ErrorKind.NOT_FOUND:
                                 # 404 con la URL recién refrescada por el scan:
                                 # el archivo ya no existe en el origen y no va a
@@ -834,6 +944,7 @@ async def run_profile_download(
 
                         if result.file_hash is None:
                             summ.errors += 1
+                            await move_pending_to_back(folder, fi.dedup_key)
                             emit(Log(f"✗ {fi.filename[:50]}: bug interno — hash nulo", "error"))
                             if result.dest and result.dest.exists():
                                 result.dest.unlink()
@@ -896,10 +1007,13 @@ async def run_profile_download(
                         _counters()
 
                     except asyncio.CancelledError:
+                        if throttle is not None:
+                            await throttle.abandon(locals().get("throttle_permit"))
                         raise
                     except Exception as exc:
                         import traceback
                         summ.errors += 1
+                        await move_pending_to_back(folder, fi.dedup_key)
                         emit(WorkerDone(slot_id, fi.filename, "✗"))
                         emit(Log(
                             f"✗ {fi.filename[:45]}  [{type(exc).__name__}: {exc}]",
@@ -908,6 +1022,8 @@ async def run_profile_download(
                         emit(Log(traceback.format_exc().splitlines()[-1], "dim"))
                         _counters()
                     finally:
+                        if throttle is not None:
+                            await throttle.abandon(locals().get("throttle_permit"))
                         if fi.remote_hash:
                             in_progress_hashes.discard(fi.remote_hash)
 
@@ -964,6 +1080,14 @@ async def run_profile_download(
                 ext = Path(file_info.filename).suffix
                 tmp_name = "_dl_" + hashlib.md5(file_info.url.encode()).hexdigest()[:12] + ext
                 try:
+                    throttle_permit = None
+                    src_throttle = throttles.get(src_site)
+                    if src_throttle is not None:
+                        throttle_permit = await src_throttle.acquire(
+                            lambda kind, seconds: _throttle_wait(
+                                src_site, kind, seconds,
+                            )
+                        )
                     result = await asyncio.wait_for(
                         engine.download(
                             url=file_info.url, dest_dir=dest_folder, filename=tmp_name,
@@ -975,11 +1099,31 @@ async def run_profile_download(
                         timeout=7200.0,
                     )
                 except asyncio.TimeoutError:
+                    if src_throttle is not None:
+                        await src_throttle.finish(
+                            throttle_permit, success=False,
+                            throttle_failure=False,
+                        )
                     emit(WorkerDone(0, file_info.filename, "⏭"))
                     summ.deferred += 1
+                    await move_pending_to_back(
+                        dest_folder, file_info.dedup_key,
+                    )
                     emit(Log(f"⏭ {file_info.filename[:55]}  [timeout — próx. sync]", "warn"))
                     _counters()
                     continue
+                if src_throttle is not None:
+                    src_codes = throttle_meta[src_site]["codes"]
+                    trip = await src_throttle.finish(
+                        throttle_permit,
+                        success=result.ok,
+                        throttle_failure=(
+                            not result.ok
+                            and getattr(result, "failure_code", None) in src_codes
+                        ),
+                    )
+                    if trip is not None:
+                        _report_throttle_trip(src_site, trip.seconds)
                 if result.ok and result.file_hash:
                     _record_global_download(result.file_size)
                     counter = await next_counter(dest_folder)
@@ -1004,9 +1148,26 @@ async def run_profile_download(
                 else:
                     if result.dest and result.dest.exists():
                         result.dest.unlink(missing_ok=True)
+                    if result.error_kind == ErrorKind.NOT_FOUND:
+                        await remove_pending(dest_folder, file_info.dedup_key)
+                        summ.dropped += 1
+                    else:
+                        await move_pending_to_back(
+                            dest_folder, file_info.dedup_key,
+                        )
+                    failure_detail = _failure_detail(result.error)
+                    log.warning(
+                        "cherry: reintento fallido | sitio=%s | archivo=%r "
+                        "| tipo=%s | detalle=%s",
+                        src_site, file_info.filename, result.error_kind,
+                        failure_detail,
+                    )
                     emit(WorkerDone(0, file_info.filename, "⏭"))
                     summ.deferred += 1
-                    emit(Log(f"⏭ {file_info.filename[:55]}  — pendiente próx. sync", "warn"))
+                    emit(Log(
+                        f"⏭ {file_info.filename[:55]}  [{result.error_kind}] "
+                        f"{failure_detail} — pendiente próx. sync", "warn",
+                    ))
                 _counters()
             emit(WorkerIdle(0))
 

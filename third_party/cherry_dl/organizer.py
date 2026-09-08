@@ -26,7 +26,7 @@ _MEDIA_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif",
     ".mp4", ".webm", ".mov", ".avi", ".mkv", ".flv",
     ".mp3", ".ogg", ".flac", ".wav", ".aac",
-    ".zip", ".rar", ".7z", ".pdf", ".psd", ".clip",
+    ".zip", ".rar", ".7z", ".pdf", ".psd", ".psb", ".clip", ".lip",
 }
 
 # Tipo de callback de progreso: (archivos_procesados, total, nombre_archivo)

@@ -69,6 +69,7 @@ log = logging.getLogger(__name__)
 # Columnas de la tabla (índices simbólicos: nunca comparar por el texto de la
 # cabecera, que está traducido).
 COL_NAME, COL_SITE, COL_SOURCES, COL_CHECKED, COL_FOLDER = range(5)
+SOURCE_DATA_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
 class CherryView(QWidget):
     """Lista de perfiles de cherry-dl, en vivo sobre `index.db`."""
@@ -79,6 +80,7 @@ class CherryView(QWidget):
     _details_ready  = Signal(object, bool)  # list[dict] a descargar, scan_only
     _profile_created = Signal(int, bool)    # id nuevo, descargar al terminar
     _url_added       = Signal(int)          # perfil al que se le añadió
+    _url_removed     = Signal(int, int)     # perfil, pendientes retirados
     _filter_saved    = Signal(int, str)     # perfil, ext_filter guardado
     _profile_deleted = Signal(int)          # perfil que ya no está en el índice
     _load_failed    = Signal(str)
@@ -136,9 +138,12 @@ class CherryView(QWidget):
         self._split_console = QSplitter(Qt.Vertical)
         self._split_console.addWidget(self._split_main)
         self._split_console.addWidget(self._build_console())
-        self._split_console.setStretchFactor(0, 4)
-        self._split_console.setStretchFactor(1, 1)
+        self._split_console.setStretchFactor(0, 3)
+        self._split_console.setStretchFactor(1, 2)
         self._split_console.setChildrenCollapsible(False)
+        # La consola nace con espacio suficiente para leer el historial, pero
+        # el splitter sigue dejando que cada usuario elija el reparto.
+        self._split_console.setSizes([620, 380])
         root.addWidget(self._split_console, 1)
 
         # Después de `super()`: antes, `self` todavía no es un QObject y no
@@ -155,6 +160,7 @@ class CherryView(QWidget):
         self._details_ready.connect(self._on_details_ready)
         self._profile_created.connect(self._on_profile_created)
         self._url_added.connect(self._on_url_added)
+        self._url_removed.connect(self._on_url_removed)
         self._filter_saved.connect(self._on_filter_saved)
         self._profile_deleted.connect(self._on_profile_deleted)
         self._load_failed.connect(self._on_load_failed)
@@ -362,15 +368,29 @@ class CherryView(QWidget):
         self._sources = QListWidget()
         self._sources.setMaximumHeight(140)
         self._sources.itemChanged.connect(self._on_source_toggled)
+        self._sources.currentItemChanged.connect(lambda *_: self._update_actions())
         lay.addWidget(self._sources)
 
+        source_actions = QHBoxLayout()
         self._btn_add_url = QPushButton(self.tr("cherry.add_url", "+ Add source"))
         self._btn_add_url.setToolTip(self.tr(
             "cherry.add_url_tip",
             "Adds another source URL to the selected project. One project can gather "
             "several sources into a single folder."))
         self._btn_add_url.clicked.connect(self._add_url)
-        lay.addWidget(self._btn_add_url)
+        source_actions.addWidget(self._btn_add_url)
+
+        self._btn_remove_url = QPushButton(self.tr(
+            "cherry.remove_url", "Remove selected source",
+        ))
+        self._btn_remove_url.setToolTip(self.tr(
+            "cherry.remove_url_tip",
+            "Removes the selected source and its queued downloads. Files already "
+            "downloaded remain in the project.",
+        ))
+        self._btn_remove_url.clicked.connect(self._remove_url)
+        source_actions.addWidget(self._btn_remove_url)
+        lay.addLayout(source_actions)
 
         lay.addWidget(self._divider())
         lay.addWidget(self._build_ext_filter())
@@ -807,10 +827,11 @@ class CherryView(QWidget):
         self._btn_new.setEnabled(not running)
         self._btn_delete.setEnabled(bool(profile) and not running)
         self._btn_add_url.setEnabled(bool(profile) and not running)
+        self._btn_remove_url.setEnabled(
+            bool(profile and self._sources.currentItem()) and not running)
         # Durante una descarga el filtro se congela: el motor ya lo leyó al
         # arrancar y editarlo a media sync solo mentiría sobre lo que baja.
         self._set_ext_enabled(bool(profile) and not running)
-        self._btn_add_url.setEnabled(bool(profile) and not running)
 
     # ── Altas en el índice ────────────────────────────────────────────────
     def _populate_sources(self, urls: list) -> None:
@@ -823,6 +844,7 @@ class CherryView(QWidget):
             item.setCheckState(
                 Qt.CheckState.Checked if u["enabled"] else Qt.CheckState.Unchecked)
             item.setData(Qt.ItemDataRole.UserRole, u["id"])
+            item.setData(SOURCE_DATA_ROLE, dict(u))
             item.setToolTip(self.tr(
                 "cherry.source_tip", "{n} files · last sync {t}"
             ).format(n=u["file_count"], t=u["last_synced"] or "—"))
@@ -928,6 +950,67 @@ class CherryView(QWidget):
                 await self._load_detail(self._selected_id)
             return
         self._url_added.emit(-1)  # solo para refrescar la tabla y el estado
+
+    def _remove_url(self) -> None:
+        profile = self._current_profile()
+        item = self._sources.currentItem()
+        if profile is None or item is None:
+            self._set_status(self.tr(
+                "cherry.no_source_selection", "Select a source first."))
+            return
+        source = item.data(SOURCE_DATA_ROLE) or {}
+        url_id = item.data(Qt.ItemDataRole.UserRole)
+        if url_id is None:
+            return
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(self.tr("cherry.remove_url_title", "Remove source"))
+        box.setText(self.tr(
+            "cherry.remove_url_body", "Remove this source from “{name}”?",
+        ).format(name=profile["display_name"]))
+        box.setInformativeText(self.tr(
+            "cherry.remove_url_detail",
+            "{url}\n\nIts queued downloads and sync state will be removed. "
+            "Files already downloaded and catalogued stay untouched.",
+        ).format(url=source.get("url") or item.text()))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+        if not self._runtime.start():
+            self._set_status(self.tr(
+                "cherry.runtime_failed", "Could not start the async runtime."))
+            return
+        self._set_status(self.tr(
+            "cherry.removing_source", "Removing source…"))
+        try:
+            self._runtime.submit(self._remove_url_async(
+                profile["id"], Path(profile["folder_path"]), int(url_id),
+            ))
+        except RuntimeError as exc:
+            self._load_failed.emit(str(exc))
+
+    async def _remove_url_async(
+        self, profile_id: int, folder: Path, url_id: int,
+    ) -> None:
+        try:
+            pending = await writes.remove_url(profile_id, folder, url_id)
+        except Exception as exc:
+            log.exception("cherry: no se pudo borrar la fuente")
+            self._load_failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self._url_removed.emit(profile_id, pending)
+
+    def _on_url_removed(self, profile_id: int, pending: int) -> None:
+        self._set_status(self.tr(
+            "cherry.source_removed",
+            "Source removed · {n} queued downloads discarded.",
+        ).format(n=pending), flash=True)
+        self.refresh()
+        if self._selected_id == profile_id:
+            self._reload_detail()
 
     # ── Borrar, ajustes y duplicados (A5) ─────────────────────────────────
     def _delete_profile(self) -> None:

@@ -139,6 +139,18 @@ class SiteTemplate(ABC):
     # (`~/.cherry-dl/site_budget.json`), fuera de las bases del motor.
     daily_byte_budget: int = 0
 
+    # Cuota móvil por sitio. 0 desactiva. El contador es global y persistente,
+    # y reserva cupo antes de cada request para no cruzarlo con varios workers.
+    download_window_limit: int = 0
+    download_window_seconds: float = 0.0
+
+    # Cortacircuitos opcional para firmas concretas del transporte. Errores no
+    # incluidos (404, red local, un archivo aislado) reinician la racha.
+    throttle_failure_codes: frozenset[str] = frozenset()
+    throttle_failure_streak: int = 5
+    throttle_failure_window: float = 120.0
+    throttle_cooldowns: tuple[float, ...] = (900.0, 1800.0, 3600.0, 10800.0)
+
     # Transporte de archivos. ``http`` usa el cliente normal; ``browser_image``
     # crea un subrecurso desde ``browser_origin`` y extrae su respuesta por CDP.
     download_transport: str = "http"

@@ -66,13 +66,19 @@ CREATE TABLE IF NOT EXISTS pending_queue (
     remote_hash     TEXT,
     extra_headers   TEXT,
     profile_url_id  INTEGER,
-    discovered_at   INTEGER NOT NULL
+    discovered_at   INTEGER NOT NULL,
+    queue_position  INTEGER
 );
 """
 
 _CREATE_IDX_PENDING = (
     "CREATE INDEX IF NOT EXISTS idx_pending_url_id "
     "ON pending_queue(profile_url_id);"
+)
+
+_CREATE_IDX_PENDING_ORDER = (
+    "CREATE INDEX IF NOT EXISTS idx_pending_order "
+    "ON pending_queue(profile_url_id, queue_position);"
 )
 
 # Metadata del perfil embebida en el catálogo → la carpeta es auto-describible.
@@ -123,6 +129,23 @@ async def init_catalog(artist_dir: Path) -> None:
         ) as cur:
             if not await cur.fetchone():
                 await db.execute(_MIGRATE_COUNTER)
+
+        # Posición mutable de la cola. Los catálogos anteriores ordenaban sólo
+        # por discovered_at, por lo que un archivo fallido reaparecía al frente
+        # en cada ejecución. ROWID conserva el FIFO previo durante la migración.
+        async with db.execute(
+            "SELECT name FROM pragma_table_info('pending_queue') "
+            "WHERE name='queue_position'"
+        ) as cur:
+            if not await cur.fetchone():
+                await db.execute(
+                    "ALTER TABLE pending_queue ADD COLUMN queue_position INTEGER"
+                )
+        await db.execute(
+            "UPDATE pending_queue SET queue_position = rowid "
+            "WHERE queue_position IS NULL"
+        )
+        await db.execute(_CREATE_IDX_PENDING_ORDER)
 
         # Asegurar fila del contador en meta
         await db.execute(_MIGRATE_META)
@@ -506,8 +529,10 @@ async def add_pending(
             INSERT INTO pending_queue
                 (url_source, download_url, filename_hint, post_id,
                  post_published, remote_hash, extra_headers,
-                 profile_url_id, discovered_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 profile_url_id, discovered_at, queue_position)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    (SELECT COALESCE(MAX(queue_position), 0) + 1
+                     FROM pending_queue))
             ON CONFLICT(url_source) DO UPDATE SET
                 download_url  = excluded.download_url,
                 extra_headers = excluded.extra_headers
@@ -582,7 +607,8 @@ async def get_pending_files(
     """
     Retorna los archivos pendientes de descarga como lista de dicts.
     Si profile_url_id está definido, filtra por esa fuente.
-    Ordenados por orden de descubrimiento (FIFO).
+    Ordenados por la posición persistente de la cola. Cada fallo mueve su fila
+    al fondo, incluso si Cherry se cierra antes de la siguiente ejecución.
     """
     db_path = artist_dir / CATALOG_NAME
     if not db_path.exists():
@@ -596,7 +622,7 @@ async def get_pending_files(
                        post_id, post_published, remote_hash, extra_headers
                 FROM pending_queue
                 WHERE profile_url_id = ?
-                ORDER BY discovered_at
+                ORDER BY queue_position, discovered_at, rowid
                 """,
                 (profile_url_id,),
             ) as cur:
@@ -607,11 +633,38 @@ async def get_pending_files(
                 SELECT url_source, download_url, filename_hint,
                        post_id, post_published, remote_hash, extra_headers
                 FROM pending_queue
-                ORDER BY discovered_at
+                ORDER BY queue_position, discovered_at, rowid
                 """
             ) as cur:
                 rows = await cur.fetchall()
     return [dict(row) for row in rows]
+
+
+async def move_pending_to_back(artist_dir: Path, url_source: str) -> bool:
+    """Mueve un pendiente fallido al fondo de su cola de forma persistente.
+
+    Retorna ``True`` si la fila seguía en la cola. La actualización es una sola
+    sentencia SQL, de modo que los workers concurrentes quedan serializados por
+    SQLite y no pueden devolver accidentalmente el archivo al frente.
+    """
+    db_path = artist_dir / CATALOG_NAME
+    if not db_path.exists():
+        return False
+    async with _db(db_path) as db:
+        async with db.execute(
+            """
+            UPDATE pending_queue
+            SET queue_position = (
+                SELECT COALESCE(MAX(queue_position), 0) + 1
+                FROM pending_queue
+            )
+            WHERE url_source = ?
+            """,
+            (url_source,),
+        ) as cur:
+            moved = cur.rowcount > 0
+        await db.commit()
+        return moved
 
 
 async def remove_pending(artist_dir: Path, url_source: str) -> None:
@@ -625,6 +678,27 @@ async def remove_pending(artist_dir: Path, url_source: str) -> None:
             "DELETE FROM pending_queue WHERE url_source = ?", (url_source,)
         )
         await db.commit()
+
+
+async def remove_pending_for_profile_url(
+    artist_dir: Path, profile_url_id: int,
+) -> int:
+    """Retira toda la cola que pertenece a una fuente eliminada.
+
+    Los archivos ya catalogados no se tocan. Retorna cuántas filas pendientes
+    salieron para que la UI pueda explicar exactamente lo que hizo.
+    """
+    db_path = artist_dir / CATALOG_NAME
+    if not db_path.exists():
+        return 0
+    async with _db(db_path) as db:
+        async with db.execute(
+            "DELETE FROM pending_queue WHERE profile_url_id = ?",
+            (profile_url_id,),
+        ) as cur:
+            removed = max(0, cur.rowcount)
+        await db.commit()
+    return removed
 
 
 async def compare_catalogs(folder_a: Path, folder_b: Path) -> dict:

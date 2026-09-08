@@ -134,7 +134,7 @@ _DDG_COOKIES = {"__ddg1_", "__ddg8_", "__ddg9_", "__ddg10_"}
 
 class DownloadResult:
     __slots__ = ("url", "filename", "dest", "file_hash", "file_size", "skipped",
-                 "error", "error_kind")
+                 "error", "error_kind", "failure_code")
 
     def __init__(
         self,
@@ -146,6 +146,7 @@ class DownloadResult:
         skipped: bool = False,
         error: str | None = None,
         error_kind: str | None = None,
+        failure_code: str | None = None,
     ) -> None:
         self.url        = url
         self.filename   = filename
@@ -155,6 +156,7 @@ class DownloadResult:
         self.skipped    = skipped
         self.error      = error
         self.error_kind = error_kind  # uno de ErrorKind.*
+        self.failure_code = failure_code
 
     @property
     def ok(self) -> bool:
@@ -491,8 +493,9 @@ class DownloadEngine:
         max_retries:  sobreescribe config.network.retries_file para esta llamada.
                       Útil en batch (max_retries=1) para falla rápida —
                       el loop de iteraciones del batch es el mecanismo de reintento.
-        transport:    ``http`` por defecto; ``browser_image`` carga el archivo
-                      como subrecurso desde ``browser_origin`` y lo extrae por CDP.
+        transport:    ``http`` por defecto; ``browser_image`` (nombre histórico)
+                      carga el archivo como subrecurso compatible desde
+                      ``browser_origin`` y lo extrae por CDP.
         """
         async with self._semaphore:
             if transport == "browser_image":
@@ -577,6 +580,17 @@ class DownloadEngine:
                 file_hash=outcome.file_hash, file_size=outcome.file_size,
             )
 
+        # Un fallo sin respuesta o durante el stream puede dejar recursos
+        # multimedia retenidos por Chromium. No reutilizar esa sesión evita
+        # que un archivo problemático convierta los siguientes en una racha de
+        # ``Failed``. Los rechazos HTTP válidos no necesitan reinicio.
+        if outcome.failure_code in {
+            "headers_timeout", "no_http_failed", "stream_timeout", "stream_error",
+        }:
+            await self._browser_transport.close()
+            self._browser_transport = None
+            self._browser_key = None
+
         code = outcome.status
         if code == 404:
             kind = ErrorKind.NOT_FOUND
@@ -593,12 +607,13 @@ class DownloadEngine:
         return DownloadResult(
             url=url, filename=filename,
             error=outcome.error, error_kind=kind,
+            failure_code=outcome.failure_code,
         )
 
     async def _wait_browser_turn(
         self, on_status: Callable[[str], None] | None,
     ) -> None:
-        """Aplica la misma compuerta global y pacer antes de crear el ``<img>``."""
+        """Aplica la misma compuerta global y pacer antes de crear el subrecurso."""
         while True:
             if self._completion_gate is not None:
                 if on_status and not self._completion_gate.ready():

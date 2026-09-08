@@ -18,7 +18,7 @@ _MEDIA_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif",
     ".mp4", ".webm", ".mov", ".avi", ".mkv", ".flv",
     ".mp3", ".ogg", ".flac", ".wav", ".aac",
-    ".zip", ".rar", ".7z", ".pdf", ".psd", ".clip",
+    ".zip", ".rar", ".7z", ".pdf", ".psd", ".psb", ".clip", ".lip",
 }
 
 
@@ -57,7 +57,7 @@ EXT_GROUPS: dict[str, tuple[str, set[str]]] = {
     "audio":   ("Audio",              {"mp3","flac","ogg","wav","aac","m4a","opus","wma"}),
     "zip":     ("Comprimidos",        {"zip","rar","7z","tar","gz","bz2","xz","cbz","cbr"}),
     "docs":    ("Documentos",         {"pdf","doc","docx","txt","epub"}),
-    "project": ("Archivos proyecto",  {"psd","clip","xcf","kra","procreate","sai","sai2","ai","ora","mdp"}),
+    "project": ("Archivos proyecto",  {"psd","psb","clip","lip","xcf","kra","procreate","sai","sai2","ai","ora","mdp"}),
 }
 
 

@@ -41,6 +41,19 @@ class TemplateConfig(BaseModel):
     workers: int = Field(3, ge=1)
 
 
+class PawchiveConfig(BaseModel):
+    """Frenos ajustables del archivo público Pawchive.
+
+    El techo de caudal permanece en el template: 2 MiB/s entre todos los
+    workers. Solo la ventana móvil se expone porque es el dato que podremos
+    afinar con observaciones reales sin alterar el comportamiento de los demás
+    servicios.
+    """
+
+    downloads_per_window: int = Field(300, ge=1, le=100_000)
+    window_hours: float = Field(3.0, gt=0, le=168)
+
+
 class UserConfig(BaseModel):
     download_dir: str = str(Path.home() / "cherry-dl-collections")
     workers: int = Field(3, ge=1)
@@ -48,6 +61,7 @@ class UserConfig(BaseModel):
     daily_limit_enabled: bool = False
     daily_limit_gb: float = Field(100.0, gt=0)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
+    pawchive: PawchiveConfig = Field(default_factory=PawchiveConfig)
     templates: dict[str, TemplateConfig] = Field(default_factory=dict)
 
     @property
@@ -88,7 +102,12 @@ def load_config() -> UserConfig:
         network_raw = raw.pop("network", {})
         network = NetworkConfig(**network_raw)
 
-        return UserConfig(**raw, network=network, templates=templates)
+        pawchive_raw = raw.pop("pawchive", {})
+        pawchive = PawchiveConfig(**pawchive_raw)
+
+        return UserConfig(
+            **raw, network=network, pawchive=pawchive, templates=templates,
+        )
 
     except Exception as e:
         # Si el TOML está corrupto, retornar defaults y no crashear
@@ -116,6 +135,9 @@ def save_config(config: UserConfig) -> None:
         f"retries_api = {config.network.retries_api}\n",
         f"retries_file = {config.network.retries_file}\n",
         f"stall_timeout = {config.network.stall_timeout}\n",
+        "\n[pawchive]\n",
+        f"downloads_per_window = {config.pawchive.downloads_per_window}\n",
+        f"window_hours = {config.pawchive.window_hours}\n",
     ]
 
     for name, tmpl in config.templates.items():
@@ -148,10 +170,29 @@ def set_config_value(key: str, value: str) -> UserConfig:
             if not math.isfinite(amount) or amount <= 0:
                 raise ValueError("daily_limit_gb debe ser mayor que cero")
             config = config.model_copy(update={"daily_limit_gb": amount})
+        case "pawchive_downloads_per_window":
+            limit = int(value)
+            if limit <= 0:
+                raise ValueError("pawchive_downloads_per_window debe ser mayor que cero")
+            config = config.model_copy(update={
+                "pawchive": config.pawchive.model_copy(update={
+                    "downloads_per_window": limit,
+                }),
+            })
+        case "pawchive_window_hours":
+            hours = float(value)
+            if not math.isfinite(hours) or hours <= 0:
+                raise ValueError("pawchive_window_hours debe ser mayor que cero")
+            config = config.model_copy(update={
+                "pawchive": config.pawchive.model_copy(update={
+                    "window_hours": hours,
+                }),
+            })
         case _:
             raise ValueError(
                 f"Clave desconocida: '{key}'. Válidas: download_dir, workers, "
-                "timeout, daily_limit_enabled, daily_limit_gb"
+                "timeout, daily_limit_enabled, daily_limit_gb, "
+                "pawchive_downloads_per_window, pawchive_window_hours"
             )
 
     save_config(config)

@@ -8,10 +8,9 @@ cosas, el motor guarda `download_dir` como string literal de TOML (comillas
 simples) precisamente para que una ruta de Windows no rompa el parseo por el
 backslash.
 
-Lo que NO se toca aquí: `network` (delays, reintentos, stall) y los workers por
-template. Son los frenos que evitan que el motor martillee un sitio hasta que lo
-bloqueen, y no hay ninguna razón para que se ajusten a ojo desde una GUI. Se
-siguen editando a mano en el TOML.
+Los ajustes genéricos de `network` y los workers por template siguen protegidos.
+La excepción es la ventana móvil de Pawchive: se expone con defaults prudentes
+porque está aislada a ese sitio y se puede ajustar con evidencia real.
 
 Síncrono a propósito: es leer y escribir un archivo de ~15 líneas. Nada de esto
 justifica pasar por el runtime.
@@ -42,6 +41,9 @@ def load() -> dict:
         "timeout": int(cfg.timeout),
         "daily_limit_enabled": bool(cfg.daily_limit_enabled),
         "daily_limit_gb": float(cfg.daily_limit_gb),
+        "pawchive_downloads_per_window": int(
+            cfg.pawchive.downloads_per_window),
+        "pawchive_window_hours": float(cfg.pawchive.window_hours),
     }
 
 
@@ -51,6 +53,8 @@ def save(
     timeout: int,
     daily_limit_enabled: bool = False,
     daily_limit_gb: float = 100.0,
+    pawchive_downloads_per_window: int = 300,
+    pawchive_window_hours: float = 3.0,
 ) -> dict:
     """Guarda los ajustes conservando el resto del TOML.
 
@@ -62,12 +66,22 @@ def save(
 
     if float(daily_limit_gb) <= 0:
         raise ValueError("El límite diario debe ser mayor que cero")
+    if int(pawchive_downloads_per_window) <= 0:
+        raise ValueError("La cuota de Pawchive debe ser mayor que cero")
+    if float(pawchive_window_hours) <= 0:
+        raise ValueError("La ventana de Pawchive debe ser mayor que cero")
+    from third_party.cherry_dl.config import PawchiveConfig
+
     cfg = load_config().model_copy(update={
         "download_dir": str(download_dir).strip(),
         "workers": int(workers),
         "timeout": int(timeout),
         "daily_limit_enabled": bool(daily_limit_enabled),
         "daily_limit_gb": float(daily_limit_gb),
+        "pawchive": PawchiveConfig(
+            downloads_per_window=int(pawchive_downloads_per_window),
+            window_hours=float(pawchive_window_hours),
+        ),
     })
     save_config(cfg)
     log.info("cherry: ajustes guardados en %s", config_file())

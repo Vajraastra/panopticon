@@ -1,10 +1,8 @@
 """
 Ajustes de cherry-dl (A5).
 
-Incluye carpeta, workers, timeout y un límite diario global opcional. Los frenos
-de red (`delay_min`, reintentos, `stall_timeout`) y los workers por template
-siguen en el TOML a mano, porque son lo que evita que el motor martillee un
-sitio hasta que lo bloqueen.
+Incluye carpeta, workers, timeout, un límite diario global opcional y la ventana
+móvil exclusiva de Pawchive. Los demás frenos de red siguen protegidos.
 
 Lee y escribe `~/.cherry-dl/config.toml`, compartido con el standalone. Cambiar
 `download_dir` **no mueve nada**: los proyectos que ya existen conservan la ruta
@@ -96,6 +94,52 @@ class SettingsDialog(QDialog):
             "cherry.settings_daily_limit", "Daily download limit",
         ), limit_holder)
 
+        pawchive_row = QHBoxLayout()
+        self._pawchive_downloads = QSpinBox()
+        self._pawchive_downloads.setRange(1, 100000)
+        self._pawchive_downloads.setSingleStep(25)
+        self._pawchive_downloads.setSuffix(self.tr(
+            "cherry.settings_pawchive_files_suffix", " files",
+        ))
+        self._pawchive_downloads.setValue(
+            current["pawchive_downloads_per_window"])
+        self._pawchive_hours = QDoubleSpinBox()
+        self._pawchive_hours.setRange(0.25, 168.0)
+        self._pawchive_hours.setDecimals(2)
+        self._pawchive_hours.setSingleStep(0.5)
+        self._pawchive_hours.setSuffix(self.tr(
+            "cherry.settings_pawchive_hours_suffix", " h",
+        ))
+        self._pawchive_hours.setValue(current["pawchive_window_hours"])
+        pawchive_tip = self.tr(
+            "cherry.settings_pawchive_tip",
+            "Pawchive only. Recommended: 300 downloads per 3 hours. "
+            "Its combined bandwidth remains capped at 2 MB/s.",
+        )
+        self._pawchive_downloads.setToolTip(pawchive_tip)
+        self._pawchive_hours.setToolTip(pawchive_tip)
+        pawchive_row.addWidget(self._pawchive_downloads)
+        pawchive_row.addWidget(QLabel(self.tr(
+            "cherry.settings_pawchive_every", "every",
+        )))
+        pawchive_row.addWidget(self._pawchive_hours)
+        pawchive_row.addStretch()
+        pawchive_holder = QWidget()
+        pawchive_holder.setLayout(pawchive_row)
+        form.addRow(self.tr(
+            "cherry.settings_pawchive_limit", "Pawchive safety window",
+        ), pawchive_holder)
+
+        recommended = QLabel(self.tr(
+            "cherry.settings_pawchive_recommended",
+            "Recommended default: 300 downloads / 3 hours · fixed 2 MB/s "
+            "shared by Pawchive workers.",
+        ))
+        recommended.setWordWrap(True)
+        recommended.setStyleSheet(
+            f"color: {self._color('accent_main', '#00ffcc')}; font-size: 11px;")
+        form.addRow("", recommended)
+
         lay.addLayout(form)
 
         note = QLabel(self.tr(
@@ -155,6 +199,8 @@ class SettingsDialog(QDialog):
                 self._timeout.value(),
                 self._daily_limit_enabled.isChecked(),
                 self._daily_limit_gb.value(),
+                self._pawchive_downloads.value(),
+                self._pawchive_hours.value(),
             )
         except Exception as exc:
             self._error.setText(self.tr(

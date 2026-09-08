@@ -27,6 +27,120 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Integración pendiente — autenticación de Pixiv (2026-09-07)
+
+El motor vendorizado sí incluye `auth/pixiv.py`: busca `PHPSESSID`, conserva la cookie y lanza
+`NeedsPixivAuth` cuando falta. El hueco está en el wrapper de Panopticon: el diálogo nativo llama
+a `run_site_login()`, pero `_login_and_resolve()` sólo implementa Patreon y rechaza Pixiv. Queda
+pendiente conectar un login guiado de Pixiv, persistir su sesión y cubrir el recorrido completo.
+
+### `catalog.py` + `download_service.py` — los fallos rotan al fondo (2026-09-07)
+
+La cola diferida anterior sólo vivía durante una ejecución: al reiniciar, el orden volvía a
+`discovered_at` y un archivo anómalo podía reaparecer al frente. `pending_queue` guarda ahora una
+`queue_position` mutable. Todo fallo de archivo la mueve atómicamente después del máximo actual,
+sin importar extensión ni clase de error; un 404 confirmado conserva su tratamiento especial y
+sale de la cola. La migración asigna posiciones por `ROWID` para no alterar el FIFO existente.
+Validación sin red: `cherry_queue_selftest.py` 9/9 y `cherry_block_toytest.py` 33/33.
+
+### `browser_transport.py` — contexto según tipo y cierre acotado (2026-09-07)
+
+Pawchive no sirve todos sus adjuntos bajo un contexto de imagen. Ocho fallos de una ejecución real
+eran `.mp4`/`.webm` válidos; una sonda A/B confirmó que un WebM fallaba como `<img>` y respondía
+HTTP 206 completo como `<video>`. El transporte elige ahora por extensión entre `<img>`, `<video>`,
+`<audio>` y un `<iframe>` genérico, e intercepta cualquier tipo de subrecurso del host de archivos.
+
+Un 206 sólo se considera completo si su `Content-Range` abarca exactamente `0..total-1` y la
+longitud coincide. Al terminar el stream también se comparan los bytes escritos; un parcial se
+rechaza y se borra. Para evitar que el cierre de Panopticon quede congelado, el comando de cierre,
+WebSocket, receptor, tareas auxiliares, proceso y borrado del perfil tienen esperas acotadas.
+Validación Chromium: 38/38, incluida una conexión que nunca contesta al cierre.
+
+Por petición expresa, los lienzos `.psd`, `.psb`, `.clip` y `.lip` pertenecen al contexto de
+imagen aunque el navegador no pueda renderizarlos: CDP intercepta la respuesta antes de la
+decodificación. Las cuatro extensiones también se reconocen en el catálogo local y en el grupo
+“Archivos de proyecto”. Banco Chromium actualizado: 41/41.
+
+La auditoría real de Hoovesart descubrió que la query `?f=` tampoco sirve como clave CDP: Chromium
+codifica nombres Unicode antes de emitir el evento y una URL con `Nutt’in…` dejaba al worker
+esperando 60 s aunque las cabeceras hubieran llegado. Como el path de Pawchive contiene el hash
+estable y `?f=` sólo es el nombre sugerido, la correlación ignora esa query. Un WebM real terminó
+con 31.994.635 bytes y cero errores sobre una copia del catálogo. Banco Chromium: 43/43.
+
+La ejecución real siguiente confirmó que los tres archivos `Nutt’in…` sí se descargaron completos;
+la racha posterior afectó a `Absolute Pin…` y `Mom , what the ...` sin apóstrofes. Un elemento
+multimedia se limpia ahora con `pause()`, retirada de `src` y `load()` antes de salir del DOM. Si
+Chromium devuelve un fallo sin HTTP, timeout o error de stream, el engine cierra esa sesión y crea
+otra para el siguiente intento, evitando heredar recursos dañados. Banco Chromium: 48/48.
+
+### `browser_transport.py` — recupera el 404 oculto de un `<img>` cross-origin (2026-09-07)
+
+Un archivo ausente de Pawchive devuelve una página HTML 404. Cuando se pide como `<img>`, Chromium
+entrega a `Fetch.requestPaused` sólo `responseErrorReason=Failed`, sin estado; el motor lo confundía
+con la firma del cortacircuitos. Sin embargo, el evento compañero
+`Network.responseReceivedExtraInfo` sí conserva `statusCode=404` y las cabeceras. El transporte
+ahora correlaciona ambos por `networkId`, espera hasta 500 ms si llegaron invertidos y limpia el
+estado auxiliar al terminar. El engine recibe 404, lo clasifica `NOT_FOUND` y el servicio retira
+sólo esa fila de `pending_queue`; no alimenta ni escala el guardrail global.
+
+Confirmado con dos hashes reales mediante una petición por archivo y reproducido sin red externa
+con un 404 HTML cross-origin en `scripts/cherry_browser_toytest.py`. La sonda viva de una
+sola petición queda en `scripts/cherry_cdp_404_probe.py`.
+
+### `browser_transport.py` — una pausa CDP tardía no deja una tarea huérfana (2026-09-06)
+
+En la primera prueba viva del transporte integrado, Chromium emitió alguna
+`Fetch.requestPaused` después de que el `<img>` correspondiente ya se hubiera quitado. El receptor
+intentaba liberarla con `asyncio.create_task(Fetch.continueRequest(...))`; si Chromium invalidaba
+el identificador en esa ventana, nadie recogía la excepción y asyncio imprimía `Task exception
+was never retrieved: Invalid InterceptionId`.
+
+Las pausas sin descarga dueña pasan ahora por una tarea registrada que consume ese cierre benigno,
+avisa si recibe otro error y se cancela ordenadamente al cerrar el navegador. No cambia la
+clasificación HTTP ni la cola: la prueba viva confirmó que los registros recientes tenían archivo
+en disco y que no quedaron `.tmp`. `scripts/cherry_browser_toytest.py` fuerza la carrera.
+
+### `browser_transport.py` + `download_service.py` — los fallos dejan diagnóstico útil (2026-09-06)
+
+La prueba viva siguiente tuvo 75 respuestas consecutivas que el visor redujo a `[network]`; el
+log persistente solo conservaba el `Network.loadingFailed` que el propio cliente provoca al
+abortar la respuesta. Se perdían el estado HTTP y las cabeceras que permiten distinguir un 206,
+una redirección, un fallo del servidor y un problema real de CDP.
+
+El transporte registra ahora archivo y target sin query, estado/texto HTTP, MIME, longitud,
+`Content-Range`, servidor, redirección, error de red e id de Network. El servicio conserva el
+detalle en `panopticon.log` y lo muestra tanto en el intento inicial como en el diferido, en lugar
+de enseñar solo `[network]`. Los cuerpos textuales se compactan y limitan; la query —que contiene
+el nombre original— no se escribe. Un 206 sigue rechazándose: aceptar una respuesta parcial como
+archivo completo corrompería el vídeo. Banco Chromium: 26/26.
+
+### `site_throttle.py` — ventana configurable y sonda automática (2026-09-06/07)
+
+La instrumentación mostró la causa que antes se escondía: después de algo más de 300
+transferencias, `file.pawchive.pw` dejó de entregar cabeceras (`reason=Failed` y timeout) y se
+recuperó solo horas después. La cuota nueva permite como máximo **300 transferencias exitosas en
+cualquier ventana móvil de 3 horas**, global para Pawchive y persistente en
+`~/.cherry-dl/site_throttle.json`. Cada worker reserva cupo antes de pedir; dos workers no pueden
+cruzar juntos el límite y un intento fallido devuelve su reserva.
+
+Los valores siguen siendo **300 / 3 h** por defecto y la UI los marca expresamente como
+recomendados, pero ahora viven en `[pawchive] downloads_per_window` y `window_hours` dentro de
+`config.toml`. El cambio sólo afecta a Pawchive. Su techo agregado de **2 MB/s** permanece fijo en
+el template; los demás servicios continúan sin límite de caudal propio.
+
+El cortacircuitos cuenta únicamente cinco firmas CDP `no_http_failed` dentro de dos minutos. El
+timeout de cabeceras se conserva en el diagnóstico pero no cuenta, porque también puede venir de
+una caída momentánea de la red local. Un 404, rechazo HTTP, stream detenido, otra razón de red o
+archivo aislado rompe la racha. Enfría 15/30/60/180 minutos y después deja pasar una sola sonda:
+éxito reanuda; repetir la firma escala la espera inmediatamente. La cola queda intacta y el sueño
+sigue siendo cancelable.
+Banco con reloj simulado: `scripts/cherry_throttle_toytest.py`, 15/15.
+
+Un éxito que empezó antes de la apertura del circuito ya no puede cerrarlo después: se registra
+para la cuota, pero sólo una sonda posterior al enfriamiento reactiva el sitio. Esto evita la tanda
+extra observada cuando un video grande terminó 17 segundos después de que otros cinco intentos
+abrieran el corte. Banco con reloj simulado actualizado: 18/18.
+
 ### `download_service.py` + templates — fuentes oficiales antes que archivos (2026-09-06)
 
 Cuando un perfil tiene varias URLs, el orden de alta deja de decidir el orden
@@ -55,8 +169,8 @@ La compuerta es global entre workers y se coordina con el pacer: desde la
 última descarga completada deben pasar cinco segundos antes de iniciar otro
 archivo, y después sigue aplicándose el turno de una petición por segundo. Si
 otro worker termina mientras uno esperaba turno, el turno se descarta y la
-pausa vuelve a contarse desde esa finalización. Se mantienen además 2 workers,
-2 MB/s agregados y 25 GB/día.
+pausa vuelve a contarse desde esa finalización. Se mantienen además 2 workers y
+2 MB/s agregados; Pawchive no tiene un tope diario propio.
 
 ### `engine.py` — un 403 del CDN ya no se toma por bloqueo de Cloudflare (2026-09-05)
 
@@ -274,6 +388,10 @@ Pawchive declara `download_transport = "browser_image"`. El engine abre de forma
 (Edge/Chrome como respaldo) con un perfil temporal vacío, navega una vez al origen y crea un
 `<img>` por archivo. No copia cookies, no usa stealth, no cambia de IP y no reintenta dentro del
 archivo. La sesión Chromium se comparte entre workers y se cierra con el engine.
+
+Cada orden CDP tiene además un plazo de 15 s. Antes, un standby podía cerrar el WebSocket a medias
+y dejar una orden previa al stream esperando el timeout exterior de dos horas; ahora el engine
+descarta esa sesión y el siguiente archivo crea un navegador limpio.
 
 El archivo no se recupera con `Network.getResponseBody`: eso lo acumularía entero en RAM. CDP lo
 pausa al recibir cabeceras, `Fetch.takeResponseBodyAsStream` entrega el cuerpo e `IO.read` lo

@@ -16,7 +16,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QProgressBar, QVBoxLayout, QWidget,
+    QCheckBox, QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QProgressBar,
+    QVBoxLayout, QWidget,
 )
 
 _MAX_LOG_LINES = 800
@@ -112,6 +113,17 @@ class DownloadPanel(QWidget):
         self._position = QLabel("")
         self._position.setStyleSheet(f"color: {dim}; font-size: 12px;")
         top.addWidget(self._position)
+        self._follow_log = QCheckBox(self.tr(
+            "cherry.dl_follow_events", "Follow events",
+        ))
+        self._follow_log.setChecked(True)
+        self._follow_log.setToolTip(self.tr(
+            "cherry.dl_follow_events_tip",
+            "Keep the newest event visible. Turn it off to inspect earlier lines "
+            "while downloads continue.",
+        ))
+        self._follow_log.toggled.connect(self._on_follow_toggled)
+        top.addWidget(self._follow_log)
         lay.addLayout(top)
 
         self._phase = QLabel(self.tr("cherry.dl_idle", "Idle"))
@@ -186,7 +198,27 @@ class DownloadPanel(QWidget):
         }
         color = colors.get(level, self._color("text_primary", "#fff"))
         safe = (message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+        bar = self._log.verticalScrollBar()
+        previous_position = bar.value()
         self._log.appendHtml(f'<span style="color:{color}">{safe}</span>')
+        if self._follow_log.isChecked():
+            # El layout del documento se completa después de appendHtml. Hacer
+            # el salto en el siguiente turno evita que el máximo aún sea el de
+            # la línea anterior y el seguimiento parezca quedarse congelado.
+            QTimer.singleShot(0, self._scroll_log_to_end)
+        else:
+            # appendHtml mueve el cursor al final incluso cuando el usuario
+            # pausó el seguimiento. Restaurar la posición mantiene legible la
+            # zona que está analizando mientras siguen entrando eventos.
+            bar.setValue(min(previous_position, bar.maximum()))
+
+    def _on_follow_toggled(self, enabled: bool) -> None:
+        if enabled:
+            self._scroll_log_to_end()
+
+    def _scroll_log_to_end(self) -> None:
+        bar = self._log.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
     # ── Slots ─────────────────────────────────────────────────────────────
     def _reset_counters(self) -> None:
