@@ -68,6 +68,7 @@ from .site_budget import (
 )
 from .site_throttle import SiteThrottle
 from .site_policy import SourceCategory, declared_site_policy, resolve_site_policy
+from .live_metrics import SiteRunMetrics, append_metrics
 from .templates._registry import find_template, get_template
 from .templates.base import FileInfo, parse_date_utc
 from .auth.patreon import NeedsManualAuth
@@ -81,6 +82,12 @@ def _failure_detail(error: str | None, limit: int = 320) -> str:
     """Una línea legible para UI y log, sin esconder la causa concreta."""
     compact = " ".join((error or "sin detalle").split())
     return compact if len(compact) <= limit else compact[:limit - 1] + "…"
+
+
+def _publish_site_metrics(metrics: SiteRunMetrics, emit: "EmitFn") -> None:
+    values = append_metrics(metrics)
+    emit(SiteMetrics(metrics.site, values))
+    emit(Log(f"◫ {metrics.summary()}", "dim"))
 
 
 # ── Eventos ─────────────────────────────────────────────────────────────────────
@@ -182,10 +189,17 @@ class SiteBlocked:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class SiteMetrics:
+    """Resumen operativo medido al terminar una fuente."""
+    site: str
+    values: dict
+
+
 DownloadEvent = Union[
     Log, WorkersResolved, SourceStarted, Cooldown, BatchInfo,
     WorkerStart, WorkerProgress, WorkerDone, WorkerIdle,
-    Counters, SourceDone, ScanComplete, ScanProgress, SiteBlocked,
+    Counters, SourceDone, ScanComplete, ScanProgress, SiteBlocked, SiteMetrics,
 ]
 
 EmitFn = Callable[[DownloadEvent], None]
@@ -481,6 +495,19 @@ async def run_profile_download(
                 continue
 
             policy = resolve_site_policy(type(template), config, workers)
+            source_metrics = SiteRunMetrics(
+                site=template.name,
+                source_url=pu["url"],
+                workers=policy.transfer.workers,
+                transfer_delay_min=policy.transfer.delay_min or 0.0,
+                transfer_delay_max=policy.transfer.delay_max or 0.0,
+            )
+            set_network_observer = getattr(
+                template, "set_network_observer", None,
+            )
+            if set_network_observer is not None:
+                set_network_observer(source_metrics.observe)
+            source_metrics.start_scan()
 
             if not getattr(template, "download_enabled", True):
                 emit(Log(
@@ -571,6 +598,7 @@ async def run_profile_download(
                 if not await _resolve_required_auth(
                     template, exc, resolve_auth, emit,
                 ):
+                    _publish_site_metrics(source_metrics, emit)
                     continue
                 pixiv_auth_refreshed = template.name == "pixiv"
                 if pixiv_auth_refreshed:
@@ -585,15 +613,18 @@ async def run_profile_download(
                     if discard is not None:
                         await discard()
                     emit(Log(f"✗ Error tras auth: {exc2}", "error"))
+                    _publish_site_metrics(source_metrics, emit)
                     continue
                 except Exception as exc2:
                     emit(Log(f"✗ Error tras auth: {exc2}", "error"))
+                    _publish_site_metrics(source_metrics, emit)
                     continue
             except Exception as exc:
                 emit(Log(
                     f"✗ Error resolviendo fuente ({type(exc).__name__}): {exc}",
                     "error",
                 ))
+                _publish_site_metrics(source_metrics, emit)
                 continue
 
             emit(SourceStarted(pu["url"], artist_info.name, pu["site"]))
@@ -764,6 +795,7 @@ async def run_profile_download(
             finally:
                 # Conserva hasta el último bloque parcial ante error o cancelación.
                 await asyncio.shield(scan_catalog.close())
+                source_metrics.finish_scan(scan_files_seen)
 
             # Marcar cobertura histórica completa SOLO si un scan completo
             # terminó entero (sin error). last_synced se fija al inicio de la
@@ -786,6 +818,7 @@ async def run_profile_download(
                     f"⏳ {count} archivo(s) en cola" if count else "✓ Ya está al día",
                     "info" if count else "ok",
                 ))
+                _publish_site_metrics(source_metrics, emit)
                 continue
 
             # ── Fase 2: descargar desde la cola ─────────────────────────────
@@ -839,6 +872,7 @@ async def run_profile_download(
             emit(Log(f"Descargando {len(pending_list)} archivo(s){resume_note}", "info"))
 
             file_queue: asyncio.Queue = asyncio.Queue(maxsize=src_workers * 3)
+            source_metrics.start_transfer()
 
             # Ventana de rechazos y su motivo. Un dict y no un `nonlocal` porque
             # lo comparten el productor y N workers, todos closures de aquí.
@@ -992,6 +1026,7 @@ async def run_profile_download(
                                     total_timeout=300.0,
                                     transport=download_transport,
                                     browser_origin=browser_origin,
+                                    on_observation=source_metrics.observe,
                                 ),
                                 timeout=7200.0,
                             )
@@ -1119,6 +1154,7 @@ async def run_profile_download(
                         # duplicado que se borra: el ancho de banda del sitio ya
                         # se gastó, que es lo que el presupuesto cuenta.
                         _record_global_download(result.file_size)
+                        source_metrics.downloaded(result.file_size)
                         if day_budget and result.file_size:
                             gastado = budget_add(template.name, result.file_size)
                             if gastado >= day_budget and template.name not in blocked_sites:
@@ -1252,9 +1288,11 @@ async def run_profile_download(
                 emit(Log("⚠ Descarga incompleta. Usá Sync para continuar.", "warn"))
 
             source_dl = summ.downloaded - dl_before
+            source_metrics.finish_transfer()
             new_count = (pu["file_count"] or 0) + source_dl
             await update_profile_url_sync(INDEX_DB, pu["id"], file_count=new_count)
             emit(SourceDone(pu["id"], new_count))
+            _publish_site_metrics(source_metrics, emit)
             if global_state["reached"]:
                 break
 

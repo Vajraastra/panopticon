@@ -49,7 +49,10 @@ class PixivTemplate(SiteTemplate):
     base_url = _BASE
     category = SourceCategory.FREE_OFFICIAL
     scan_policy = ScanPolicy(delay_min=_DELAY_MIN, delay_max=_DELAY_MAX)
-    transfer_policy = TransferPolicy(workers=2, max_workers=2)
+    transfer_policy = TransferPolicy(
+        workers=3, max_workers=3,
+        delay_min=_DELAY_MIN, delay_max=_DELAY_MAX,
+    )
     provides_file_hashes = False
 
     _http: httpx.AsyncClient | None = None
@@ -91,6 +94,7 @@ class PixivTemplate(SiteTemplate):
             self.scan_policy.delay_max or 0,
         ))
         response = await client.get(url, params=params)
+        self._observe_network("scan_http", response.status_code)
         if response.status_code in (401, 403):
             clear_pixiv_session()
             raise NeedsPixivAuth(
@@ -157,6 +161,10 @@ class PixivTemplate(SiteTemplate):
                 raise ValueError("Pixiv devolvió una lista de obras inválida")
             for work in works:
                 if not isinstance(work, dict):
+                    continue
+                # Panopticon conserva sólo ilustraciones estáticas de Pixiv.
+                # Manga y ugoira no se encolan ni activan llamadas de metadata.
+                if work.get("type") != "illust":
                     continue
                 published = parse_date_utc(str(work.get("create_date") or ""))
                 if since is not None and published is not None and published < since:

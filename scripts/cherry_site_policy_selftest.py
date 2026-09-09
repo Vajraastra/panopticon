@@ -95,16 +95,20 @@ def main() -> None:
           "el servicio debe consumir el override de Patreon")
     check(pawchive.transfer.workers == 2,
           "un override no puede superar el tope rígido de Pawchive")
-    check(pixiv.transfer.workers == 2,
-          "sin override se conserva el default/tope de Pixiv")
+    check(pixiv.transfer.workers == 3,
+          "Pixiv aplica el primer escalón O5 y su tope")
 
     check((patreon.scan.delay_min, patreon.scan.delay_max) == (1.0, 2.5),
           "Patreon conserva su jitter propio de API")
     check((pixiv.scan.delay_min, pixiv.scan.delay_max) == (0.5, 1.5),
           "Pixiv conserva su jitter propio de API")
     check(
-        (patreon.transfer.delay_min, patreon.transfer.delay_max) == (10, 30),
-        "la transferencia de Patreon conserva el fallback global hasta O5",
+        (patreon.transfer.delay_min, patreon.transfer.delay_max) == (1.0, 2.5),
+        "Patreon reutiliza su jitter nativo en transferencias",
+    )
+    check(
+        (pixiv.transfer.delay_min, pixiv.transfer.delay_max) == (0.5, 1.5),
+        "Pixiv reutiliza su jitter nativo en transferencias",
     )
     check(patreon.scan.retries == 6 and patreon.transfer.retries == 7,
           "los reintentos de scan y archivo deben resolverse por separado")
@@ -139,7 +143,7 @@ def main() -> None:
     check(engine._api_retries == 6,
           "el motor activa reintentos de API")
     engine.set_transfer_policy(patreon.transfer)
-    check((engine._delay_min, engine._delay_max) == (10, 30),
+    check((engine._delay_min, engine._delay_max) == (1.0, 2.5),
           "el motor cambia al delay de transferencias")
     check(engine._file_retries == 7 and engine._stall_timeout == 45,
           "el motor cambia reintentos y stall de archivos")
@@ -162,9 +166,8 @@ def main() -> None:
         config_module.CONFIG_FILE = old_file
         config_module.CHERRY_DIR = old_dir
 
-    print(f"OK: {checks}/29 comprobaciones")
+    print(f"OK: {checks}/30 comprobaciones")
 
 
 if __name__ == "__main__":
     main()
-

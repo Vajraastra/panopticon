@@ -12,6 +12,7 @@ API: endpoints internos JSON:API de www.patreon.com/api.
 Paginación: cursor-based via links.next en cada respuesta.
 
 Workers: máximo 2 (max_workers=2). Patreon penaliza con 429 con >2 workers.
+Transferencias: reutilizan el jitter nativo de la API (1–2,5 s).
 
 Dedup: url_source = "patreon://media/{id}" o "patreon://attachment/{id}"
        IDs estables de la API — no contienen tokens que expiran.
@@ -104,7 +105,10 @@ class PatreonTemplate(SiteTemplate):
     base_url    = _BASE
     category = SourceCategory.PAID_OFFICIAL
     scan_policy = ScanPolicy(delay_min=_DELAY_MIN, delay_max=_DELAY_MAX)
-    transfer_policy = TransferPolicy(workers=2, max_workers=2)
+    transfer_policy = TransferPolicy(
+        workers=2, max_workers=2,
+        delay_min=_DELAY_MIN, delay_max=_DELAY_MAX,
+    )
 
     # Cliente HTTP propio, separado del cliente del engine (que usa headers DDG
     # de Kemono). Se inicializa en la primera llamada a _get_client() y se
@@ -229,6 +233,7 @@ class PatreonTemplate(SiteTemplate):
             self.scan_policy.delay_max or 0,
         ))
         resp = await client.get(url)
+        self._observe_network("scan_http", resp.status_code)
 
         if resp.status_code in (401, 403):
             from ..auth.patreon import clear_patreon_session
@@ -300,6 +305,7 @@ class PatreonTemplate(SiteTemplate):
                 raise RuntimeError(
                     f"Error de red al paginar posts de Patreon: {exc}"
                 )
+            self._observe_network("scan_http", resp.status_code)
 
             # Rate limit — esperar y reintentar la misma página
             if resp.status_code == 429:

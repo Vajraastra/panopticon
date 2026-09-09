@@ -268,7 +268,11 @@ async def run() -> None:
             # ── 1. Descarga limpia ────────────────────────────────────────
             print("[1] Descarga limpia")
             size = 512 * 1024
-            r = await eng.download(f"{base}/ok/{size}", tmp, "limpia.bin")
+            observations: list[tuple[str, int]] = []
+            r = await eng.download(
+                f"{base}/ok/{size}", tmp, "limpia.bin",
+                on_observation=lambda kind, code: observations.append((kind, code)),
+            )
             check(r.ok, "termina sin error")
             check(r.file_size == size, f"tamaño correcto ({r.file_size} == {size})")
             dest = tmp / "limpia.bin"
@@ -279,6 +283,8 @@ async def run() -> None:
                 "el hash SHA-256 coincide con el del contenido",
             )
             check(not (tmp / "limpia.bin.tmp").exists(), "no queda .tmp huérfano")
+            check(("transfer_http", 200) in observations,
+                  "la métrica observa el HTTP 200")
 
             # ── 2. Conexión truncada → reanudar por Range ────────────────
             print("\n[2] Conexión truncada a la mitad (reanuda por Range)")
@@ -303,13 +309,18 @@ async def run() -> None:
             # ── 4. 403 del origen: sin reintentos ────────────────────────
             print("\n[4] 403 del origen (Cloudflare solo como CDN)")
             t0 = asyncio.get_running_loop().time()
-            r = await eng.download(f"{base}/cf403", tmp, "denegado.bin")
+            r = await eng.download(
+                f"{base}/cf403", tmp, "denegado.bin",
+                on_observation=lambda kind, code: observations.append((kind, code)),
+            )
             dt = asyncio.get_running_loop().time() - t0
             check(not r.ok, "falla, como debe")
             check(r.error_kind == ErrorKind.AUTH,
                   f"clasificado como AUTH, no CLOUDFLARE (fue {r.error_kind})")
             check(dt < 5.0, f"retorna al instante, sin ciclo de esperas ({dt:.2f}s)")
             check(not (tmp / "denegado.bin").exists(), "no deja archivo a medias")
+            check(("transfer_http", 403) in observations,
+                  "la métrica observa el HTTP 403")
 
             # ── 5. URL con firma vencida: ni se pide ─────────────────────
             print("\n[5] URL con firma ya vencida")

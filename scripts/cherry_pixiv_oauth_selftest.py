@@ -228,12 +228,12 @@ async def test_app_api_mapping() -> None:
 
     check("artista autenticado", artist.name == "OAuth Artist")
     check("recorre todas las páginas", len(page_requests) == 2)
-    check("dos imágenes, dos páginas de manga y un ugoira", len(files) == 4)
+    check("sólo conserva ilustraciones estáticas", len(files) == 1)
     check("dedup compatible", [item.url_source for item in files] == [
-        "pixiv://illust/100/p0", "pixiv://illust/100/p1", "pixiv://ugoira/200",
         "pixiv://illust/300/p0",
     ])
-    check("ugoira grande", any("1920x1080" in item.url for item in files))
+    check("manga y ugoira no llegan a descarga",
+          all(item.content_role == "page" for item in files))
 
 
 async def main() -> int:

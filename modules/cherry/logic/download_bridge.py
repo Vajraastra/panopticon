@@ -51,7 +51,7 @@ class DownloadBridge(QObject):
     concurrentes de varios perfiles, un puente por perfil sobre el mismo runtime.
     """
 
-    # ── los 13 DownloadEvent del motor ──────────────────────────────────────
+    # ── eventos DownloadEvent del motor ─────────────────────────────────────
     log_line         = Signal(str, str)        # msg, level: info|dim|ok|warn|error
     workers_resolved = Signal(int)             # workers efectivos tras el cap
     source_started   = Signal(str, str, str)   # url, artista, sitio
@@ -66,6 +66,7 @@ class DownloadBridge(QObject):
     counters         = Signal(int, int, int, int)  # bajados, saltados, err, difer.
     source_done      = Signal(int, int)        # url_id, file_count
     site_blocked     = Signal(str, int, str)   # sitio, racha, lo que dijo el server
+    site_metrics     = Signal(str, object)     # sitio, muestra operativa
     unknown_event    = Signal(object)          # evento que el upstream añadió
 
     # ── autenticación interactiva ───────────────────────────────────────────
@@ -245,7 +246,7 @@ class DownloadBridge(QObject):
         solo se emiten señales (que Qt entrega en cola al hilo receptor)."""
         from third_party.cherry_dl.download_service import (
             BatchInfo, Cooldown, Counters, Log, ScanComplete, ScanProgress,
-            SiteBlocked, SourceDone, SourceStarted, WorkerDone, WorkerIdle,
+            SiteBlocked, SiteMetrics, SourceDone, SourceStarted, WorkerDone, WorkerIdle,
             WorkerProgress, WorkerStart, WorkersResolved,
         )
 
@@ -285,6 +286,8 @@ class DownloadBridge(QObject):
             self.scan_complete.emit(ev.pending)
         elif cls is SiteBlocked:
             self.site_blocked.emit(ev.site, ev.streak, ev.detail)
+        elif cls is SiteMetrics:
+            self.site_metrics.emit(ev.site, ev.values)
         else:
             # El motor es vendorizado: si upstream añade un evento, se ve aquí
             # en vez de desaparecer en silencio.

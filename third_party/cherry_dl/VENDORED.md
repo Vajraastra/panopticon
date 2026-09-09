@@ -43,9 +43,9 @@ separados:
 4. **Identidad cruzada.** Pawchive ya expone SHA-256 antes de descargar y seguirá siendo la
    prueba principal. Se añadirá una tabla de alias para conservar servicio, publicación, nombre
    original, rol/posición y tamaño; un basename aislado nunca basta para omitir contenido.
-5. **Medición viva de Patreon/Pixiv.** Ambos están limitados a 2 workers y sus archivos heredan
-   el delay global de 10–30 s, aunque sus APIs ya usan jitter menor. Se instrumentará rendimiento
-   y errores antes de ajustar valores. Pixiv aún requiere rescan y descarga histórica reales.
+5. **Medición viva de Patreon/Pixiv.** O5 registra rendimiento y rechazos por fuente en JSONL.
+   Patreon conserva 2 workers y Pixiv sube a 3; API y archivos reutilizan el jitter nativo de
+   cada sitio. Pixiv sólo encola ilustraciones estáticas por decisión del usuario.
 6. **Sitios nuevos.** Fanbox y Coomer entran solo después de estabilizar la arquitectura común.
 
 Los límites de Pawchive se restablecen al cambiar de fuente y no causan directamente la lentitud
@@ -72,7 +72,7 @@ ritmo, caudal, pausa post-descarga, presupuesto, ventana/circuito y transporte.
 
 `download_service` activa primero la política de scan y sólo al encontrar cola activa cambia a la
 de transferencia. Los diferidos conservan y restauran el contrato completo de su sitio. Patreon y
-Pixiv mantienen jitter API propio y delay global de archivos hasta O5. El override TOML de workers,
+Pixiv mantienen jitter API propio; desde O5 sus archivos reutilizan ese mismo rango. El override TOML de workers,
 antes inerte, ya manda por sitio sin superar `max_workers`. Pawchive conserva exactamente 2 workers,
 1 petición/s en ambas fases, 2 MiB/s, 5 s post-descarga, 300/3 h, circuito y navegador CDP. Banco:
 `scripts/cherry_site_policy_selftest.py` 29/29; regresiones amplias sin fallos.

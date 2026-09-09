@@ -12,7 +12,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import TYPE_CHECKING, AsyncIterator, Callable
 
 from ..site_policy import ScanPolicy, SourceCategory, TransferPolicy
 
@@ -199,6 +199,16 @@ class SiteTemplate(ABC):
 
     def __init__(self, engine: "DownloadEngine") -> None:
         self.engine = engine
+        self._network_observer: Callable[[str, int], None] | None = None
+
+    def set_network_observer(
+        self, observer: Callable[[str, int], None] | None,
+    ) -> None:
+        self._network_observer = observer
+
+    def _observe_network(self, kind: str, status_code: int = 0) -> None:
+        if self._network_observer is not None:
+            self._network_observer(kind, status_code)
 
     @classmethod
     @abstractmethod

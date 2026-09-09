@@ -517,6 +517,7 @@ class DownloadEngine:
         extra_headers: dict | None = None,
         total_timeout: float | None = None,
         on_status: Callable[[str], None] | None = None,
+        on_observation: Callable[[str, int], None] | None = None,
         max_retries: int | None = None,
         transport: str = "http",
         browser_origin: str | None = None,
@@ -535,6 +536,8 @@ class DownloadEngine:
                        sin lanzar excepciones.
         on_status:    callback(msg: str) llamado en cada transición de estado
                       importante (delay, conexión, stall, retry, etc.).
+        on_observation: callback(kind, status_code) para telemetría de respuestas
+                        HTTP y stalls, incluidos intentos luego recuperados.
         max_retries:  sobreescribe config.network.retries_file para esta llamada.
                       Útil en batch (max_retries=1) para falla rápida —
                       el loop de iteraciones del batch es el mecanismo de reintento.
@@ -551,7 +554,8 @@ class DownloadEngine:
             else:
                 result = await self._do_download(
                     url, dest_dir, filename, progress, task_id,
-                    on_progress, extra_headers, total_timeout, on_status, max_retries,
+                    on_progress, extra_headers, total_timeout, on_status,
+                    on_observation, max_retries,
                 )
             # Una respuesta fallida también termina un intento de archivo. Si
             # el sitio acaba de decir 403/429, arrancar el siguiente al ritmo
@@ -796,6 +800,7 @@ class DownloadEngine:
         extra_headers: dict | None = None,
         total_timeout: float | None = None,
         on_status: Callable[[str], None] | None = None,
+        on_observation: Callable[[str, int], None] | None = None,
         max_retries: int | None = None,
     ) -> DownloadResult:
         """
@@ -982,6 +987,8 @@ class DownloadEngine:
                         "GET", url, headers=req_headers
                     ) as resp:
                         code = resp.status_code
+                        if on_observation is not None:
+                            on_observation("transfer_http", code)
 
                         # ── Errores permanentes: no reintentar ─────────────────
                         if code == 404:
@@ -1195,6 +1202,8 @@ class DownloadEngine:
                     last_error = "Timeout en descarga"
                     last_kind  = ErrorKind.TIMEOUT
                     error_count += 1
+                    if on_observation is not None:
+                        on_observation("stall", 0)
                     # Preservar progreso acumulado: volcar al .tmp lo recibido
                     # antes del corte, para que `written` marque la posición
                     # exacta desde la que reanudar el Range.
