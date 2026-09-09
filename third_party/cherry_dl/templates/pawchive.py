@@ -94,6 +94,7 @@ from __future__ import annotations
 
 import html
 import re
+from html.parser import HTMLParser
 from typing import AsyncIterator
 
 import httpx
@@ -124,6 +125,27 @@ _AWAITING_ARCHIVE_MARKERS = (
     "haven’t archived this post yet",
     "previews only",
 )
+
+
+class _ArtistNameParser(HTMLParser):
+    """Extrae el nombre canónico que Pawchive publica en la página."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.artist_name = ""
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if self.artist_name or tag.casefold() != "meta":
+            return
+        values = {str(key).casefold(): value for key, value in attrs}
+        if values.get("name", "").casefold() == "artist_name":
+            self.artist_name = (values.get("content") or "").strip()
+
+
+def _artist_name_from_page(page: str) -> str:
+    parser = _ArtistNameParser()
+    parser.feed(page)
+    return parser.artist_name
 
 
 # ── Template ───────────────────────────────────────────────────────────────────
@@ -196,10 +218,23 @@ class PawchiveTemplate(SiteTemplate):
         service = m.group(1).lower()
         creator_id = m.group(2)
 
+        canonical_url = f"{_BASE}/{service}/user/{creator_id}"
         name = ""
         try:
-            index = await self._get_creators_index()
-            name = index.get((service, creator_id), "")
+            # La página individual publica el nombre en
+            # <meta name="artist_name" content="…">. Son ~75 KB frente a los
+            # ~13 MB del índice global y resuelve justo el creador solicitado.
+            name = _artist_name_from_page(
+                await self.engine.get_text(canonical_url)
+            )
+        except Exception:
+            # Compatibilidad con respuestas antiguas o fallos puntuales de la
+            # página: el índice global sigue siendo el segundo camino.
+            pass
+        try:
+            if not name:
+                index = await self._get_creators_index()
+                name = index.get((service, creator_id), "")
         except Exception:
             # Sin índice se sigue adelante: el id sirve de nombre.
             pass
@@ -209,7 +244,7 @@ class PawchiveTemplate(SiteTemplate):
             name=name or creator_id,
             service=service,
             site=self.name,
-            url=f"{_BASE}/{service}/user/{creator_id}",
+            url=canonical_url,
         )
 
     async def classify_not_found(

@@ -80,6 +80,11 @@ async def resolve_artist_name(engine: "DownloadEngine", url: str) -> str:
     template = get_template(url, engine)
     if template is None:
         raise ValueError(f"No hay template para la URL: {url}")
+    # La resolución desde el asistente también es tráfico del sitio. Aplicar
+    # su política evita pagar el delay genérico de 10–30 s y mantiene el ritmo
+    # responsable (Pawchive: una petición por segundo).
+    engine.set_scan_policy(template.scan_policy)
+    engine.set_pace(template.scan_policy.min_request_interval)
     artist = await template.get_artist_info(url)
     return artist.name
 

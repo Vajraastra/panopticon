@@ -27,6 +27,14 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Nombre de artista desde una fuente Pawchive (2026-09-09)
+
+El alta de un proyecto ya no depende primero del índice global de creadores de Pawchive. Consulta
+la página individual (~75 KB), lee su `meta artist_name` y conserva el índice de ~13 MB sólo como
+respaldo compatible. El flujo público aplica la política de scan del sitio, por lo que la consulta
+usa el ritmo Pawchive de 1 petición/s en vez del delay genérico de 10–30 s. Verificado en vivo con
+`patreon/user/600910`: `Kobi-Tfs` en 0,96 s. Regresión Pawchive: 71/71.
+
 ### Disponibilidad persistente de fuentes (2026-09-09)
 
 `profile_urls` distingue una casilla desactivada por el usuario de una fuente vetada

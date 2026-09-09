@@ -42,6 +42,7 @@ from cherry_dl.download_service import (                                 # noqa:
     source_priority,
 )
 from cherry_dl.engine import _ByteBucket, _CompletionGate, _Pacer        # noqa: E402
+from cherry_dl.profiles import resolve_artist_name                       # noqa: E402
 from cherry_dl.templates._registry import find_template, list_templates   # noqa: E402
 from cherry_dl.templates.kemono import KemonoTemplate                     # noqa: E402
 from cherry_dl.templates.patreon import PatreonTemplate                   # noqa: E402
@@ -101,6 +102,14 @@ class EngineFalso:
 
     def __init__(self) -> None:
         self.llamadas: list[str] = []
+        self.scan_policy = None
+        self.pace = None
+
+    def set_scan_policy(self, policy) -> None:
+        self.scan_policy = policy
+
+    def set_pace(self, interval) -> None:
+        self.pace = interval
 
     async def get_json(self, url: str):
         self.llamadas.append(url)
@@ -109,6 +118,10 @@ class EngineFalso:
         if "o=0" in url:
             return PAGINA_0
         return []       # segunda página vacía → fin de la paginación
+
+    async def get_text(self, url: str):
+        self.llamadas.append(url)
+        return '<meta content="BOKABA &amp; Co." name="artist_name">'
 
 
 # ── Pruebas ───────────────────────────────────────────────────────────────────
@@ -187,10 +200,27 @@ async def main() -> int:
     t = PawchiveTemplate(eng)
 
     print("\n[5] Info del artista")
+    PawchiveTemplate._creators_cache = None
     a = await t.get_artist_info("https://pawchive.pw/patreon/user/30500811")
     chk(a.artist_id == "30500811", "id correcto")
-    chk(a.name == "BOKABA", f"resuelve el nombre real desde el índice ({a.name})")
+    chk(a.name == "BOKABA & Co.",
+        f"resuelve el nombre real desde la página individual ({a.name})")
     chk(a.service == "patreon" and a.site == "pawchive", "service y site correctos")
+    chk(sum(1 for u in eng.llamadas if u.endswith("/creators")) == 0,
+        "no descarga el índice global cuando la página publica el nombre")
+
+    class EngineSinMeta(EngineFalso):
+        async def get_text(self, url: str):
+            self.llamadas.append(url)
+            return "<html><title>respuesta antigua</title></html>"
+
+    PawchiveTemplate._creators_cache = None
+    respaldo = EngineSinMeta()
+    a_respaldo = await PawchiveTemplate(respaldo).get_artist_info(
+        "https://pawchive.pw/patreon/user/30500811"
+    )
+    chk(a_respaldo.name == "BOKABA",
+        "si falta el meta, conserva el índice global como respaldo")
 
     print("\n[6] Archivos del artista")
     files = [f async for f in t.iter_files(a)]
@@ -216,8 +246,18 @@ async def main() -> int:
     chk(len(paginas) == 2, f"pide páginas hasta la vacía ({len(paginas)})")
     chk(paginas[0].endswith("o=0") and paginas[1].endswith("o=50"),
         "el offset avanza de 50 en 50")
-    chk(sum(1 for u in eng.llamadas if u.endswith("/creators")) == 1,
-        "el índice de creadores (12,8 MB) se pide UNA sola vez por sesión")
+    chk(sum(1 for u in respaldo.llamadas if u.endswith("/creators")) == 1,
+        "el respaldo pide el índice de creadores UNA sola vez por sesión")
+
+    resolvedor = EngineFalso()
+    nombre_publico = await resolve_artist_name(
+        resolvedor, "https://pawchive.pw/patreon/user/30500811"
+    )
+    chk(nombre_publico == "BOKABA & Co.",
+        "el flujo público de alta devuelve el nombre de la página")
+    chk(resolvedor.scan_policy is PawchiveTemplate.scan_policy
+        and resolvedor.pace == 1.0,
+        "el alta usa la política Pawchive y evita la espera genérica")
 
     print("\n[8] El pool llega al servicio de descarga")
     # Se llama a la función REAL de download_service, no a una copia del
