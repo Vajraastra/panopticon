@@ -65,7 +65,7 @@ from .site_budget import (
     spent_today as budget_spent_today,
 )
 from .site_throttle import SiteThrottle
-from .site_policy import declared_site_policy, resolve_site_policy
+from .site_policy import SourceCategory, declared_site_policy, resolve_site_policy
 from .templates._registry import find_template, get_template
 from .templates.base import FileInfo, parse_date_utc
 from .auth.patreon import NeedsManualAuth
@@ -269,6 +269,12 @@ def source_priority(url: str) -> int:
     return int(declared_site_policy(cls).category)
 
 
+def source_category(url: str) -> SourceCategory:
+    """Categoría declarada de una URL, compartida con el planificador batch."""
+    cls = find_template(url) if url else None
+    return declared_site_policy(cls).category
+
+
 def ordered_sources(sources: list[dict]) -> list[dict]:
     """Orden estable para que los mirrors solo rellenen lo que falte."""
     return sorted(
@@ -297,6 +303,8 @@ async def run_profile_download(
     exclude_mode: bool = False,
     force_full: bool = False,
     scan_only: bool = False,
+    source_categories: set[SourceCategory] | None = None,
+    finalize_profile: bool = True,
     emit: EmitFn,
     config=None,
     resolve_auth: Optional[AuthResolver] = None,
@@ -313,6 +321,8 @@ async def run_profile_download(
       exclude_mode  — False = incluir solo esas extensiones; True = excluirlas.
       force_full    — ignora last_synced y escanea desde el inicio (Rescan).
       scan_only     — solo puebla pending_queue, no descarga.
+      source_categories — limita esta pasada a esas categorías semánticas.
+      finalize_profile — actualiza last_checked al cerrar la última pasada.
       emit          — callback síncrono que recibe DownloadEvent.
       resolve_auth  — callback async opcional para resolver auth interactiva.
     """
@@ -371,9 +381,14 @@ async def run_profile_download(
 
     # El engine arranca con el pool más grande que alguna fuente vaya a pedir;
     # `set_workers` lo ajusta al entrar en cada una.
+    selected_urls = [
+        pu for pu in profile.get("urls", [])
+        if source_categories is None
+        or source_category(pu.get("url") or "") in source_categories
+    ]
     pool_max = max(
         [site_workers(find_template(pu["url"]), workers, config)
-         for pu in profile.get("urls", [])
+         for pu in selected_urls
          if pu.get("enabled") and pu.get("url")]
         or [workers]
     )
@@ -413,8 +428,8 @@ async def run_profile_download(
         log.warning(msg)
         emit(Log(msg, "warn"))
 
-    sources = ordered_sources(profile["urls"])
-    if sources != profile["urls"]:
+    sources = ordered_sources(selected_urls)
+    if source_categories is None and sources != profile["urls"]:
         emit(Log(
             "↕ Fuentes reordenadas: pago → gratuitas → repositorios → legado",
             "dim",
@@ -556,6 +571,12 @@ async def run_profile_download(
                 except Exception as exc2:
                     emit(Log(f"✗ Error tras auth: {exc2}", "error"))
                     continue
+            except Exception as exc:
+                emit(Log(
+                    f"✗ Error resolviendo fuente ({type(exc).__name__}): {exc}",
+                    "error",
+                ))
+                continue
 
             emit(SourceStarted(pu["url"], artist_info.name, pu["site"]))
             emit(Log(f"▶ {artist_info.name} ({pu['site']})", "info"))
@@ -1293,7 +1314,8 @@ async def run_profile_download(
             emit(WorkerIdle(0))
 
     # ── Resumen final ───────────────────────────────────────────────────────
-    await update_profile_last_checked(INDEX_DB, profile["id"])
+    if finalize_profile:
+        await update_profile_last_checked(INDEX_DB, profile["id"])
     if scan_only:
         total_q = await pending_count(folder)
         emit(ScanComplete(total_q))

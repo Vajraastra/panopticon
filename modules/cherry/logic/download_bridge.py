@@ -26,6 +26,7 @@ import asyncio
 import logging
 import time
 from typing import Any, Optional
+from weakref import WeakKeyDictionary
 
 from PySide6.QtCore import QObject, Signal
 
@@ -37,6 +38,10 @@ log = logging.getLogger(__name__)
 # por cada chunk leído del socket: sin freno son miles de señales por segundo
 # encoladas en el bucle de la GUI, que se atasca aunque el hilo no bloquee.
 _PROGRESS_MIN_INTERVAL = 0.05  # 20 Hz por slot
+
+# Un login por sitio y event loop. Hoy la cola es secuencial; este registro
+# conserva ese contrato si mañana varios puentes comparten el mismo runtime.
+_AUTH_FLIGHTS: WeakKeyDictionary = WeakKeyDictionary()
 
 
 class DownloadBridge(QObject):
@@ -105,6 +110,8 @@ class DownloadBridge(QObject):
         exclude_mode: bool = False,
         force_full: bool = False,
         scan_only: bool = False,
+        source_categories: set | None = None,
+        finalize_profile: bool = True,
         config: Any = None,
     ) -> bool:
         """Arranca la descarga de un perfil. Devuelve False si ya hay una
@@ -125,6 +132,8 @@ class DownloadBridge(QObject):
             exclude_mode=exclude_mode,
             force_full=force_full,
             scan_only=scan_only,
+            source_categories=source_categories,
+            finalize_profile=finalize_profile,
             config=config,
         )
         try:
@@ -289,9 +298,15 @@ class DownloadBridge(QObject):
         puede resolver con `call_soon_threadsafe`.
         """
         loop = asyncio.get_running_loop()
+        flights = _AUTH_FLIGHTS.setdefault(loop, {})
+        existing = flights.get(site)
+        if existing is not None and not existing.done():
+            return await asyncio.shield(existing)
+
         self._auth_token += 1
         token = self._auth_token
         fut: asyncio.Future = loop.create_future()
+        flights[site] = fut
         self._auth_futures[token] = fut
         self.auth_required.emit(site, token)
         try:
@@ -300,9 +315,13 @@ class DownloadBridge(QObject):
             # La descarga se canceló mientras el diálogo seguía abierto: hay
             # que avisar a la GUI para que lo cierre.
             self.auth_aborted.emit(token)
+            if not fut.done():
+                fut.set_result(False)
             raise
         finally:
             self._auth_futures.pop(token, None)
+            if flights.get(site) is fut:
+                flights.pop(site, None)
 
     async def _login_and_resolve(self, site: str, token: int) -> None:
         """Corre en el loop: hace el login guiado y resuelve el Future."""

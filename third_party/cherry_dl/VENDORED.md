@@ -514,3 +514,12 @@ El botón del inspector devuelve hasta 25 filas a revisión; una tanda vencida t
 automáticamente cada semana. Un post sin esos anuncios conserva el tratamiento de 404 definitivo.
 Si la página de diagnóstico falla, la fila permanece activa para no convertir una interrupción
 de red en pérdida de catálogo. Banco: `scripts/cherry_archive_waiting_selftest.py`.
+
+### `download_service.py` — ejecución por categoría (2026-09-09)
+
+Panopticon puede limitar una ejecución a un conjunto de `SourceCategory`. El batch usa esa costura
+para completar los oficiales de pago de todos los perfiles, luego los oficiales gratuitos y al
+final los repositorios. `finalize_profile` reserva `last_checked` para la última pasada; una llamada
+normal conserva el comportamiento anterior. Los fallos al resolver una fuente se registran y
+saltan sólo esa fuente. La agregación de resúmenes y el orden global pertenecen a
+`modules/cherry/logic/download_queue.py`, no al vendor.

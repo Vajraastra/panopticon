@@ -304,8 +304,9 @@ class CherryView(QWidget):
         self._btn_all = QPushButton()
         self._btn_all.setToolTip(self.tr(
             "cherry.download_all_tip",
-            "Downloads EVERY project currently listed, one after another, honouring the "
-            "filter you have set. It can take hours; you can cancel at any point."))
+            "Downloads EVERY listed project in global source passes: paid official "
+            "sites first, then free official sites and repositories. It honours each "
+            "project's filter and can be cancelled at any point."))
         self._btn_all.clicked.connect(self._start_all_visible)
         lay.addWidget(self._btn_all)
 
@@ -1362,8 +1363,9 @@ class CherryView(QWidget):
                 self.tr("cherry.batch_title", "Download several profiles"),
                 self.tr(
                     "cherry.batch_body",
-                    "{n} profiles will be synced one after another. It can take hours "
-                    "and hits the sites in sequence; you can cancel at any point.",
+                    "{n} profiles will be synced in global passes: paid official sites "
+                    "first, then free official sites and repositories. It can take hours "
+                    "and can be cancelled at any point.",
                 ).format(n=len(rows)),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Yes,
