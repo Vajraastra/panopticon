@@ -27,6 +27,15 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Disponibilidad persistente de fuentes (2026-09-09)
+
+`profile_urls` distingue una casilla desactivada por el usuario de una fuente vetada
+automáticamente. Los batch y Rescan desmarcan una fuente que no responde antes de entregar
+contenido o que sigue sin acceso después de renovar sesión. Sync simple la omite; el usuario puede
+reactivarla y un Rescan vuelve a probar las vetadas automáticamente. Un scan correcto las activa de
+nuevo y las desactivadas manualmente nunca se sondean. El estado y su motivo viajan también en
+`profile_meta`. Regresión: `scripts/cherry_batch_planner_selftest.py` (34/34).
+
 ### Ciclo de vida robusto entre proyectos y standby (2026-09-09)
 
 La cola productor/workers ya no interpreta 120 segundos de backpressure como fallo: espera espacio

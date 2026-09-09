@@ -15,7 +15,16 @@ from modules.cherry.logic.download_bridge import DownloadBridge  # noqa: E402
 from modules.cherry.logic.download_queue import DownloadQueue  # noqa: E402
 from third_party.cherry_dl.download_service import DownloadSummary  # noqa: E402
 from third_party.cherry_dl import download_service  # noqa: E402
+from third_party.cherry_dl.auth.patreon import NeedsManualAuth  # noqa: E402
+from third_party.cherry_dl.index import (  # noqa: E402
+    add_profile_url,
+    create_profile,
+    get_profile,
+    init_index,
+    set_profile_url_enabled,
+)
 from third_party.cherry_dl.site_policy import SourceCategory  # noqa: E402
+from third_party.cherry_dl.templates.base import ArtistInfo, SiteTemplate  # noqa: E402
 
 
 class FakeBridge(QObject):
@@ -54,6 +63,7 @@ class FakeBridge(QObject):
 def source(url: str, sid: int) -> dict:
     return {
         "id": sid, "url": url, "site": "test", "enabled": 1,
+        "auto_disabled": False, "auto_disabled_reason": None,
         "last_synced": None, "file_count": 0,
     }
 
@@ -228,10 +238,141 @@ def test_source_failure_stays_inside_profile() -> None:
     asyncio.run(run())
 
 
+def test_automatic_source_availability() -> None:
+    class BrokenTemplate:
+        name = "broken"
+        download_enabled = True
+
+        async def get_artist_info(self, _url: str):
+            raise RuntimeError("servicio sin respuesta")
+
+    class HealthyTemplate(SiteTemplate):
+        name = "healthy"
+
+        @classmethod
+        def can_handle(cls, _url: str) -> bool:
+            return True
+
+        async def get_artist_info(self, url: str) -> ArtistInfo:
+            return ArtistInfo("artist-1", "Disponible", "test", self.name, url)
+
+        async def iter_files(self, _artist, since=None):
+            if False:
+                yield
+
+    class SubscriptionDeniedTemplate:
+        name = "patreon"
+        download_enabled = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_artist_info(self, _url: str):
+            self.calls += 1
+            raise NeedsManualAuth("sesión válida, pero sin suscripción")
+
+    async def run() -> None:
+        original_template = download_service.get_template
+        original_db = download_service.INDEX_DB
+        try:
+            with tempfile.TemporaryDirectory() as root:
+                root_path = Path(root)
+                db_path = root_path / "index.db"
+                folder = root_path / "profile"
+                await init_index(db_path)
+                pid = await create_profile(db_path, "A", folder, "test")
+                sid = await add_profile_url(
+                    db_path, pid, "https://example.invalid/a", "test"
+                )
+                download_service.INDEX_DB = db_path
+
+                download_service.get_template = lambda _url, _engine: BrokenTemplate()
+                item = await get_profile(db_path, pid)
+                await download_service.run_profile_download(
+                    item,
+                    workers=1,
+                    ext_filter=set(),
+                    validate_sources=True,
+                    scan_only=True,
+                    emit=lambda _event: None,
+                )
+                disabled = await get_profile(db_path, pid)
+                state = disabled["urls"][0]
+                check(not state["enabled"] and state["auto_disabled"],
+                      "el batch no desactivó la fuente sin respuesta")
+                check("sin respuesta" in state["auto_disabled_reason"],
+                      "no se conservó el motivo de la desactivación")
+
+                await set_profile_url_enabled(db_path, sid, True)
+                manual_active = await get_profile(db_path, pid)
+                check(manual_active["urls"][0]["enabled"],
+                      "el usuario no pudo reactivar la fuente")
+                check(not manual_active["urls"][0]["auto_disabled"],
+                      "la reactivación manual conservó el veto automático")
+
+                denied_template = SubscriptionDeniedTemplate()
+                download_service.get_template = lambda _url, _engine: denied_template
+                await download_service.run_profile_download(
+                    manual_active,
+                    workers=1,
+                    ext_filter=set(),
+                    validate_sources=True,
+                    scan_only=True,
+                    resolve_auth=lambda _site: asyncio.sleep(0, result=True),
+                    emit=lambda _event: None,
+                )
+                disabled = await get_profile(db_path, pid)
+                check(denied_template.calls == 2,
+                      "no se volvió a comprobar la fuente tras renovar sesión")
+                check(disabled["urls"][0]["auto_disabled"],
+                      "la falta de suscripción no desactivó la fuente")
+
+                bridge = FakeBridge()
+                queue = DownloadQueue(bridge)
+                check(queue.start([disabled]), "Sync simple no aceptó el perfil")
+                check(not bridge.starts,
+                      "Sync simple volvió a intentar una fuente auto-desactivada")
+
+                download_service.get_template = (
+                    lambda _url, engine: HealthyTemplate(engine)
+                )
+                await download_service.run_profile_download(
+                    disabled,
+                    workers=1,
+                    ext_filter=set(),
+                    force_full=True,
+                    scan_only=True,
+                    emit=lambda _event: None,
+                )
+                recovered = await get_profile(db_path, pid)
+                state = recovered["urls"][0]
+                check(state["enabled"] and not state["auto_disabled"],
+                      "Rescan completo no reactivó la fuente recuperada")
+                check(state["auto_disabled_reason"] is None,
+                      "la recuperación dejó un motivo obsoleto")
+
+                await set_profile_url_enabled(db_path, sid, False)
+                manual = await get_profile(db_path, pid)
+                check(not manual["urls"][0]["auto_disabled"],
+                      "la desactivación manual se confundió con la automática")
+                bridge = FakeBridge()
+                queue = DownloadQueue(bridge)
+                check(queue.start([manual], force_full=True),
+                      "Rescan no aceptó un perfil sin fuentes elegibles")
+                check(not bridge.starts,
+                      "Rescan intentó una fuente desactivada manualmente")
+        finally:
+            download_service.get_template = original_template
+            download_service.INDEX_DB = original_db
+
+    asyncio.run(run())
+
+
 if __name__ == "__main__":
     test_global_order_and_aggregation()
     test_failure_isolation()
     test_cancellation_announces_touched_profiles()
     test_auth_single_flight()
     test_source_failure_stays_inside_profile()
-    print("O3 planner: 22/22 comprobaciones")
+    test_automatic_source_availability()
+    print("O3 planner: 34/34 comprobaciones")

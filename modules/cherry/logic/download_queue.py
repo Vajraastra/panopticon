@@ -105,6 +105,12 @@ class DownloadQueue(QObject):
         if not profiles:
             return False
 
+        params = dict(params)
+        params.setdefault(
+            "validate_sources",
+            len(profiles) > 1 or bool(params.get("force_full")),
+        )
+
         # Import perezoso: abrir la vista no debe cargar templates/httpx.
         from third_party.cherry_dl.download_service import source_category
 
@@ -117,7 +123,10 @@ class DownloadQueue(QObject):
             categories = {
                 source_category(source.get("url") or "")
                 for source in state.profile.get("urls", [])
-                if source.get("enabled") and source.get("url")
+                if source.get("url") and (
+                    source.get("enabled")
+                    or (params.get("force_full") and source.get("auto_disabled"))
+                )
             }
             for category in categories:
                 jobs_by_category.setdefault(category, []).append(_Job(state, category))

@@ -59,10 +59,17 @@ CREATE TABLE IF NOT EXISTS profile_urls (
     site        TEXT NOT NULL,
     artist_id   TEXT,
     enabled     INTEGER NOT NULL DEFAULT 1,
+    auto_disabled INTEGER NOT NULL DEFAULT 0,
+    auto_disabled_reason TEXT,
     last_synced TEXT,
     file_count  INTEGER NOT NULL DEFAULT 0
 );
 """
+
+_MIGRATE_PROFILE_URL_AVAILABILITY = (
+    ("auto_disabled", "ALTER TABLE profile_urls ADD COLUMN auto_disabled INTEGER NOT NULL DEFAULT 0"),
+    ("auto_disabled_reason", "ALTER TABLE profile_urls ADD COLUMN auto_disabled_reason TEXT"),
+)
 
 _CREATE_IDX_PROFILE_URLS = (
     "CREATE INDEX IF NOT EXISTS idx_profile_urls_profile "
@@ -103,6 +110,14 @@ async def init_index(db_path: Path) -> None:
         await db.execute(_CREATE_PROFILE_URLS)
         await db.execute(_CREATE_IDX_PROFILE_URLS)
         await db.execute(_CREATE_EXCLUSIONS)
+
+        for column, statement in _MIGRATE_PROFILE_URL_AVAILABILITY:
+            async with db.execute(
+                "SELECT name FROM pragma_table_info('profile_urls') WHERE name = ?",
+                (column,),
+            ) as cur:
+                if not await cur.fetchone():
+                    await db.execute(statement)
 
         # Migración: agregar ext_filter si no existe (bases de datos anteriores)
         async with db.execute(
@@ -340,7 +355,7 @@ async def get_profile(db_path: Path, profile_id: int) -> dict | None:
     """
     Retorna un perfil con todas sus URLs.
     Dict: {id, display_name, folder_path, primary_site, created_at, last_checked, urls: [...]}
-    Cada URL: {id, profile_id, url, site, artist_id, enabled, last_synced, file_count}
+    Cada URL incluye estado manual (`enabled`) y de disponibilidad automática.
     """
     async with aiosqlite.connect(db_path) as db:
         async with db.execute(
@@ -361,7 +376,17 @@ async def get_profile(db_path: Path, profile_id: int) -> dict | None:
         }
 
         async with db.execute(
-            "SELECT id, profile_id, url, site, artist_id, enabled, last_synced, file_count "
+            "SELECT name FROM pragma_table_info('profile_urls') "
+            "WHERE name = 'auto_disabled'"
+        ) as cur:
+            has_availability = bool(await cur.fetchone())
+        availability_columns = (
+            "auto_disabled, auto_disabled_reason"
+            if has_availability else "0, NULL"
+        )
+        async with db.execute(
+            "SELECT id, profile_id, url, site, artist_id, enabled, "
+            f"{availability_columns}, last_synced, file_count "
             "FROM profile_urls WHERE profile_id = ? ORDER BY id",
             (profile_id,),
         ) as cur:
@@ -370,8 +395,9 @@ async def get_profile(db_path: Path, profile_id: int) -> dict | None:
     profile["urls"] = [
         {
             "id": u[0], "profile_id": u[1], "url": u[2], "site": u[3],
-            "artist_id": u[4], "enabled": bool(u[5]), "last_synced": u[6],
-            "file_count": u[7],
+            "artist_id": u[4], "enabled": bool(u[5]),
+            "auto_disabled": bool(u[6]), "auto_disabled_reason": u[7],
+            "last_synced": u[8], "file_count": u[9],
         }
         for u in url_rows
     ]
@@ -416,6 +442,8 @@ async def sync_profile_meta(db_path: Path, profile_id: int) -> None:
                 "url": u["url"], "site": u["site"], "artist_id": u["artist_id"],
                 "enabled": u["enabled"], "last_synced": u["last_synced"],
                 "file_count": u["file_count"],
+                "auto_disabled": u.get("auto_disabled", False),
+                "auto_disabled_reason": u.get("auto_disabled_reason"),
             }
             for u in prof["urls"]
         ],
@@ -512,11 +540,14 @@ async def reindex_from_folders(
             for u in urls:
                 await db.execute(
                     "INSERT INTO profile_urls "
-                    "(profile_id, url, site, artist_id, enabled, last_synced, file_count) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "(profile_id, url, site, artist_id, enabled, auto_disabled, "
+                    "auto_disabled_reason, last_synced, file_count) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (pid, u.get("url"), u.get("site") or "", u.get("artist_id"),
                      1 if u.get("enabled", True) else 0,
-                     u.get("last_synced"), u.get("file_count") or 0),
+                     1 if u.get("auto_disabled", False) else 0,
+                     u.get("auto_disabled_reason"), u.get("last_synced"),
+                     u.get("file_count") or 0),
                 )
                 stats["urls"] += 1
 
@@ -712,11 +743,32 @@ async def merge_profiles(
 async def set_profile_url_enabled(
     db_path: Path, url_id: int, enabled: bool
 ) -> None:
-    """Activa o desactiva una URL de perfil."""
+    """Activa o desactiva manualmente una URL y limpia el veto automático."""
+    await init_index(db_path)
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
-            "UPDATE profile_urls SET enabled = ? WHERE id = ?",
+            "UPDATE profile_urls SET enabled = ?, auto_disabled = 0, "
+            "auto_disabled_reason = NULL WHERE id = ?",
             (1 if enabled else 0, url_id),
+        )
+        await db.commit()
+
+    pid = await _profile_id_of_url(db_path, url_id)
+    if pid is not None:
+        await sync_profile_meta(db_path, pid)
+
+
+async def set_profile_url_availability(
+    db_path: Path, url_id: int, *, available: bool, reason: str | None = None,
+) -> None:
+    """Persiste la salud de una fuente sin confundirla con la elección manual."""
+    await init_index(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "UPDATE profile_urls SET enabled = ?, auto_disabled = ?, "
+            "auto_disabled_reason = ? WHERE id = ?",
+            (1 if available else 0, 0 if available else 1,
+             None if available else reason, url_id),
         )
         await db.commit()
 

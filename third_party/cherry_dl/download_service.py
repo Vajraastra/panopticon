@@ -57,6 +57,7 @@ from .index import (
     get_or_create_artist,
     get_or_create_site,
     init_index,
+    set_profile_url_availability,
     update_profile_last_checked,
     update_profile_url_sync,
 )
@@ -351,6 +352,7 @@ async def run_profile_download(
     exclude_mode: bool = False,
     force_full: bool = False,
     scan_only: bool = False,
+    validate_sources: bool = False,
     source_categories: set[SourceCategory] | None = None,
     finalize_profile: bool = True,
     emit: EmitFn,
@@ -369,6 +371,7 @@ async def run_profile_download(
       exclude_mode  — False = incluir solo esas extensiones; True = excluirlas.
       force_full    — ignora last_synced y escanea desde el inicio (Rescan).
       scan_only     — solo puebla pending_queue, no descarga.
+      validate_sources — desactiva fuentes que no responden al inicio del scan.
       source_categories — limita esta pasada a esas categorías semánticas.
       finalize_profile — actualiza last_checked al cerrar la última pasada.
       emit          — callback síncrono que recibe DownloadEvent.
@@ -434,10 +437,16 @@ async def run_profile_download(
         if source_categories is None
         or source_category(pu.get("url") or "") in source_categories
     ]
+    def _eligible(pu: dict) -> bool:
+        return bool(
+            pu.get("enabled")
+            or (force_full and pu.get("auto_disabled"))
+        )
+
     pool_max = max(
         [site_workers(find_template(pu["url"]), workers, config)
          for pu in selected_urls
-         if pu.get("enabled") and pu.get("url")]
+         if _eligible(pu) and pu.get("url")]
         or [workers]
     )
 
@@ -485,8 +494,39 @@ async def run_profile_download(
 
     async with DownloadEngine(config, workers=pool_max) as engine:
         for pu in sources:
-            if not pu["enabled"] or not pu["url"]:
+            if not _eligible(pu) or not pu["url"]:
                 continue
+
+            async def _set_unavailable(detail: str) -> None:
+                if not (validate_sources or force_full):
+                    return
+                if not isinstance(pu.get("id"), int) or pu["id"] <= 0:
+                    return
+                reason = _failure_detail(detail)
+                await set_profile_url_availability(
+                    INDEX_DB, pu["id"], available=False, reason=reason,
+                )
+                pu["enabled"] = False
+                pu["auto_disabled"] = True
+                pu["auto_disabled_reason"] = reason
+                emit(Log(
+                    f"⏭ Fuente desactivada automáticamente: {reason}. "
+                    "Se volverá a probar en un Rescan completo.",
+                    "warn",
+                ))
+
+            async def _set_available() -> None:
+                if not pu.get("auto_disabled"):
+                    return
+                if not isinstance(pu.get("id"), int) or pu["id"] <= 0:
+                    return
+                await set_profile_url_availability(
+                    INDEX_DB, pu["id"], available=True,
+                )
+                pu["enabled"] = True
+                pu["auto_disabled"] = False
+                pu["auto_disabled_reason"] = None
+                emit(Log("✓ Fuente reactivada automáticamente", "ok"))
 
             if global_state["reached"]:
                 if not global_state["notified"]:
@@ -508,6 +548,7 @@ async def run_profile_download(
             template = get_template(pu["url"], engine)
             if not template:
                 emit(Log(f"Sin template para: {pu['url']}", "error"))
+                await _set_unavailable("URL sin proveedor compatible")
                 continue
 
             policy = resolve_site_policy(type(template), config, workers)
@@ -531,6 +572,7 @@ async def run_profile_download(
                     f"pero no se consulta",
                     "warn",
                 ))
+                await _set_unavailable(f"{template.name}: servicio fuera de línea")
                 continue
 
             if template.name in blocked_sites:
@@ -629,10 +671,12 @@ async def run_profile_download(
                     if discard is not None:
                         await discard()
                     emit(Log(f"✗ Error tras auth: {exc2}", "error"))
+                    await _set_unavailable(str(exc2))
                     _publish_site_metrics(source_metrics, emit)
                     continue
                 except Exception as exc2:
                     emit(Log(f"✗ Error tras auth: {exc2}", "error"))
+                    await _set_unavailable(str(exc2))
                     _publish_site_metrics(source_metrics, emit)
                     continue
             except Exception as exc:
@@ -640,6 +684,7 @@ async def run_profile_download(
                     f"✗ Error resolviendo fuente ({type(exc).__name__}): {exc}",
                     "error",
                 ))
+                await _set_unavailable(f"{type(exc).__name__}: {exc}")
                 _publish_site_metrics(source_metrics, emit)
                 continue
 
@@ -793,6 +838,8 @@ async def run_profile_download(
                             template, scan_auth, resolve_auth, emit,
                         ):
                             scan_ok = False
+                            if auth_retried and scan_files_seen == 0:
+                                await _set_unavailable(str(scan_auth))
                             emit(Log("⚠ Scan parcial — usá Sync para continuar.", "warn"))
                             break
                         auth_retried = True
@@ -800,6 +847,10 @@ async def run_profile_download(
                         continue
                     except Exception as scan_exc:
                         scan_ok = False
+                        if scan_files_seen == 0:
+                            await _set_unavailable(
+                                f"{type(scan_exc).__name__}: {scan_exc}"
+                            )
                         emit(Log(
                             f"✗ Error en escaneo ({type(scan_exc).__name__}): {scan_exc}",
                             "error",
@@ -812,6 +863,9 @@ async def run_profile_download(
                 # Conserva hasta el último bloque parcial ante error o cancelación.
                 await asyncio.shield(scan_catalog.close())
                 source_metrics.finish_scan(scan_files_seen)
+
+            if scan_ok:
+                await _set_available()
 
             # Marcar cobertura histórica completa SOLO si un scan completo
             # terminó entero (sin error). last_synced se fija al inicio de la

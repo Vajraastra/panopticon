@@ -77,7 +77,7 @@ class CherryView(QWidget):
     # Puentes loop → GUI (se emiten desde el hilo del runtime).
     _profiles_ready = Signal(object)   # list[dict]
     _detail_ready   = Signal(object)   # dict | None
-    _details_ready  = Signal(object, bool)  # list[dict] a descargar, scan_only
+    _details_ready  = Signal(object, bool, bool)  # perfiles, scan_only, batch
     _profile_created = Signal(int, bool)    # id nuevo, descargar al terminar
     _url_added       = Signal(int)          # perfil al que se le añadió
     _url_removed     = Signal(int, int)     # perfil, pendientes retirados
@@ -886,9 +886,15 @@ class CherryView(QWidget):
                 Qt.CheckState.Checked if u["enabled"] else Qt.CheckState.Unchecked)
             item.setData(Qt.ItemDataRole.UserRole, u["id"])
             item.setData(SOURCE_DATA_ROLE, dict(u))
-            item.setToolTip(self.tr(
+            tip = self.tr(
                 "cherry.source_tip", "{n} files · last sync {t}"
-            ).format(n=u["file_count"], t=u["last_synced"] or "—"))
+            ).format(n=u["file_count"], t=u["last_synced"] or "—")
+            if u.get("auto_disabled"):
+                tip += "\n" + self.tr(
+                    "cherry.source_auto_disabled",
+                    "Automatically disabled: {reason}. Enable it manually or run a full rescan.",
+                ).format(reason=u.get("auto_disabled_reason") or "unavailable")
+            item.setToolTip(tip)
             self._sources.addItem(item)
         self._sources.blockSignals(False)
 
@@ -1372,9 +1378,11 @@ class CherryView(QWidget):
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
-        self._start([p["id"] for p in rows], scan_only=False)
+        self._start([p["id"] for p in rows], scan_only=False, batch=True)
 
-    def _start(self, profile_ids: list[int], scan_only: bool) -> None:
+    def _start(
+        self, profile_ids: list[int], scan_only: bool, batch: bool = False,
+    ) -> None:
         if self._queue.is_running or self._bridge.is_busy:
             self._set_status(self.tr("cherry.dl_busy", "A download is already running."))
             return
@@ -1387,12 +1395,14 @@ class CherryView(QWidget):
         self._btn_console.setChecked(True)  # si estaba plegada, ahora interesa
         self._set_status(self.tr("cherry.dl_preparing", "Loading profile sources…"))
         try:
-            self._runtime.submit(self._load_details(profile_ids, scan_only))
+            self._runtime.submit(self._load_details(profile_ids, scan_only, batch))
         except RuntimeError as exc:
             self._load_failed.emit(str(exc))
         self._update_actions()
 
-    async def _load_details(self, profile_ids: list[int], scan_only: bool) -> None:
+    async def _load_details(
+        self, profile_ids: list[int], scan_only: bool, batch: bool,
+    ) -> None:
         """`run_profile_download` exige la clave `urls`, que la tabla no trae."""
         try:
             rows = await profiles_logic.load_profile_details(profile_ids)
@@ -1400,9 +1410,11 @@ class CherryView(QWidget):
             log.exception("cherry: fallo cargando los perfiles a descargar")
             self._load_failed.emit(f"{type(exc).__name__}: {exc}")
             return
-        self._details_ready.emit(rows, scan_only)
+        self._details_ready.emit(rows, scan_only, batch)
 
-    def _on_details_ready(self, rows: list, scan_only: bool) -> None:
+    def _on_details_ready(
+        self, rows: list, scan_only: bool, batch: bool,
+    ) -> None:
         if not rows:
             self._set_status(self.tr("cherry.dl_nothing", "Nothing to download."))
             self._update_actions()
@@ -1413,6 +1425,7 @@ class CherryView(QWidget):
             workers=self._workers.value(),
             force_full=self._force_full.isChecked(),
             scan_only=scan_only,
+            validate_sources=batch or self._force_full.isChecked(),
         )
         if not started:
             self._set_status(self.tr("cherry.dl_busy", "A download is already running."))
