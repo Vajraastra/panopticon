@@ -138,15 +138,13 @@ async def main() -> int:
         {"id": "patreon-b", "url": "https://www.patreon.com/autor-b"},
     ]
     orden = [f["id"] for f in ordered_sources(fuentes)]
-    chk(source_priority(fuentes[1]["url"]) == 0,
-        "Patreon directo tiene prioridad oficial")
-    chk(source_priority(fuentes[3]["url"]) == 0,
-        "Pixiv directo tiene prioridad oficial")
+    chk(source_priority(fuentes[1]["url"]) < source_priority(fuentes[3]["url"]),
+        "Patreon de pago precede al oficial gratuito Pixiv")
     chk(source_priority(fuentes[0]["url"]) < source_priority(fuentes[2]["url"]),
         "Pawchive queda antes que el legado de Kemono")
     chk(find_template(fuentes[2]["url"]).download_enabled is False,
         "Kemono se reconoce, pero queda fuera del circuito de descarga")
-    chk(orden == ["patreon-a", "pixiv", "patreon-b", "paw", "kemono"],
+    chk(orden == ["patreon-a", "patreon-b", "pixiv", "paw", "kemono"],
         f"orden global correcto y estable ({orden})")
 
     print("\n[3] Hash desde el path")

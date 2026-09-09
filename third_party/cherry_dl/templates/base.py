@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, AsyncIterator
 
+from ..site_policy import ScanPolicy, SourceCategory, TransferPolicy
+
 if TYPE_CHECKING:
     from ..engine import DownloadEngine
 
@@ -74,6 +76,12 @@ class SiteTemplate(ABC):
 
     name: str = ""
     base_url: str = ""
+    category = SourceCategory.UNKNOWN
+    scan_policy = ScanPolicy()
+    transfer_policy = TransferPolicy()
+
+    # Alias transitorios para las UIs vendorizadas que aún leen atributos
+    # planos. Las políticas anteriores son la fuente canónica.
     workers: int = 3
 
     # Orden entre varias fuentes de un mismo perfil. Los sitios oficiales usan
@@ -155,6 +163,31 @@ class SiteTemplate(ABC):
     # crea un subrecurso desde ``browser_origin`` y extrae su respuesta por CDP.
     download_transport: str = "http"
     browser_origin: str = ""
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        if "category" in cls.__dict__:
+            cls.source_priority = int(cls.category)
+        if "scan_policy" in cls.__dict__:
+            scan = cls.scan_policy
+            cls.cooldown_threshold = scan.cooldown_threshold
+            cls.cooldown_seconds = scan.cooldown_seconds
+        if "transfer_policy" in cls.__dict__:
+            transfer = cls.transfer_policy
+            cls.workers = transfer.workers
+            cls.max_workers = transfer.max_workers
+            cls.min_request_interval = transfer.min_request_interval
+            cls.post_download_delay = transfer.post_download_delay
+            cls.max_bytes_per_sec = transfer.max_bytes_per_sec
+            cls.daily_byte_budget = transfer.daily_byte_budget
+            cls.download_window_limit = transfer.download_window_limit
+            cls.download_window_seconds = transfer.download_window_seconds
+            cls.throttle_failure_codes = transfer.throttle_failure_codes
+            cls.throttle_failure_streak = transfer.throttle_failure_streak
+            cls.throttle_failure_window = transfer.throttle_failure_window
+            cls.throttle_cooldowns = transfer.throttle_cooldowns
+            cls.download_transport = transfer.transport
+            cls.browser_origin = transfer.browser_origin
 
     def __init__(self, engine: "DownloadEngine") -> None:
         self.engine = engine

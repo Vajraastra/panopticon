@@ -42,6 +42,7 @@ from ..auth.patreon import (
     refresh_patreon_cookies,
 )
 from .base import ArtistInfo, FileInfo, SiteTemplate, parse_date_utc
+from ..site_policy import ScanPolicy, SourceCategory, TransferPolicy
 
 # ── Constantes ─────────────────────────────────────────────────────────────────
 
@@ -101,8 +102,9 @@ class PatreonTemplate(SiteTemplate):
 
     name        = "patreon"
     base_url    = _BASE
-    workers     = 2   # valor por defecto sugerido al crear perfil
-    max_workers = 2   # límite absoluto — el TUI lo respeta
+    category = SourceCategory.PAID_OFFICIAL
+    scan_policy = ScanPolicy(delay_min=_DELAY_MIN, delay_max=_DELAY_MAX)
+    transfer_policy = TransferPolicy(workers=2, max_workers=2)
 
     # Cliente HTTP propio, separado del cliente del engine (que usa headers DDG
     # de Kemono). Se inicializa en la primera llamada a _get_client() y se
@@ -222,7 +224,10 @@ class PatreonTemplate(SiteTemplate):
         })
         url = f"{_API}/campaigns?{params}"
 
-        await asyncio.sleep(random.uniform(_DELAY_MIN, _DELAY_MAX))
+        await asyncio.sleep(random.uniform(
+            self.scan_policy.delay_min or 0,
+            self.scan_policy.delay_max or 0,
+        ))
         resp = await client.get(url)
 
         if resp.status_code in (401, 403):
@@ -284,7 +289,10 @@ class PatreonTemplate(SiteTemplate):
                 params["page[cursor]"] = cursor
 
             api_url = f"{_API}/posts?{urlencode(params)}"
-            await asyncio.sleep(random.uniform(_DELAY_MIN, _DELAY_MAX))
+            await asyncio.sleep(random.uniform(
+                self.scan_policy.delay_min or 0,
+                self.scan_policy.delay_max or 0,
+            ))
 
             try:
                 resp = await client.get(api_url)

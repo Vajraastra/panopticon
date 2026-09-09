@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .base import ArtistInfo, FileInfo, SiteTemplate, parse_date_utc
+from ..site_policy import ScanPolicy, SourceCategory, TransferPolicy
 
 # ── Constantes ─────────────────────────────────────────────────────────────────
 
@@ -49,14 +50,12 @@ _PAGE_SIZE = 50  # Kemono retorna 50 posts por página
 class KemonoTemplate(SiteTemplate):
     name = "kemono"
     base_url = _BASE
-    source_priority = 200         # legado: incluso después del respaldo activo
+    category = SourceCategory.DISABLED_LEGACY
+    scan_policy = ScanPolicy(cooldown_threshold=100, cooldown_seconds=60.0)
+    transfer_policy = TransferPolicy(workers=2, max_workers=2)
     download_enabled = False      # conservar URLs, pero no tocar el servicio
-    workers = 2                  # >2 workers activa rate limiting agresivo en Kemono
-    max_workers = 2              # el de arriba era un tope de facto; explícito
     provides_file_hashes = True  # Kemono expone SHA-256 en el path del CDN
     scan_page_delay = 1.0        # 1 s entre páginas de API — evita burst de cientos de GETs
-    cooldown_threshold = 100     # si >100 URLs nuevas → enfriamiento antes de descargar
-    cooldown_seconds = 60.0      # enfriamiento post-scan agresivo — 60s para que Kemono olvide el burst
 
     # ── Detección ──────────────────────────────────────────────────────────────
 

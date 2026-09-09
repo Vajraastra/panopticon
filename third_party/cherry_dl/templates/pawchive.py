@@ -99,6 +99,7 @@ from typing import AsyncIterator
 import httpx
 
 from .base import ArtistInfo, FileInfo, SiteTemplate, parse_date_utc
+from ..site_policy import ScanPolicy, SourceCategory, TransferPolicy
 
 # ── Constantes ─────────────────────────────────────────────────────────────────
 
@@ -130,29 +131,32 @@ _AWAITING_ARCHIVE_MARKERS = (
 class PawchiveTemplate(SiteTemplate):
     name = "pawchive"
     base_url = _BASE
-    source_priority = 100         # respaldo después de las fuentes oficiales
-    workers = 2                  # ver «Lo que 5 workers midió en vivo»
-    max_workers = 2              # tope rígido: el perfil no puede subirlo
-    min_request_interval = 1.0   # 1 petición/s AGREGADA — ver cabecera
-    post_download_delay = 5.0    # 5 s desde el último archivo terminado
-    max_bytes_per_sec = 2 * 1024**2      # 2 MB/s entre todas las descargas
-    daily_byte_budget = 0                 # sin tope diario; conservan caudal/pausa
-    # Fallbacks documentales. download_service toma los valores efectivos de
-    # config.pawchive; 300 / 3 h siguen siendo el default recomendado.
-    download_window_limit = 300
-    download_window_seconds = 3 * 60 * 60
-    # `headers_timeout` no entra: también puede ser una caída momentánea de la
-    # red local. La firma observada del límite remoto fue CDP Failed sin HTTP.
-    throttle_failure_codes = frozenset({"no_http_failed"})
-    throttle_failure_streak = 5           # un archivo aislado no enfría el sitio
-    throttle_failure_window = 120.0
-    throttle_cooldowns = (15 * 60, 30 * 60, 60 * 60, 3 * 60 * 60)
-    download_transport = "browser_image"
-    browser_origin = _BASE + "/"
+    category = SourceCategory.REPOSITORY
+    scan_policy = ScanPolicy(
+        min_request_interval=1.0,
+        cooldown_threshold=200,
+        cooldown_seconds=30.0,
+    )
+    transfer_policy = TransferPolicy(
+        workers=2,
+        max_workers=2,
+        min_request_interval=1.0,
+        post_download_delay=5.0,
+        max_bytes_per_sec=2 * 1024**2,
+        daily_byte_budget=0,
+        # Fallbacks; download_service usa la ventana ajustable de config.
+        download_window_limit=300,
+        download_window_seconds=3 * 60 * 60,
+        # `headers_timeout` puede ser red local; la firma remota fue CDP Failed.
+        throttle_failure_codes=frozenset({"no_http_failed"}),
+        throttle_failure_streak=5,
+        throttle_failure_window=120.0,
+        throttle_cooldowns=(15 * 60, 30 * 60, 60 * 60, 3 * 60 * 60),
+        transport="browser_image",
+        browser_origin=_BASE + "/",
+    )
     provides_file_hashes = True  # el hash SHA-256 viene en el path
     scan_page_delay = 0.0        # lo espacia el pacer; sumar aquí sería doble
-    cooldown_threshold = 200     # el pacer ya evita el burst que esto enfriaba
-    cooldown_seconds = 30.0      # margen corto tras un scan grande
 
     # ── Detección ──────────────────────────────────────────────────────────────
 

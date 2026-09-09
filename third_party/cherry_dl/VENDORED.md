@@ -35,9 +35,9 @@ separados:
 1. **Catálogo por lotes y URLs firmadas — cerrado.** Una instantánea reemplaza las consultas por
    archivo y los UPSERTs se confirman en bloques de 250. Las firmas activas se renuevan sin alterar
    `awaiting_archive`, FIFO, cancelación ni reanudación.
-2. **Jerarquía y políticas por sitio.** Orden decidido: oficiales de pago (Patreon/Fanbox),
-   oficiales gratuitos (Pixiv), repositorios (Pawchive/Coomer) y legado desactivado (Kemono).
-   API/scan y transferencias tendrán políticas independientes. Los frenos de Pawchive no cambian.
+2. **Jerarquía y políticas por sitio — cerrado.** Orden explícito y estable: oficiales de pago
+   (Patreon/Fanbox), oficiales gratuitos (Pixiv), repositorios (Pawchive/Coomer) y legado
+   desactivado (Kemono). API/scan y transferencias usan políticas independientes.
 3. **Batch por pasadas globales.** Procesar la categoría activa para todos los proyectos antes
    de avanzar: pago → gratuito → repositorios. Un fallo de una fuente no cancela el proyecto.
 4. **Identidad cruzada.** Pawchive ya expone SHA-256 antes de descargar y seguirá siendo la
@@ -49,8 +49,8 @@ separados:
 6. **Sitios nuevos.** Fanbox y Coomer entran solo después de estabilizar la arquitectura común.
 
 Los límites de Pawchive se restablecen al cambiar de fuente y no causan directamente la lentitud
-de Patreon/Pixiv. La configuración `[templates.<sitio>]` se carga y guarda, pero actualmente no
-participa en `site_workers`; debe hacerse efectiva o retirarse durante el hito 2.
+de Patreon/Pixiv. La configuración `[templates.<sitio>].workers` ya participa en la política
+efectiva y siempre queda por debajo del tope rígido declarado por el sitio.
 
 ### `catalog.py` + `download_service.py` — scan por lotes y firmas activas (2026-09-09)
 
@@ -62,6 +62,20 @@ pendientes nuevos y las firmas renovadas se escriben en bloques de 250; un confl
 El bloque incompleto se confirma al salir incluso por cancelación, de modo que un Sync posterior
 reanuda desde la cola persistida. `scripts/cherry_catalog_batch_selftest.py` mide una conexión y tres
 commits para 503 UPSERTs, además de refresh, FIFO, espera, cancelación y reanudación (521 checks).
+
+### `site_policy.py` + engine/templates — jerarquía y políticas por fase (2026-09-09)
+
+O2 convierte el orden numérico implícito en `SourceCategory`: pago, gratuito, repositorio y legado.
+El sort sigue siendo estable dentro de cada categoría. `ScanPolicy` contiene delay, reintentos,
+ritmo y enfriamiento de API; `TransferPolicy` contiene workers/tope, delay, reintentos, stall,
+ritmo, caudal, pausa post-descarga, presupuesto, ventana/circuito y transporte.
+
+`download_service` activa primero la política de scan y sólo al encontrar cola activa cambia a la
+de transferencia. Los diferidos conservan y restauran el contrato completo de su sitio. Patreon y
+Pixiv mantienen jitter API propio y delay global de archivos hasta O5. El override TOML de workers,
+antes inerte, ya manda por sitio sin superar `max_workers`. Pawchive conserva exactamente 2 workers,
+1 petición/s en ambas fases, 2 MiB/s, 5 s post-descarga, 300/3 h, circuito y navegador CDP. Banco:
+`scripts/cherry_site_policy_selftest.py` 29/29; regresiones amplias sin fallos.
 
 ### Integración cerrada — autenticación de Pixiv (2026-09-07)
 

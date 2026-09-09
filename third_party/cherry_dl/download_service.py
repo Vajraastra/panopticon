@@ -65,6 +65,7 @@ from .site_budget import (
     spent_today as budget_spent_today,
 )
 from .site_throttle import SiteThrottle
+from .site_policy import declared_site_policy, resolve_site_policy
 from .templates._registry import find_template, get_template
 from .templates.base import FileInfo, parse_date_utc
 from .auth.patreon import NeedsManualAuth
@@ -240,7 +241,7 @@ _REJECTIONS = frozenset({
 })
 
 
-def site_workers(cls, requested: int) -> int:
+def site_workers(cls, requested: int, config=None) -> int:
     """
     Descargas simultáneas para un sitio concreto.
 
@@ -252,17 +253,20 @@ def site_workers(cls, requested: int) -> int:
 
     `cls` puede ser None (URL sin template): entonces manda lo pedido.
     """
+    if config is not None:
+        return resolve_site_policy(cls, config, requested).transfer.workers
+    declared = declared_site_policy(cls).transfer
     if cls is None:
         return max(1, requested)
-    want = max(requested, getattr(cls, "workers", 0) or 0)
-    cap  = getattr(cls, "max_workers", None)
+    want = max(requested, declared.workers)
+    cap = declared.max_workers
     return max(1, min(want, cap) if cap else want)
 
 
 def source_priority(url: str) -> int:
-    """Prioridad de una URL: oficiales primero, archivos al final."""
+    """Categoría semántica de una URL, usada como prioridad estable."""
     cls = find_template(url) if url else None
-    return getattr(cls, "source_priority", 0) if cls else 0
+    return int(declared_site_policy(cls).category)
 
 
 def ordered_sources(sources: list[dict]) -> list[dict]:
@@ -368,7 +372,7 @@ async def run_profile_download(
     # El engine arranca con el pool más grande que alguna fuente vaya a pedir;
     # `set_workers` lo ajusta al entrar en cada una.
     pool_max = max(
-        [site_workers(find_template(pu["url"]), workers)
+        [site_workers(find_template(pu["url"]), workers, config)
          for pu in profile.get("urls", [])
          if pu.get("enabled") and pu.get("url")]
         or [workers]
@@ -412,7 +416,7 @@ async def run_profile_download(
     sources = ordered_sources(profile["urls"])
     if sources != profile["urls"]:
         emit(Log(
-            "↕ Fuentes reordenadas: oficiales primero; Pawchive como respaldo",
+            "↕ Fuentes reordenadas: pago → gratuitas → repositorios → legado",
             "dim",
         ))
 
@@ -443,6 +447,8 @@ async def run_profile_download(
                 emit(Log(f"Sin template para: {pu['url']}", "error"))
                 continue
 
+            policy = resolve_site_policy(type(template), config, workers)
+
             if not getattr(template, "download_enabled", True):
                 emit(Log(
                     f"⏭ {template.name}: fuera de servicio; se conserva la URL "
@@ -460,7 +466,9 @@ async def run_profile_download(
 
             # Presupuesto del día. Se mira ANTES de escanear: un scan que
             # encola trabajo que no se va a hacer gasta peticiones para nada.
-            day_budget = getattr(template, "daily_byte_budget", 0) or 0
+            transfer_policy = policy.transfer
+            scan_policy = policy.scan
+            day_budget = transfer_policy.daily_byte_budget or 0
             left = budget_remaining(template.name, day_budget)
             if left == 0:
                 blocked_sites[template.name] = (
@@ -474,53 +482,40 @@ async def run_profile_download(
                 ))
                 continue
 
-            # Ritmo y pool del SITIO, no del perfil. Se fijan por fuente y no
-            # una vez por engine: un perfil puede mezclar sitios con límites
-            # distintos, y este bucle es secuencial.
-            src_workers = site_workers(type(template), workers)
+            # El pool pertenece a transferencias; durante API/scan se activa
+            # una política separada para que sus pausas y reintentos no se
+            # filtren a los cuerpos de archivos (ni a la inversa).
+            src_workers = transfer_policy.workers
             engine.set_workers(src_workers)
             emit(WorkersResolved(src_workers))
 
-            pace = getattr(template, "min_request_interval", 0.0)
-            engine.set_pace(pace)
-            if pace:
+            engine.set_scan_policy(scan_policy)
+            engine.set_pace(scan_policy.min_request_interval)
+            engine.set_rate(0)
+            engine.set_completion_gap(0)
+            if scan_policy.min_request_interval:
                 emit(Log(
-                    f"⏱ {template.name}: 1 petición cada {pace:g}s, "
-                    f"compartida entre {src_workers} descargas", "dim",
+                    f"⏱ {template.name}: API cada "
+                    f"{scan_policy.min_request_interval:g}s", "dim",
                 ))
 
-            rate = getattr(template, "max_bytes_per_sec", 0.0) or 0.0
-            engine.set_rate(rate)
-            if rate:
-                queda = (f", {left / 2**30:.1f} GB de presupuesto hoy"
-                         if left >= 0 else "")
-                emit(Log(
-                    f"⏱ {template.name}: techo de {rate / 2**20:.1f} MB/s "
-                    f"entre todas las descargas{queda}", "dim",
-                ))
-
-            completion_gap = getattr(template, "post_download_delay", 0.0) or 0.0
-            engine.set_completion_gap(completion_gap)
-            if completion_gap:
-                emit(Log(
-                    f"⏳ {template.name}: {completion_gap:.0f}s entre terminar "
-                    f"un archivo y empezar el siguiente", "dim",
-                ))
-
-            download_transport = getattr(template, "download_transport", "http")
-            browser_origin = getattr(template, "browser_origin", "")
-            window_limit = getattr(template, "download_window_limit", 0) or 0
-            window_seconds = getattr(template, "download_window_seconds", 0) or 0
+            pace = transfer_policy.min_request_interval
+            rate = transfer_policy.max_bytes_per_sec or 0.0
+            completion_gap = transfer_policy.post_download_delay or 0.0
+            download_transport = transfer_policy.transport
+            browser_origin = transfer_policy.browser_origin
+            window_limit = transfer_policy.download_window_limit or 0
+            window_seconds = transfer_policy.download_window_seconds or 0
             if template.name == "pawchive":
                 window_limit = config.pawchive.downloads_per_window
                 window_seconds = config.pawchive.window_hours * 60 * 60
-            failure_codes = getattr(template, "throttle_failure_codes", frozenset())
+            failure_codes = transfer_policy.throttle_failure_codes
             throttle = None
             if window_limit or failure_codes:
                 throttle_meta[template.name] = {
                     "limit": window_limit,
                     "window": window_seconds,
-                    "streak": getattr(template, "throttle_failure_streak", 5),
+                    "streak": transfer_policy.throttle_failure_streak,
                     "codes": failure_codes,
                 }
                 throttle = throttles.get(template.name)
@@ -529,14 +524,9 @@ async def run_profile_download(
                         template.name,
                         limit=window_limit,
                         window_seconds=window_seconds,
-                        failure_threshold=getattr(template, "throttle_failure_streak", 5),
-                        failure_window_seconds=getattr(
-                            template, "throttle_failure_window", 120.0,
-                        ),
-                        cooldowns=getattr(
-                            template, "throttle_cooldowns",
-                            (900.0, 1800.0, 3600.0, 10800.0),
-                        ),
+                        failure_threshold=transfer_policy.throttle_failure_streak,
+                        failure_window_seconds=transfer_policy.throttle_failure_window,
+                        cooldowns=transfer_policy.throttle_cooldowns,
                     )
                     throttles[template.name] = throttle
 
@@ -715,8 +705,8 @@ async def run_profile_download(
                 await set_meta_int(folder, "full_scan_done", 1)
             emit(Log(f"Scan: {new_this_scan} nuevo(s) en cola", "dim"))
 
-            threshold = getattr(template, "cooldown_threshold", 200)
-            cooldown = getattr(template, "cooldown_seconds", 10.0)
+            threshold = scan_policy.cooldown_threshold
+            cooldown = scan_policy.cooldown_seconds
             if new_this_scan >= threshold:
                 emit(Cooldown(cooldown))
                 emit(Log(f"⏸ Enfriamiento {cooldown:.0f}s antes de descargar…", "warn"))
@@ -738,6 +728,28 @@ async def run_profile_download(
                     INDEX_DB, pu["id"], file_count=pu.get("file_count") or 0,
                 )
                 continue
+
+            engine.set_transfer_policy(transfer_policy)
+            engine.set_pace(pace)
+            engine.set_rate(rate)
+            engine.set_completion_gap(completion_gap)
+            if pace:
+                emit(Log(
+                    f"⏱ {template.name}: transferencias cada {pace:g}s "
+                    f"entre {src_workers} workers", "dim",
+                ))
+            if rate:
+                queda = (f", {left / 2**30:.1f} GB de presupuesto hoy"
+                         if left >= 0 else "")
+                emit(Log(
+                    f"⏱ {template.name}: techo de {rate / 2**20:.1f} MB/s "
+                    f"entre todas las descargas{queda}", "dim",
+                ))
+            if completion_gap:
+                emit(Log(
+                    f"⏳ {template.name}: {completion_gap:.0f}s entre terminar "
+                    f"un archivo y empezar el siguiente", "dim",
+                ))
 
             # Progreso "X / N" con resume.
             batch_key = f"pending_batch_{pu_id}"
@@ -894,9 +906,8 @@ async def run_profile_download(
                             emit(Log(f"⏸ {fi.filename[:55]}  [timeout — diferido]", "warn"))
                             await move_pending_to_back(folder, fi.dedup_key)
                             deferred.append((
-                                fi, artist_info, folder, pace, rate,
-                                completion_gap, template.name,
-                                download_transport, browser_origin,
+                                fi, artist_info, folder, transfer_policy,
+                                template.name, download_transport, browser_origin,
                             ))
                             summ.deferred += 1
                             _counters()
@@ -957,9 +968,8 @@ async def run_profile_download(
 
                             if result.error_kind in ErrorKind.DEFERRABLE:
                                 deferred.append((
-                                    fi, artist_info, folder, pace, rate,
-                                    completion_gap, template.name,
-                                    download_transport, browser_origin,
+                                    fi, artist_info, folder, transfer_policy,
+                                    template.name, download_transport, browser_origin,
                                 ))
                                 emit(WorkerDone(slot_id, fi.filename, "⏸"))
                                 emit(Log(
@@ -1143,9 +1153,8 @@ async def run_profile_download(
         # ── Cola diferida ───────────────────────────────────────────────────
         if deferred and not global_state["reached"]:
             emit(Log(f"⏭ Cola diferida: {len(deferred)} archivo(s)…", "warn"))
-            for (file_info, a_info, dest_folder, src_pace, src_rate,
-                 src_completion_gap, src_site, src_transport,
-                 src_browser_origin) in deferred:
+            for (file_info, a_info, dest_folder, src_policy, src_site,
+                 src_transport, src_browser_origin) in deferred:
                 # Un sitio que cerró la puerta no se reintenta aquí: la cola
                 # diferida es el otro camino por el que se le volvía a pedir.
                 if src_site in blocked_sites:
@@ -1154,9 +1163,11 @@ async def run_profile_download(
                 # fuentes distintas y el pacer que quedó activo es el de la
                 # última, que puede ser más permisivo que el que este archivo
                 # debe respetar. Con el caudal, igual.
-                engine.set_pace(src_pace)
-                engine.set_rate(src_rate)
-                engine.set_completion_gap(src_completion_gap)
+                engine.set_transfer_policy(src_policy)
+                engine.set_workers(src_policy.workers)
+                engine.set_pace(src_policy.min_request_interval)
+                engine.set_rate(src_policy.max_bytes_per_sec)
+                engine.set_completion_gap(src_policy.post_download_delay)
                 if await url_exists(dest_folder, file_info.dedup_key):
                     summ.skipped += 1
                     continue

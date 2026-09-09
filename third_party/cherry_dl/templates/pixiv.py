@@ -17,6 +17,7 @@ from ..auth.pixiv import (
     ensure_pixiv_access_token,
 )
 from .base import ArtistInfo, FileInfo, SiteTemplate, parse_date_utc
+from ..site_policy import ScanPolicy, SourceCategory, TransferPolicy
 
 _BASE = "https://www.pixiv.net"
 _APP_API = "https://app-api.pixiv.net"
@@ -46,8 +47,9 @@ _URI_UGOIRA = "pixiv://ugoira/{}"
 class PixivTemplate(SiteTemplate):
     name = "pixiv"
     base_url = _BASE
-    workers = 2
-    max_workers = 2
+    category = SourceCategory.FREE_OFFICIAL
+    scan_policy = ScanPolicy(delay_min=_DELAY_MIN, delay_max=_DELAY_MAX)
+    transfer_policy = TransferPolicy(workers=2, max_workers=2)
     provides_file_hashes = False
 
     _http: httpx.AsyncClient | None = None
@@ -84,7 +86,10 @@ class PixivTemplate(SiteTemplate):
         params: dict[str, object] | None = None,
     ) -> dict:
         client = await self._get_client()
-        await asyncio.sleep(random.uniform(_DELAY_MIN, _DELAY_MAX))
+        await asyncio.sleep(random.uniform(
+            self.scan_policy.delay_min or 0,
+            self.scan_policy.delay_max or 0,
+        ))
         response = await client.get(url, params=params)
         if response.status_code in (401, 403):
             clear_pixiv_session()

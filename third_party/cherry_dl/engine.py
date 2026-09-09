@@ -41,6 +41,7 @@ from tenacity import (
 )
 
 from .config import UserConfig, load_session, save_session
+from .site_policy import ScanPolicy, TransferPolicy
 
 
 # ── Helpers de I/O en thread ───────────────────────────────────────────────────
@@ -301,6 +302,11 @@ class DownloadEngine:
         self.config = config
         self._workers = workers or config.workers
         self._semaphore = asyncio.Semaphore(self._workers)
+        self._delay_min = config.network.delay_min
+        self._delay_max = config.network.delay_max
+        self._api_retries = config.network.retries_api
+        self._file_retries = config.network.retries_file
+        self._stall_timeout = config.network.stall_timeout
         self._client: httpx.AsyncClient | None = None
         # Solo cookies planas (strings) — los bloques de servicios como
         # {"pixiv": {...}} son dicts anidados y no son cookies HTTP.
@@ -443,6 +449,34 @@ class DownloadEngine:
         # última descarga de una fuente también debe separar la primera de la
         # siguiente.
 
+    def set_scan_policy(self, policy: ScanPolicy) -> None:
+        """Activa delays y reintentos exclusivos de API/scan."""
+        self._delay_min = (
+            self.config.network.delay_min
+            if policy.delay_min is None else policy.delay_min
+        )
+        self._delay_max = (
+            self.config.network.delay_max
+            if policy.delay_max is None else policy.delay_max
+        )
+        self._api_retries = policy.retries or self.config.network.retries_api
+
+    def set_transfer_policy(self, policy: TransferPolicy) -> None:
+        """Activa delays, reintentos y stall exclusivos de archivos."""
+        self._delay_min = (
+            self.config.network.delay_min
+            if policy.delay_min is None else policy.delay_min
+        )
+        self._delay_max = (
+            self.config.network.delay_max
+            if policy.delay_max is None else policy.delay_max
+        )
+        self._file_retries = policy.retries or self.config.network.retries_file
+        self._stall_timeout = (
+            self.config.network.stall_timeout
+            if policy.stall_timeout is None else policy.stall_timeout
+        )
+
     @property
     def paced(self) -> bool:
         """True si hay un ritmo por sitio activo (en vez del delay global)."""
@@ -458,7 +492,7 @@ class DownloadEngine:
         GET con retry. Retorna el JSON parseado.
         Respeta el delay configurado entre requests.
         """
-        max_attempts = retries or self.config.network.retries_api
+        max_attempts = retries or self._api_retries
         return await self._get_json_with_retry(url, max_attempts)
 
     async def get_text(self, url: str) -> str:
@@ -572,7 +606,7 @@ class DownloadEngine:
                 take_bytes=(self._bucket.take if self._bucket is not None else None),
                 on_progress=report,
                 on_status=on_status,
-                stall_timeout=self.config.network.stall_timeout,
+                stall_timeout=self._stall_timeout,
             )
         except Exception as exc:
             if self._browser_transport is not None:
@@ -639,8 +673,8 @@ class DownloadEngine:
                 await self._pacer.wait()
             else:
                 await asyncio.sleep(random.uniform(
-                    self.config.network.delay_min,
-                    self.config.network.delay_max,
+                    self._delay_min,
+                    self._delay_max,
                 ))
             if self._completion_gate is None or self._completion_gate.ready():
                 return
@@ -787,7 +821,7 @@ class DownloadEngine:
           que en Python 3.12 puede propagar CancelledError en lugar de TimeoutError
           cuando httpx re-crea la excepción durante cleanup de streams HTTP/2.
         """
-        max_errors = max_retries if max_retries is not None else self.config.network.retries_file
+        max_errors = max_retries if max_retries is not None else self._file_retries
         last_error: str = ""
         last_kind:  str = ErrorKind.UNKNOWN
 
@@ -913,8 +947,8 @@ class DownloadEngine:
                             await self._pacer.wait()
                         elif first_request:
                             if on_status:
-                                d_min = self.config.network.delay_min
-                                d_max = self.config.network.delay_max
+                                d_min = self._delay_min
+                                d_max = self._delay_max
                                 on_status(
                                     f"⏳ esperando ({d_min:.0f}–{d_max:.0f}s)…"
                                 )
@@ -1062,7 +1096,7 @@ class DownloadEngine:
                         # socket — cubre el caso del read-timeout de httpx que no
                         # disparaba con streams huérfanos (ver __aenter__).
                         _first_chunk = True
-                        _stall = self.config.network.stall_timeout
+                        _stall = self._stall_timeout
                         _loop = asyncio.get_running_loop()
                         # Reprogramar el watchdog COMO MUCHO cada _resched_every s, NO
                         # por chunk. Bajo qasync cada reschedule (call_at → startTimer)
@@ -1210,8 +1244,8 @@ class DownloadEngine:
             await self._pacer.wait()
             return
         d = random.uniform(
-            self.config.network.delay_min,
-            self.config.network.delay_max,
+            self._delay_min,
+            self._delay_max,
         )
         await asyncio.sleep(d)
 
