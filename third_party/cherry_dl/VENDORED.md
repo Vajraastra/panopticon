@@ -52,6 +52,12 @@ O1–O5 quedaron cerrados. O6 se aplaza mientras se reinicia la indexación y se
 operativa con las métricas vivas. Antes de O6 se hará una limpieza auditada de respaldos y archivos
 ignorados; no se eliminarán copias por patrón ni sin clasificar primero su función de recuperación.
 
+La primera observación viva completa con RuiDX confirmó que Patreon entrega y Cherry cataloga las
+publicaciones recientes. La aparente detención en marzo era una confusión entre fecha de descarga
+y fecha de publicación durante un rescan histórico. Quedan dos ajustes generales fuera de O:
+confirmar `last_synced` sólo al terminar el scan y conservar ambas cronologías del archivo
+(modificación = publicación; creación = descarga), con migración histórica sin retransferencias.
+
 Los límites de Pawchive se restablecen al cambiar de fuente y no causan directamente la lentitud
 de Patreon/Pixiv. La configuración `[templates.<sitio>].workers` ya participa en la política
 efectiva y siempre queda por debajo del tope rígido declarado por el sitio.
