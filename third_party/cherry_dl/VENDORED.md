@@ -27,6 +27,15 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Ciclo de vida robusto entre proyectos y standby (2026-09-09)
+
+La cola productor/workers ya no interpreta 120 segundos de backpressure como fallo: espera espacio
+y, si una tarea muere inesperadamente, cancela y recoge el grupo para no dejar consumidores sin
+centinela. El transporte CDP verifica receptor y proceso al reanudar, reconstruye la sesión muerta
+tras standby y despierta las órdenes pendientes cuando cierra el WebSocket. Un 206 incompleto
+descarta esa sesión; el transporte HTTP cuenta parciales repetidos sin progreso hacia el límite de
+reintentos. Regresión dedicada: `scripts/cherry_lifecycle_selftest.py` (9/9).
+
 ### Plan de optimización multi-fuente (2026-09-09)
 
 La auditoría posterior a Pawchive fijó seis hitos, que se ejecutarán en sesiones y commits

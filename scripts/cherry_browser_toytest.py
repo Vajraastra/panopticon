@@ -188,6 +188,7 @@ async def main() -> int:
                 root + "partial", target, "partial.mp4",
                 transport="browser_image", browser_origin=root,
             )
+            partial_released_session = engine._browser_transport is None
             missing = await engine.download(
                 root + "missing-html", target, "missing.gif",
                 transport="browser_image", browser_origin=cross_origin_root,
@@ -294,6 +295,8 @@ async def main() -> int:
         check("mime=video/mp4" in (partial.error or ""), "muestra el MIME")
         check("range=bytes 0-1023/" in (partial.error or ""), "muestra Content-Range")
         check(not (target / "partial.mp4").exists(), "no guarda un video parcial")
+        check(partial_released_session,
+              "el parcial descarta la sesión antes del siguiente archivo")
 
         print("\n[5] Un 404 HTML cross-origin conserva su estado real")
         check(not missing.ok, "el HTML de nginx no se acepta como imagen")

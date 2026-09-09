@@ -633,9 +633,11 @@ class DownloadEngine:
         # multimedia retenidos por Chromium. No reutilizar esa sesión evita
         # que un archivo problemático convierta los siguientes en una racha de
         # ``Failed``. Los rechazos HTTP válidos no necesitan reinicio.
-        if outcome.failure_code in {
-            "headers_timeout", "no_http_failed", "stream_timeout", "stream_error",
-        }:
+        if (outcome.failure_code in {
+                "headers_timeout", "no_http_failed", "incomplete_response",
+                "stream_timeout", "stream_error",
+            }
+            or outcome.status == 206):
             await self._browser_transport.close()
             self._browser_transport = None
             self._browser_key = None
@@ -842,6 +844,7 @@ class DownloadEngine:
         hasher                   = hashlib.sha256()
         full_size:   int = 0            # tamaño total declarado por el servidor
         error_count: int = 0            # solo errores reales (no range resumes)
+        high_water:  int = 0            # máximo progreso entre respuestas
 
         # Tiempo de inicio para timeout total del engine.
         # get_running_loop().time() usa el reloj monotónico del loop.
@@ -1175,6 +1178,14 @@ class DownloadEngine:
                             f"({total * 100 // full_size}%) — continuando con Range…"
                         )
                         last_kind = ErrorKind.NETWORK
+                        if total <= high_water:
+                            # Si el servidor ignora Range y vuelve a entregar el
+                            # mismo prefijo, esto no es una reanudación: es un
+                            # fallo sin progreso. Contarlo evita que un parcial
+                            # mantenga el worker ocupado hasta el timeout global.
+                            error_count += 1
+                        else:
+                            high_water = total
                         continue
 
                     # ── Descarga completa ───────────────────────────────────────

@@ -233,6 +233,22 @@ class BrowserImageTransport:
 
     async def start(self, bytes_per_sec: float = 0) -> None:
         async with self._start_lock:
+            # Tras suspender Windows, Chromium o el WebSocket pueden morir sin
+            # que la referencia desaparezca. Reusar ese objeto obliga a esperar
+            # timeouts por cada orden y parece un worker congelado. La tarea
+            # receptora y el proceso son la señal de vida autoritativa.
+            stale = (
+                self._ws is not None
+                and (
+                    self._recv_task is None
+                    or self._recv_task.done()
+                    or self._process is None
+                    or self._process.returncode is not None
+                )
+            )
+            if stale:
+                log.info("La sesión CDP no sobrevivió al standby; se reinicia")
+                await self.close()
             if self._ws is None:
                 await self._launch()
             rate = float(bytes_per_sec or 0)
@@ -313,6 +329,7 @@ class BrowserImageTransport:
         raise RuntimeError(f"El navegador no pudo abrir {self.root_url}")
 
     async def _receive(self) -> None:
+        failure: BaseException | None = None
         try:
             async for raw in self._ws:
                 message = json.loads(raw)
@@ -350,9 +367,15 @@ class BrowserImageTransport:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            failure = exc
+        else:
+            failure = ConnectionError("El WebSocket CDP se cerró")
+        finally:
             for future in self._pending.values():
                 if not future.done():
-                    future.set_exception(exc)
+                    future.set_exception(failure or ConnectionError(
+                        "El receptor CDP terminó",
+                    ))
             self._pending.clear()
 
     def _resume_unclaimed(
@@ -755,3 +778,6 @@ class BrowserImageTransport:
         self._ws = None
         self._process = None
         self._profile = None
+        self._session_id = None
+        self._target_id = None
+        self._configured_rate = None

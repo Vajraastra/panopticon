@@ -315,6 +315,22 @@ def ordered_sources(sources: list[dict]) -> list[dict]:
     )
 
 
+async def _enqueue_with_backpressure(queue: asyncio.Queue, item) -> None:
+    """Espera espacio real; una descarga lenta no equivale a cola rota."""
+    await queue.put(item)
+
+
+async def _gather_transfer_tasks(tasks: list[asyncio.Task]) -> list:
+    """Reúne productor/workers y corta el grupo si uno muere inesperadamente."""
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
 @dataclass
 class DownloadSummary:
     downloaded: int = 0
@@ -930,7 +946,12 @@ async def run_profile_download(
                             remote_size=pf.get("remote_size"),
                             extra_headers=extra,
                         )
-                        await asyncio.wait_for(file_queue.put(fi), timeout=120.0)
+                        # La cola llena es backpressure normal: un archivo grande
+                        # de Pawchive puede ocupar ambos workers durante bastante
+                        # más de dos minutos. Expirar este put mataba al productor
+                        # sin centinelas; al terminar, los workers esperaban para
+                        # siempre y el lote no avanzaba al proyecto siguiente.
+                        await _enqueue_with_backpressure(file_queue, fi)
                     # Terminación normal: un centinela None por worker para que
                     # cada bucle corte. Solo aquí — en cancelación NO se encolan:
                     # los workers ya fueron cancelados por el gather padre y no
@@ -1270,22 +1291,7 @@ async def run_profile_download(
                 *[asyncio.create_task(worker_task(i), name=f"worker-{i}")
                   for i in range(src_workers)],
             ]
-            try:
-                results = await asyncio.gather(*all_tasks, return_exceptions=True)
-            except asyncio.CancelledError:
-                for t in all_tasks:
-                    t.cancel()
-                await asyncio.gather(*all_tasks, return_exceptions=True)
-                raise
-
-            # Si el productor murió, la paginación quedó incompleta.
-            producer_exc = results[0]
-            if isinstance(producer_exc, Exception):
-                emit(Log(
-                    f"✗ Error en paginación ({type(producer_exc).__name__}): {producer_exc}",
-                    "error",
-                ))
-                emit(Log("⚠ Descarga incompleta. Usá Sync para continuar.", "warn"))
+            await _gather_transfer_tasks(all_tasks)
 
             source_dl = summ.downloaded - dl_before
             source_metrics.finish_transfer()
