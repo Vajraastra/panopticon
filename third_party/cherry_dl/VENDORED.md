@@ -34,6 +34,7 @@ la página individual (~75 KB), lee su `meta artist_name` y conserva el índice 
 respaldo compatible. El flujo público aplica la política de scan del sitio, por lo que la consulta
 usa el ritmo Pawchive de 1 petición/s en vez del delay genérico de 10–30 s. Verificado en vivo con
 `patreon/user/600910`: `Kobi-Tfs` en 0,96 s. Regresión Pawchive: 71/71.
+David confirmó después desde la interfaz que la obtención del nombre funciona en uso real.
 
 ### Disponibilidad persistente de fuentes (2026-09-09)
 
