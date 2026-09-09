@@ -48,6 +48,10 @@ separados:
    cada sitio. Pixiv sólo encola ilustraciones estáticas por decisión del usuario.
 6. **Sitios nuevos.** Fanbox y Coomer entran solo después de estabilizar la arquitectura común.
 
+O1–O5 quedaron cerrados. O6 se aplaza mientras se reinicia la indexación y se recoge evidencia
+operativa con las métricas vivas. Antes de O6 se hará una limpieza auditada de respaldos y archivos
+ignorados; no se eliminarán copias por patrón ni sin clasificar primero su función de recuperación.
+
 Los límites de Pawchive se restablecen al cambiar de fuente y no causan directamente la lentitud
 de Patreon/Pixiv. La configuración `[templates.<sitio>].workers` ya participa en la política
 efectiva y siempre queda por debajo del tope rígido declarado por el sitio.
