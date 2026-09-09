@@ -27,6 +27,33 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Plan de optimización multi-fuente (2026-09-09)
+
+La auditoría posterior a Pawchive fijó seis hitos, que se ejecutarán en sesiones y commits
+separados:
+
+1. **Catálogo por lotes y URLs firmadas.** El scan actual puede abrir `catalog.db` para
+   `url_exists`, `hash_exists`, `pending_url_exists` y `add_pending` por cada archivo. Se
+   reemplazará por una instantánea inicial y UPSERTs en bloques. El mismo cambio debe corregir
+   que `pending_url_exists()` impide hoy llegar al UPSERT que refresca una URL firmada activa.
+   `awaiting_archive`, FIFO, cancelación y reanudación son invariantes.
+2. **Jerarquía y políticas por sitio.** Orden decidido: oficiales de pago (Patreon/Fanbox),
+   oficiales gratuitos (Pixiv), repositorios (Pawchive/Coomer) y legado desactivado (Kemono).
+   API/scan y transferencias tendrán políticas independientes. Los frenos de Pawchive no cambian.
+3. **Batch por pasadas globales.** Procesar la categoría activa para todos los proyectos antes
+   de avanzar: pago → gratuito → repositorios. Un fallo de una fuente no cancela el proyecto.
+4. **Identidad cruzada.** Pawchive ya expone SHA-256 antes de descargar y seguirá siendo la
+   prueba principal. Se añadirá una tabla de alias para conservar servicio, publicación, nombre
+   original, rol/posición y tamaño; un basename aislado nunca basta para omitir contenido.
+5. **Medición viva de Patreon/Pixiv.** Ambos están limitados a 2 workers y sus archivos heredan
+   el delay global de 10–30 s, aunque sus APIs ya usan jitter menor. Se instrumentará rendimiento
+   y errores antes de ajustar valores. Pixiv aún requiere rescan y descarga histórica reales.
+6. **Sitios nuevos.** Fanbox y Coomer entran solo después de estabilizar la arquitectura común.
+
+Los límites de Pawchive se restablecen al cambiar de fuente y no causan directamente la lentitud
+de Patreon/Pixiv. La configuración `[templates.<sitio>]` se carga y guarda, pero actualmente no
+participa en `site_workers`; debe hacerse efectiva o retirarse durante el hito 2.
+
 ### Integración cerrada — autenticación de Pixiv (2026-09-07)
 
 El motor busca `PHPSESSID`, conserva la cookie y lanza `NeedsPixivAuth` cuando falta. Panopticon
