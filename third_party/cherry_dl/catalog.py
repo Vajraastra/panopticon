@@ -50,6 +50,28 @@ _CREATE_IDX = "CREATE INDEX IF NOT EXISTS idx_hash ON files(hash);"
 # archivo procesado → sin índice es un table scan O(n) por archivo.
 _CREATE_IDX_URL = "CREATE INDEX IF NOT EXISTS idx_url_source ON files(url_source);"
 
+# Identidades estables del contenido en el servicio original. Una misma obra
+# puede aparecer por el sitio original y por un espejo con URLs distintas.
+_CREATE_CONTENT_ALIASES = """
+CREATE TABLE IF NOT EXISTS content_aliases (
+    service            TEXT NOT NULL,
+    post_id            TEXT NOT NULL,
+    original_filename  TEXT NOT NULL,
+    content_role       TEXT NOT NULL DEFAULT '',
+    content_position   INTEGER NOT NULL,
+    remote_size        INTEGER,
+    file_hash          TEXT NOT NULL,
+    date_added         INTEGER NOT NULL,
+    PRIMARY KEY (service, post_id, original_filename, content_position),
+    FOREIGN KEY (file_hash) REFERENCES files(hash) ON DELETE CASCADE
+);
+"""
+
+_CREATE_IDX_ALIAS_HASH = (
+    "CREATE INDEX IF NOT EXISTS idx_content_alias_hash "
+    "ON content_aliases(file_hash);"
+)
+
 # Cola de descarga persistente por artista.
 # Cada URL descubierta se agrega aquí antes de descargar; se elimina al
 # completarse. Si el proceso se interrumpe, la cola sobrevive en disco y
@@ -64,6 +86,11 @@ CREATE TABLE IF NOT EXISTS pending_queue (
     post_id         TEXT,
     post_published  TEXT,
     remote_hash     TEXT,
+    content_service TEXT,
+    original_filename TEXT,
+    content_role    TEXT,
+    content_position INTEGER,
+    remote_size     INTEGER,
     extra_headers   TEXT,
     profile_url_id  INTEGER,
     discovered_at   INTEGER NOT NULL,
@@ -93,6 +120,11 @@ CREATE TABLE IF NOT EXISTS awaiting_archive (
     post_id         TEXT,
     post_published  TEXT,
     remote_hash     TEXT,
+    content_service TEXT,
+    original_filename TEXT,
+    content_role    TEXT,
+    content_position INTEGER,
+    remote_size     INTEGER,
     extra_headers   TEXT,
     profile_url_id  INTEGER,
     first_seen      INTEGER NOT NULL,
@@ -148,6 +180,8 @@ async def init_catalog(artist_dir: Path) -> None:
         await db.execute(_CREATE_META)
         await db.execute(_CREATE_IDX)
         await db.execute(_CREATE_IDX_URL)
+        await db.execute(_CREATE_CONTENT_ALIASES)
+        await db.execute(_CREATE_IDX_ALIAS_HASH)
         await db.execute(_CREATE_PENDING)
         await db.execute(_CREATE_IDX_PENDING)
         await db.execute(_CREATE_PROFILE_META)
@@ -177,6 +211,24 @@ async def init_catalog(artist_dir: Path) -> None:
             "WHERE queue_position IS NULL"
         )
         await db.execute(_CREATE_IDX_PENDING_ORDER)
+
+        # Metadatos semánticos añadidos en O4. También viajan con los
+        # originales de Pawchive que esperan ser archivados.
+        semantic_columns = {
+            "content_service": "TEXT",
+            "original_filename": "TEXT",
+            "content_role": "TEXT",
+            "content_position": "INTEGER",
+            "remote_size": "INTEGER",
+        }
+        for table in ("pending_queue", "awaiting_archive"):
+            async with db.execute(f"PRAGMA table_info('{table}')") as cur:
+                existing = {row[1] async for row in cur}
+            for column, sql_type in semantic_columns.items():
+                if column not in existing:
+                    await db.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"
+                    )
 
         # Asegurar fila del contador en meta
         await db.execute(_MIGRATE_META)
@@ -297,12 +349,16 @@ class ScanCatalogBatch:
         self.artist_dir = artist_dir
         self._db_conn = db
         self.batch_size = max(1, batch_size)
-        self.downloaded_urls: set[str] = set()
+        self.downloaded_urls: dict[str, str] = {}
         self.downloaded_hashes: set[str] = set()
-        self.pending_payloads: dict[str, tuple[str, str | None]] = {}
+        self.content_aliases: dict[
+            tuple[str, str, str, int], tuple[str, int | None]
+        ] = {}
+        self.pending_payloads: dict[str, tuple] = {}
         self.pending_positions: dict[str, int] = {}
         self.awaiting_urls: set[str] = set()
         self._buffer: dict[str, tuple] = {}
+        self._alias_buffer: dict[tuple[str, str, str, int], tuple] = {}
         self._next_queue_position = 0
         self.write_commits = 0
         self._closed = False
@@ -318,18 +374,29 @@ class ScanCatalogBatch:
             ) as cur:
                 async for url_source, file_hash in cur:
                     if url_source:
-                        batch.downloaded_urls.add(url_source)
+                        batch.downloaded_urls[url_source] = file_hash
                     if file_hash:
                         batch.downloaded_hashes.add(file_hash)
 
             async with db.execute(
-                "SELECT url_source, download_url, extra_headers, queue_position "
+                "SELECT service, post_id, original_filename, content_position, "
+                "file_hash, remote_size FROM content_aliases"
+            ) as cur:
+                async for service, post_id, name, position, file_hash, size in cur:
+                    batch.content_aliases[(service, post_id, name, position)] = (
+                        file_hash, size,
+                    )
+
+            async with db.execute(
+                "SELECT url_source, download_url, filename_hint, post_id, "
+                "post_published, remote_hash, content_service, "
+                "original_filename, content_role, content_position, "
+                "remote_size, extra_headers, queue_position "
                 "FROM pending_queue"
             ) as cur:
-                async for url_source, download_url, extra_headers, position in cur:
-                    batch.pending_payloads[url_source] = (
-                        download_url, extra_headers,
-                    )
+                async for row in cur:
+                    url_source, *payload, position = row
+                    batch.pending_payloads[url_source] = tuple(payload)
                     batch.pending_positions[url_source] = int(position)
 
             async with db.execute(
@@ -349,10 +416,56 @@ class ScanCatalogBatch:
         return batch
 
     def is_downloaded(self, url_source: str, remote_hash: str = "") -> bool:
-        return (
-            url_source in self.downloaded_urls
-            or bool(remote_hash and remote_hash in self.downloaded_hashes)
+        return self.find_downloaded_hash(url_source, remote_hash) is not None
+
+    def find_downloaded_hash(
+        self,
+        url_source: str,
+        remote_hash: str = "",
+        *,
+        service: str = "",
+        post_id: str = "",
+        original_filename: str = "",
+        position: int | None = None,
+        remote_size: int | None = None,
+    ) -> str | None:
+        """Resuelve hash remoto → alias lógico → URL estable, sin tocar red."""
+        if remote_hash and remote_hash in self.downloaded_hashes:
+            return remote_hash
+        key = content_identity_key(
+            service, post_id, original_filename, position,
         )
+        if key is not None and key in self.content_aliases:
+            file_hash, known_size = self.content_aliases[key]
+            candidate_size = _remote_size_value(remote_size)
+            if (candidate_size is None or known_size is None
+                    or candidate_size == int(known_size)):
+                return file_hash
+        return self.downloaded_urls.get(url_source)
+
+    async def stage_content_alias(
+        self,
+        file_hash: str,
+        service: str,
+        post_id: str,
+        original_filename: str,
+        role: str,
+        position: int | None,
+        remote_size: int | None = None,
+    ) -> bool:
+        """Persiste al cerrar el lote una identidad observada durante el scan."""
+        key = content_identity_key(service, post_id, original_filename, position)
+        if key is None or not file_hash:
+            return False
+        size = _remote_size_value(remote_size)
+        self.content_aliases[key] = (file_hash, size)
+        self._alias_buffer[key] = (
+            *key[:3], role or "", key[3], size, file_hash, int(time.time()),
+            file_hash,
+        )
+        if len(self._alias_buffer) >= self.batch_size:
+            await self.flush()
+        return True
 
     async def stage_pending(
         self,
@@ -362,6 +475,11 @@ class ScanCatalogBatch:
         post_id: str = "",
         post_published: str = "",
         remote_hash: str = "",
+        content_service: str = "",
+        original_filename: str = "",
+        content_role: str = "",
+        content_position: int | None = None,
+        remote_size: int | None = None,
         extra_headers: str | None = None,
         profile_url_id: int | None = None,
     ) -> bool:
@@ -378,7 +496,12 @@ class ScanCatalogBatch:
 
         is_new = url_source not in self.pending_payloads
         previous = self.pending_payloads.get(url_source)
-        payload = (download_url, extra_headers)
+        payload = (
+            download_url, filename_hint, post_id or "", post_published or "",
+            remote_hash or "", content_service or "",
+            original_filename or filename_hint, content_role or "",
+            content_position, _remote_size_value(remote_size), extra_headers,
+        )
         if previous == payload:
             return False
 
@@ -394,6 +517,9 @@ class ScanCatalogBatch:
         self._buffer[url_source] = (
             url_source, download_url, filename_hint,
             post_id or "", post_published or "", remote_hash or "",
+            content_service or "", original_filename or filename_hint,
+            content_role or "", content_position,
+            _remote_size_value(remote_size),
             extra_headers, profile_url_id, int(time.time()), queue_position,
         )
         if len(self._buffer) >= self.batch_size:
@@ -401,28 +527,55 @@ class ScanCatalogBatch:
         return is_new
 
     async def flush(self) -> None:
-        if not self._buffer:
+        if not self._buffer and not self._alias_buffer:
             return
-        rows = list(self._buffer.values())
-        await self._db_conn.executemany(
-            """
-            INSERT INTO pending_queue
-                (url_source, download_url, filename_hint, post_id,
-                 post_published, remote_hash, extra_headers,
-                 profile_url_id, discovered_at, queue_position)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(url_source) DO UPDATE SET
-                download_url  = excluded.download_url,
-                extra_headers = excluded.extra_headers
-            WHERE pending_queue.download_url  IS NOT excluded.download_url
-               OR pending_queue.extra_headers IS NOT excluded.extra_headers
-            """,
-            rows,
-        )
+        if self._buffer:
+            await self._db_conn.executemany(
+                """
+                INSERT INTO pending_queue
+                    (url_source, download_url, filename_hint, post_id,
+                     post_published, remote_hash, content_service,
+                     original_filename, content_role, content_position,
+                     remote_size, extra_headers, profile_url_id,
+                     discovered_at, queue_position)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(url_source) DO UPDATE SET
+                    download_url  = excluded.download_url,
+                    filename_hint = excluded.filename_hint,
+                    post_id = excluded.post_id,
+                    post_published = excluded.post_published,
+                    remote_hash = excluded.remote_hash,
+                    content_service = excluded.content_service,
+                    original_filename = excluded.original_filename,
+                    content_role = excluded.content_role,
+                    content_position = excluded.content_position,
+                    remote_size = excluded.remote_size,
+                    extra_headers = excluded.extra_headers
+                """,
+                list(self._buffer.values()),
+            )
+        if self._alias_buffer:
+            await self._db_conn.executemany(
+                """
+                INSERT INTO content_aliases
+                    (service, post_id, original_filename, content_role,
+                     content_position, remote_size, file_hash, date_added)
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                WHERE EXISTS (SELECT 1 FROM files WHERE hash = ?)
+                ON CONFLICT(service, post_id, original_filename, content_position)
+                DO UPDATE SET
+                    content_role = excluded.content_role,
+                    remote_size = COALESCE(excluded.remote_size,
+                                           content_aliases.remote_size),
+                    file_hash = excluded.file_hash
+                """,
+                list(self._alias_buffer.values()),
+            )
         await self._db_conn.commit()
         self.write_commits += 1
         for url_source in tuple(self._buffer):
             self._buffer.pop(url_source, None)
+        self._alias_buffer.clear()
 
     async def close(self) -> None:
         if self._closed:
@@ -477,6 +630,9 @@ async def remove_file(artist_dir: Path, file_hash: str) -> None:
     """Elimina un registro del catálogo por hash (usado en repair al re-indexar)."""
     db_path = artist_dir / CATALOG_NAME
     async with _db(db_path) as db:
+        await db.execute(
+            "DELETE FROM content_aliases WHERE file_hash = ?", (file_hash,)
+        )
         await db.execute("DELETE FROM files WHERE hash = ?", (file_hash,))
         await db.commit()
 
@@ -686,6 +842,11 @@ async def add_pending(
     post_id: str = "",
     post_published: str = "",
     remote_hash: str = "",
+    content_service: str = "",
+    original_filename: str = "",
+    content_role: str = "",
+    content_position: int | None = None,
+    remote_size: int | None = None,
     extra_headers: str | None = None,
     profile_url_id: int | None = None,
 ) -> None:
@@ -693,15 +854,9 @@ async def add_pending(
     Agrega un archivo a la cola de pendientes. Seguro llamar múltiples veces:
     la url_source es la clave, así que un re-scan no duplica la fila.
 
-    Si la fila ya existe se REFRESCAN `download_url` y `extra_headers`. No es un
-    detalle: Patreon entrega URLs firmadas con `token-time` y caducidad diaria,
-    así que la URL guardada en un scan viejo llega muerta al momento de
-    descargar, y con el `INSERT OR IGNORE` de antes ningún re-scan la reponía —
-    el archivo quedaba atascado en la cola para siempre. Lo demás no se toca; en
-    particular `discovered_at` conserva cuándo se vio el archivo por primera vez.
-
-    El WHERE evita reescribir la fila cuando nada cambió, que es el caso normal
-    en sitios que direccionan por hash (kemono) y donde la URL es estable.
+    Si la fila ya existe se refrescan la URL firmada, headers y metadatos
+    semánticos. La posición FIFO y `discovered_at` conservan cuándo se vio el
+    archivo por primera vez.
     """
     db_path = artist_dir / CATALOG_NAME
     async with _db(db_path) as db:
@@ -709,20 +864,32 @@ async def add_pending(
             """
             INSERT INTO pending_queue
                 (url_source, download_url, filename_hint, post_id,
-                 post_published, remote_hash, extra_headers,
-                 profile_url_id, discovered_at, queue_position)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 post_published, remote_hash, content_service,
+                 original_filename, content_role, content_position,
+                 remote_size, extra_headers, profile_url_id,
+                 discovered_at, queue_position)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     (SELECT COALESCE(MAX(queue_position), 0) + 1
                      FROM pending_queue))
             ON CONFLICT(url_source) DO UPDATE SET
                 download_url  = excluded.download_url,
+                filename_hint = excluded.filename_hint,
+                post_id = excluded.post_id,
+                post_published = excluded.post_published,
+                remote_hash = excluded.remote_hash,
+                content_service = excluded.content_service,
+                original_filename = excluded.original_filename,
+                content_role = excluded.content_role,
+                content_position = excluded.content_position,
+                remote_size = excluded.remote_size,
                 extra_headers = excluded.extra_headers
-            WHERE pending_queue.download_url  IS NOT excluded.download_url
-               OR pending_queue.extra_headers IS NOT excluded.extra_headers
             """,
             (
                 url_source, download_url, filename_hint,
                 post_id or "", post_published or "", remote_hash or "",
+                content_service or "", original_filename or filename_hint,
+                content_role or "", content_position,
+                _remote_size_value(remote_size),
                 extra_headers, profile_url_id, int(time.time()),
             ),
         )
@@ -744,6 +911,106 @@ async def pending_url_exists(artist_dir: Path, url_source: str) -> bool:
             return await cur.fetchone() is not None
 
 
+def content_identity_key(
+    service: str,
+    post_id: str,
+    original_filename: str,
+    position: int | None,
+) -> tuple[str, str, str, int] | None:
+    """Normaliza una identidad lógica; None significa que no es segura."""
+    service = (service or "").strip().casefold()
+    post_id = (post_id or "").strip()
+    original_filename = (original_filename or "").strip()
+    if not service or not post_id or not original_filename:
+        return None
+    try:
+        position = int(position) if position is not None else -1
+    except (TypeError, ValueError):
+        return None
+    if position < 0:
+        return None
+    return service, post_id, original_filename, position
+
+
+def _remote_size_value(value: int | None) -> int | None:
+    try:
+        size = int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    return size if size is None or size >= 0 else None
+
+
+async def content_alias_hash(
+    artist_dir: Path,
+    service: str,
+    post_id: str,
+    original_filename: str,
+    position: int | None,
+    remote_size: int | None = None,
+) -> str | None:
+    """Busca un hash por identidad lógica, validando tamaño si ambos lo saben."""
+    key = content_identity_key(service, post_id, original_filename, position)
+    if key is None:
+        return None
+    db_path = artist_dir / CATALOG_NAME
+    if not db_path.exists():
+        return None
+    async with _db(db_path) as db:
+        async with db.execute(
+            "SELECT file_hash, remote_size FROM content_aliases "
+            "WHERE service = ? AND post_id = ? AND original_filename = ? "
+            "AND content_position = ?",
+            key,
+        ) as cur:
+            row = await cur.fetchone()
+    if row is None:
+        return None
+    remote_size = _remote_size_value(remote_size)
+    if remote_size is not None and row[1] is not None:
+        if remote_size != int(row[1]):
+            return None
+    return str(row[0])
+
+
+async def add_content_alias(
+    artist_dir: Path,
+    file_hash: str,
+    service: str,
+    post_id: str,
+    original_filename: str,
+    role: str,
+    position: int | None,
+    remote_size: int | None = None,
+) -> bool:
+    """Liga una identidad semántica a un hash ya presente en ``files``."""
+    key = content_identity_key(service, post_id, original_filename, position)
+    if key is None or not file_hash:
+        return False
+    size = _remote_size_value(remote_size)
+    db_path = artist_dir / CATALOG_NAME
+    async with _db(db_path) as db:
+        async with db.execute(
+            """
+            INSERT INTO content_aliases
+                (service, post_id, original_filename, content_role,
+                 content_position, remote_size, file_hash, date_added)
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE EXISTS (SELECT 1 FROM files WHERE hash = ?)
+            ON CONFLICT(service, post_id, original_filename, content_position)
+            DO UPDATE SET
+                content_role = excluded.content_role,
+                remote_size = COALESCE(excluded.remote_size,
+                                       content_aliases.remote_size),
+                file_hash = excluded.file_hash
+            """,
+            (*key[:3], role or "", key[3], size, file_hash,
+             int(time.time()), file_hash),
+        ) as cur:
+            changed = cur.rowcount > 0
+        await db.commit()
+    return changed
+
+
 async def defer_until_archived(
     artist_dir: Path,
     url_source: str,
@@ -762,7 +1029,8 @@ async def defer_until_archived(
         await db.execute(_CREATE_IDX_AWAITING_ARCHIVE)
         async with db.execute(
             "SELECT download_url, filename_hint, post_id, post_published, "
-            "remote_hash, extra_headers, profile_url_id "
+            "remote_hash, content_service, original_filename, content_role, "
+            "content_position, remote_size, extra_headers, profile_url_id "
             "FROM pending_queue WHERE url_source = ?",
             (url_source,),
         ) as cur:
@@ -773,15 +1041,22 @@ async def defer_until_archived(
             """
             INSERT INTO awaiting_archive
                 (url_source, download_url, filename_hint, post_id,
-                 post_published, remote_hash, extra_headers, profile_url_id,
+                 post_published, remote_hash, content_service,
+                 original_filename, content_role, content_position, remote_size,
+                 extra_headers, profile_url_id,
                  first_seen, last_checked, next_check, check_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             ON CONFLICT(url_source) DO UPDATE SET
                 download_url = excluded.download_url,
                 filename_hint = excluded.filename_hint,
                 post_id = excluded.post_id,
                 post_published = excluded.post_published,
                 remote_hash = excluded.remote_hash,
+                content_service = excluded.content_service,
+                original_filename = excluded.original_filename,
+                content_role = excluded.content_role,
+                content_position = excluded.content_position,
+                remote_size = excluded.remote_size,
                 extra_headers = excluded.extra_headers,
                 profile_url_id = excluded.profile_url_id,
                 last_checked = excluded.last_checked,
@@ -861,15 +1136,20 @@ async def reactivate_awaiting_archive(
                 """
                 INSERT OR IGNORE INTO pending_queue
                     (url_source, download_url, filename_hint, post_id,
-                     post_published, remote_hash, extra_headers,
-                     profile_url_id, discovered_at, queue_position)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                     post_published, remote_hash, content_service,
+                     original_filename, content_role, content_position,
+                     remote_size, extra_headers, profile_url_id,
+                     discovered_at, queue_position)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                         (SELECT COALESCE(MAX(queue_position), 0) + 1
                          FROM pending_queue))
                 """,
                 (
                     row["url_source"], row["download_url"], row["filename_hint"],
                     row["post_id"], row["post_published"], row["remote_hash"],
+                    row["content_service"], row["original_filename"],
+                    row["content_role"], row["content_position"],
+                    row["remote_size"],
                     row["extra_headers"], row["profile_url_id"], now,
                 ),
             ) as cur:
@@ -943,7 +1223,9 @@ async def get_pending_files(
             async with db.execute(
                 """
                 SELECT url_source, download_url, filename_hint,
-                       post_id, post_published, remote_hash, extra_headers
+                       post_id, post_published, remote_hash, content_service,
+                       original_filename, content_role, content_position,
+                       remote_size, extra_headers
                 FROM pending_queue
                 WHERE profile_url_id = ?
                 ORDER BY queue_position, discovered_at, rowid
@@ -955,7 +1237,9 @@ async def get_pending_files(
             async with db.execute(
                 """
                 SELECT url_source, download_url, filename_hint,
-                       post_id, post_published, remote_hash, extra_headers
+                       post_id, post_published, remote_hash, content_service,
+                       original_filename, content_role, content_position,
+                       remote_size, extra_headers
                 FROM pending_queue
                 ORDER BY queue_position, discovered_at, rowid
                 """

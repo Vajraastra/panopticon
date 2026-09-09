@@ -30,6 +30,14 @@ class FileInfo:
     artist_id: str
     artist_name: str
     post_id: str
+    # Identidad lógica del contenido, independiente del sitio espejo. El
+    # servicio es el origen real (p. ej. ``patreon`` tanto en Patreon como en
+    # Pawchive), y la posición es global dentro de la publicación.
+    content_service: str = ""
+    original_filename: str = ""
+    content_role: str = ""
+    content_position: int = -1
+    remote_size: int | None = None
     # Metadatos opcionales del post
     post_title: str = ""
     date_published: str = ""

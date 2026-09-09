@@ -36,9 +36,11 @@ from .downloads import _build_local_hash_map, _passes_ext_filter, build_filename
 from .catalog import (
     ARCHIVE_RECHECK_BATCH,
     ScanCatalogBatch,
+    add_content_alias,
     add_file,
     defer_until_archived,
     clean_pending_catalog_overlap,
+    content_alias_hash,
     get_meta_int,
     get_pending_files,
     hash_exists,
@@ -273,6 +275,22 @@ def source_category(url: str) -> SourceCategory:
     """Categoría declarada de una URL, compartida con el planificador batch."""
     cls = find_template(url) if url else None
     return declared_site_policy(cls).category
+
+
+async def _remember_content_alias(
+    folder: Path, file_info: FileInfo, file_hash: str,
+) -> bool:
+    """Conserva la identidad original sólo cuando ya existe un hash probado."""
+    return await add_content_alias(
+        folder,
+        file_hash,
+        file_info.content_service,
+        file_info.post_id,
+        file_info.original_filename or file_info.filename,
+        file_info.content_role,
+        file_info.content_position,
+        file_info.remote_size,
+    )
 
 
 def ordered_sources(sources: list[dict]) -> list[dict]:
@@ -676,7 +694,27 @@ async def run_profile_download(
                             if key in seen_scan:
                                 continue
                             seen_scan.add(key)
-                            if scan_catalog.is_downloaded(key, fi.remote_hash):
+                            matched_hash = scan_catalog.find_downloaded_hash(
+                                key,
+                                fi.remote_hash,
+                                service=fi.content_service or artist_info.service,
+                                post_id=fi.post_id,
+                                original_filename=(
+                                    fi.original_filename or fi.filename
+                                ),
+                                position=fi.content_position,
+                                remote_size=fi.remote_size,
+                            )
+                            if matched_hash:
+                                await scan_catalog.stage_content_alias(
+                                    matched_hash,
+                                    fi.content_service or artist_info.service,
+                                    fi.post_id,
+                                    fi.original_filename or fi.filename,
+                                    fi.content_role,
+                                    fi.content_position,
+                                    fi.remote_size,
+                                )
                                 continue
                             if await scan_catalog.stage_pending(
                                     url_source=key,
@@ -685,6 +723,15 @@ async def run_profile_download(
                                     post_id=fi.post_id,
                                     post_published=fi.date_published,
                                     remote_hash=fi.remote_hash,
+                                    content_service=(
+                                        fi.content_service or artist_info.service
+                                    ),
+                                    original_filename=(
+                                        fi.original_filename or fi.filename
+                                    ),
+                                    content_role=fi.content_role,
+                                    content_position=fi.content_position,
+                                    remote_size=fi.remote_size,
                                     extra_headers=(
                                         json.dumps(fi.extra_headers)
                                         if fi.extra_headers else None
@@ -834,6 +881,19 @@ async def run_profile_download(
                             post_id=pf.get("post_id") or "",
                             date_published=pf.get("post_published") or "",
                             remote_hash=pf.get("remote_hash") or "",
+                            content_service=(
+                                pf.get("content_service") or artist_info.service
+                            ),
+                            original_filename=(
+                                pf.get("original_filename")
+                                or pf["filename_hint"]
+                            ),
+                            content_role=pf.get("content_role") or "",
+                            content_position=(
+                                pf.get("content_position")
+                                if pf.get("content_position") is not None else -1
+                            ),
+                            remote_size=pf.get("remote_size"),
                             extra_headers=extra,
                         )
                         await asyncio.wait_for(file_queue.put(fi), timeout=120.0)
@@ -874,15 +934,33 @@ async def run_profile_download(
 
                     try:
                         throttle_permit = None
-                        if await url_exists(folder, fi.dedup_key):
+                        if fi.remote_hash and await hash_exists(folder, fi.remote_hash):
                             summ.skipped += 1
-                            emit(Log(f"— {fi.filename[:60]}  [URL en catálogo]", "dim"))
+                            await _remember_content_alias(folder, fi, fi.remote_hash)
+                            emit(Log(f"— {fi.filename[:60]}  [hash en catálogo]", "dim"))
                             await remove_pending(folder, fi.dedup_key)
                             _counters()
                             continue
-                        if fi.remote_hash and await hash_exists(folder, fi.remote_hash):
+                        logical_hash = await content_alias_hash(
+                            folder,
+                            fi.content_service,
+                            fi.post_id,
+                            fi.original_filename or fi.filename,
+                            fi.content_position,
+                            fi.remote_size,
+                        )
+                        if logical_hash:
                             summ.skipped += 1
-                            emit(Log(f"— {fi.filename[:60]}  [hash en catálogo]", "dim"))
+                            emit(Log(
+                                f"— {fi.filename[:60]}  [identidad ya catalogada]",
+                                "dim",
+                            ))
+                            await remove_pending(folder, fi.dedup_key)
+                            _counters()
+                            continue
+                        if await url_exists(folder, fi.dedup_key):
+                            summ.skipped += 1
+                            emit(Log(f"— {fi.filename[:60]}  [URL en catálogo]", "dim"))
                             await remove_pending(folder, fi.dedup_key)
                             _counters()
                             continue
@@ -1068,6 +1146,9 @@ async def run_profile_download(
                         # Dedup post-descarga (mismo contenido ya catalogado).
                         if await hash_exists(folder, result.file_hash):
                             summ.skipped += 1
+                            await _remember_content_alias(
+                                folder, fi, result.file_hash,
+                            )
                             if result.dest and result.dest.exists():
                                 result.dest.unlink()
                             emit(WorkerIdle(slot_id))
@@ -1098,6 +1179,9 @@ async def run_profile_download(
                                 filename=final_name, url_source=fi.dedup_key,
                                 file_size=result.file_size, counter=counter,
                             )
+                            await _remember_content_alias(
+                                folder, fi, result.file_hash,
+                            )
                             await remove_pending(folder, fi.dedup_key)
                             summ.downloaded += 1
                             icon = "↷" if renamed else "✓"
@@ -1112,6 +1196,9 @@ async def run_profile_download(
                                 artist_dir=folder, file_hash=result.file_hash,
                                 filename=final_name, url_source=fi.dedup_key,
                                 file_size=result.file_size, counter=counter,
+                            )
+                            await _remember_content_alias(
+                                folder, fi, result.file_hash,
                             )
                             await remove_pending(folder, fi.dedup_key)
                             local_hashes[result.file_hash] = result.dest
@@ -1253,6 +1340,9 @@ async def run_profile_download(
                         artist_dir=dest_folder, file_hash=result.file_hash,
                         filename=final_name, url_source=file_info.dedup_key,
                         file_size=result.file_size, counter=counter,
+                    )
+                    await _remember_content_alias(
+                        dest_folder, file_info, result.file_hash,
                     )
                     await remove_pending(dest_folder, file_info.dedup_key)
                     summ.downloaded += 1

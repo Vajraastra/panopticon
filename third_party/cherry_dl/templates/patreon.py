@@ -382,6 +382,7 @@ def _extract_files_from_post(
     rels = post.get("relationships", {})
 
     # ── 1. Media embebida ──────────────────────────────────────────────────────
+    position = 0
     for rel_item in rels.get("images", {}).get("data", []):
         media_id    = str(rel_item.get("id", ""))
         media_attrs = included_map.get(("media", media_id), {})
@@ -396,9 +397,8 @@ def _extract_files_from_post(
             continue
         seen_cdn_urls.add(cdn_url)
 
-        filename = _safe_filename(
-            media_attrs.get("file_name") or f"media_{media_id}"
-        )
+        original_name = media_attrs.get("file_name") or f"media_{media_id}"
+        filename = _safe_filename(original_name)
         files.append(FileInfo(
             url          = cdn_url,
             url_source   = _URI_MEDIA.format(media_id),
@@ -406,9 +406,15 @@ def _extract_files_from_post(
             artist_id    = artist.artist_id,
             artist_name  = artist.name,
             post_id      = post_id,
+            content_service = artist.service,
+            original_filename = original_name,
+            content_role = "primary",
+            content_position = position,
+            remote_size = media_attrs.get("size_bytes"),
             post_title   = title,
             date_published = published,
         ))
+        position += 1
 
     # ── 2. Adjuntos (PSD, ZIP, MP4, archivos fuente, etc.) ────────────────────
     for rel_item in rels.get("attachments", {}).get("data", []):
@@ -423,9 +429,8 @@ def _extract_files_from_post(
             continue
         seen_cdn_urls.add(att_url)
 
-        filename = _safe_filename(
-            att_attrs.get("name") or f"attachment_{att_id}"
-        )
+        original_name = att_attrs.get("name") or f"attachment_{att_id}"
+        filename = _safe_filename(original_name)
         files.append(FileInfo(
             url          = att_url,
             url_source   = _URI_ATTACHMENT.format(att_id),
@@ -433,9 +438,14 @@ def _extract_files_from_post(
             artist_id    = artist.artist_id,
             artist_name  = artist.name,
             post_id      = post_id,
+            content_service = artist.service,
+            original_filename = original_name,
+            content_role = "attachment",
+            content_position = position,
             post_title   = title,
             date_published = published,
         ))
+        position += 1
 
     return files
 

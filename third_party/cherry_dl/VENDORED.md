@@ -523,3 +523,11 @@ final los repositorios. `finalize_profile` reserva `last_checked` para la últim
 normal conserva el comportamiento anterior. Los fallos al resolver una fuente se registran y
 saltan sólo esa fuente. La agregación de resúmenes y el orden global pertenecen a
 `modules/cherry/logic/download_queue.py`, no al vendor.
+
+### Identidad cruzada de contenido (2026-09-09)
+
+`catalog.db` conserva alias ligados al SHA-256 final con servicio original, publicación, nombre
+exacto, rol/posición y tamaño remoto cuando está disponible. El servicio decide en este orden:
+hash remoto, identidad semántica segura y, después de transferir, SHA-256 local. Un basename
+aislado nunca basta para omitir un archivo. La cola activa y `awaiting_archive` conservan esos
+metadatos durante reanudaciones y migran catálogos anteriores de forma aditiva.

@@ -313,17 +313,21 @@ def _extract_files_from_post(post: dict, artist: ArtistInfo):
     date_published = post.get("published", "")
     referer = {"Referer": artist.url}
 
-    entradas = []
+    entradas: list[tuple[str, int, dict]] = []
     main_file = post.get("file")
     if main_file:
-        entradas.append(main_file)
-    entradas.extend(post.get("attachments") or [])
+        entradas.append(("primary", 0, main_file))
+    entradas.extend(
+        ("attachment", position, entry)
+        for position, entry in enumerate(post.get("attachments") or [], start=1)
+    )
 
-    for entrada in entradas:
+    for role, position, entrada in entradas:
         path = entrada.get("path")
         if not path or entrada.get("preview_only"):
             continue
-        filename = _safe_filename(entrada.get("name") or _name_from_path(path))
+        original_name = entrada.get("name") or _name_from_path(path)
+        filename = _safe_filename(original_name)
         yield FileInfo(
             # El `?f=` es el nombre que el sitio sugiere al navegador. Se manda
             # porque es lo que hace su propia página, y así la petición no se
@@ -333,6 +337,11 @@ def _extract_files_from_post(post: dict, artist: ArtistInfo):
             artist_id=artist.artist_id,
             artist_name=artist.name,
             post_id=post_id,
+            content_service=artist.service,
+            original_filename=original_name,
+            content_role=role,
+            content_position=position,
+            remote_size=entrada.get("size") or entrada.get("size_bytes"),
             post_title=post_title,
             date_published=date_published,
             remote_hash=_hash_from_path(path) or "",

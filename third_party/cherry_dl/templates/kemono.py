@@ -189,13 +189,19 @@ def _extract_files_from_post(post: dict, artist: ArtistInfo):
     main_file = post.get("file")
     if main_file and main_file.get("path"):
         path = main_file["path"]
-        filename = _safe_filename(main_file.get("name") or _name_from_path(path))
+        original_name = main_file.get("name") or _name_from_path(path)
+        filename = _safe_filename(original_name)
         yield FileInfo(
             url=f"{_BASE}{path}",
             filename=filename,
             artist_id=artist.artist_id,
             artist_name=artist.name,
             post_id=post_id,
+            content_service=artist.service,
+            original_filename=original_name,
+            content_role="primary",
+            content_position=0,
+            remote_size=main_file.get("size") or main_file.get("size_bytes"),
             post_title=post_title,
             date_published=date_published,
             remote_hash=_hash_from_path(path) or "",
@@ -203,17 +209,23 @@ def _extract_files_from_post(post: dict, artist: ArtistInfo):
         )
 
     # Archivos adjuntos
-    for att in post.get("attachments", []):
+    for position, att in enumerate(post.get("attachments", []), start=1):
         if not att.get("path"):
             continue
         path = att["path"]
-        filename = _safe_filename(att.get("name") or _name_from_path(path))
+        original_name = att.get("name") or _name_from_path(path)
+        filename = _safe_filename(original_name)
         yield FileInfo(
             url=f"{_BASE}{path}",
             filename=filename,
             artist_id=artist.artist_id,
             artist_name=artist.name,
             post_id=post_id,
+            content_service=artist.service,
+            original_filename=original_name,
+            content_role="attachment",
+            content_position=position,
+            remote_size=att.get("size") or att.get("size_bytes"),
             post_title=post_title,
             date_published=date_published,
             remote_hash=_hash_from_path(path) or "",
