@@ -35,8 +35,8 @@ from .engine import DownloadEngine, ErrorKind
 from .downloads import _build_local_hash_map, _passes_ext_filter, build_filename
 from .catalog import (
     ARCHIVE_RECHECK_BATCH,
+    ScanCatalogBatch,
     add_file,
-    add_pending,
     defer_until_archived,
     clean_pending_catalog_overlap,
     get_meta_int,
@@ -46,7 +46,6 @@ from .catalog import (
     move_pending_to_back,
     next_counter,
     pending_count,
-    pending_url_exists,
     reactivate_awaiting_archive,
     remove_pending,
     set_meta_int,
@@ -653,59 +652,60 @@ async def run_profile_download(
             scan_files_seen = 0
             scan_ok = True
             auth_retried = False
-            while True:
-                try:
-                    async for fi in template.iter_files(artist_info, since=scan_since):
-                        scan_files_seen += 1
-                        # Señal de vida durante el paginado (Fase 1 no descarga).
-                        if scan_files_seen % 25 == 0:
-                            emit(ScanProgress(scan_files_seen, new_this_scan))
-                        key = fi.dedup_key
-                        if key in seen_scan:
-                            continue
-                        seen_scan.add(key)
-                        if await url_exists(folder, key):
-                            continue
-                        if fi.remote_hash and await hash_exists(folder, fi.remote_hash):
-                            continue
-                        if not await pending_url_exists(folder, key):
-                            await add_pending(
-                                folder,
-                                url_source=key,
-                                download_url=fi.url,
-                                filename_hint=fi.filename,
-                                post_id=fi.post_id,
-                                post_published=fi.date_published,
-                                remote_hash=fi.remote_hash,
-                                extra_headers=(
-                                    json.dumps(fi.extra_headers)
-                                    if fi.extra_headers else None
-                                ),
-                                profile_url_id=pu_id,
-                            )
-                            new_this_scan += 1
-                except asyncio.CancelledError:
-                    raise
-                except (NeedsManualAuth, NeedsPixivAuth) as scan_auth:
-                    if auth_retried or not await _resolve_required_auth(
-                        template, scan_auth, resolve_auth, emit,
-                    ):
+            scan_catalog = await ScanCatalogBatch.open(folder)
+            try:
+                while True:
+                    try:
+                        async for fi in template.iter_files(artist_info, since=scan_since):
+                            scan_files_seen += 1
+                            # Señal de vida durante el paginado (Fase 1 no descarga).
+                            if scan_files_seen % 25 == 0:
+                                emit(ScanProgress(scan_files_seen, new_this_scan))
+                            key = fi.dedup_key
+                            if key in seen_scan:
+                                continue
+                            seen_scan.add(key)
+                            if scan_catalog.is_downloaded(key, fi.remote_hash):
+                                continue
+                            if await scan_catalog.stage_pending(
+                                    url_source=key,
+                                    download_url=fi.url,
+                                    filename_hint=fi.filename,
+                                    post_id=fi.post_id,
+                                    post_published=fi.date_published,
+                                    remote_hash=fi.remote_hash,
+                                    extra_headers=(
+                                        json.dumps(fi.extra_headers)
+                                        if fi.extra_headers else None
+                                    ),
+                                    profile_url_id=pu_id,
+                            ):
+                                new_this_scan += 1
+                    except asyncio.CancelledError:
+                        raise
+                    except (NeedsManualAuth, NeedsPixivAuth) as scan_auth:
+                        if auth_retried or not await _resolve_required_auth(
+                            template, scan_auth, resolve_auth, emit,
+                        ):
+                            scan_ok = False
+                            emit(Log("⚠ Scan parcial — usá Sync para continuar.", "warn"))
+                            break
+                        auth_retried = True
+                        emit(Log("↺ Sesión renovada; retomando el escaneo…", "info"))
+                        continue
+                    except Exception as scan_exc:
                         scan_ok = False
+                        emit(Log(
+                            f"✗ Error en escaneo ({type(scan_exc).__name__}): {scan_exc}",
+                            "error",
+                        ))
                         emit(Log("⚠ Scan parcial — usá Sync para continuar.", "warn"))
                         break
-                    auth_retried = True
-                    emit(Log("↺ Sesión renovada; retomando el escaneo…", "info"))
-                    continue
-                except Exception as scan_exc:
-                    scan_ok = False
-                    emit(Log(
-                        f"✗ Error en escaneo ({type(scan_exc).__name__}): {scan_exc}",
-                        "error",
-                    ))
-                    emit(Log("⚠ Scan parcial — usá Sync para continuar.", "warn"))
-                    break
-                else:
-                    break
+                    else:
+                        break
+            finally:
+                # Conserva hasta el último bloque parcial ante error o cancelación.
+                await asyncio.shield(scan_catalog.close())
 
             # Marcar cobertura histórica completa SOLO si un scan completo
             # terminó entero (sin error). last_synced se fija al inicio de la

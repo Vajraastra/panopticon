@@ -32,11 +32,9 @@
 La auditoría posterior a Pawchive fijó seis hitos, que se ejecutarán en sesiones y commits
 separados:
 
-1. **Catálogo por lotes y URLs firmadas.** El scan actual puede abrir `catalog.db` para
-   `url_exists`, `hash_exists`, `pending_url_exists` y `add_pending` por cada archivo. Se
-   reemplazará por una instantánea inicial y UPSERTs en bloques. El mismo cambio debe corregir
-   que `pending_url_exists()` impide hoy llegar al UPSERT que refresca una URL firmada activa.
-   `awaiting_archive`, FIFO, cancelación y reanudación son invariantes.
+1. **Catálogo por lotes y URLs firmadas — cerrado.** Una instantánea reemplaza las consultas por
+   archivo y los UPSERTs se confirman en bloques de 250. Las firmas activas se renuevan sin alterar
+   `awaiting_archive`, FIFO, cancelación ni reanudación.
 2. **Jerarquía y políticas por sitio.** Orden decidido: oficiales de pago (Patreon/Fanbox),
    oficiales gratuitos (Pixiv), repositorios (Pawchive/Coomer) y legado desactivado (Kemono).
    API/scan y transferencias tendrán políticas independientes. Los frenos de Pawchive no cambian.
@@ -53,6 +51,17 @@ separados:
 Los límites de Pawchive se restablecen al cambiar de fuente y no causan directamente la lentitud
 de Patreon/Pixiv. La configuración `[templates.<sitio>]` se carga y guarda, pero actualmente no
 participa en `site_workers`; debe hacerse efectiva o retirarse durante el hito 2.
+
+### `catalog.py` + `download_service.py` — scan por lotes y firmas activas (2026-09-09)
+
+O1 reemplaza las consultas SQLite por elemento del scan con `ScanCatalogBatch`: una sola conexión
+carga URLs y hashes descargados, pendientes activos, esperas de Pawchive y el máximo FIFO. Los
+pendientes nuevos y las firmas renovadas se escriben en bloques de 250; un conflicto actualiza sólo
+`download_url` y `extra_headers`, nunca `queue_position`. Las filas de `awaiting_archive` se omiten.
+
+El bloque incompleto se confirma al salir incluso por cancelación, de modo que un Sync posterior
+reanuda desde la cola persistida. `scripts/cherry_catalog_batch_selftest.py` mide una conexión y tres
+commits para 503 UPSERTs, además de refresh, FIFO, espera, cancelación y reanudación (521 checks).
 
 ### Integración cerrada — autenticación de Pixiv (2026-09-07)
 

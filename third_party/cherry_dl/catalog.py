@@ -284,6 +284,156 @@ async def get_all_hashes(artist_dir: Path) -> set[str]:
     return {row[0] for row in rows}
 
 
+class ScanCatalogBatch:
+    """Instantánea y escritor por lotes para un escaneo completo de una fuente.
+
+    Mantiene una sola conexión abierta durante el scan. Las consultas de dedup
+    se resuelven en memoria y los pendientes nuevos o con URL firmada renovada
+    se confirman en bloques, sin tocar la posición FIFO de filas existentes.
+    """
+
+    def __init__(self, artist_dir: Path, db: aiosqlite.Connection,
+                 batch_size: int) -> None:
+        self.artist_dir = artist_dir
+        self._db_conn = db
+        self.batch_size = max(1, batch_size)
+        self.downloaded_urls: set[str] = set()
+        self.downloaded_hashes: set[str] = set()
+        self.pending_payloads: dict[str, tuple[str, str | None]] = {}
+        self.pending_positions: dict[str, int] = {}
+        self.awaiting_urls: set[str] = set()
+        self._buffer: dict[str, tuple] = {}
+        self._next_queue_position = 0
+        self.write_commits = 0
+        self._closed = False
+
+    @classmethod
+    async def open(cls, artist_dir: Path, *, batch_size: int = 250
+                   ) -> "ScanCatalogBatch":
+        db = await _db(artist_dir / CATALOG_NAME)
+        batch = cls(artist_dir, db, batch_size)
+        try:
+            async with db.execute(
+                "SELECT url_source, hash FROM files"
+            ) as cur:
+                async for url_source, file_hash in cur:
+                    if url_source:
+                        batch.downloaded_urls.add(url_source)
+                    if file_hash:
+                        batch.downloaded_hashes.add(file_hash)
+
+            async with db.execute(
+                "SELECT url_source, download_url, extra_headers, queue_position "
+                "FROM pending_queue"
+            ) as cur:
+                async for url_source, download_url, extra_headers, position in cur:
+                    batch.pending_payloads[url_source] = (
+                        download_url, extra_headers,
+                    )
+                    batch.pending_positions[url_source] = int(position)
+
+            async with db.execute(
+                "SELECT url_source FROM awaiting_archive"
+            ) as cur:
+                async for row in cur:
+                    batch.awaiting_urls.add(row[0])
+
+            async with db.execute(
+                "SELECT COALESCE(MAX(queue_position), 0) FROM pending_queue"
+            ) as cur:
+                row = await cur.fetchone()
+                batch._next_queue_position = int(row[0]) if row else 0
+        except BaseException:
+            await db.close()
+            raise
+        return batch
+
+    def is_downloaded(self, url_source: str, remote_hash: str = "") -> bool:
+        return (
+            url_source in self.downloaded_urls
+            or bool(remote_hash and remote_hash in self.downloaded_hashes)
+        )
+
+    async def stage_pending(
+        self,
+        url_source: str,
+        download_url: str,
+        filename_hint: str,
+        post_id: str = "",
+        post_published: str = "",
+        remote_hash: str = "",
+        extra_headers: str | None = None,
+        profile_url_id: int | None = None,
+    ) -> bool:
+        """Prepara un UPSERT y retorna True sólo cuando la fila es nueva.
+
+        Una fila en ``awaiting_archive`` se ignora: verla otra vez durante un
+        scan no debe devolverla a la cola activa. Para un pendiente activo se
+        refrescan URL y headers sin cambiar su posición.
+        """
+        if self._closed:
+            raise RuntimeError("el lote de catálogo ya está cerrado")
+        if url_source in self.awaiting_urls:
+            return False
+
+        is_new = url_source not in self.pending_payloads
+        previous = self.pending_payloads.get(url_source)
+        payload = (download_url, extra_headers)
+        if previous == payload:
+            return False
+
+        if is_new:
+            self._next_queue_position += 1
+            queue_position = self._next_queue_position
+            self.pending_positions[url_source] = queue_position
+        else:
+            # En conflicto SQLite conserva la posición existente.
+            queue_position = self.pending_positions[url_source]
+
+        self.pending_payloads[url_source] = payload
+        self._buffer[url_source] = (
+            url_source, download_url, filename_hint,
+            post_id or "", post_published or "", remote_hash or "",
+            extra_headers, profile_url_id, int(time.time()), queue_position,
+        )
+        if len(self._buffer) >= self.batch_size:
+            await self.flush()
+        return is_new
+
+    async def flush(self) -> None:
+        if not self._buffer:
+            return
+        rows = list(self._buffer.values())
+        await self._db_conn.executemany(
+            """
+            INSERT INTO pending_queue
+                (url_source, download_url, filename_hint, post_id,
+                 post_published, remote_hash, extra_headers,
+                 profile_url_id, discovered_at, queue_position)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(url_source) DO UPDATE SET
+                download_url  = excluded.download_url,
+                extra_headers = excluded.extra_headers
+            WHERE pending_queue.download_url  IS NOT excluded.download_url
+               OR pending_queue.extra_headers IS NOT excluded.extra_headers
+            """,
+            rows,
+        )
+        await self._db_conn.commit()
+        self.write_commits += 1
+        for url_source in tuple(self._buffer):
+            self._buffer.pop(url_source, None)
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        try:
+            await self.flush()
+        finally:
+            self._closed = True
+            await self._db_conn.close()
+
+
 async def add_file(
     artist_dir: Path,
     file_hash: str,
