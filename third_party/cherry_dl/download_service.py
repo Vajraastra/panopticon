@@ -34,8 +34,10 @@ from .config import INDEX_DB, load_config
 from .engine import DownloadEngine, ErrorKind
 from .downloads import _build_local_hash_map, _passes_ext_filter, build_filename
 from .catalog import (
+    ARCHIVE_RECHECK_BATCH,
     add_file,
     add_pending,
+    defer_until_archived,
     clean_pending_catalog_overlap,
     get_meta_int,
     get_pending_files,
@@ -45,6 +47,7 @@ from .catalog import (
     next_counter,
     pending_count,
     pending_url_exists,
+    reactivate_awaiting_archive,
     remove_pending,
     set_meta_int,
     url_exists,
@@ -188,6 +191,28 @@ EmitFn = Callable[[DownloadEvent], None]
 AuthResolver = Callable[[str], Awaitable[bool]]
 
 
+def _auth_site(exc: Exception) -> str:
+    return "pixiv" if isinstance(exc, NeedsPixivAuth) else "patreon"
+
+
+async def _resolve_required_auth(
+    template,
+    exc: Exception,
+    resolve_auth: Optional[AuthResolver],
+    emit: EmitFn,
+) -> bool:
+    """Suelta el cliente rechazado antes de capturar y usar una sesión nueva."""
+    site = _auth_site(exc)
+    discard = getattr(template, "discard_auth_client", None)
+    if discard is not None:
+        await discard()
+    emit(Log(f"⚠ {site.capitalize()} requiere autenticación", "warn"))
+    if resolve_auth is None or not await resolve_auth(site):
+        emit(Log("✗ Autenticación cancelada", "error"))
+        return False
+    return True
+
+
 # Rechazos seguidos que se toman por «este sitio nos cerró la puerta».
 #
 # El 2026-09-05 una descarga de Pawchive encadenó 774 respuestas 403 en trece
@@ -256,6 +281,7 @@ class DownloadSummary:
     errors: int = 0
     deferred: int = 0
     dropped: int = 0    # retirados de la cola por no existir ya en el origen
+    awaiting_archive: int = 0  # Pawchive lo anuncia, pero aún no tiene original
 
 
 # ── Servicio ────────────────────────────────────────────────────────────────────
@@ -291,6 +317,17 @@ async def run_profile_download(
 
     def _counters() -> None:
         emit(Counters(summ.downloaded, summ.skipped, summ.errors, summ.deferred))
+
+    async def _not_found_action(template, artist, file_info) -> str:
+        """Clasifica sin permitir que un fallo del diagnóstico pierda la fila."""
+        try:
+            return await template.classify_not_found(artist, file_info)
+        except Exception:
+            log.exception(
+                "cherry: fallo clasificando 404 | sitio=%s | archivo=%r",
+                template.name, file_info.filename,
+            )
+            return "unknown"
 
     config = config or load_config()
     folder = Path(profile["folder_path"])
@@ -505,16 +542,28 @@ async def run_profile_download(
                     throttles[template.name] = throttle
 
             # ── Resolver artista (puede disparar lazy auth / modal) ─────────
+            pixiv_auth_refreshed = False
             try:
                 artist_info = await template.get_artist_info(pu["url"])
             except (NeedsManualAuth, NeedsPixivAuth) as exc:
-                site = "pixiv" if isinstance(exc, NeedsPixivAuth) else "patreon"
-                emit(Log(f"⚠ {site.capitalize()} requiere autenticación", "warn"))
-                if resolve_auth is None or not await resolve_auth(site):
-                    emit(Log("✗ Autenticación cancelada", "error"))
+                if not await _resolve_required_auth(
+                    template, exc, resolve_auth, emit,
+                ):
                     continue
+                pixiv_auth_refreshed = template.name == "pixiv"
+                if pixiv_auth_refreshed:
+                    emit(Log(
+                        "Sesión Pixiv renovada; se comprobará el historial completo.",
+                        "dim",
+                    ))
                 try:
                     artist_info = await template.get_artist_info(pu["url"])
+                except (NeedsManualAuth, NeedsPixivAuth) as exc2:
+                    discard = getattr(template, "discard_auth_client", None)
+                    if discard is not None:
+                        await discard()
+                    emit(Log(f"✗ Error tras auth: {exc2}", "error"))
+                    continue
                 except Exception as exc2:
                     emit(Log(f"✗ Error tras auth: {exc2}", "error"))
                     continue
@@ -555,6 +604,16 @@ async def run_profile_download(
             if cleaned:
                 emit(Log(f"⊘ {cleaned} ya descargadas eliminadas de la cola", "dim"))
 
+            if template.name == "pawchive":
+                due = await reactivate_awaiting_archive(
+                    folder, pu_id, limit=ARCHIVE_RECHECK_BATCH, due_only=True,
+                )
+                if due:
+                    emit(Log(
+                        f"↺ {due} original(es) de Pawchive vuelven a revisión semanal",
+                        "dim",
+                    ))
+
             existing_pending = await pending_count(folder, pu_id)
 
             new_this_scan = 0
@@ -580,7 +639,7 @@ async def run_profile_download(
             if not full_done and url_since is not None:
                 await set_meta_int(folder, "full_scan_done", 1)
                 full_done = 1
-            need_full = force_full or not full_done
+            need_full = force_full or pixiv_auth_refreshed or not full_done
             scan_since = None if need_full else url_since
             emit(Log(
                 "Escaneo completo del historial…" if need_full
@@ -593,45 +652,60 @@ async def run_profile_download(
             seen_scan: set[str] = set()
             scan_files_seen = 0
             scan_ok = True
-            try:
-                async for fi in template.iter_files(artist_info, since=scan_since):
-                    scan_files_seen += 1
-                    # Señal de vida durante el paginado (Fase 1 no descarga).
-                    if scan_files_seen % 25 == 0:
-                        emit(ScanProgress(scan_files_seen, new_this_scan))
-                    key = fi.dedup_key
-                    if key in seen_scan:
-                        continue
-                    seen_scan.add(key)
-                    if await url_exists(folder, key):
-                        continue
-                    if fi.remote_hash and await hash_exists(folder, fi.remote_hash):
-                        continue
-                    if not await pending_url_exists(folder, key):
-                        await add_pending(
-                            folder,
-                            url_source=key,
-                            download_url=fi.url,
-                            filename_hint=fi.filename,
-                            post_id=fi.post_id,
-                            post_published=fi.date_published,
-                            remote_hash=fi.remote_hash,
-                            extra_headers=(
-                                json.dumps(fi.extra_headers)
-                                if fi.extra_headers else None
-                            ),
-                            profile_url_id=pu_id,
-                        )
-                        new_this_scan += 1
-            except asyncio.CancelledError:
-                raise
-            except Exception as scan_exc:
-                scan_ok = False
-                emit(Log(
-                    f"✗ Error en escaneo ({type(scan_exc).__name__}): {scan_exc}",
-                    "error",
-                ))
-                emit(Log("⚠ Scan parcial — usá Sync para continuar.", "warn"))
+            auth_retried = False
+            while True:
+                try:
+                    async for fi in template.iter_files(artist_info, since=scan_since):
+                        scan_files_seen += 1
+                        # Señal de vida durante el paginado (Fase 1 no descarga).
+                        if scan_files_seen % 25 == 0:
+                            emit(ScanProgress(scan_files_seen, new_this_scan))
+                        key = fi.dedup_key
+                        if key in seen_scan:
+                            continue
+                        seen_scan.add(key)
+                        if await url_exists(folder, key):
+                            continue
+                        if fi.remote_hash and await hash_exists(folder, fi.remote_hash):
+                            continue
+                        if not await pending_url_exists(folder, key):
+                            await add_pending(
+                                folder,
+                                url_source=key,
+                                download_url=fi.url,
+                                filename_hint=fi.filename,
+                                post_id=fi.post_id,
+                                post_published=fi.date_published,
+                                remote_hash=fi.remote_hash,
+                                extra_headers=(
+                                    json.dumps(fi.extra_headers)
+                                    if fi.extra_headers else None
+                                ),
+                                profile_url_id=pu_id,
+                            )
+                            new_this_scan += 1
+                except asyncio.CancelledError:
+                    raise
+                except (NeedsManualAuth, NeedsPixivAuth) as scan_auth:
+                    if auth_retried or not await _resolve_required_auth(
+                        template, scan_auth, resolve_auth, emit,
+                    ):
+                        scan_ok = False
+                        emit(Log("⚠ Scan parcial — usá Sync para continuar.", "warn"))
+                        break
+                    auth_retried = True
+                    emit(Log("↺ Sesión renovada; retomando el escaneo…", "info"))
+                    continue
+                except Exception as scan_exc:
+                    scan_ok = False
+                    emit(Log(
+                        f"✗ Error en escaneo ({type(scan_exc).__name__}): {scan_exc}",
+                        "error",
+                    ))
+                    emit(Log("⚠ Scan parcial — usá Sync para continuar.", "warn"))
+                    break
+                else:
+                    break
 
             # Marcar cobertura histórica completa SOLO si un scan completo
             # terminó entero (sin error). last_synced se fija al inicio de la
@@ -893,23 +967,33 @@ async def run_profile_download(
                                     f"{failure_detail}", "warn",
                                 ))
                             elif result.error_kind == ErrorKind.NOT_FOUND:
-                                # 404 con la URL recién refrescada por el scan:
-                                # el archivo ya no existe en el origen y no va a
-                                # volver. Dejarlo en la cola lo condena a
-                                # reintentarse en cada sync para siempre, así
-                                # que sale. Solo aquí: un 403 puede ser sesión
-                                # caducada y un url_expired se re-resuelve, y
-                                # retirar cualquiera de esos SÍ perdería el
-                                # archivo. Lo borrado es una fila de cola, no un
-                                # archivo en disco; si el origen lo repone, el
-                                # próximo scan lo vuelve a descubrir.
-                                summ.dropped += 1
-                                await remove_pending(folder, fi.dedup_key)
-                                emit(WorkerDone(slot_id, fi.filename, "⊘"))
-                                emit(Log(
-                                    f"⊘ {fi.filename[:45]}  "
-                                    f"[404 — ya no existe, fuera de la cola]", "dim",
-                                ))
+                                state = await _not_found_action(
+                                    template, artist_info, fi,
+                                )
+                                if state == "awaiting":
+                                    await defer_until_archived(folder, fi.dedup_key)
+                                    summ.awaiting_archive += 1
+                                    emit(WorkerDone(slot_id, fi.filename, "◷"))
+                                    emit(Log(
+                                        f"◷ {fi.filename[:45]}  [Pawchive aún no "
+                                        "archivó el original]", "warn",
+                                    ))
+                                elif state == "unknown":
+                                    await move_pending_to_back(folder, fi.dedup_key)
+                                    summ.deferred += 1
+                                    emit(WorkerDone(slot_id, fi.filename, "⏸"))
+                                    emit(Log(
+                                        f"⏸ {fi.filename[:45]}  [404 sin poder "
+                                        "comprobar la publicación — se conserva]", "warn",
+                                    ))
+                                else:
+                                    summ.dropped += 1
+                                    await remove_pending(folder, fi.dedup_key)
+                                    emit(WorkerDone(slot_id, fi.filename, "⊘"))
+                                    emit(Log(
+                                        f"⊘ {fi.filename[:45]}  "
+                                        f"[404 definitivo — fuera de la cola]", "dim",
+                                    ))
                             else:
                                 summ.errors += 1
                                 emit(WorkerDone(slot_id, fi.filename, "✗"))
@@ -1148,25 +1232,51 @@ async def run_profile_download(
                 else:
                     if result.dest and result.dest.exists():
                         result.dest.unlink(missing_ok=True)
+                    failure_detail = _failure_detail(result.error)
                     if result.error_kind == ErrorKind.NOT_FOUND:
-                        await remove_pending(dest_folder, file_info.dedup_key)
-                        summ.dropped += 1
+                        src_template = get_template(a_info.url, engine)
+                        state = (
+                            await _not_found_action(src_template, a_info, file_info)
+                            if src_template is not None else "permanent"
+                        )
+                        if state == "awaiting":
+                            await defer_until_archived(
+                                dest_folder, file_info.dedup_key,
+                            )
+                            summ.awaiting_archive += 1
+                            outcome_icon = "◷"
+                            outcome_note = "Pawchive aún no archivó el original"
+                        elif state == "unknown":
+                            await move_pending_to_back(
+                                dest_folder, file_info.dedup_key,
+                            )
+                            summ.deferred += 1
+                            outcome_icon = "⏸"
+                            outcome_note = "404 sin poder comprobar la publicación"
+                        else:
+                            await remove_pending(dest_folder, file_info.dedup_key)
+                            summ.dropped += 1
+                            outcome_icon = "⊘"
+                            outcome_note = "404 definitivo — fuera de la cola"
                     else:
                         await move_pending_to_back(
                             dest_folder, file_info.dedup_key,
                         )
-                    failure_detail = _failure_detail(result.error)
+                        summ.deferred += 1
+                        outcome_icon = "⏭"
+                        outcome_note = (
+                            f"{result.error_kind} {failure_detail} — pendiente próx. sync"
+                        )
                     log.warning(
                         "cherry: reintento fallido | sitio=%s | archivo=%r "
                         "| tipo=%s | detalle=%s",
                         src_site, file_info.filename, result.error_kind,
                         failure_detail,
                     )
-                    emit(WorkerDone(0, file_info.filename, "⏭"))
-                    summ.deferred += 1
+                    emit(WorkerDone(0, file_info.filename, outcome_icon))
                     emit(Log(
-                        f"⏭ {file_info.filename[:55]}  [{result.error_kind}] "
-                        f"{failure_detail} — pendiente próx. sync", "warn",
+                        f"{outcome_icon} {file_info.filename[:55]}  "
+                        f"[{outcome_note}]", "warn",
                     ))
                 _counters()
             emit(WorkerIdle(0))

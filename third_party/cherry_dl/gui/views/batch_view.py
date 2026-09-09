@@ -440,22 +440,31 @@ class BatchView(QWidget):
             self._append_log(f"⏸ Enfriamiento {ev.seconds:.0f}s…")
 
     async def _resolve_auth(self, site: str) -> bool:
-        """Resuelve auth interactiva (Patreon) si una fuente la requiere."""
-        if site != "patreon":
-            self._append_log(f"  ✗ Auth de {site} no soportada en la GUI todavía")
+        """Resuelve auth interactiva de Patreon o Pixiv si se requiere."""
+        if site == "patreon":
+            from ...auth.patreon import guided_login_patreon
+            login = guided_login_patreon
+            required_cookie = "session_id"
+        elif site == "pixiv":
+            from ...auth.pixiv import guided_login_pixiv
+            login = guided_login_pixiv
+            required_cookie = "refresh_token"
+        else:
+            self._append_log(f"  ✗ Auth de {site} no soportada")
             return False
-        from ...auth.patreon import guided_login_patreon
 
-        self._append_log("  ⟳ Abriendo el navegador para iniciar sesión en Patreon…")
+        self._append_log(
+            f"  ⟳ Abriendo el navegador para iniciar sesión en {site.capitalize()}…"
+        )
         try:
-            cookies = await guided_login_patreon(
+            cookies = await login(
                 on_status=lambda m: self._append_log(f"    {m}"),
             )
         except Exception as exc:
-            self._append_log(f"  ✗ Error en el login de Patreon: {exc}")
+            self._append_log(f"  ✗ Error en el login de {site.capitalize()}: {exc}")
             return False
-        if cookies and cookies.get("session_id"):
-            self._append_log("  ✓ Sesión de Patreon iniciada y guardada.")
+        if cookies and cookies.get(required_cookie):
+            self._append_log(f"  ✓ Sesión de {site.capitalize()} iniciada y guardada.")
             return True
         self._append_log("  ✗ Login incompleto — no se capturó la sesión.")
         return False

@@ -92,6 +92,7 @@ cada sync, el día que el original se importe entrará sin hacer nada.
 
 from __future__ import annotations
 
+import html
 import re
 from typing import AsyncIterator
 
@@ -116,6 +117,12 @@ _URL_RE = re.compile(
 )
 
 _PAGE_SIZE = 50  # la API devuelve 50 posts por página
+
+_AWAITING_ARCHIVE_MARKERS = (
+    "haven't archived this post yet",
+    "haven’t archived this post yet",
+    "previews only",
+)
 
 
 # ── Template ───────────────────────────────────────────────────────────────────
@@ -200,6 +207,45 @@ class PawchiveTemplate(SiteTemplate):
             site=self.name,
             url=f"{_BASE}/{service}/user/{creator_id}",
         )
+
+    async def classify_not_found(
+        self, artist: ArtistInfo, file_info: FileInfo,
+    ) -> str:
+        """Consulta la publicación y reconoce solo los avisos de Pawchive.
+
+        Un ``Server: ddos-guard`` no basta: también sirve 404 genuinos. La
+        evidencia autoritativa es el anuncio humano de la página del post.
+        Si no podemos consultar la página devolvemos ``unknown`` para conservar
+        la fila activa; nunca convertimos un fallo de diagnóstico en pérdida.
+        """
+        if not file_info.post_id:
+            return "permanent"
+        cache = getattr(self, "_not_found_cache", None)
+        if cache is None:
+            cache = self._not_found_cache = {}
+        cache_key = f"{artist.service}:{artist.artist_id}:{file_info.post_id}"
+        if cache_key in cache:
+            return cache[cache_key]
+        post_url = (
+            f"{_BASE}/{artist.service}/user/{artist.artist_id}"
+            f"/post/{file_info.post_id}"
+        )
+        try:
+            page = await self.engine.get_text(post_url)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return "permanent"
+            return "unknown"
+        except Exception:
+            return "unknown"
+        text = html.unescape(page).casefold()
+        state = (
+            "awaiting"
+            if any(marker in text for marker in _AWAITING_ARCHIVE_MARKERS)
+            else "permanent"
+        )
+        cache[cache_key] = state
+        return state
 
     # ── Listado de archivos ────────────────────────────────────────────────────
 

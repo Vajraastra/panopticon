@@ -170,6 +170,17 @@ class SiteTemplate(ABC):
         """Extrae y retorna información del artista desde la URL."""
         ...
 
+    async def classify_not_found(
+        self, artist: ArtistInfo, file_info: FileInfo,
+    ) -> str:
+        """Clasifica un 404 como ``permanent``, ``awaiting`` o ``unknown``.
+
+        Los sitios normales conservan la semántica histórica: 404 definitivo.
+        Un archivador puede sobreescribirlo si publica evidencia explícita de
+        que el original está anunciado pero todavía no disponible.
+        """
+        return "permanent"
+
     @abstractmethod
     def iter_files(
         self,

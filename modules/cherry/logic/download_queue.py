@@ -33,6 +33,7 @@ class QueueTotals:
         self.skipped = 0
         self.errors = 0
         self.deferred = 0
+        self.awaiting_archive = 0
         self.done = 0
         self.failed: list[tuple[str, str]] = []  # (perfil, mensaje)
 
@@ -41,6 +42,7 @@ class QueueTotals:
         self.skipped += getattr(summary, "skipped", 0)
         self.errors += getattr(summary, "errors", 0)
         self.deferred += getattr(summary, "deferred", 0)
+        self.awaiting_archive += getattr(summary, "awaiting_archive", 0)
         self.done += 1
 
 

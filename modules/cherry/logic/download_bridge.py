@@ -307,30 +307,41 @@ class DownloadBridge(QObject):
     async def _login_and_resolve(self, site: str, token: int) -> None:
         """Corre en el loop: hace el login guiado y resuelve el Future."""
         ok = False
-        if site != "patreon":
-            # Pixiv se autentica por cookie pegada a mano; su diálogo llega con
-            # el resto de la vista de ajustes (A5).
-            self.log_line.emit(f"✗ Auth de {site} todavía no soportada aquí", "error")
-        else:
+        if site == "patreon":
             from third_party.cherry_dl.auth.patreon import guided_login_patreon
 
-            self.log_line.emit("⟳ Abriendo el navegador para iniciar sesión…", "info")
-            try:
-                cookies = await guided_login_patreon(
-                    on_status=lambda m: self.log_line.emit(f"    {m}", "dim"),
-                )
-                ok = bool(cookies and cookies.get("session_id"))
-            except asyncio.CancelledError:
-                self._set_auth_result(token, False)
-                raise
-            except Exception as exc:
-                log.exception("cherry: el login guiado falló")
-                self.log_line.emit(f"✗ Error en el login: {exc}", "error")
-            else:
-                self.log_line.emit(
-                    "✓ Sesión iniciada y guardada" if ok else "✗ Login incompleto",
-                    "ok" if ok else "error",
-                )
+            login = guided_login_patreon
+            required_cookie = "session_id"
+        elif site == "pixiv":
+            from third_party.cherry_dl.auth.pixiv import guided_login_pixiv
+
+            login = guided_login_pixiv
+            required_cookie = "refresh_token"
+        else:
+            self.log_line.emit(f"✗ Auth de {site} todavía no soportada aquí", "error")
+            self._set_auth_result(token, False)
+            return
+
+        self.log_line.emit(
+            f"⟳ Abriendo el navegador para iniciar sesión en {site.capitalize()}…",
+            "info",
+        )
+        try:
+            cookies = await login(
+                on_status=lambda m: self.log_line.emit(f"    {m}", "dim"),
+            )
+            ok = bool(cookies and cookies.get(required_cookie))
+        except asyncio.CancelledError:
+            self._set_auth_result(token, False)
+            raise
+        except Exception as exc:
+            log.exception("cherry: el login guiado de %s falló", site)
+            self.log_line.emit(f"✗ Error en el login de {site.capitalize()}: {exc}", "error")
+        else:
+            self.log_line.emit(
+                "✓ Sesión iniciada y guardada" if ok else "✗ Login incompleto",
+                "ok" if ok else "error",
+            )
         self._set_auth_result(token, ok)
 
     def _set_auth_result(self, token: int, ok: bool) -> None:

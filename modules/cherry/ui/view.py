@@ -83,6 +83,7 @@ class CherryView(QWidget):
     _url_removed     = Signal(int, int)     # perfil, pendientes retirados
     _filter_saved    = Signal(int, str)     # perfil, ext_filter guardado
     _profile_deleted = Signal(int)          # perfil que ya no está en el índice
+    _archive_reactivated = Signal(int, int) # perfil, filas devueltas a la cola
     _load_failed    = Signal(str)
 
     def __init__(self, context: dict | None = None, runtime: CherryRuntime | None = None) -> None:
@@ -107,6 +108,7 @@ class CherryView(QWidget):
         self._filter_cache: dict[int, str] = {}
         self._started = False
         self._auth_boxes: dict[int, QMessageBox] = {}
+        self._archive_check_busy = False
 
         super().__init__()
 
@@ -163,6 +165,7 @@ class CherryView(QWidget):
         self._url_removed.connect(self._on_url_removed)
         self._filter_saved.connect(self._on_filter_saved)
         self._profile_deleted.connect(self._on_profile_deleted)
+        self._archive_reactivated.connect(self._on_archive_reactivated)
         self._load_failed.connect(self._on_load_failed)
         self._legacy.state_changed.connect(self._on_legacy_state)
 
@@ -437,12 +440,21 @@ class CherryView(QWidget):
         self._btn_download.clicked.connect(lambda: self._start_selected(scan_only=False))
         actions.addWidget(self._btn_download, 0, 1)
 
+        self._btn_check_archive = QPushButton()
+        self._btn_check_archive.setToolTip(self.tr(
+            "cherry.archive_check_tip",
+            "Rechecks up to 25 Pawchive originals that its post page says have not "
+            "been archived yet. They stay outside the active queue meanwhile.",
+        ))
+        self._btn_check_archive.clicked.connect(self._check_awaiting_archive)
+        actions.addWidget(self._btn_check_archive, 1, 0, 1, 2)
+
         self._btn_open = QPushButton(self.tr("cherry.open_folder", "Open folder"))
         self._btn_open.setToolTip(self.tr(
             "cherry.open_folder_tip",
             "Opens the project's download folder in the file explorer."))
         self._btn_open.clicked.connect(self._open_folder)
-        actions.addWidget(self._btn_open, 1, 0)
+        actions.addWidget(self._btn_open, 2, 0)
 
         self._btn_delete = QPushButton(self.tr("cherry.delete_profile", "Remove project"))
         self._btn_delete.setToolTip(self.tr(
@@ -450,7 +462,7 @@ class CherryView(QWidget):
             "Removes it from the index. The downloaded folder is left untouched.",
         ))
         self._btn_delete.clicked.connect(self._delete_profile)
-        actions.addWidget(self._btn_delete, 1, 1)
+        actions.addWidget(self._btn_delete, 2, 1)
         lay.addLayout(actions)
 
         lay.addStretch(1)
@@ -674,6 +686,17 @@ class CherryView(QWidget):
         lines.append(self.tr("cherry.detail_created", "Created: {d}").format(d=created))
 
         urls = detail.get("urls", [])
+        waiting = int(detail.get("awaiting_archive_count", 0))
+        if waiting:
+            warn = self._color("accent_warning", "#ffb347")
+            lines.append(self.tr(
+                "cherry.archive_detail",
+                "<span style='color:{color}'>◷ Pawchive: {n} originals announced "
+                "but not archived yet</span>",
+            ).format(color=warn, n=waiting))
+        profile = self._current_profile()
+        if profile is not None:
+            profile["awaiting_archive_count"] = waiting
         lines.append(self.tr("cherry.detail_sources", "Sources ({n}):").format(n=len(urls)))
         self._detail_label.setText("<br>".join(lines))
         self._populate_sources(urls)
@@ -742,8 +765,17 @@ class CherryView(QWidget):
         warn = self._color("accent_warning", "#ff5555")
 
         for row, p in enumerate(rows):
-            name = QTableWidgetItem(p["display_name"])
+            waiting = int(p.get("awaiting_archive_count", 0))
+            name = QTableWidgetItem(
+                f"◷ {p['display_name']} ({waiting})" if waiting else p["display_name"]
+            )
             name.setData(Qt.UserRole, p["id"])
+            if waiting:
+                name.setForeground(QBrush(QColor(warn)))
+                name.setToolTip(self.tr(
+                    "cherry.archive_marker_tip",
+                    "{n} Pawchive originals are announced but not archived yet.",
+                ).format(n=waiting))
             table.setItem(row, COL_NAME, name)
             table.setItem(row, COL_SITE, QTableWidgetItem(p["primary_site"]))
 
@@ -822,6 +854,14 @@ class CherryView(QWidget):
         self._btn_open.setEnabled(bool(profile and profile.get("folder_exists")))
         self._btn_scan.setEnabled(bool(profile) and not running)
         self._btn_download.setEnabled(bool(profile) and not running)
+        waiting = int(profile.get("awaiting_archive_count", 0)) if profile else 0
+        sample = min(25, waiting)
+        self._btn_check_archive.setText(self.tr(
+            "cherry.archive_check", "Check Pawchive waiting ({sample} of {total})",
+        ).format(sample=sample, total=waiting))
+        self._btn_check_archive.setEnabled(
+            bool(profile and waiting) and not running and not self._archive_check_busy
+        )
         self._btn_all.setEnabled(bool(self._profiles) and not running)
         self._btn_cancel.setEnabled(running)
         self._btn_new.setEnabled(not running)
@@ -1261,6 +1301,57 @@ class CherryView(QWidget):
             return
         self._start([profile["id"]], scan_only)
 
+    def _check_awaiting_archive(self) -> None:
+        profile = self._current_profile()
+        if profile is None or self._archive_check_busy:
+            return
+        self._archive_check_busy = True
+        self._update_actions()
+        self._set_status(self.tr(
+            "cherry.archive_preparing", "Preparing a Pawchive archive check…",
+        ))
+        try:
+            self._runtime.submit(self._reactivate_archive_async(
+                profile["id"], Path(profile["folder_path"]),
+            ))
+        except RuntimeError as exc:
+            self._archive_check_busy = False
+            self._load_failed.emit(str(exc))
+
+    async def _reactivate_archive_async(self, profile_id: int, folder: Path) -> None:
+        try:
+            from third_party.cherry_dl.catalog import reactivate_awaiting_archive
+            count = await reactivate_awaiting_archive(folder, limit=25)
+        except Exception:
+            log.exception("cherry: fallo preparando revisión de Pawchive")
+            count = -1
+        self._archive_reactivated.emit(profile_id, count)
+
+    def _on_archive_reactivated(self, profile_id: int, count: int) -> None:
+        self._archive_check_busy = False
+        if count < 0:
+            self._set_status(self.tr(
+                "cherry.archive_prepare_failed",
+                "Could not prepare the Pawchive archive check.",
+            ), flash=True)
+            self._update_actions()
+            return
+        if count == 0:
+            self._set_status(self.tr(
+                "cherry.archive_none_due", "No Pawchive originals to check.",
+            ), flash=True)
+            self.refresh()
+            return
+        profile = next((p for p in self._profiles if p["id"] == profile_id), None)
+        if profile is not None:
+            profile["awaiting_archive_count"] = max(
+                0, int(profile.get("awaiting_archive_count", 0)) - count,
+            )
+        self._set_status(self.tr(
+            "cherry.archive_checking", "Checking {n} Pawchive originals…",
+        ).format(n=count), flash=True)
+        self._start([profile_id], scan_only=False)
+
     def _start_all_visible(self) -> None:
         rows = self._visible_profiles()
         if not rows:
@@ -1355,11 +1446,15 @@ class CherryView(QWidget):
             return
         self._panel.append_log(self.tr(
             "cherry.dl_profile_done",
-            "✓ {name} · ↓{d} ⏭{s} ✗{e} ⏸{f}",
+            "✓ {name} · ↓{d} ⏭{s} ✗{e} ⏸{f} ◷{a}",
         ).format(name=name, d=summary.downloaded, s=summary.skipped,
-                 e=summary.errors, f=summary.deferred), "ok")
+                 e=summary.errors, f=summary.deferred,
+                 a=getattr(summary, "awaiting_archive", 0)), "ok")
         if summary.downloaded:
             self._announce_folder(profile)
+        if (getattr(summary, "awaiting_archive", 0)
+                or profile.get("awaiting_archive_count")):
+            self.refresh()
 
     def _announce_folder(self, profile: dict) -> None:
         """Avisa por EventBus de que la carpeta del perfil tiene archivos nuevos (A4).
@@ -1390,9 +1485,11 @@ class CherryView(QWidget):
 
     def _on_queue_finished(self, totals) -> None:
         text = self.tr(
-            "cherry.dl_queue_done", "Done · {n} profiles · ↓{d} ⏭{s} ✗{e} ⏸{f}"
+            "cherry.dl_queue_done",
+            "Done · {n} profiles · ↓{d} ⏭{s} ✗{e} ⏸{f} ◷{a}"
         ).format(n=totals.done, d=totals.downloaded, s=totals.skipped,
-                 e=totals.errors, f=totals.deferred)
+                 e=totals.errors, f=totals.deferred,
+                 a=getattr(totals, "awaiting_archive", 0))
         self._panel.set_phase(text)
         self._panel.append_log(text, "ok")
         for name, message in totals.failed:

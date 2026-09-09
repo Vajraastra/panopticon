@@ -300,6 +300,74 @@ def test_auth_roundtrip(app, runtime, bridge, rec) -> None:
           bridge.resolve_auth_result(9999, True) is False)
 
 
+def test_pixiv_guided_login(app, runtime, bridge, rec) -> None:
+    print("\n[6b] Pixiv OAuth: captura, persistencia y reanudación del puente")
+    from third_party.cherry_dl.auth import browser_login, pixiv
+
+    captured = {}
+    original_capture = browser_login.capture_oauth_code
+    original_request = pixiv._request_tokens
+    original_save = pixiv.save_pixiv_tokens
+    original_guided = pixiv.guided_login_pixiv
+
+    async def fake_capture(url, **kwargs):
+        captured["url"] = url
+        return "synthetic-code"
+
+    async def fake_request(fields):
+        captured["fields"] = dict(fields)
+        return {
+            "access_token": "synthetic-access",
+            "refresh_token": "synthetic-refresh",
+            "_expires_at": 9999999999,
+        }
+
+    def fake_save(tokens):
+        captured["saved"] = dict(tokens)
+
+    browser_login.capture_oauth_code = fake_capture
+    pixiv._request_tokens = fake_request
+    pixiv.save_pixiv_tokens = fake_save
+    try:
+        tokens = runtime.run_sync(pixiv.guided_login_pixiv(), timeout=5)
+    finally:
+        browser_login.capture_oauth_code = original_capture
+        pixiv._request_tokens = original_request
+        pixiv.save_pixiv_tokens = original_save
+
+    check("el login abre OAuth PKCE",
+          captured["url"].startswith("https://app-api.pixiv.net/web/v1/login?"))
+    check("intercambia el código capturado",
+          captured["fields"].get("code") == "synthetic-code")
+    check("el refresh_token se persiste",
+          captured["saved"].get("refresh_token") == "synthetic-refresh")
+    check("el login devuelve los tokens",
+          tokens and tokens.get("refresh_token") == "synthetic-refresh")
+
+    async def fake_guided(*, on_status=None):
+        if on_status:
+            on_status("OAuth sintético autorizado")
+        return {"refresh_token": "bridge-refresh"}
+
+    rec.auth_tokens.clear()
+    pixiv.guided_login_pixiv = fake_guided
+    waiting = runtime.submit(bridge._resolve_auth("pixiv"))
+    try:
+        arrived = pump(app, lambda: bool(rec.auth_tokens), timeout=5)
+        check("Pixiv solicita auth en la GUI", arrived)
+        if not arrived:
+            waiting.cancel()
+            return
+        site, token = rec.auth_tokens[0]
+        check("el token pertenece a Pixiv", site == "pixiv", f"({site})")
+        check("run_site_login acepta Pixiv", bridge.run_site_login(site, token))
+        done = pump(app, lambda: waiting.done(), timeout=5)
+        check("la descarga se reanuda con sesión válida",
+              done and waiting.result() is True)
+    finally:
+        pixiv.guided_login_pixiv = original_guided
+
+
 def test_runner_no_network(app, runtime, bridge, rec) -> None:
     print("\n[7] run_profile_download end-to-end (perfil sin template, sin red)")
     rec.events.clear()
@@ -658,6 +726,7 @@ def main() -> int:
             test_progress_throttle(app, runtime, bridge, rec)
             test_cancel_mechanics(app, runtime)
             test_auth_roundtrip(app, runtime, bridge, rec)
+            test_pixiv_guided_login(app, runtime, bridge, rec)
             test_runner_no_network(app, runtime, bridge, rec)
             test_queue(app, runtime, bridge, rec)
     finally:

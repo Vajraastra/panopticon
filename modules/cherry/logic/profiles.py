@@ -56,8 +56,15 @@ async def load_profiles(db_path: Path | None = None) -> list[dict]:
     if not rows:
         return []
     flags = await asyncio.to_thread(_check_folders, [r["folder_path"] for r in rows])
-    for row, ok in zip(rows, flags):
+    from third_party.cherry_dl.catalog import awaiting_archive_count
+    counts = await asyncio.gather(*(
+        awaiting_archive_count(Path(row["folder_path"])) if ok
+        else asyncio.sleep(0, result=0)
+        for row, ok in zip(rows, flags)
+    ))
+    for row, ok, waiting in zip(rows, flags, counts):
         row["folder_exists"] = ok
+        row["awaiting_archive_count"] = int(waiting)
     return rows
 
 
@@ -78,6 +85,13 @@ async def load_profile_detail(profile_id: int, db_path: Path | None = None) -> d
         return None
     flags = await asyncio.to_thread(_check_folders, [profile["folder_path"]])
     profile["folder_exists"] = flags[0]
+    if flags[0]:
+        from third_party.cherry_dl.catalog import awaiting_archive_count
+        profile["awaiting_archive_count"] = await awaiting_archive_count(
+            Path(profile["folder_path"])
+        )
+    else:
+        profile["awaiting_archive_count"] = 0
     return profile
 
 

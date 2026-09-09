@@ -37,6 +37,7 @@ import httpx
 
 from ..auth.patreon import (
     COOKIES_TO_KEEP,
+    NeedsManualAuth,
     ensure_patreon_session,
     refresh_patreon_cookies,
 )
@@ -69,7 +70,6 @@ _BASE_HEADERS = {
     ),
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://www.patreon.com/",
     "Origin": "https://www.patreon.com",
     "sec-fetch-dest": "empty",
@@ -109,6 +109,7 @@ class PatreonTemplate(SiteTemplate):
     # cierra en el finally de iter_files().
     _http: httpx.AsyncClient | None = None
     _session_cookies: dict[str, str] = {}
+    _auth_invalid = False
 
     # ── Autenticación ──────────────────────────────────────────────────────────
 
@@ -135,15 +136,25 @@ class PatreonTemplate(SiteTemplate):
         """Cierra el cliente HTTP y persiste cookies actualizadas."""
         if self._http is None:
             return
+        client = self._http
+        self._http = None
         updated = {
             c.name: c.value
-            for c in self._http.cookies.jar
+            for c in client.cookies.jar
             if c.name in COOKIES_TO_KEEP
         }
-        if updated:
+        if updated and not self._auth_invalid:
             refresh_patreon_cookies(updated)
-        await self._http.aclose()
+        await client.aclose()
+        self._auth_invalid = False
+
+    async def discard_auth_client(self) -> None:
+        """Descarta el cliente que conserva una cookie rechazada, sin guardarla."""
+        client = self._http
         self._http = None
+        self._auth_invalid = False
+        if client is not None:
+            await client.aclose()
 
     # ── Detección ──────────────────────────────────────────────────────────────
 
@@ -202,7 +213,7 @@ class PatreonTemplate(SiteTemplate):
         """
         Resuelve un username de Patreon a (campaign_id, display_name).
         Lanza ValueError si el creador no existe en la API.
-        Lanza RuntimeError si la sesión expiró (401).
+        Lanza NeedsManualAuth si la sesión expiró o fue rechazada (401/403).
         """
         client = await self._get_client()
         params = urlencode({
@@ -214,12 +225,12 @@ class PatreonTemplate(SiteTemplate):
         await asyncio.sleep(random.uniform(_DELAY_MIN, _DELAY_MAX))
         resp = await client.get(url)
 
-        if resp.status_code == 401:
+        if resp.status_code in (401, 403):
             from ..auth.patreon import clear_patreon_session
+            self._auth_invalid = True
             clear_patreon_session()
-            raise RuntimeError(
-                "Sesión de Patreon expirada. "
-                "Reinicia cherry-dl para re-autenticarte."
+            raise NeedsManualAuth(
+                "Sesión de Patreon expirada. Vuelve a iniciar sesión."
             )
 
         resp.raise_for_status()
@@ -250,7 +261,7 @@ class PatreonTemplate(SiteTemplate):
 
         Manejo de errores:
           429 → espera Retry-After (o 60 s) y reintenta la misma página.
-          401/403 → RuntimeError con instrucción de re-login.
+          401/403 → NeedsManualAuth para abrir el login y reanudar.
         """
         client = await self._get_client()
         cursor: str | None = None
@@ -290,10 +301,10 @@ class PatreonTemplate(SiteTemplate):
 
             if resp.status_code in (401, 403):
                 from ..auth.patreon import clear_patreon_session
+                self._auth_invalid = True
                 clear_patreon_session()
-                raise RuntimeError(
-                    "Sesión de Patreon sin acceso (401/403). "
-                    "Reinicia cherry-dl para re-autenticarte."
+                raise NeedsManualAuth(
+                    "Sesión de Patreon sin acceso (401/403). Vuelve a iniciar sesión."
                 )
 
             resp.raise_for_status()

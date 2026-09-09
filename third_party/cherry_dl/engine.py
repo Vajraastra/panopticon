@@ -461,6 +461,17 @@ class DownloadEngine:
         max_attempts = retries or self.config.network.retries_api
         return await self._get_json_with_retry(url, max_attempts)
 
+    async def get_text(self, url: str) -> str:
+        """GET de una página de diagnóstico, respetando el ritmo del sitio.
+
+        No reintenta: se usa después de un 404 para consultar una sola vez la
+        publicación de Pawchive y decidir si el original aún no fue archivado.
+        """
+        await self._delay()
+        response = await self._client.get(url, headers=_DDG_ACCEPT)
+        response.raise_for_status()
+        return response.text
+
     async def download(
         self,
         url: str,

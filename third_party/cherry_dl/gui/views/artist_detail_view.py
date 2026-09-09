@@ -968,13 +968,30 @@ class ArtistDetailView(QWidget):
 
     async def _resolve_auth(self, site: str) -> bool:
         """Fallback reactivo: el servicio lo llama si una fuente lanza
-        NeedsManualAuth a mitad de descarga (p. ej. sesión expirada/rechazada).
+        auth a mitad de descarga (p. ej. sesión expirada/rechazada).
         """
-        if site != "patreon":
-            self._append_log(f"  ✗ Auth de {site} no soportada en la GUI todavía")
-            return False
-        self._append_log("  ⚠ La sesión de Patreon expiró o fue rechazada.")
-        return await self._run_patreon_login()
+        if site == "patreon":
+            self._append_log("  ⚠ La sesión de Patreon expiró o fue rechazada.")
+            return await self._run_patreon_login()
+        if site == "pixiv":
+            from ...auth.pixiv import guided_login_pixiv
+
+            self._append_log("  ⚠ La sesión de Pixiv expiró o fue rechazada.")
+            try:
+                cookies = await guided_login_pixiv(
+                    on_status=lambda m: self._append_log(f"    {m}"),
+                )
+            except Exception as exc:
+                self._append_log(f"  ✗ Error en el login de Pixiv: {exc}")
+                return False
+            ok = bool(cookies and cookies.get("refresh_token"))
+            self._append_log(
+                "  ✓ Sesión de Pixiv iniciada y guardada."
+                if ok else "  ✗ Login incompleto — no se capturó la sesión."
+            )
+            return ok
+        self._append_log(f"  ✗ Auth de {site} no soportada")
+        return False
 
     async def _do_deduplicate(self) -> None:
         """

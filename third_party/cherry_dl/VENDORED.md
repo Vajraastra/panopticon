@@ -27,12 +27,52 @@
 
 ## Divergencias respecto a `befa56d`
 
-### Integración pendiente — autenticación de Pixiv (2026-09-07)
+### Integración cerrada — autenticación de Pixiv (2026-09-07)
 
-El motor vendorizado sí incluye `auth/pixiv.py`: busca `PHPSESSID`, conserva la cookie y lanza
-`NeedsPixivAuth` cuando falta. El hueco está en el wrapper de Panopticon: el diálogo nativo llama
-a `run_site_login()`, pero `_login_and_resolve()` sólo implementa Patreon y rechaza Pixiv. Queda
-pendiente conectar un login guiado de Pixiv, persistir su sesión y cubrir el recorrido completo.
+El motor busca `PHPSESSID`, conserva la cookie y lanza `NeedsPixivAuth` cuando falta. Panopticon
+ya conecta ese evento con `guided_login_pixiv()`: abre el navegador real mediante el perfil CDP
+dedicado, captura y persiste la sesión, resuelve el token del puente y reanuda la fuente. El
+recorrido sintético está cubierto en `scripts/cherry_bridge_selftest.py` (99/99); queda validar
+una sesión real con la cuenta del usuario.
+
+La auditoría posterior eliminó las restricciones residuales: Pixiv y Patreon descartan el cliente
+HTTP que retiene una cookie rechazada, ambos 401/403 entran al resolver común, el paginado puede
+renovar sesión y retomarse una vez, y las vistas clásica individual/batch aceptan Pixiv. La red de
+seguridad específica vive en `scripts/cherry_auth_selftest.py` (27/27 sin red).
+
+La primera prueba viva encontró que una cookie ya presente en el perfil CDP cerraba el navegador
+antes del login. `capture_cookies()` registra ahora el valor inicial y Patreon/Pixiv exigen uno
+nuevo antes de aceptar y cerrar. Banco específico actualizado: 27/27. El batch actual serializa
+perfiles; una paralelización futura deberá aplicar single-flight a la renovación por sitio.
+
+La segunda prueba viva llegó autenticada a Pixiv (HTTP 200) y descubrió que Pixiv y Patreon
+forzaban `Accept-Encoding: br` aunque Brotli no estuviera disponible. Ambos dejaron de imponer
+ese header; HTTPX negocia automáticamente una compresión compatible. La consulta real al perfil
+104099575 ya obtiene el artista y el banco específico queda en 27/27.
+
+La comprobación de visibilidad mostró después que esa cookie era anónima: se enviaba, pero
+`/ajax/user/extra` respondía 401 mientras los endpoints públicos seguían dando 200. Pixiv valida
+ahora un `userId` antes de escanear; el capturador CDP no cierra el navegador hasta que esa misma
+prueba confirme el login. Si la autenticación se renueva antes del scan, se fuerza un recorrido
+histórico completo para recuperar contenido que una ejecución anónima pudiera haber omitido.
+Banco específico: 37/37.
+
+La ruta heredada `www.pixiv.net/login.php` mostró “Page unavailable” durante la prueba real.
+Aunque todavía redirige, el flujo abre ahora directamente el portal vigente y verificado con 200:
+`accounts.pixiv.net/login`, con `return_to` a Pixiv. Banco específico: 38/38.
+
+La captura posterior mostró que el formulario terminaba en `accounts.pixiv.net/error` dentro de
+Brave mientras Shields bloqueaba recursos. El servicio seguía respondiendo 200. Para evitar que
+los bloqueadores integrados rompan callbacks entre subdominios, Windows prueba ahora Edge y
+Chrome antes que Brave; en el equipo validado selecciona Edge. Banco específico: 39/39.
+
+El mismo callback falló después en Edge: no era una caída ni un bloqueo propio de Brave, sino que
+la autenticación web por cookies no era una base fiable. El template usa ahora la App API con
+OAuth2 PKCE. `guided_login_pixiv()` captura el `code`, intercambia y persiste los tokens; las
+ejecuciones siguientes renuevan el access token con el refresh token sin interacción. La prueba
+viva autorizó correctamente y consultó el perfil 104099575: primera página de 30 obras y
+`next_url` presente. Pruebas: `cherry_pixiv_oauth_selftest.py` 18/18,
+`cherry_auth_selftest.py` 21/21 y puente 99/99.
 
 ### `catalog.py` + `download_service.py` — los fallos rotan al fondo (2026-09-07)
 
@@ -412,3 +452,15 @@ perfiles. Cuando se agota, el servicio no inicia otro archivo ni escanea la sigu
 sync posterior tampoco toca la red hasta el siguiente día. Los archivos ya en curso terminan y
 pueden producir un rebase pequeño. Los topes internos por sitio siguen disponibles, pero Pawchive
 declara cero: el único tope diario que el usuario puede activar es el global.
+
+### 404 de originales que Pawchive todavía no archivó (2026-09-08)
+
+Un 404 del host de archivos no basta para decidir que el original desapareció. El template abre
+la página de la publicación y reconoce exclusivamente “haven't archived this post yet” —incluida
+la variante de apóstrofo tipográfico— y “Previews only”. Solo entonces mueve la fila a
+`awaiting_archive`, fuera de la cola activa y visible como `◷` en el proyecto.
+
+El botón del inspector devuelve hasta 25 filas a revisión; una tanda vencida también vuelve
+automáticamente cada semana. Un post sin esos anuncios conserva el tratamiento de 404 definitivo.
+Si la página de diagnóstico falla, la fila permanece activa para no convertir una interrupción
+de red en pérdida de catálogo. Banco: `scripts/cherry_archive_waiting_selftest.py`.

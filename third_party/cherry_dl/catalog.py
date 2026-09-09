@@ -81,6 +81,35 @@ _CREATE_IDX_PENDING_ORDER = (
     "ON pending_queue(profile_url_id, queue_position);"
 )
 
+# Archivos que Pawchive anuncia en sus metadatos pero cuyo original todavía no
+# ha sido archivado. No pertenecen a pending_queue: esa cola es trabajo activo
+# y reintentarlos en cada Sync solo produce una tormenta de 404. Conservamos el
+# payload completo para poder devolver una muestra a la cola sin reescanear.
+_CREATE_AWAITING_ARCHIVE = """
+CREATE TABLE IF NOT EXISTS awaiting_archive (
+    url_source      TEXT PRIMARY KEY,
+    download_url    TEXT NOT NULL,
+    filename_hint   TEXT NOT NULL,
+    post_id         TEXT,
+    post_published  TEXT,
+    remote_hash     TEXT,
+    extra_headers   TEXT,
+    profile_url_id  INTEGER,
+    first_seen      INTEGER NOT NULL,
+    last_checked    INTEGER NOT NULL,
+    next_check      INTEGER NOT NULL,
+    check_count     INTEGER NOT NULL DEFAULT 1
+);
+"""
+
+_CREATE_IDX_AWAITING_ARCHIVE = (
+    "CREATE INDEX IF NOT EXISTS idx_awaiting_archive_due "
+    "ON awaiting_archive(profile_url_id, next_check);"
+)
+
+ARCHIVE_RECHECK_SECONDS = 7 * 24 * 60 * 60
+ARCHIVE_RECHECK_BATCH = 25
+
 # Metadata del perfil embebida en el catálogo → la carpeta es auto-describible.
 # Permite reconstruir index.db (caché por-máquina) desde las carpetas al cambiar
 # de OS, sin perder las URLs de scrape ni el estado de sincronización.
@@ -122,6 +151,8 @@ async def init_catalog(artist_dir: Path) -> None:
         await db.execute(_CREATE_PENDING)
         await db.execute(_CREATE_IDX_PENDING)
         await db.execute(_CREATE_PROFILE_META)
+        await db.execute(_CREATE_AWAITING_ARCHIVE)
+        await db.execute(_CREATE_IDX_AWAITING_ARCHIVE)
 
         # Migrar columna counter si no existe (catálogos previos)
         async with db.execute(
@@ -549,16 +580,159 @@ async def add_pending(
 
 
 async def pending_url_exists(artist_dir: Path, url_source: str) -> bool:
-    """Retorna True si la URL ya está en la cola de pendientes."""
+    """True si la URL está activa o esperando que Pawchive la archive."""
     db_path = artist_dir / CATALOG_NAME
     if not db_path.exists():
         return False
     async with _db(db_path) as db:
         async with db.execute(
-            "SELECT 1 FROM pending_queue WHERE url_source = ? LIMIT 1",
-            (url_source,),
+            "SELECT 1 FROM pending_queue WHERE url_source = ? "
+            "UNION ALL "
+            "SELECT 1 FROM awaiting_archive WHERE url_source = ? LIMIT 1",
+            (url_source, url_source),
         ) as cur:
             return await cur.fetchone() is not None
+
+
+async def defer_until_archived(
+    artist_dir: Path,
+    url_source: str,
+    *,
+    recheck_seconds: int = ARCHIVE_RECHECK_SECONDS,
+) -> bool:
+    """Mueve atómicamente un 404 temporal fuera de la cola activa.
+
+    Solo se llama después de que el template de Pawchive haya confirmado en la
+    página del post "haven't archived this post yet" o "Previews only".
+    """
+    db_path = artist_dir / CATALOG_NAME
+    now = int(time.time())
+    async with _db(db_path) as db:
+        await db.execute(_CREATE_AWAITING_ARCHIVE)
+        await db.execute(_CREATE_IDX_AWAITING_ARCHIVE)
+        async with db.execute(
+            "SELECT download_url, filename_hint, post_id, post_published, "
+            "remote_hash, extra_headers, profile_url_id "
+            "FROM pending_queue WHERE url_source = ?",
+            (url_source,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return False
+        await db.execute(
+            """
+            INSERT INTO awaiting_archive
+                (url_source, download_url, filename_hint, post_id,
+                 post_published, remote_hash, extra_headers, profile_url_id,
+                 first_seen, last_checked, next_check, check_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(url_source) DO UPDATE SET
+                download_url = excluded.download_url,
+                filename_hint = excluded.filename_hint,
+                post_id = excluded.post_id,
+                post_published = excluded.post_published,
+                remote_hash = excluded.remote_hash,
+                extra_headers = excluded.extra_headers,
+                profile_url_id = excluded.profile_url_id,
+                last_checked = excluded.last_checked,
+                next_check = excluded.next_check,
+                check_count = awaiting_archive.check_count + 1
+            """,
+            (url_source, *row, now, now, now + max(1, recheck_seconds)),
+        )
+        await db.execute(
+            "DELETE FROM pending_queue WHERE url_source = ?", (url_source,)
+        )
+        await db.commit()
+        return True
+
+
+async def awaiting_archive_count(
+    artist_dir: Path, profile_url_id: int | None = None,
+) -> int:
+    """Cuenta originales anunciados por Pawchive pero aún no publicados."""
+    db_path = artist_dir / CATALOG_NAME
+    if not db_path.exists():
+        return 0
+    condition = " WHERE profile_url_id = ?" if profile_url_id is not None else ""
+    params = (profile_url_id,) if profile_url_id is not None else ()
+    async with _db(db_path) as db:
+        try:
+            async with db.execute(
+                "SELECT COUNT(*) FROM awaiting_archive" + condition, params,
+            ) as cur:
+                row = await cur.fetchone()
+        except aiosqlite.OperationalError:
+            return 0  # catálogo anterior: la migración ocurrirá al sincronizar
+    return int(row[0]) if row else 0
+
+
+async def reactivate_awaiting_archive(
+    artist_dir: Path,
+    profile_url_id: int | None = None,
+    *,
+    limit: int = ARCHIVE_RECHECK_BATCH,
+    due_only: bool = False,
+) -> int:
+    """Devuelve una muestra a pending_queue para comprobarla de nuevo.
+
+    ``due_only`` se usa en Sync normal (una vez por semana). El botón de la UI
+    lo ignora para permitir una comprobación manual inmediata. Nunca reactiva
+    más de una tanda conservadora por ejecución.
+    """
+    db_path = artist_dir / CATALOG_NAME
+    if not db_path.exists() or limit <= 0:
+        return 0
+    now = int(time.time())
+    conditions: list[str] = []
+    params: list[int] = []
+    if profile_url_id is not None:
+        conditions.append("profile_url_id = ?")
+        params.append(profile_url_id)
+    if due_only:
+        conditions.append("next_check <= ?")
+        params.append(now)
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    async with _db(db_path) as db:
+        await db.execute(_CREATE_PENDING)
+        await db.execute(_CREATE_AWAITING_ARCHIVE)
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM awaiting_archive" + where
+            + " ORDER BY next_check, first_seen, rowid LIMIT ?",
+            (*params, int(limit)),
+        ) as cur:
+            rows = await cur.fetchall()
+        if not rows:
+            return 0
+        moved: list[str] = []
+        for row in rows:
+            async with db.execute(
+                """
+                INSERT OR IGNORE INTO pending_queue
+                    (url_source, download_url, filename_hint, post_id,
+                     post_published, remote_hash, extra_headers,
+                     profile_url_id, discovered_at, queue_position)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        (SELECT COALESCE(MAX(queue_position), 0) + 1
+                         FROM pending_queue))
+                """,
+                (
+                    row["url_source"], row["download_url"], row["filename_hint"],
+                    row["post_id"], row["post_published"], row["remote_hash"],
+                    row["extra_headers"], row["profile_url_id"], now,
+                ),
+            ) as cur:
+                if cur.rowcount > 0:
+                    moved.append(row["url_source"])
+        if moved:
+            placeholders = ",".join("?" for _ in moved)
+            await db.execute(
+                f"DELETE FROM awaiting_archive WHERE url_source IN ({placeholders})",
+                moved,
+            )
+        await db.commit()
+        return len(moved)
 
 
 async def pending_count(
@@ -683,7 +857,7 @@ async def remove_pending(artist_dir: Path, url_source: str) -> None:
 async def remove_pending_for_profile_url(
     artist_dir: Path, profile_url_id: int,
 ) -> int:
-    """Retira toda la cola que pertenece a una fuente eliminada.
+    """Retira toda cola activa o en espera de una fuente eliminada.
 
     Los archivos ya catalogados no se tocan. Retorna cuántas filas pendientes
     salieron para que la UI pueda explicar exactamente lo que hizo.
@@ -697,6 +871,14 @@ async def remove_pending_for_profile_url(
             (profile_url_id,),
         ) as cur:
             removed = max(0, cur.rowcount)
+        try:
+            async with db.execute(
+                "DELETE FROM awaiting_archive WHERE profile_url_id = ?",
+                (profile_url_id,),
+            ) as cur:
+                removed += max(0, cur.rowcount)
+        except aiosqlite.OperationalError:
+            pass
         await db.commit()
     return removed
 

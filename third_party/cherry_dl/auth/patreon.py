@@ -156,6 +156,7 @@ async def guided_login_patreon(on_status=None) -> dict[str, str] | None:
         wanted=set(COOKIES_TO_KEEP),
         require="session_id",
         on_status=on_status,
+        require_fresh=True,
     )
     if cookies and cookies.get("session_id"):
         save_patreon_cookies(cookies)

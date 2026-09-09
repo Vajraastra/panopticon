@@ -1,171 +1,171 @@
-"""
-Autenticación con Pixiv via cookies del navegador del sistema.
-
-Flujo en ensure_pixiv_session():
-  1. session.json["pixiv"] válido  →  usar directamente
-  2. browser_cookie3: leer cookies de Firefox/Chrome/Brave/Edge
-     →  si encuentra PHPSESSID: guardar en session.json y continuar
-  3. raise NeedsPixivAuth  →  TUI muestra PixivAuthModal
-
-PixivAuthModal (en tui/app.py):
-  - Botón "Abrir pixiv.net/login" → webbrowser.open() (stdlib)
-  - Botón "Ya inicié sesión"      → reintenta browser_cookie3
-  - Al encontrar PHPSESSID: guarda en session.json y continúa
-
-Firefox se intenta antes que Chrome en Linux porque no requiere keyring.
-Chrome/Brave/Edge requieren GNOME Keyring o KWallet desbloqueados
-(siempre disponibles en sesiones de escritorio activas).
-
-Sin caducidad por tiempo: la sesión guardada vale hasta que Pixiv la
-rechace (401/403). Ahí el template llama clear_pixiv_session() y el flujo
-se reinicia desde el paso 2 (re-login automático).
-
-La API que usa el template es la web AJAX API de pixiv.net:
-  GET /ajax/user/{id}                    → info del artista
-  GET /ajax/user/{id}/profile/all        → todos los IDs de obras
-  GET /ajax/user/{id}/illusts?ids[]=...  → detalles por lote
-  GET /ajax/illust/{id}/pages            → páginas de obra multi-pág
-  GET /ajax/illust/{id}/ugoira_meta      → ZIP de animación
-
-Estas rutas son las mismas que usa gallery-dl y son estables desde 2018.
-"""
+"""Autenticación OAuth2 PKCE de Pixiv mediante el navegador del usuario."""
 
 from __future__ import annotations
 
 import time
+from base64 import urlsafe_b64encode
+from hashlib import sha256
+from secrets import token_urlsafe
+from urllib.parse import urlencode
+
+import httpx
 
 from ..config import load_session, save_session
 
-# ── Constantes ────────────────────────────────────────────────────────────────
-
 _SESSION_KEY = "pixiv"
+_LOGIN_URL = "https://app-api.pixiv.net/web/v1/login"
+_TOKEN_URL = "https://oauth.secure.pixiv.net/auth/token"
+_CALLBACK_URI = "https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback"
 
-# Cookies relevantes de pixiv.net que se persisten
-COOKIES_TO_KEEP = frozenset({
-    "PHPSESSID",
-    "device_token",
-    "p_ab_id",
-    "p_ab_id_2",
-    "p_ab_d_id",
-    "privacy_policy_agreement",
-})
+# Credenciales públicas de la app oficial, usadas también por gallery-dl/PixivPy.
+CLIENT_ID = "MOBrBDS8blbauoSck0ZfDbtuzpyT"
+CLIENT_SECRET = "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj"
+TOKEN_USER_AGENT = "PixivIOSApp/7.13.3 (iOS 14.6; iPhone13,2)"
 
-# Orden de browsers a intentar. Firefox primero: sin keyring en Linux.
-_BROWSER_LOADERS = [
-    "firefox",
-    "chrome",
-    "chromium",
-    "brave",
-    "edge",
-]
-
-
-# ── Excepción ─────────────────────────────────────────────────────────────────
 
 class NeedsPixivAuth(Exception):
-    """
-    No se encontró sesión activa de Pixiv en el navegador.
-    La TUI debe mostrar PixivAuthModal para que el usuario inicie sesión.
-    """
+    """Pixiv necesita un login OAuth interactivo o renovar sus tokens."""
 
 
-# ── API pública ───────────────────────────────────────────────────────────────
-
-def load_pixiv_cookies() -> dict[str, str] | None:
-    """
-    Carga cookies de Pixiv guardadas en session.json.
-
-    Sin caducidad por tiempo: la sesión vale hasta que Pixiv la rechace
-    (401/403), momento en que el template llama clear_pixiv_session(). Retorna
-    None si no existen o falta el PHPSESSID.
-    """
-    data  = load_session()
+def load_pixiv_tokens() -> dict[str, object] | None:
+    data = load_session()
     block = data.get(_SESSION_KEY)
-    if not isinstance(block, dict):
+    if not isinstance(block, dict) or not block.get("refresh_token"):
         return None
-
-    cookies = {k: v for k, v in block.items() if not k.startswith("_")}
-    return cookies if cookies.get("PHPSESSID") else None
+    return dict(block)
 
 
-def save_pixiv_cookies(cookies: dict[str, str]) -> None:
-    """Guarda cookies de Pixiv en session.json con timestamp actual."""
-    data  = load_session()
-    block = dict(cookies)
+def save_pixiv_tokens(tokens: dict[str, object]) -> None:
+    data = load_session()
+    block = dict(tokens)
     block["_saved_at"] = int(time.time())
     data[_SESSION_KEY] = block
     save_session(data)
 
 
+def load_pixiv_cookies() -> dict[str, object] | None:
+    """Alias temporal: el bloque Pixiv contiene tokens, no cookies web."""
+    return load_pixiv_tokens()
+
+
+def save_pixiv_cookies(tokens: dict[str, object]) -> None:
+    """Alias temporal para callers antiguos."""
+    save_pixiv_tokens(tokens)
+
+
 def clear_pixiv_session() -> None:
-    """Elimina las cookies guardadas (fuerza re-autenticación)."""
     data = load_session()
     data.pop(_SESSION_KEY, None)
     save_session(data)
 
 
-async def ensure_pixiv_session() -> dict[str, str]:
-    """
-    Garantiza una sesión válida de Pixiv.
-
-    Pasos:
-      1. session.json válido  →  retorna cookies guardadas
-      2. browser_cookie3      →  lee del browser, guarda y retorna
-      3. raise NeedsPixivAuth →  la TUI muestra PixivAuthModal
-    """
-    existing = load_pixiv_cookies()
-    if existing:
-        return existing
-
-    from_browser = load_from_browser()
-    if from_browser:
-        save_pixiv_cookies(from_browser)
-        return from_browser
-
-    raise NeedsPixivAuth(
-        "No se encontró sesión activa de Pixiv en el navegador."
-    )
+def generate_pkce() -> tuple[str, str]:
+    verifier = token_urlsafe(32)
+    digest = sha256(verifier.encode("ascii")).digest()
+    challenge = urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return verifier, challenge
 
 
-# ── Lectura de cookies del browser ────────────────────────────────────────────
-
-def load_from_browser() -> dict[str, str] | None:
-    """
-    Lee cookies de Pixiv del browser instalado en el sistema.
-
-    Intenta cada browser en _BROWSER_LOADERS en orden. Retorna el
-    primer dict que contenga PHPSESSID, o None si ninguno lo tiene.
-
-    Errores por keyring bloqueado, browser no instalado o perfil
-    corrupto se silencian — se pasa al siguiente browser.
-    """
-    try:
-        import browser_cookie3
-    except ImportError:
-        return None
-
-    loaders = {
-        "firefox":  browser_cookie3.firefox,
-        "chrome":   browser_cookie3.chrome,
-        "chromium": browser_cookie3.chromium,
-        "brave":    browser_cookie3.brave,
-        "edge":     browser_cookie3.edge,
+def build_login_url(challenge: str) -> str:
+    params = {
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "client": "pixiv-android",
     }
+    return f"{_LOGIN_URL}?{urlencode(params)}"
 
-    for name in _BROWSER_LOADERS:
-        loader = loaders.get(name)
-        if loader is None:
-            continue
-        try:
-            jar = loader(domain_name="pixiv.net")
-            cookies = {
-                c.name: c.value
-                for c in jar
-                if c.name in COOKIES_TO_KEEP
-            }
-            if cookies.get("PHPSESSID"):
-                return cookies
-        except Exception:
-            continue
 
+def _token_body(payload: object) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        return {}
+    wrapped = payload.get("response")
+    return dict(wrapped) if isinstance(wrapped, dict) else dict(payload)
+
+
+async def _request_tokens(fields: dict[str, str]) -> dict[str, object]:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30)) as client:
+        response = await client.post(
+            _TOKEN_URL,
+            data={
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "include_policy": "true",
+                **fields,
+            },
+            headers={
+                "User-Agent": TOKEN_USER_AGENT,
+                "App-OS": "ios",
+                "App-OS-Version": "14.6",
+            },
+        )
+    response.raise_for_status()
+    body = _token_body(response.json())
+    if not body.get("access_token"):
+        raise ValueError("Pixiv no devolvió un access_token")
+    expires_in = int(body.get("expires_in") or 3600)
+    body["_expires_at"] = int(time.time()) + expires_in
+    return body
+
+
+async def ensure_pixiv_access_token() -> str:
+    tokens = load_pixiv_tokens()
+    if not tokens:
+        raise NeedsPixivAuth("Pixiv necesita autorización OAuth.")
+
+    access_token = str(tokens.get("access_token") or "")
+    expires_at = int(tokens.get("_expires_at") or 0)
+    if access_token and expires_at > int(time.time()) + 60:
+        return access_token
+
+    refresh_token = str(tokens.get("refresh_token") or "")
+    try:
+        renewed = await _request_tokens({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "get_secure_url": "1",
+        })
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        clear_pixiv_session()
+        raise NeedsPixivAuth("El acceso OAuth de Pixiv venció.") from exc
+
+    if not renewed.get("refresh_token"):
+        renewed["refresh_token"] = refresh_token
+    save_pixiv_tokens(renewed)
+    return str(renewed["access_token"])
+
+
+async def ensure_pixiv_session() -> dict[str, object]:
+    """Compatibilidad: garantiza OAuth y devuelve el bloque persistido."""
+    await ensure_pixiv_access_token()
+    return load_pixiv_tokens() or {}
+
+
+async def guided_login_pixiv(on_status=None) -> dict[str, object] | None:
+    from .browser_login import capture_oauth_code
+
+    verifier, challenge = generate_pkce()
+    code = await capture_oauth_code(
+        build_login_url(challenge),
+        timeout=300,
+        on_status=on_status,
+    )
+    if not code:
+        return None
+    try:
+        tokens = await _request_tokens({
+            "code": code,
+            "code_verifier": verifier,
+            "grant_type": "authorization_code",
+            "redirect_uri": _CALLBACK_URI,
+        })
+    except (httpx.HTTPError, ValueError, TypeError):
+        if on_status:
+            on_status("Pixiv rechazó el código de autorización; vuelve a intentarlo.")
+        return None
+    save_pixiv_tokens(tokens)
+    return tokens
+
+
+def load_from_browser() -> None:
+    """Compatibilidad: OAuth no puede recuperarse desde cookies del browser."""
     return None
