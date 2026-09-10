@@ -38,6 +38,8 @@ class FileInfo:
     content_role: str = ""
     content_position: int = -1
     remote_size: int | None = None
+    # Las previews de Pawchive son sustitutos temporales, nunca contenido final.
+    is_preview: bool = False
     # Metadatos opcionales del post
     post_title: str = ""
     date_published: str = ""

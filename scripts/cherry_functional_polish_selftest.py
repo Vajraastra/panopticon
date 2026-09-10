@@ -158,6 +158,12 @@ async def main() -> None:
             app.processEvents()
             check(bar.value() == maximum_before,
                   "pausar el seguimiento debe conservar la posición")
+            panel._on_file_progress(7, 12)
+            check(panel._file_bar.isVisible() and panel._file_bar.value() == 7,
+                  "la barra de archivos debe reflejar el avance real")
+            panel._on_job_progress(3, 8)
+            check(panel._batch_bar.isVisible() and panel._batch_bar.value() == 3,
+                  "la barra batch debe contar trabajos programados")
             panel.close()
 
             class CreatedProbe:

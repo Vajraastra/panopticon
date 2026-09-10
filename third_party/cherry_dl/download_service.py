@@ -32,7 +32,11 @@ from typing import Awaitable, Callable, Optional, Union
 
 from .config import INDEX_DB, load_config
 from .engine import DownloadEngine, ErrorKind
-from .downloads import _build_local_hash_map, _passes_ext_filter, build_filename
+from .downloads import (
+    _build_local_hash_map,
+    _passes_ext_filter,
+    build_filename,
+)
 from .catalog import (
     ARCHIVE_RECHECK_BATCH,
     ScanCatalogBatch,
@@ -127,6 +131,13 @@ class BatchInfo:
 
 
 @dataclass(frozen=True)
+class FileProgress:
+    """Archivos resueltos en la tanda activa y total teórico de la tanda."""
+    done: int
+    total: int
+
+
+@dataclass(frozen=True)
 class WorkerStart:
     slot: int
     filename: str
@@ -198,7 +209,7 @@ class SiteMetrics:
 
 
 DownloadEvent = Union[
-    Log, WorkersResolved, SourceStarted, Cooldown, BatchInfo,
+    Log, WorkersResolved, SourceStarted, Cooldown, BatchInfo, FileProgress,
     WorkerStart, WorkerProgress, WorkerDone, WorkerIdle,
     Counters, SourceDone, ScanComplete, ScanProgress, SiteBlocked, SiteMetrics,
 ]
@@ -296,6 +307,8 @@ async def _remember_content_alias(
     folder: Path, file_info: FileInfo, file_hash: str,
 ) -> bool:
     """Conserva la identidad original sólo cuando ya existe un hash probado."""
+    if file_info.is_preview:
+        return False
     return await add_content_alias(
         folder,
         file_hash,
@@ -378,6 +391,13 @@ async def run_profile_download(
       resolve_auth  — callback async opcional para resolver auth interactiva.
     """
     summ = DownloadSummary()
+    progress = {"done": 0, "total": 0}
+
+    def _file_finished() -> None:
+        if not progress["total"]:
+            return
+        progress["done"] = min(progress["done"] + 1, progress["total"])
+        emit(FileProgress(progress["done"], progress["total"]))
 
     def _counters() -> None:
         emit(Counters(summ.downloaded, summ.skipped, summ.errors, summ.deferred))
@@ -737,6 +757,7 @@ async def run_profile_download(
             existing_pending = await pending_count(folder, pu_id)
 
             new_this_scan = 0
+            preview_markers = 0
 
             # ── Fase 1: escaneo ─────────────────────────────────────────────
             # El filtro de extensión NO influye en el escaneo: el scan puebla
@@ -797,7 +818,29 @@ async def run_profile_download(
                                 position=fi.content_position,
                                 remote_size=fi.remote_size,
                             )
+                            if fi.is_preview:
+                                if matched_hash:
+                                    scan_catalog.resolve_preview_only(key)
+                                elif await scan_catalog.stage_preview_only(
+                                        url_source=key,
+                                        filename_hint=fi.filename,
+                                        post_id=fi.post_id,
+                                        post_published=fi.date_published,
+                                        observed_hash=fi.remote_hash,
+                                        content_service=(
+                                            fi.content_service or artist_info.service
+                                        ),
+                                        original_filename=(
+                                            fi.original_filename or fi.filename
+                                        ),
+                                        content_role=fi.content_role,
+                                        content_position=fi.content_position,
+                                        profile_url_id=pu_id,
+                                ):
+                                    preview_markers += 1
+                                continue
                             if matched_hash:
+                                scan_catalog.resolve_preview_only(key)
                                 await scan_catalog.stage_content_alias(
                                     matched_hash,
                                     fi.content_service or artist_info.service,
@@ -874,6 +917,11 @@ async def run_profile_download(
             if need_full and scan_ok and scan_files_seen > 0:
                 await set_meta_int(folder, "full_scan_done", 1)
             emit(Log(f"Scan: {new_this_scan} nuevo(s) en cola", "dim"))
+            if preview_markers:
+                emit(Log(
+                    f"Scan: {preview_markers} preview(s) marcada(s), sin descarga",
+                    "dim",
+                ))
 
             threshold = scan_policy.cooldown_threshold
             cooldown = scan_policy.cooldown_seconds
@@ -893,8 +941,17 @@ async def run_profile_download(
 
             # ── Fase 2: descargar desde la cola ─────────────────────────────
             pending_list = await get_pending_files(folder, pu_id)
+            if ext_filter:
+                pending_list = [
+                    item for item in pending_list
+                    if _passes_ext_filter(
+                        item.get("filename_hint") or "",
+                        ext_filter,
+                        exclude_mode,
+                    )
+                ]
             if not pending_list:
-                emit(Log("✓ Sin archivos nuevos", "ok"))
+                emit(Log("✓ Sin archivos nuevos para el filtro activo", "ok"))
                 await update_profile_url_sync(
                     INDEX_DB, pu["id"], file_count=pu.get("file_count") or 0,
                 )
@@ -924,7 +981,7 @@ async def run_profile_download(
 
             # Progreso "X / N" con resume.
             batch_key = f"pending_batch_{pu_id}"
-            if existing_pending == 0:
+            if ext_filter or existing_pending == 0:
                 batch_total = len(pending_list)
                 batch_offset = 0
                 await set_meta_int(folder, batch_key, batch_total)
@@ -937,6 +994,8 @@ async def run_profile_download(
                     batch_total = len(pending_list)
                     batch_offset = 0
             emit(BatchInfo(batch_total, batch_offset))
+            progress.update(done=batch_offset, total=batch_total)
+            emit(FileProgress(batch_offset, batch_total))
 
             resume_note = f" — retomando desde {batch_offset} / {batch_total}" if batch_offset else ""
             emit(Log(f"Descargando {len(pending_list)} archivo(s){resume_note}", "info"))
@@ -966,10 +1025,6 @@ async def run_profile_download(
                     for pf in pending_list:
                         if _blocked():
                             break
-                        if ext_filter and not _passes_ext_filter(
-                            pf.get("filename_hint") or "", ext_filter, exclude_mode
-                        ):
-                            continue
                         extra: dict = {}
                         if pf.get("extra_headers"):
                             try:
@@ -998,6 +1053,7 @@ async def run_profile_download(
                                 if pf.get("content_position") is not None else -1
                             ),
                             remote_size=pf.get("remote_size"),
+                            is_preview=bool(pf.get("is_preview")),
                             extra_headers=extra,
                         )
                         # La cola llena es backpressure normal: un archivo grande
@@ -1037,13 +1093,15 @@ async def run_profile_download(
                         summ.skipped += 1
                         emit(Log(f"— {fi.filename[:60]}  [hash en progreso]", "dim"))
                         _counters()
+                        _file_finished()
                         continue
                     if fi.remote_hash:
                         in_progress_hashes.add(fi.remote_hash)
 
                     try:
                         throttle_permit = None
-                        if fi.remote_hash and await hash_exists(folder, fi.remote_hash):
+                        if (fi.remote_hash and await hash_exists(
+                                folder, fi.remote_hash, include_previews=False)):
                             summ.skipped += 1
                             await _remember_content_alias(folder, fi, fi.remote_hash)
                             emit(Log(f"— {fi.filename[:60]}  [hash en catálogo]", "dim"))
@@ -1067,7 +1125,8 @@ async def run_profile_download(
                             await remove_pending(folder, fi.dedup_key)
                             _counters()
                             continue
-                        if await url_exists(folder, fi.dedup_key):
+                        if await url_exists(
+                                folder, fi.dedup_key, include_previews=False):
                             summ.skipped += 1
                             emit(Log(f"— {fi.filename[:60]}  [URL en catálogo]", "dim"))
                             await remove_pending(folder, fi.dedup_key)
@@ -1075,7 +1134,9 @@ async def run_profile_download(
                             continue
 
                         counter = await next_counter(folder)
-                        final_name = build_filename(artist_info.name, counter, fi.filename)
+                        final_name = build_filename(
+                            artist_info.name, counter, fi.filename,
+                        )
                         emit(WorkerStart(slot_id, fi.filename))
 
                         def make_cb(s: int) -> Callable[[int, int], None]:
@@ -1289,6 +1350,11 @@ async def run_profile_download(
                                 artist_dir=folder, file_hash=result.file_hash,
                                 filename=final_name, url_source=fi.dedup_key,
                                 file_size=result.file_size, counter=counter,
+                                is_preview=fi.is_preview,
+                                content_service=fi.content_service,
+                                post_id=fi.post_id,
+                                content_role=fi.content_role,
+                                content_position=fi.content_position,
                             )
                             await _remember_content_alias(
                                 folder, fi, result.file_hash,
@@ -1307,6 +1373,11 @@ async def run_profile_download(
                                 artist_dir=folder, file_hash=result.file_hash,
                                 filename=final_name, url_source=fi.dedup_key,
                                 file_size=result.file_size, counter=counter,
+                                is_preview=fi.is_preview,
+                                content_service=fi.content_service,
+                                post_id=fi.post_id,
+                                content_role=fi.content_role,
+                                content_position=fi.content_position,
                             )
                             await _remember_content_alias(
                                 folder, fi, result.file_hash,
@@ -1339,6 +1410,7 @@ async def run_profile_download(
                             await throttle.abandon(locals().get("throttle_permit"))
                         if fi.remote_hash:
                             in_progress_hashes.discard(fi.remote_hash)
+                        _file_finished()
 
             all_tasks = [
                 asyncio.create_task(producer(), name="producer"),
@@ -1374,7 +1446,9 @@ async def run_profile_download(
                 engine.set_pace(src_policy.min_request_interval)
                 engine.set_rate(src_policy.max_bytes_per_sec)
                 engine.set_completion_gap(src_policy.post_download_delay)
-                if await url_exists(dest_folder, file_info.dedup_key):
+                if await url_exists(
+                        dest_folder, file_info.dedup_key,
+                        include_previews=False):
                     summ.skipped += 1
                     continue
                 emit(WorkerStart(0, file_info.filename))
@@ -1428,7 +1502,9 @@ async def run_profile_download(
                 if result.ok and result.file_hash:
                     _record_global_download(result.file_size)
                     counter = await next_counter(dest_folder)
-                    final_name = build_filename(a_info.name, counter, file_info.filename)
+                    final_name = build_filename(
+                        a_info.name, counter, file_info.filename,
+                    )
                     if result.dest and result.dest.exists():
                         try:
                             result.dest.replace(dest_folder / final_name)
@@ -1438,6 +1514,11 @@ async def run_profile_download(
                         artist_dir=dest_folder, file_hash=result.file_hash,
                         filename=final_name, url_source=file_info.dedup_key,
                         file_size=result.file_size, counter=counter,
+                        is_preview=file_info.is_preview,
+                        content_service=file_info.content_service,
+                        post_id=file_info.post_id,
+                        content_role=file_info.content_role,
+                        content_position=file_info.content_position,
                     )
                     await _remember_content_alias(
                         dest_folder, file_info, result.file_hash,

@@ -875,6 +875,8 @@
   "cherry.dl_scanning": "Escaneando: {seen} vistos · {queued} encolados",
   "cherry.dl_scan_done": "Escaneo terminado: {n} en cola",
   "cherry.dl_batch": "Descargando {total} archivos (se reanuda en {offset})",
+  "cherry.dl_file_progress": "Archivos: %v / %m",
+  "cherry.dl_job_progress": "Lote: %v / %m",
   "cherry.dl_source_done": "Fuente terminada · {n} archivos en el catálogo",
   "cherry.dl_cooldown": "⏸ Enfriando · {s} s",
   "cherry.dl_profile_done": "✓ {name} · ↓{d} ⏭{s} ✗{e} ⏸{f} ◷{a}",

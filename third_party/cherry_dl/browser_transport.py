@@ -219,6 +219,7 @@ class BrowserImageTransport:
         self._process: asyncio.subprocess.Process | None = None
         self._ws = None
         self._recv_task: asyncio.Task | None = None
+        self._receive_failure: BaseException | None = None
         self._session_id: str | None = None
         self._target_id: str | None = None
         self._next_id = 0
@@ -303,6 +304,7 @@ class BrowserImageTransport:
         self._ws = await connect(
             ws_url, max_size=None, ping_interval=None, proxy=None,
         )
+        self._receive_failure = None
         self._recv_task = asyncio.create_task(self._receive())
         target = await self._send_browser("Target.createTarget", {"url": "about:blank"})
         self._target_id = target["targetId"]
@@ -371,12 +373,35 @@ class BrowserImageTransport:
         else:
             failure = ConnectionError("El WebSocket CDP se cerró")
         finally:
+            self._receive_failure = failure or ConnectionError(
+                "El receptor CDP terminó",
+            )
             for future in self._pending.values():
                 if not future.done():
-                    future.set_exception(failure or ConnectionError(
-                        "El receptor CDP terminó",
-                    ))
+                    future.set_exception(self._receive_failure)
             self._pending.clear()
+
+    async def _wait_for_paused_response(
+        self, queue: asyncio.Queue, timeout: float,
+    ) -> dict:
+        """Espera cabeceras o la muerte de CDP, lo que suceda primero."""
+        receive_task = self._recv_task
+        queue_task = asyncio.create_task(queue.get())
+        watched = {queue_task}
+        if receive_task is not None:
+            watched.add(receive_task)
+        done, _ = await asyncio.wait(
+            watched, timeout=timeout, return_when=asyncio.FIRST_COMPLETED,
+        )
+        if queue_task in done:
+            return queue_task.result()
+        queue_task.cancel()
+        await asyncio.gather(queue_task, return_exceptions=True)
+        if not done:
+            raise asyncio.TimeoutError
+        raise self._receive_failure or ConnectionError(
+            "El WebSocket CDP se cerró antes de recibir cabeceras",
+        )
 
     def _resume_unclaimed(
         self, request_id: str, network_id: str | None = None,
@@ -495,7 +520,7 @@ class BrowserImageTransport:
         })
 
         try:
-            paused = await asyncio.wait_for(queue.get(), timeout=60.0)
+            paused = await self._wait_for_paused_response(queue, timeout=60.0)
         except asyncio.TimeoutError:
             self._paused.pop(key, None)
             await self._remove_element(element_id)

@@ -64,6 +64,7 @@ class DownloadQueue(QObject):
     """Ejecuta perfiles detallados en pasadas globales y de forma secuencial."""
 
     profile_started = Signal(int, int, str)
+    job_progress = Signal(int, int)  # trabajos terminados, trabajos totales
     profile_finished = Signal(object, object)
     queue_finished = Signal(object)
     queue_cancelled = Signal(object)
@@ -74,6 +75,8 @@ class DownloadQueue(QObject):
         self._pending: list[_Job] = []
         self._states: list[_ProfileState] = []
         self._total = 0
+        self._job_total = 0
+        self._jobs_done = 0
         self._current: _Job | None = None
         self._totals = QueueTotals()
         self._params: dict = {}
@@ -137,6 +140,9 @@ class DownloadQueue(QObject):
             for category in sorted(jobs_by_category, key=int)
             for job in jobs_by_category[category]
         ]
+        self._job_total = len(self._pending)
+        self._jobs_done = 0
+        self.job_progress.emit(0, self._job_total)
         self._total = len(profiles)
         self._totals = QueueTotals()
         self._params = params
@@ -212,6 +218,8 @@ class DownloadQueue(QObject):
         if error is not None:
             state.failed = True
             self._totals.failed.append((state.profile["display_name"], error))
+        self._jobs_done += 1
+        self.job_progress.emit(self._jobs_done, self._job_total)
         state.remaining -= 1
         if state.remaining == 0:
             self._finish_profile(state)

@@ -134,6 +134,20 @@ class DownloadPanel(QWidget):
         self._counters.setStyleSheet("font-size: 13px;")
         lay.addWidget(self._counters)
 
+        self._file_bar = QProgressBar()
+        self._file_bar.setFormat(self.tr(
+            "cherry.dl_file_progress", "Files: %v / %m",
+        ))
+        self._file_bar.setVisible(False)
+        lay.addWidget(self._file_bar)
+
+        self._batch_bar = QProgressBar()
+        self._batch_bar.setFormat(self.tr(
+            "cherry.dl_job_progress", "Batch: %v / %m",
+        ))
+        self._batch_bar.setVisible(False)
+        lay.addWidget(self._batch_bar)
+
         div = QFrame()
         div.setFixedHeight(1)
         div.setStyleSheet(f"background-color: {self._color('border', '#333')};")
@@ -163,6 +177,7 @@ class DownloadPanel(QWidget):
         bridge.source_started.connect(self._on_source_started)
         bridge.cooldown.connect(self._on_cooldown)
         bridge.batch_info.connect(self._on_batch_info)
+        bridge.file_progress.connect(self._on_file_progress)
         bridge.scan_progress.connect(self._on_scan_progress)
         bridge.scan_complete.connect(self._on_scan_complete)
         bridge.worker_start.connect(self._on_worker_start)
@@ -174,6 +189,7 @@ class DownloadPanel(QWidget):
         bridge.site_blocked.connect(self._on_site_blocked)
         if queue is not None:
             queue.profile_started.connect(self._on_profile_started)
+            queue.job_progress.connect(self._on_job_progress)
 
     # ── API de la vista ───────────────────────────────────────────────────
     def reset(self, title: str = "") -> None:
@@ -182,6 +198,8 @@ class DownloadPanel(QWidget):
         self._log.clear()
         self._reset_counters()
         self._stop_cooldown()
+        self._file_bar.setVisible(False)
+        self._batch_bar.setVisible(False)
         self.set_phase(self.tr("cherry.dl_starting", "Starting…"))
         for row in self._rows:
             row.idle()
@@ -261,11 +279,13 @@ class DownloadPanel(QWidget):
             self.append_log("", "dim")
         self.append_log(f"── {name} ──", "info")
         self._reset_counters()
+        self._file_bar.setVisible(False)
         self._stop_cooldown()
         for row in self._rows:
             row.idle()
 
     def _on_source_started(self, url: str, artist: str, site: str) -> None:
+        self._file_bar.setVisible(False)
         self.set_phase(self.tr("cherry.dl_source", "Source: {a} ({s})").format(a=artist, s=site))
 
     def _on_scan_progress(self, seen: int, queued: int) -> None:
@@ -281,6 +301,16 @@ class DownloadPanel(QWidget):
         self.set_phase(self.tr(
             "cherry.dl_batch", "Downloading {total} files (resuming at {offset})"
         ).format(total=total, offset=offset))
+
+    def _on_file_progress(self, done: int, total: int) -> None:
+        self._file_bar.setRange(0, max(1, total))
+        self._file_bar.setValue(max(0, min(done, total)))
+        self._file_bar.setVisible(total > 0)
+
+    def _on_job_progress(self, done: int, total: int) -> None:
+        self._batch_bar.setRange(0, max(1, total))
+        self._batch_bar.setValue(max(0, min(done, total)))
+        self._batch_bar.setVisible(total > 1)
 
     def _on_worker_start(self, slot: int, filename: str) -> None:
         self._ensure_slots(slot + 1)

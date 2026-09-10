@@ -160,11 +160,74 @@ async def test_partial_invalidates_browser() -> None:
         shutil.rmtree(target, ignore_errors=True)
 
 
+async def test_header_wait_stops_with_dead_cdp() -> None:
+    print("\n[5] Un CDP cerrado despierta al worker que espera cabeceras")
+    transport = BrowserImageTransport(
+        "https://origin.invalid", "https://file.invalid/a",
+    )
+    transport._recv_task = asyncio.create_task(asyncio.sleep(0.01))
+    started = asyncio.get_running_loop().time()
+    failed = False
+    try:
+        await transport._wait_for_paused_response(asyncio.Queue(), timeout=1.0)
+    except ConnectionError:
+        failed = True
+    check(failed, "el cierre se reporta como conexión perdida")
+    check(asyncio.get_running_loop().time() - started < 0.2,
+          "no consume los 60 s de espera de cabeceras")
+
+
+async def test_old_failure_does_not_close_new_browser() -> None:
+    print("\n[6] Un worker viejo no cierra la sesión de reemplazo")
+
+    class FailedTransport:
+        def __init__(self):
+            self.closed = False
+
+        async def start(self, _rate):
+            return None
+
+        async def download(self, *_args, **_kwargs):
+            return BrowserDownload(error="stream roto", failure_code="stream_error")
+
+        async def close(self):
+            self.closed = True
+
+    config = UserConfig(
+        workers=2, timeout=5,
+        network=NetworkConfig(delay_min=0, delay_max=0, stall_timeout=10),
+    )
+    target = Path(tempfile.mkdtemp(prefix="cherry_lifecycle_"))
+    try:
+        async with DownloadEngine(config, workers=2) as engine:
+            old = FailedTransport()
+            replacement = FailedTransport()
+            engine._browser_transport = old
+            engine._browser_key = ("https://origin.invalid", "file.invalid")
+
+            async def replace_before_result(_status):
+                engine._browser_transport = replacement
+
+            engine._wait_browser_turn = replace_before_result
+            await engine.download(
+                "https://file.invalid/a", target, "a.bin",
+                transport="browser_image", browser_origin="https://origin.invalid",
+            )
+            check(not replacement.closed,
+                  "el fallo anterior conserva el navegador nuevo")
+            check(engine._browser_transport is replacement,
+                  "la referencia nueva sigue activa")
+    finally:
+        shutil.rmtree(target, ignore_errors=True)
+
+
 async def main() -> int:
     await test_backpressure()
     await test_task_group_failure()
     await test_standby_restart()
     await test_partial_invalidates_browser()
+    await test_header_wait_stops_with_dead_cdp()
+    await test_old_failure_does_not_close_new_browser()
     print(f"\n{ok} ok, {fail} fallo(s)")
     return 1 if fail else 0
 

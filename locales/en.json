@@ -875,6 +875,8 @@
   "cherry.dl_scanning": "Scanning: {seen} seen · {queued} queued",
   "cherry.dl_scan_done": "Scan complete: {n} pending",
   "cherry.dl_batch": "Downloading {total} files (resuming at {offset})",
+  "cherry.dl_file_progress": "Files: %v / %m",
+  "cherry.dl_job_progress": "Batch: %v / %m",
   "cherry.dl_source_done": "Source finished · {n} files in catalog",
   "cherry.dl_cooldown": "⏸ Cooling down · {s}s",
   "cherry.dl_profile_done": "✓ {name} · ↓{d} ⏭{s} ✗{e} ⏸{f} ◷{a}",

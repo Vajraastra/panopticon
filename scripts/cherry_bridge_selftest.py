@@ -91,7 +91,7 @@ class Recorder:
 
         for name in (
             "log_line", "workers_resolved", "source_started", "cooldown",
-            "batch_info", "scan_progress", "scan_complete", "worker_start",
+            "batch_info", "file_progress", "scan_progress", "scan_complete", "worker_start",
             "worker_progress", "worker_done", "worker_idle", "counters",
             "source_done", "site_metrics", "unknown_event",
         ):
@@ -165,10 +165,10 @@ def test_index_read(app, runtime) -> list[dict]:
 
 
 def test_event_bridge(app, runtime, bridge, rec) -> None:
-    print("\n[3] Los 14 DownloadEvent cruzan de hilo")
+    print("\n[3] Los 15 DownloadEvent cruzan de hilo")
     import asyncio
     from third_party.cherry_dl.download_service import (
-        BatchInfo, Cooldown, Counters, Log, ScanComplete, ScanProgress,
+        BatchInfo, Cooldown, Counters, FileProgress, Log, ScanComplete, ScanProgress,
         SiteMetrics, SourceDone, SourceStarted, WorkerDone, WorkerIdle, WorkerProgress,
         WorkerStart, WorkersResolved,
     )
@@ -176,12 +176,13 @@ def test_event_bridge(app, runtime, bridge, rec) -> None:
     samples = [
         Log("hola", "info"), WorkersResolved(3),
         SourceStarted("http://x", "artista", "kemono"), Cooldown(1.5),
-        BatchInfo(10, 2), ScanProgress(25, 4), WorkerStart(0, "a.jpg"),
+        BatchInfo(10, 2), FileProgress(3, 10), ScanProgress(25, 4),
+        WorkerStart(0, "a.jpg"),
         WorkerProgress(0, 5, 10), WorkerDone(0, "a.jpg", "✓"),
         WorkerIdle(0), Counters(1, 2, 3, 4), SourceDone(7, 42),
         ScanComplete(9), SiteMetrics("pixiv", {"files_per_minute": 4.0}),
     ]
-    check("son 14 tipos de evento", len(samples) == 14, f"({len(samples)})")
+    check("son 15 tipos de evento", len(samples) == 15, f"({len(samples)})")
 
     rec.events.clear()
     rec.threads.clear()
@@ -192,14 +193,14 @@ def test_event_bridge(app, runtime, bridge, rec) -> None:
         return threading.get_ident()
 
     emitter_tid = runtime.run_sync(fire(), timeout=5)
-    got_all = pump(app, lambda: len(rec.events) >= 14, timeout=5)
+    got_all = pump(app, lambda: len(rec.events) >= 15, timeout=5)
 
-    check("los 14 llegan a la GUI", got_all, f"(llegaron {len(rec.events)})")
+    check("los 15 llegan a la GUI", got_all, f"(llegaron {len(rec.events)})")
     check("se emitieron desde el hilo del loop", emitter_tid != MAIN_THREAD)
     check("se reciben en el hilo GUI (conexión queued)",
           rec.threads == {MAIN_THREAD}, f"(hilos {rec.threads})")
     faltan = {"log_line", "workers_resolved", "source_started", "cooldown",
-              "batch_info", "scan_progress", "worker_start", "worker_progress",
+              "batch_info", "file_progress", "scan_progress", "worker_start", "worker_progress",
               "worker_done", "worker_idle", "counters", "source_done",
               "scan_complete", "site_metrics"} - set(rec.names())
     check("ninguno cae en unknown_event", not faltan and rec.count("unknown_event") == 0,

@@ -30,7 +30,12 @@ CREATE TABLE IF NOT EXISTS files (
     url_source  TEXT,
     date_added  INTEGER NOT NULL,    -- unix timestamp
     file_size   INTEGER,             -- bytes
-    counter     INTEGER              -- número secuencial global del artista
+    counter     INTEGER,             -- número secuencial global del artista
+    is_preview  INTEGER NOT NULL DEFAULT 0,
+    content_service TEXT,
+    post_id     TEXT,
+    content_role TEXT,
+    content_position INTEGER
 );
 """
 
@@ -91,6 +96,7 @@ CREATE TABLE IF NOT EXISTS pending_queue (
     content_role    TEXT,
     content_position INTEGER,
     remote_size     INTEGER,
+    is_preview      INTEGER NOT NULL DEFAULT 0,
     extra_headers   TEXT,
     profile_url_id  INTEGER,
     discovered_at   INTEGER NOT NULL,
@@ -125,6 +131,7 @@ CREATE TABLE IF NOT EXISTS awaiting_archive (
     content_role    TEXT,
     content_position INTEGER,
     remote_size     INTEGER,
+    is_preview      INTEGER NOT NULL DEFAULT 0,
     extra_headers   TEXT,
     profile_url_id  INTEGER,
     first_seen      INTEGER NOT NULL,
@@ -138,6 +145,25 @@ _CREATE_IDX_AWAITING_ARCHIVE = (
     "CREATE INDEX IF NOT EXISTS idx_awaiting_archive_due "
     "ON awaiting_archive(profile_url_id, next_check);"
 )
+
+# Estado observado en Pawchive cuando sólo existe una miniatura. No es una cola:
+# no contiene una URL descargable ni reserva contador/nombre de archivo.
+_CREATE_PREVIEW_ONLY = """
+CREATE TABLE IF NOT EXISTS preview_only (
+    url_source        TEXT PRIMARY KEY,
+    filename_hint     TEXT NOT NULL,
+    post_id           TEXT,
+    post_published    TEXT,
+    observed_hash     TEXT,
+    content_service   TEXT,
+    original_filename TEXT,
+    content_role      TEXT,
+    content_position  INTEGER,
+    profile_url_id    INTEGER,
+    first_seen        INTEGER NOT NULL,
+    last_seen         INTEGER NOT NULL
+);
+"""
 
 ARCHIVE_RECHECK_SECONDS = 7 * 24 * 60 * 60
 ARCHIVE_RECHECK_BATCH = 25
@@ -187,6 +213,7 @@ async def init_catalog(artist_dir: Path) -> None:
         await db.execute(_CREATE_PROFILE_META)
         await db.execute(_CREATE_AWAITING_ARCHIVE)
         await db.execute(_CREATE_IDX_AWAITING_ARCHIVE)
+        await db.execute(_CREATE_PREVIEW_ONLY)
 
         # Migrar columna counter si no existe (catálogos previos)
         async with db.execute(
@@ -194,6 +221,21 @@ async def init_catalog(artist_dir: Path) -> None:
         ) as cur:
             if not await cur.fetchone():
                 await db.execute(_MIGRATE_COUNTER)
+
+        file_columns = {
+            "is_preview": "INTEGER NOT NULL DEFAULT 0",
+            "content_service": "TEXT",
+            "post_id": "TEXT",
+            "content_role": "TEXT",
+            "content_position": "INTEGER",
+        }
+        async with db.execute("PRAGMA table_info('files')") as cur:
+            existing_files = {row[1] async for row in cur}
+        for column, sql_type in file_columns.items():
+            if column not in existing_files:
+                await db.execute(
+                    f"ALTER TABLE files ADD COLUMN {column} {sql_type}"
+                )
 
         # Posición mutable de la cola. Los catálogos anteriores ordenaban sólo
         # por discovered_at, por lo que un archivo fallido reaparecía al frente
@@ -220,6 +262,7 @@ async def init_catalog(artist_dir: Path) -> None:
             "content_role": "TEXT",
             "content_position": "INTEGER",
             "remote_size": "INTEGER",
+            "is_preview": "INTEGER NOT NULL DEFAULT 0",
         }
         for table in ("pending_queue", "awaiting_archive"):
             async with db.execute(f"PRAGMA table_info('{table}')") as cur:
@@ -229,6 +272,42 @@ async def init_catalog(artist_dir: Path) -> None:
                     await db.execute(
                         f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"
                     )
+
+        # La versión experimental llegó a encolar previews. Al abrir cualquier
+        # catálogo se inmovilizan como marcadores antes de que un worker pueda
+        # descargarlas. La limpieza de archivos ya guardados es deliberadamente
+        # una herramienta separada y recuperable.
+        now = int(time.time())
+        for table in ("pending_queue", "awaiting_archive"):
+            date_column = "discovered_at" if table == "pending_queue" else "first_seen"
+            await db.execute(
+                f"""
+                INSERT INTO preview_only
+                    (url_source, filename_hint, post_id, post_published,
+                     observed_hash, content_service, original_filename,
+                     content_role, content_position, profile_url_id,
+                     first_seen, last_seen)
+                SELECT url_source, filename_hint, post_id, post_published,
+                       remote_hash, content_service, original_filename,
+                       content_role, content_position, profile_url_id,
+                       COALESCE({date_column}, ?), ?
+                FROM {table}
+                WHERE is_preview = 1
+                ON CONFLICT(url_source) DO UPDATE SET
+                    filename_hint = excluded.filename_hint,
+                    post_id = excluded.post_id,
+                    post_published = excluded.post_published,
+                    observed_hash = excluded.observed_hash,
+                    content_service = excluded.content_service,
+                    original_filename = excluded.original_filename,
+                    content_role = excluded.content_role,
+                    content_position = excluded.content_position,
+                    profile_url_id = excluded.profile_url_id,
+                    last_seen = excluded.last_seen
+                """,
+                (now, now),
+            )
+            await db.execute(f"DELETE FROM {table} WHERE is_preview = 1")
 
         # Asegurar fila del contador en meta
         await db.execute(_MIGRATE_META)
@@ -302,25 +381,33 @@ async def next_counter(artist_dir: Path) -> int:
 
 # ── Consultas ──────────────────────────────────────────────────────────────────
 
-async def url_exists(artist_dir: Path, url: str) -> bool:
+async def url_exists(
+    artist_dir: Path, url: str, *, include_previews: bool = True,
+) -> bool:
     """
     Retorna True si la URL ya está registrada en el catálogo.
     Permite detectar duplicados ANTES de descargar, sin necesidad de hash.
     """
     db_path = artist_dir / CATALOG_NAME
     async with _db(db_path) as db:
+        preview_clause = "" if include_previews else " AND is_preview = 0"
         async with db.execute(
-            "SELECT 1 FROM files WHERE url_source = ? LIMIT 1", (url,)
+            "SELECT 1 FROM files WHERE url_source = ?" + preview_clause
+            + " LIMIT 1", (url,)
         ) as cur:
             return await cur.fetchone() is not None
 
 
-async def hash_exists(artist_dir: Path, file_hash: str) -> bool:
+async def hash_exists(
+    artist_dir: Path, file_hash: str, *, include_previews: bool = True,
+) -> bool:
     """Retorna True si el hash ya está registrado en el catálogo."""
     db_path = artist_dir / CATALOG_NAME
     async with _db(db_path) as db:
+        preview_clause = "" if include_previews else " AND is_preview = 0"
         async with db.execute(
-            "SELECT 1 FROM files WHERE hash = ? LIMIT 1", (file_hash,)
+            "SELECT 1 FROM files WHERE hash = ?" + preview_clause + " LIMIT 1",
+            (file_hash,),
         ) as cur:
             return await cur.fetchone() is not None
 
@@ -351,6 +438,7 @@ class ScanCatalogBatch:
         self.batch_size = max(1, batch_size)
         self.downloaded_urls: dict[str, str] = {}
         self.downloaded_hashes: set[str] = set()
+        self.preview_only_urls: set[str] = set()
         self.content_aliases: dict[
             tuple[str, str, str, int], tuple[str, int | None]
         ] = {}
@@ -358,6 +446,8 @@ class ScanCatalogBatch:
         self.pending_positions: dict[str, int] = {}
         self.awaiting_urls: set[str] = set()
         self._buffer: dict[str, tuple] = {}
+        self._preview_buffer: dict[str, tuple] = {}
+        self._resolved_previews: set[str] = set()
         self._alias_buffer: dict[tuple[str, str, str, int], tuple] = {}
         self._next_queue_position = 0
         self.write_commits = 0
@@ -370,9 +460,13 @@ class ScanCatalogBatch:
         batch = cls(artist_dir, db, batch_size)
         try:
             async with db.execute(
-                "SELECT url_source, hash FROM files"
+                "SELECT url_source, hash, is_preview, content_service, post_id, "
+                "content_role, content_position FROM files"
             ) as cur:
-                async for url_source, file_hash in cur:
+                async for (url_source, file_hash, is_preview, service, post_id,
+                           role, position) in cur:
+                    if is_preview:
+                        continue
                     if url_source:
                         batch.downloaded_urls[url_source] = file_hash
                     if file_hash:
@@ -391,7 +485,7 @@ class ScanCatalogBatch:
                 "SELECT url_source, download_url, filename_hint, post_id, "
                 "post_published, remote_hash, content_service, "
                 "original_filename, content_role, content_position, "
-                "remote_size, extra_headers, queue_position "
+                "remote_size, extra_headers, is_preview, queue_position "
                 "FROM pending_queue"
             ) as cur:
                 async for row in cur:
@@ -404,6 +498,10 @@ class ScanCatalogBatch:
             ) as cur:
                 async for row in cur:
                     batch.awaiting_urls.add(row[0])
+
+            async with db.execute("SELECT url_source FROM preview_only") as cur:
+                async for row in cur:
+                    batch.preview_only_urls.add(row[0])
 
             async with db.execute(
                 "SELECT COALESCE(MAX(queue_position), 0) FROM pending_queue"
@@ -467,6 +565,14 @@ class ScanCatalogBatch:
             await self.flush()
         return True
 
+    def resolve_preview_only(self, url_source: str) -> None:
+        """Retira un marcador cuando esa identidad ya tiene archivo final."""
+        if url_source not in self.preview_only_urls:
+            return
+        self.preview_only_urls.discard(url_source)
+        self._preview_buffer.pop(url_source, None)
+        self._resolved_previews.add(url_source)
+
     async def stage_pending(
         self,
         url_source: str,
@@ -481,6 +587,7 @@ class ScanCatalogBatch:
         content_position: int | None = None,
         remote_size: int | None = None,
         extra_headers: str | None = None,
+        is_preview: bool = False,
         profile_url_id: int | None = None,
     ) -> bool:
         """Prepara un UPSERT y retorna True sólo cuando la fila es nueva.
@@ -494,6 +601,10 @@ class ScanCatalogBatch:
         if url_source in self.awaiting_urls:
             return False
 
+        # La misma identidad ya dejó de ser preview: el original reemplaza el
+        # marcador y entra a la cola normal en esta misma confirmación.
+        self.resolve_preview_only(url_source)
+
         is_new = url_source not in self.pending_payloads
         previous = self.pending_payloads.get(url_source)
         payload = (
@@ -501,6 +612,7 @@ class ScanCatalogBatch:
             remote_hash or "", content_service or "",
             original_filename or filename_hint, content_role or "",
             content_position, _remote_size_value(remote_size), extra_headers,
+            int(bool(is_preview)),
         )
         if previous == payload:
             return False
@@ -520,15 +632,84 @@ class ScanCatalogBatch:
             content_service or "", original_filename or filename_hint,
             content_role or "", content_position,
             _remote_size_value(remote_size),
-            extra_headers, profile_url_id, int(time.time()), queue_position,
+            extra_headers, int(bool(is_preview)), profile_url_id,
+            int(time.time()), queue_position,
         )
         if len(self._buffer) >= self.batch_size:
             await self.flush()
         return is_new
 
+    async def stage_preview_only(
+        self,
+        url_source: str,
+        filename_hint: str,
+        post_id: str = "",
+        post_published: str = "",
+        observed_hash: str = "",
+        content_service: str = "",
+        original_filename: str = "",
+        content_role: str = "",
+        content_position: int | None = None,
+        profile_url_id: int | None = None,
+    ) -> bool:
+        """Registra disponibilidad parcial sin crear trabajo de descarga."""
+        if self._closed:
+            raise RuntimeError("el lote de catálogo ya está cerrado")
+        is_new = url_source not in self.preview_only_urls
+        now = int(time.time())
+        self.preview_only_urls.add(url_source)
+        self._resolved_previews.discard(url_source)
+        self._buffer.pop(url_source, None)
+        self.pending_payloads.pop(url_source, None)
+        self.pending_positions.pop(url_source, None)
+        self._preview_buffer[url_source] = (
+            url_source, filename_hint, post_id or "", post_published or "",
+            observed_hash or "", content_service or "",
+            original_filename or filename_hint, content_role or "",
+            content_position, profile_url_id, now, now,
+        )
+        if len(self._preview_buffer) >= self.batch_size:
+            await self.flush()
+        return is_new
+
     async def flush(self) -> None:
-        if not self._buffer and not self._alias_buffer:
+        if (not self._buffer and not self._alias_buffer
+                and not self._preview_buffer and not self._resolved_previews):
             return
+        if self._preview_buffer:
+            preview_urls = tuple(self._preview_buffer)
+            placeholders = ",".join("?" for _ in preview_urls)
+            await self._db_conn.execute(
+                f"DELETE FROM pending_queue WHERE url_source IN ({placeholders})",
+                preview_urls,
+            )
+            await self._db_conn.executemany(
+                """
+                INSERT INTO preview_only
+                    (url_source, filename_hint, post_id, post_published,
+                     observed_hash, content_service, original_filename,
+                     content_role, content_position, profile_url_id,
+                     first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(url_source) DO UPDATE SET
+                    filename_hint = excluded.filename_hint,
+                    post_id = excluded.post_id,
+                    post_published = excluded.post_published,
+                    observed_hash = excluded.observed_hash,
+                    content_service = excluded.content_service,
+                    original_filename = excluded.original_filename,
+                    content_role = excluded.content_role,
+                    content_position = excluded.content_position,
+                    profile_url_id = excluded.profile_url_id,
+                    last_seen = excluded.last_seen
+                """,
+                list(self._preview_buffer.values()),
+            )
+        if self._resolved_previews:
+            await self._db_conn.executemany(
+                "DELETE FROM preview_only WHERE url_source = ?",
+                [(url,) for url in self._resolved_previews],
+            )
         if self._buffer:
             await self._db_conn.executemany(
                 """
@@ -536,9 +717,9 @@ class ScanCatalogBatch:
                     (url_source, download_url, filename_hint, post_id,
                      post_published, remote_hash, content_service,
                      original_filename, content_role, content_position,
-                     remote_size, extra_headers, profile_url_id,
+                     remote_size, extra_headers, is_preview, profile_url_id,
                      discovered_at, queue_position)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(url_source) DO UPDATE SET
                     download_url  = excluded.download_url,
                     filename_hint = excluded.filename_hint,
@@ -550,7 +731,8 @@ class ScanCatalogBatch:
                     content_role = excluded.content_role,
                     content_position = excluded.content_position,
                     remote_size = excluded.remote_size,
-                    extra_headers = excluded.extra_headers
+                    extra_headers = excluded.extra_headers,
+                    is_preview = excluded.is_preview
                 """,
                 list(self._buffer.values()),
             )
@@ -576,6 +758,8 @@ class ScanCatalogBatch:
         for url_source in tuple(self._buffer):
             self._buffer.pop(url_source, None)
         self._alias_buffer.clear()
+        self._preview_buffer.clear()
+        self._resolved_previews.clear()
 
     async def close(self) -> None:
         if self._closed:
@@ -594,17 +778,39 @@ async def add_file(
     url_source: str | None = None,
     file_size: int | None = None,
     counter: int | None = None,
+    is_preview: bool = False,
+    content_service: str = "",
+    post_id: str = "",
+    content_role: str = "",
+    content_position: int | None = None,
 ) -> None:
     """Registra un archivo nuevo en el catálogo."""
     db_path = artist_dir / CATALOG_NAME
     async with _db(db_path) as db:
         await db.execute(
             """
-            INSERT OR IGNORE INTO files
-                (hash, filename, url_source, date_added, file_size, counter)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO files
+                (hash, filename, url_source, date_added, file_size, counter,
+                 is_preview, content_service, post_id, content_role,
+                 content_position)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(hash) DO UPDATE SET
+                filename = excluded.filename,
+                url_source = excluded.url_source,
+                file_size = excluded.file_size,
+                counter = excluded.counter,
+                is_preview = 0,
+                content_service = excluded.content_service,
+                post_id = excluded.post_id,
+                content_role = excluded.content_role,
+                content_position = excluded.content_position
+            WHERE files.is_preview = 1 AND excluded.is_preview = 0
             """,
-            (file_hash, filename, url_source, int(time.time()), file_size, counter),
+            (
+                file_hash, filename, url_source, int(time.time()), file_size,
+                counter, int(bool(is_preview)), content_service or "",
+                post_id or "", content_role or "", content_position,
+            ),
         )
         await db.commit()
 
@@ -620,7 +826,8 @@ async def get_all_files(artist_dir: Path) -> list[dict]:
     async with _db(db_path) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT hash, filename, url_source, file_size, counter FROM files"
+            "SELECT hash, filename, url_source, file_size, counter, is_preview, "
+            "content_service, post_id, content_role, content_position FROM files"
         ) as cur:
             rows = await cur.fetchall()
     return [dict(row) for row in rows]
@@ -788,7 +995,8 @@ async def clean_pending_catalog_overlap(
     async with _db(db_path) as db:
         async with db.execute(
             f"SELECT COUNT(*) FROM pending_queue "
-            f"WHERE url_source IN (SELECT url_source FROM files) {pu_clause}",
+            f"WHERE url_source IN (SELECT url_source FROM files "
+            f"WHERE is_preview = 0) {pu_clause}",
             params,
         ) as cur:
             row = await cur.fetchone()
@@ -796,7 +1004,8 @@ async def clean_pending_catalog_overlap(
         if removed:
             await db.execute(
                 f"DELETE FROM pending_queue "
-                f"WHERE url_source IN (SELECT url_source FROM files) {pu_clause}",
+                f"WHERE url_source IN (SELECT url_source FROM files "
+                f"WHERE is_preview = 0) {pu_clause}",
                 params,
             )
             await db.commit()
@@ -848,6 +1057,7 @@ async def add_pending(
     content_position: int | None = None,
     remote_size: int | None = None,
     extra_headers: str | None = None,
+    is_preview: bool = False,
     profile_url_id: int | None = None,
 ) -> None:
     """
@@ -866,9 +1076,9 @@ async def add_pending(
                 (url_source, download_url, filename_hint, post_id,
                  post_published, remote_hash, content_service,
                  original_filename, content_role, content_position,
-                 remote_size, extra_headers, profile_url_id,
+                 remote_size, extra_headers, is_preview, profile_url_id,
                  discovered_at, queue_position)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     (SELECT COALESCE(MAX(queue_position), 0) + 1
                      FROM pending_queue))
             ON CONFLICT(url_source) DO UPDATE SET
@@ -882,7 +1092,8 @@ async def add_pending(
                 content_role = excluded.content_role,
                 content_position = excluded.content_position,
                 remote_size = excluded.remote_size,
-                extra_headers = excluded.extra_headers
+                extra_headers = excluded.extra_headers,
+                is_preview = excluded.is_preview
             """,
             (
                 url_source, download_url, filename_hint,
@@ -890,7 +1101,8 @@ async def add_pending(
                 content_service or "", original_filename or filename_hint,
                 content_role or "", content_position,
                 _remote_size_value(remote_size),
-                extra_headers, profile_url_id, int(time.time()),
+                extra_headers, int(bool(is_preview)), profile_url_id,
+                int(time.time()),
             ),
         )
         await db.commit()
@@ -1030,7 +1242,8 @@ async def defer_until_archived(
         async with db.execute(
             "SELECT download_url, filename_hint, post_id, post_published, "
             "remote_hash, content_service, original_filename, content_role, "
-            "content_position, remote_size, extra_headers, profile_url_id "
+            "content_position, remote_size, extra_headers, is_preview, "
+            "profile_url_id "
             "FROM pending_queue WHERE url_source = ?",
             (url_source,),
         ) as cur:
@@ -1042,10 +1255,10 @@ async def defer_until_archived(
             INSERT INTO awaiting_archive
                 (url_source, download_url, filename_hint, post_id,
                  post_published, remote_hash, content_service,
-                 original_filename, content_role, content_position, remote_size,
-                 extra_headers, profile_url_id,
-                 first_seen, last_checked, next_check, check_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                  original_filename, content_role, content_position, remote_size,
+                  extra_headers, is_preview, profile_url_id,
+                  first_seen, last_checked, next_check, check_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             ON CONFLICT(url_source) DO UPDATE SET
                 download_url = excluded.download_url,
                 filename_hint = excluded.filename_hint,
@@ -1058,6 +1271,7 @@ async def defer_until_archived(
                 content_position = excluded.content_position,
                 remote_size = excluded.remote_size,
                 extra_headers = excluded.extra_headers,
+                is_preview = excluded.is_preview,
                 profile_url_id = excluded.profile_url_id,
                 last_checked = excluded.last_checked,
                 next_check = excluded.next_check,
@@ -1109,7 +1323,7 @@ async def reactivate_awaiting_archive(
     if not db_path.exists() or limit <= 0:
         return 0
     now = int(time.time())
-    conditions: list[str] = []
+    conditions: list[str] = ["is_preview = 0"]
     params: list[int] = []
     if profile_url_id is not None:
         conditions.append("profile_url_id = ?")
@@ -1138,9 +1352,9 @@ async def reactivate_awaiting_archive(
                     (url_source, download_url, filename_hint, post_id,
                      post_published, remote_hash, content_service,
                      original_filename, content_role, content_position,
-                     remote_size, extra_headers, profile_url_id,
+                     remote_size, extra_headers, is_preview, profile_url_id,
                      discovered_at, queue_position)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                         (SELECT COALESCE(MAX(queue_position), 0) + 1
                          FROM pending_queue))
                 """,
@@ -1150,7 +1364,8 @@ async def reactivate_awaiting_archive(
                     row["content_service"], row["original_filename"],
                     row["content_role"], row["content_position"],
                     row["remote_size"],
-                    row["extra_headers"], row["profile_url_id"], now,
+                    row["extra_headers"], row["is_preview"],
+                    row["profile_url_id"], now,
                 ),
             ) as cur:
                 if cur.rowcount > 0:
@@ -1225,9 +1440,9 @@ async def get_pending_files(
                 SELECT url_source, download_url, filename_hint,
                        post_id, post_published, remote_hash, content_service,
                        original_filename, content_role, content_position,
-                       remote_size, extra_headers
+                       remote_size, extra_headers, is_preview
                 FROM pending_queue
-                WHERE profile_url_id = ?
+                WHERE profile_url_id = ? AND is_preview = 0
                 ORDER BY queue_position, discovered_at, rowid
                 """,
                 (profile_url_id,),
@@ -1239,8 +1454,9 @@ async def get_pending_files(
                 SELECT url_source, download_url, filename_hint,
                        post_id, post_published, remote_hash, content_service,
                        original_filename, content_role, content_position,
-                       remote_size, extra_headers
+                       remote_size, extra_headers, is_preview
                 FROM pending_queue
+                WHERE is_preview = 0
                 ORDER BY queue_position, discovered_at, rowid
                 """
             ) as cur:
@@ -1472,13 +1688,19 @@ async def migrate_unique_files(
             ctr  = await next_counter(folder_dst)
             ext  = Path(f["filename"]).suffix
             pad  = max(4, len(str(ctr)))
-            new_name = f"{ctr:0{pad}d}{ext}"
+            marker = "preview_" if f.get("is_preview") else ""
+            new_name = f"{marker}{ctr:0{pad}d}{ext}"
             new_path = folder_dst / new_name
 
             await asyncio.to_thread(shutil.move, str(src_path), str(new_path))
             await add_file(
                 folder_dst, f["hash"], new_name,
                 f.get("url_source"), f.get("file_size"), ctr,
+                is_preview=bool(f.get("is_preview")),
+                content_service=f.get("content_service") or "",
+                post_id=f.get("post_id") or "",
+                content_role=f.get("content_role") or "",
+                content_position=f.get("content_position"),
             )
             moved += 1
         except Exception as exc:

@@ -51,24 +51,42 @@ async def main() -> None:
         db_path = artist / CATALOG_NAME
 
         with closing(sqlite3.connect(db_path)) as db:
+            file_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(files)")
+            }
             alias_columns = {
                 row[1] for row in db.execute("PRAGMA table_info(content_aliases)")
             }
             pending_columns = {
                 row[1] for row in db.execute("PRAGMA table_info(pending_queue)")
             }
+            preview_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(preview_only)")
+            }
         check("file_hash" in alias_columns, "crea tabla de alias ligada al hash")
+        check(
+            {"is_preview", "content_service", "post_id", "content_role",
+             "content_position"} <= file_columns,
+            "files conserva compatibilidad para limpiar previews heredadas",
+        )
         check(
             {"content_service", "original_filename", "content_role",
              "content_position", "remote_size"} <= pending_columns,
             "la cola conserva toda la identidad semántica",
         )
+        check("url_source" in preview_columns,
+              "crea la tabla de marcadores sin descarga")
 
         hash_a = "a" * 64
         hash_b = "b" * 64
         await add_file(artist, hash_a, "Artist_00001.png", "patreon://media/1")
         await add_file(artist, hash_b, "Artist_00002.png", "patreon://media/2")
-
+        check(
+            await content_alias_hash(
+                artist, "patreon", "90", "cover.png", 0,
+            ) is None,
+            "una preview no se convierte en alias definitivo",
+        )
         check(
             not await add_content_alias(
                 artist, "c" * 64, "patreon", "10", "cover.png", "primary", 0,
@@ -127,6 +145,13 @@ async def main() -> None:
                 batch.find_downloaded_hash("patreon://media/2") == hash_b,
                 "la URL estable permanece como última defensa pre-descarga",
             )
+            check(
+                batch.find_downloaded_hash(
+                    "pawchive://patreon/creator/post/90/primary/0",
+                    "e" * 64,
+                ) is None,
+                "la identidad de preview no bloquea el original",
+            )
             await batch.stage_content_alias(
                 hash_b, "patreon", "12", "source.psd", "attachment", 1, 456,
             )
@@ -138,7 +163,6 @@ async def main() -> None:
             ) == hash_b,
             "el scan persiste alias encontrados por hash remoto",
         )
-
         await add_pending(
             artist, "pawchive://10/0", "https://files.invalid/old", "old.png",
             profile_url_id=7,
@@ -180,6 +204,81 @@ async def main() -> None:
              restored["remote_size"]) == ("patreon", 0, 123),
             "el ciclo de archivo preserva la identidad",
         )
+
+        preview_url = "pawchive://patreon/creator/post/99/primary/0"
+        batch = await ScanCatalogBatch.open(artist)
+        try:
+            check(
+                await batch.stage_preview_only(
+                    preview_url, "legacy.png", post_id="99",
+                    observed_hash="f" * 64,
+                    content_service="patreon", original_filename="legacy.png",
+                    content_role="primary", content_position=0,
+                    profile_url_id=8,
+                ),
+                "el scan registra la preview como marcador",
+            )
+        finally:
+            await batch.close()
+        with closing(sqlite3.connect(db_path)) as db:
+            marker_count = db.execute(
+                "SELECT COUNT(*) FROM preview_only WHERE url_source = ?",
+                (preview_url,),
+            ).fetchone()[0]
+            queued_count = db.execute(
+                "SELECT COUNT(*) FROM pending_queue WHERE url_source = ?",
+                (preview_url,),
+            ).fetchone()[0]
+        check(marker_count == 1 and queued_count == 0,
+              "la preview queda en DB pero nunca en la cola")
+
+        batch = await ScanCatalogBatch.open(artist)
+        try:
+            check(
+                await batch.stage_pending(
+                    preview_url, "https://file.pawchive.pw/data/full.png",
+                    "legacy.png", post_id="99", remote_hash="e" * 64,
+                    content_service="patreon", original_filename="legacy.png",
+                    content_role="primary", content_position=0,
+                    profile_url_id=8,
+                ),
+                "el original entra a la cola cuando deja de ser preview",
+            )
+        finally:
+            await batch.close()
+        with closing(sqlite3.connect(db_path)) as db:
+            check(
+                db.execute(
+                    "SELECT COUNT(*) FROM preview_only WHERE url_source = ?",
+                    (preview_url,),
+                ).fetchone()[0] == 0,
+                "el original retira el marcador preview-only",
+            )
+
+        legacy_preview_url = "pawchive://patreon/creator/post/100/primary/0"
+        await add_pending(
+            artist, legacy_preview_url, "https://img.invalid/preview.webp",
+            "preview.webp", post_id="100", remote_hash="f" * 64,
+            content_service="patreon", original_filename="preview.webp",
+            content_role="primary", content_position=0, is_preview=True,
+            profile_url_id=8,
+        )
+        await init_catalog(artist)
+        check(
+            not any(
+                row["url_source"] == legacy_preview_url
+                for row in await get_pending_files(artist, 8)
+            ),
+            "al abrir, una preview heredada sale de la cola",
+        )
+        with closing(sqlite3.connect(db_path)) as db:
+            check(
+                db.execute(
+                    "SELECT COUNT(*) FROM preview_only WHERE url_source = ?",
+                    (legacy_preview_url,),
+                ).fetchone()[0] == 1,
+                "la migración conserva la preview heredada como marcador",
+            )
 
         origin = ArtistInfo("creator", "Artist", "patreon", "kemono", "https://x")
         post = {

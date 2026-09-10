@@ -75,18 +75,18 @@ H1 = "51bf253b816128bec1d099972b433c474c6b81e7d79857dbac211003486a83ff"
 H2 = "571ffff62ab3b6eb012709962b23a85e3de2f90ebf0d808fd53ed6fb245b2bf4"
 
 PAGINA_0 = [
-    {   # file preview_only + adjunto libre → solo debe salir el adjunto
+    {   # formato legado: preview_only vivía en cada entrada
         "id": "168501262", "title": "Senpai-San", "published": "2026-09-03T16:05:03",
         "file": {"name": "Notice0904.png", "path": f"/51/bf/{H1}.png",
                  "preview_only": True},
         "attachments": [{"name": "NC_Senpai-San.zip", "path": f"/57/1f/{H2}.zip"}],
     },
-    {   # todo preview_only → no sale nada
+    {   # formato vivo 2026-09-10: el estado vive en el post
         "id": "168400000", "title": "Solo preview", "published": "2026-09-02T10:00:00",
+        "preview_state": "pending", "has_full": False,
         "file": {"name": "a.jpg", "path": "/cf/ea/" + "c" * 64 + ".jpg",
-                 "preview_only": True},
-        "attachments": [{"name": "b.jpg", "path": "/ab/cd/" + "d" * 64 + ".jpg",
-                         "preview_only": True}],
+                 },
+        "attachments": [{"name": "b.jpg", "path": "/ab/cd/" + "d" * 64 + ".jpg"}],
     },
     {   # sin file, dos adjuntos libres
         "id": "168300000", "title": "Dos adjuntos", "published": "2026-09-01T10:00:00",
@@ -224,20 +224,24 @@ async def main() -> int:
 
     print("\n[6] Archivos del artista")
     files = [f async for f in t.iter_files(a)]
-    chk(len(files) == 3, f"salen 3 de 6: los preview_only se saltan (fueron {len(files)})")
+    chk(len(files) == 6, f"salen 6 estados de archivo, incluidos previews ({len(files)})")
     nombres = [f.filename for f in files]
     chk("NC_Senpai-San.zip" in nombres, "incluye el adjunto libre")
-    chk("Notice0904.png" not in nombres, "excluye el file marcado preview_only")
-    chk("a.jpg" not in nombres and "b.jpg" not in nombres,
-        "excluye el post entero cuando todo es preview")
+    previews = {f.filename: f for f in files if f.is_preview}
+    chk(set(previews) == {"Notice0904.png", "a.jpg", "b.jpg"},
+        f"detecta preview legado y estado nuevo ({set(previews)})")
+    chk(all(f.url.startswith("https://file.pawchive.pw/data/")
+            for f in previews.values()),
+        "la preview conserva la URL final sólo como metadata, sin descargarla")
 
-    z = files[0]
+    z = next(f for f in files if f.filename == "NC_Senpai-San.zip")
     chk(z.url.startswith("https://file.pawchive.pw/data/57/1f/"),
         "la URL apunta al host de archivos, bajo /data/")
     chk(z.url.endswith("?f=NC_Senpai-San.zip"), "lleva el ?f= que usa la propia web")
     chk(z.remote_hash == H2, "el hash sale del path, antes de descargar")
     chk(z.extra_headers.get("Referer") == a.url, "manda Referer del creador")
-    chk(z.dedup_key == z.url, "la clave de dedup es la URL (como en kemono)")
+    chk(z.dedup_key == "pawchive://patreon/30500811/post/168501262/attachment/1",
+        "la identidad Pawchive es estable entre preview y original")
     raro = next(f for f in files if f.filename.startswith("y"))
     chk(raro.filename == "y_ raro_.png", f"sanea el nombre ({raro.filename})")
 

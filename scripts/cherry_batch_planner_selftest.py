@@ -85,10 +85,12 @@ def test_global_order_and_aggregation() -> None:
     queue = DownloadQueue(bridge)
     finished: list[tuple[str, object]] = []
     ended: list[object] = []
+    progress: list[tuple[int, int]] = []
     queue.profile_finished.connect(
         lambda item, summary: finished.append((item["display_name"], summary))
     )
     queue.queue_finished.connect(ended.append)
+    queue.job_progress.connect(lambda done, total: progress.append((done, total)))
     rows = [
         profile(1, "A", [
             source("https://pawchive.pw/patreon/user/1", 11),
@@ -126,6 +128,8 @@ def test_global_order_and_aggregation() -> None:
           "los resúmenes parciales no se agregaron por perfil")
     check(len(ended) == 1 and ended[0].done == 2 and ended[0].downloaded == 10,
           "el resumen final no contó perfiles completos")
+    check(progress[0] == (0, 4), f"el total de trabajos no es exacto: {progress}")
+    check(progress[-1] == (4, 4), f"la barra no terminó completa: {progress}")
 
 
 def test_failure_isolation() -> None:
@@ -375,4 +379,4 @@ if __name__ == "__main__":
     test_auth_single_flight()
     test_source_failure_stays_inside_profile()
     test_automatic_source_availability()
-    print("O3 planner: 34/34 comprobaciones")
+    print("O3 planner: 36/36 comprobaciones")

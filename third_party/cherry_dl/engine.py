@@ -582,6 +582,7 @@ class DownloadEngine:
                 error="El transporte de navegador no tiene página de origen",
                 error_kind=ErrorKind.UNKNOWN,
             )
+        browser_transport = None
         try:
             from .browser_transport import BrowserImageTransport
 
@@ -596,7 +597,8 @@ class DownloadEngine:
             rate = self._bucket.rate if self._bucket is not None else 0.0
             if on_status:
                 on_status("◉ preparando navegador…")
-            await self._browser_transport.start(rate)
+            browser_transport = self._browser_transport
+            await browser_transport.start(rate)
             await self._wait_browser_turn(on_status)
 
             def report(done: int, total: int) -> None:
@@ -605,7 +607,7 @@ class DownloadEngine:
                 if on_progress:
                     on_progress(done, total)
 
-            outcome = await self._browser_transport.download(
+            outcome = await browser_transport.download(
                 url, dest_dir, filename,
                 take_bytes=(self._bucket.take if self._bucket is not None else None),
                 on_progress=report,
@@ -613,10 +615,11 @@ class DownloadEngine:
                 stall_timeout=self._stall_timeout,
             )
         except Exception as exc:
-            if self._browser_transport is not None:
-                await self._browser_transport.close()
+            if (browser_transport is not None
+                    and self._browser_transport is browser_transport):
                 self._browser_transport = None
                 self._browser_key = None
+                await browser_transport.close()
             return DownloadResult(
                 url=url, filename=filename,
                 error=f"No se pudo usar el navegador: {type(exc).__name__}: {exc}",
@@ -638,9 +641,10 @@ class DownloadEngine:
                 "stream_timeout", "stream_error",
             }
             or outcome.status == 206):
-            await self._browser_transport.close()
-            self._browser_transport = None
-            self._browser_key = None
+            if self._browser_transport is browser_transport:
+                self._browser_transport = None
+                self._browser_key = None
+                await browser_transport.close()
 
         code = outcome.status
         if code == 404:

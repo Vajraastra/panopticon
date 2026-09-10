@@ -79,15 +79,12 @@ nueva prueba deliberada.
 
 ## `preview_only`
 
-Algunos posts traen `preview_only: true` en su `file` o en sus `attachments`.
-Aparece por creador —en uno medido eran 100/100 posts, y en una muestra de 12
-creadores distintos 0 de 2.964 adjuntos— lo que encaja con contenido indexado
-pero no importado todavía (el índice de creadores tiene su `ever_imported`).
-
-Esos archivos **se saltan**. Bajar una vista previa metería en la biblioteca un
-archivo degradado que además, al deduplicarse por hash del contenido, contaría
-como distinto del original y no se reemplazaría solo. Como el scan se repite en
-cada sync, el día que el original se importe entrará sin hacer nada.
+El listado paginado expone `preview_state: "pending"` / `has_full: false`; las
+respuestas antiguas pueden traer `preview_only: true` en cada entrada. Esas
+filas se entregan al servicio únicamente para registrar su estado en el
+catálogo. Nunca se encolan ni se descargan: la miniatura es degradada y no
+representa el archivo original. Cuando Pawchive publica el original, el mismo
+identificador canónico reemplaza el marcador y entra al flujo normal.
 """
 
 from __future__ import annotations
@@ -109,7 +106,6 @@ _BASE = "https://pawchive.pw"
 # Los archivos viven en otro host, y solo bajo /data/. El dominio principal
 # devuelve 404 para esas rutas; `img.pawchive.pw` sirve únicamente miniaturas.
 _FILES = "https://file.pawchive.pw"
-
 _SERVICES = frozenset(["patreon", "fanbox"])
 
 # URL válida: https://pawchive.pw/{service}/user/{id}
@@ -341,12 +337,15 @@ def _extract_files_from_post(post: dict, artist: ArtistInfo):
     Genera un FileInfo por cada archivo descargable del post: el `file`
     principal y cada uno de sus `attachments`.
 
-    Se saltan los marcados `preview_only` — ver la cabecera del módulo.
+    Las previews sólo producen un marcador de catálogo; el servicio evita que
+    lleguen a la cola de descarga.
     """
     post_id = str(post.get("id", ""))
     post_title = post.get("title", "")
     date_published = post.get("published", "")
     referer = {"Referer": artist.url}
+    preview_state = str(post.get("preview_state") or "").strip().casefold()
+    post_is_preview = preview_state == "pending" or post.get("has_full") is False
 
     entradas: list[tuple[str, int, dict]] = []
     main_file = post.get("file")
@@ -359,8 +358,9 @@ def _extract_files_from_post(post: dict, artist: ArtistInfo):
 
     for role, position, entrada in entradas:
         path = entrada.get("path")
-        if not path or entrada.get("preview_only"):
+        if not path:
             continue
+        is_preview = bool(entrada.get("preview_only")) or post_is_preview
         original_name = entrada.get("name") or _name_from_path(path)
         filename = _safe_filename(original_name)
         yield FileInfo(
@@ -368,6 +368,10 @@ def _extract_files_from_post(post: dict, artist: ArtistInfo):
             # porque es lo que hace su propia página, y así la petición no se
             # distingue de una normal.
             url=f"{_FILES}/data{path}?f={filename}",
+            url_source=(
+                f"pawchive://{artist.service}/{artist.artist_id}/post/"
+                f"{post_id}/{role}/{position}"
+            ),
             filename=filename,
             artist_id=artist.artist_id,
             artist_name=artist.name,
@@ -377,6 +381,7 @@ def _extract_files_from_post(post: dict, artist: ArtistInfo):
             content_role=role,
             content_position=position,
             remote_size=entrada.get("size") or entrada.get("size_bytes"),
+            is_preview=is_preview,
             post_title=post_title,
             date_published=date_published,
             remote_hash=_hash_from_path(path) or "",

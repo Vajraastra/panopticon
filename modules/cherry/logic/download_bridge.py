@@ -57,6 +57,7 @@ class DownloadBridge(QObject):
     source_started   = Signal(str, str, str)   # url, artista, sitio
     cooldown         = Signal(float)           # segundos de enfriamiento
     batch_info       = Signal(int, int)        # total, offset (resume)
+    file_progress    = Signal(int, int)        # resueltos, total tanda
     scan_progress    = Signal(int, int)        # vistos, encolados
     scan_complete    = Signal(int)             # pendientes (solo scan_only)
     worker_start     = Signal(int, str)        # slot, filename
@@ -247,7 +248,7 @@ class DownloadBridge(QObject):
         """`emit` del motor. Corre en el hilo del loop: aquí NO se toca la GUI,
         solo se emiten señales (que Qt entrega en cola al hilo receptor)."""
         from third_party.cherry_dl.download_service import (
-            BatchInfo, Cooldown, Counters, Log, ScanComplete, ScanProgress,
+            BatchInfo, Cooldown, Counters, FileProgress, Log, ScanComplete, ScanProgress,
             SiteBlocked, SiteMetrics, SourceDone, SourceStarted, WorkerDone, WorkerIdle,
             WorkerProgress, WorkerStart, WorkersResolved,
         )
@@ -282,6 +283,8 @@ class DownloadBridge(QObject):
             self.source_done.emit(ev.url_id, ev.file_count)
         elif cls is BatchInfo:
             self.batch_info.emit(ev.total, ev.offset)
+        elif cls is FileProgress:
+            self.file_progress.emit(ev.done, ev.total)
         elif cls is Cooldown:
             self.cooldown.emit(float(ev.seconds))
         elif cls is ScanComplete:

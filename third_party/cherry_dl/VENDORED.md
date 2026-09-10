@@ -376,9 +376,12 @@ Dos cosas que no se ven desde Kemono y hubo que averiguar en vivo:
 
 - **Los archivos van por otro host**, `https://file.pawchive.pw/data{path}?f={nombre}`, con Range.
   El dominio principal devuelve 404 para esas rutas e `img.pawchive.pw` solo sirve miniaturas.
-- **`preview_only`** marca contenido indexado pero no importado. Se salta: bajarlo metería en la
-  biblioteca una versión degradada que, al deduplicarse por hash del contenido, contaría como un
-  archivo distinto del original y no se reemplazaría sola.
+- **Preview-only es sólo estado (revertido 2026-09-10):** el listado vivo usa
+  `preview_state: "pending"` / `has_full: false`; también se reconoce el `preview_only` legado.
+  Se guarda un marcador en `preview_only`, nunca una miniatura: no entra en la cola, no consume
+  ancho de banda y no reserva contador. Al aparecer el original, su identidad canónica retira el
+  marcador y entra a `pending_queue`. `scripts/cherry_preview_cleanup.py` revierte los archivos
+  provisionales ya descargados con respaldo de DB y cuarentena recuperable.
 
 **El ritmo lo puso su administrador.** El host de archivos empezó respondiendo 403 con un mensaje
 escrito a mano: *«stop before I block every single one of your IPs, either download reasonably or
@@ -568,3 +571,16 @@ exacto, rol/posición y tamaño remoto cuando está disponible. El servicio deci
 hash remoto, identidad semántica segura y, después de transferir, SHA-256 local. Un basename
 aislado nunca basta para omitir un archivo. La cola activa y `awaiting_archive` conservan esos
 metadatos durante reanudaciones y migran catálogos anteriores de forma aditiva.
+
+### Cierre CDP durante una transferencia grande (2026-09-10)
+
+Un ZIP de 216 MB alcanzó cabeceras válidas (`HTTP 200`) y después perdió el WebSocket CDP.
+El primer worker se difería correctamente, pero otro que esperaba cabeceras en la misma sesión
+consumía los 60 s completos porque esa espera sólo observaba su cola de respuestas. Ahora espera
+a la vez la respuesta y la tarea receptora: si CDP termina, todos los workers afectados despiertan
+de inmediato y conservan sus archivos en la cola diferida.
+
+La invalidación también queda ligada a la instancia concreta que falló. Un worker atrasado ya no
+puede cerrar el navegador de reemplazo que otro worker haya creado mientras procesaba el fallo.
+Regresiones: `scripts/cherry_lifecycle_selftest.py` (13/13) y navegador real
+`scripts/cherry_browser_toytest.py` (51/51).
