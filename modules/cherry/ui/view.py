@@ -78,7 +78,7 @@ class CherryView(QWidget):
     _profiles_ready = Signal(object)   # list[dict]
     _detail_ready   = Signal(object)   # dict | None
     _details_ready  = Signal(object, bool, bool)  # perfiles, scan_only, batch
-    _profile_created = Signal(int, bool)    # id nuevo, descargar al terminar
+    _profile_created = Signal(int)          # id nuevo; se escanea sin descargar
     _url_added       = Signal(int)          # perfil al que se le añadió
     _url_removed     = Signal(int, int)     # perfil, pendientes retirados
     _filter_saved    = Signal(int, str)     # perfil, ext_filter guardado
@@ -916,27 +916,26 @@ class CherryView(QWidget):
         self._set_status(self.tr("cherry.creating", "Creating the project…"))
         try:
             self._runtime.submit(self._create_async(
-                dialog.display_name(), dialog.url(), dialog.download_now()))
+                dialog.display_name(), dialog.url()))
         except RuntimeError as exc:
             self._load_failed.emit(str(exc))
 
-    async def _create_async(self, name: str, url: str, download: bool) -> None:
+    async def _create_async(self, name: str, url: str) -> None:
         try:
             profile_id = await writes.create_profile(name, url)
         except Exception as exc:
             log.exception("cherry: no se pudo crear el perfil")
             self._load_failed.emit(f"{type(exc).__name__}: {exc}")
             return
-        self._profile_created.emit(profile_id, download)
+        self._profile_created.emit(profile_id)
 
-    def _on_profile_created(self, profile_id: int, download: bool) -> None:
+    def _on_profile_created(self, profile_id: int) -> None:
         # `refresh()` vuelve a leer el índice y `_restore_selection` deja
         # marcado el perfil nuevo, que ya es el seleccionado.
         self._selected_id = profile_id
         self._set_status(self.tr("cherry.created", "Project created."))
         self.refresh()
-        if download:
-            self._start([profile_id], scan_only=False)
+        self._start([profile_id], scan_only=True)
 
     def _add_url(self) -> None:
         profile = self._current_profile()
@@ -1534,12 +1533,21 @@ class CherryView(QWidget):
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle(self.tr("cherry.auth_title", "Session required"))
-        box.setText(self.tr(
-            "cherry.auth_body",
-            "{site} needs an active session. Without one, only free public posts "
-            "would be downloaded.\n\nLog in now? Your real browser will open so you "
-            "can sign in; the download resumes by itself afterwards.",
-        ).format(site=site.capitalize()))
+        if site == "pixiv":
+            body = self.tr(
+                "cherry.auth_pixiv_body",
+                "Pixiv needs an active session with explicit content enabled. "
+                "Your browser will open the login or display settings as needed; "
+                "the scan resumes by itself afterwards.\n\nContinue?",
+            )
+        else:
+            body = self.tr(
+                "cherry.auth_body",
+                "{site} needs an active session. Without one, only free public posts "
+                "would be downloaded.\n\nLog in now? Your real browser will open so you "
+                "can sign in; the download resumes by itself afterwards.",
+            ).format(site=site.capitalize())
+        box.setText(body)
         box.setStandardButtons(
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
         box.setDefaultButton(QMessageBox.StandardButton.Yes)

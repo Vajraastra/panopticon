@@ -20,6 +20,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from modules.cherry.logic import profile_writes  # noqa: E402
 from modules.cherry.ui.download_panel import DownloadPanel  # noqa: E402
 from modules.cherry.ui.settings_dialog import SettingsDialog  # noqa: E402
+from modules.cherry.ui.view import CherryView  # noqa: E402
 from third_party.cherry_dl import config  # noqa: E402
 from third_party.cherry_dl.catalog import (  # noqa: E402
     add_pending,
@@ -158,6 +159,34 @@ async def main() -> None:
             check(bar.value() == maximum_before,
                   "pausar el seguimiento debe conservar la posición")
             panel.close()
+
+            class CreatedProbe:
+                _selected_id = None
+
+                def __init__(self):
+                    self.starts = []
+                    self.refreshed = False
+
+                @staticmethod
+                def tr(_key, default):
+                    return default
+
+                @staticmethod
+                def _set_status(_text):
+                    return None
+
+                def refresh(self):
+                    self.refreshed = True
+
+                def _start(self, profile_ids, scan_only):
+                    self.starts.append((profile_ids, scan_only))
+
+            created = CreatedProbe()
+            CherryView._on_profile_created(created, 77)
+            check(created._selected_id == 77 and created.refreshed,
+                  "el alta debe seleccionar y refrescar el proyecto")
+            check(created.starts == [([77], True)],
+                  "el alta debe escanear sin iniciar descargas")
         finally:
             config.CHERRY_DIR = old_dir
             config.CONFIG_FILE = old_file

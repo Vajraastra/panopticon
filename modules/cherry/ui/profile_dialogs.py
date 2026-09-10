@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit,
-    QPushButton, QVBoxLayout, QWidget,
+    QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit, QPushButton,
+    QVBoxLayout, QWidget,
 )
 
 from ..logic import library_check
@@ -147,10 +147,6 @@ class NewProfileDialog(_BaseDialog):
         self._status = self._hint("")
         lay.addWidget(self._status)
 
-        self._download_now = QCheckBox(self.tr("cherry.new_download_now", "Download right away"))
-        self._download_now.setChecked(True)
-        lay.addWidget(self._download_now)
-
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
@@ -180,9 +176,6 @@ class NewProfileDialog(_BaseDialog):
 
     def display_name(self) -> str:
         return self._name.text().strip()
-
-    def download_now(self) -> bool:
-        return self._download_now.isChecked()
 
     # ── estado ────────────────────────────────────────────────────────────
     def _on_url_changed(self) -> None:

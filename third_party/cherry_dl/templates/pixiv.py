@@ -12,9 +12,10 @@ from urllib.parse import urlparse
 import httpx
 
 from ..auth.pixiv import (
+    API_HEADERS,
     NeedsPixivAuth,
     clear_pixiv_session,
-    ensure_pixiv_access_token,
+    ensure_pixiv_content_access,
 )
 from .base import ArtistInfo, FileInfo, SiteTemplate, parse_date_utc
 from ..site_policy import ScanPolicy, SourceCategory, TransferPolicy
@@ -24,14 +25,7 @@ _APP_API = "https://app-api.pixiv.net"
 _DELAY_MIN = 0.5
 _DELAY_MAX = 1.5
 
-_API_HEADERS = {
-    "App-OS": "ios",
-    "App-OS-Version": "16.7.2",
-    "App-Version": "7.19.1",
-    "User-Agent": "PixivIOSApp/7.19.1 (iOS 16.7.2; iPhone12,8)",
-    "Referer": "https://app-api.pixiv.net/",
-    "Accept-Language": "en-US",
-}
+_API_HEADERS = API_HEADERS  # compatibilidad con pruebas/callers del vendor
 _DOWNLOAD_HEADERS = {"Referer": "https://app-api.pixiv.net/"}
 
 _URL_RE = re.compile(
@@ -64,9 +58,9 @@ class PixivTemplate(SiteTemplate):
     async def _get_client(self) -> httpx.AsyncClient:
         if self._http is not None:
             return self._http
-        access_token = await ensure_pixiv_access_token()
+        access_token = await ensure_pixiv_content_access()
         self._http = httpx.AsyncClient(
-            headers={**_API_HEADERS, "Authorization": f"Bearer {access_token}"},
+            headers={**API_HEADERS, "Authorization": f"Bearer {access_token}"},
             http2=False,
             follow_redirects=True,
             timeout=httpx.Timeout(connect=30, read=60, write=30, pool=30),

@@ -57,6 +57,8 @@ async def test_pkce_and_login() -> None:
     old_capture = browser_login.capture_oauth_code
     old_request = auth._request_tokens
     old_save = auth.save_pixiv_tokens
+    old_load = auth.load_pixiv_tokens
+    old_restrict = auth.pixiv_x_restrict
 
     async def fake_capture(login_url, **_kwargs):
         captured["url"] = login_url
@@ -69,12 +71,16 @@ async def test_pkce_and_login() -> None:
     browser_login.capture_oauth_code = fake_capture
     auth._request_tokens = fake_request
     auth.save_pixiv_tokens = lambda tokens: saved.append(dict(tokens))
+    auth.load_pixiv_tokens = lambda: None
+    auth.pixiv_x_restrict = lambda _token: asyncio.sleep(0, result=1)
     try:
         tokens = await auth.guided_login_pixiv()
     finally:
         browser_login.capture_oauth_code = old_capture
         auth._request_tokens = old_request
         auth.save_pixiv_tokens = old_save
+        auth.load_pixiv_tokens = old_load
+        auth.pixiv_x_restrict = old_restrict
 
     fields = captured["fields"]
     used_verifier = fields["code_verifier"]
@@ -185,8 +191,68 @@ async def test_refresh() -> None:
     check("entrega token renovado", token == "renewed")
 
 
+async def test_content_visibility() -> None:
+    print("\n[4] Visibilidad de contenido autenticado")
+    old_ensure = auth.ensure_pixiv_access_token
+    old_restrict = auth.pixiv_x_restrict
+    auth.ensure_pixiv_access_token = lambda: asyncio.sleep(0, result="access")
+
+    async def restricted(_token):
+        return 0
+
+    auth.pixiv_x_restrict = restricted
+    try:
+        try:
+            await auth.ensure_pixiv_content_access()
+        except auth.NeedsPixivAuth as exc:
+            rejected = "R-18" in str(exc)
+        else:
+            rejected = False
+    finally:
+        auth.ensure_pixiv_access_token = old_ensure
+        auth.pixiv_x_restrict = old_restrict
+    check("detecta cuenta que oculta R-18", rejected)
+
+    old_load = auth.load_pixiv_tokens
+    old_ensure = auth.ensure_pixiv_access_token
+    old_restrict = auth.pixiv_x_restrict
+    old_capture = browser_login.capture_oauth_code
+    old_wait = browser_login.wait_for_pixiv_content_settings
+    calls = []
+    values = iter((0, 1))
+    auth.load_pixiv_tokens = lambda: {
+        "access_token": "access", "refresh_token": "refresh",
+        "_expires_at": 9999999999,
+    }
+    auth.ensure_pixiv_access_token = lambda: asyncio.sleep(0, result="access")
+    auth.pixiv_x_restrict = lambda _token: asyncio.sleep(0, result=next(values))
+
+    async def no_oauth(_url, **_kwargs):
+        calls.append("oauth")
+        return None
+
+    async def enable_settings(url, *, is_enabled, **_kwargs):
+        calls.append(url)
+        return int(await is_enabled()) >= 1
+
+    browser_login.capture_oauth_code = no_oauth
+    browser_login.wait_for_pixiv_content_settings = enable_settings
+    try:
+        tokens = await auth.guided_login_pixiv()
+    finally:
+        auth.load_pixiv_tokens = old_load
+        auth.ensure_pixiv_access_token = old_ensure
+        auth.pixiv_x_restrict = old_restrict
+        browser_login.capture_oauth_code = old_capture
+        browser_login.wait_for_pixiv_content_settings = old_wait
+
+    check("abre ajustes para una sesión OAuth ya válida",
+          calls == ["https://www.pixiv.net/settings/viewing"])
+    check("reanuda al confirmar R-18", bool(tokens and tokens.get("refresh_token")))
+
+
 async def test_app_api_mapping() -> None:
-    print("\n[4] Mapeo App API")
+    print("\n[5] Mapeo App API")
     page_requests = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -240,6 +306,7 @@ async def main() -> int:
     await test_pkce_and_login()
     await test_callback_capture()
     await test_refresh()
+    await test_content_visibility()
     await test_app_api_mapping()
     print(f"\n{ok} ok, {failed} fallo(s)")
     return 1 if failed else 0

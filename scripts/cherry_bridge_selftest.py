@@ -308,6 +308,8 @@ def test_pixiv_guided_login(app, runtime, bridge, rec) -> None:
     original_capture = browser_login.capture_oauth_code
     original_request = pixiv._request_tokens
     original_save = pixiv.save_pixiv_tokens
+    original_load = pixiv.load_pixiv_tokens
+    original_restrict = pixiv.pixiv_x_restrict
     original_guided = pixiv.guided_login_pixiv
 
     async def fake_capture(url, **kwargs):
@@ -328,12 +330,16 @@ def test_pixiv_guided_login(app, runtime, bridge, rec) -> None:
     browser_login.capture_oauth_code = fake_capture
     pixiv._request_tokens = fake_request
     pixiv.save_pixiv_tokens = fake_save
+    pixiv.load_pixiv_tokens = lambda: None
+    pixiv.pixiv_x_restrict = lambda _token: asyncio.sleep(0, result=1)
     try:
         tokens = runtime.run_sync(pixiv.guided_login_pixiv(), timeout=5)
     finally:
         browser_login.capture_oauth_code = original_capture
         pixiv._request_tokens = original_request
         pixiv.save_pixiv_tokens = original_save
+        pixiv.load_pixiv_tokens = original_load
+        pixiv.pixiv_x_restrict = original_restrict
 
     check("el login abre OAuth PKCE",
           captured["url"].startswith("https://app-api.pixiv.net/web/v1/login?"))

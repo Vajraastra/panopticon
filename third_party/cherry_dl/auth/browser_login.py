@@ -237,3 +237,49 @@ async def capture_oauth_code(
             browser.stop()
         except Exception:
             pass
+
+
+async def wait_for_pixiv_content_settings(
+    settings_url: str,
+    *,
+    is_enabled,
+    timeout: int = 300,
+    on_status=None,
+) -> bool:
+    """Abre ajustes web y espera a que la App API confirme acceso R-18."""
+    import nodriver as uc
+
+    def _say(msg: str) -> None:
+        if on_status:
+            on_status(msg)
+
+    info = find_browser()
+    if info is None:
+        _say("No se encontró Edge/Chrome/Brave instalado.")
+        return False
+    browser_name, exe = info
+    _say(f"Abriendo ajustes de Pixiv en {browser_name}…")
+    _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    browser = await uc.start(
+        browser_executable_path=exe,
+        user_data_dir=str(_PROFILE_DIR),
+        headless=False,
+    )
+    try:
+        await browser.get(settings_url)
+        _say("Activa Contenido explícito (R-18) y guarda el ajuste.")
+        for _ in range(timeout // 2):
+            try:
+                if int(await is_enabled()) >= 1:
+                    _say("Pixiv confirmó el acceso a obras R-18.")
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(2)
+        _say("Tiempo agotado sin habilitar las obras R-18.")
+        return False
+    finally:
+        try:
+            browser.stop()
+        except Exception:
+            pass
