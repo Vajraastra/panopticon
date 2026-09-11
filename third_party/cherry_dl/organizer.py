@@ -5,8 +5,8 @@ Permite incorporar a cherry-dl archivos descargados por otros medios.
 El proceso:
   1. Escanea la carpeta fuente y calcula SHA-256 de cada archivo
   2. Compara contra catalog.db del artista (y contra los vistos en esta misma sesión)
-  3. Renombra los no-duplicados al formato: {artista}_{contador:05d}{ext}
-  4. Mueve los archivos al directorio del artista en cherry-dl
+  3. Asigna el nombre y contador independiente de su tipo
+  4. Mueve imágenes a la raíz y los demás tipos a su subcarpeta
   5. Registra los nuevos hashes en catalog.db
 """
 
@@ -17,8 +17,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .catalog import add_file, get_all_hashes, init_catalog, next_counter
-from .downloads import build_filename
+from .catalog import (
+    add_file, ensure_layout_version, get_all_hashes, init_catalog, next_counter,
+)
+from .file_routing import (
+    COUNTER_NAMESPACES, LAYOUT_VERSION, destination, route, routed_name,
+)
 from .hasher import sha256_file
 
 # Extensiones de medios soportadas
@@ -65,8 +69,8 @@ async def organize(
     """
     Incorpora archivos de source_dir al catálogo de cherry-dl.
 
-    Los archivos son renombrados al formato {artista}_{contador:05d}{ext}
-    y movidos al directorio correspondiente dentro de dest_root.
+    Las imágenes conservan {artista}_{contador:05d}{ext}; los demás tipos
+    reciben prefijo, contador independiente y su subcarpeta.
 
     Args:
         source_dir:   Carpeta con los archivos a incorporar.
@@ -87,6 +91,12 @@ async def organize(
 
     # Inicializar catalog.db si no existe
     await init_catalog(artist_dir)
+    if not await ensure_layout_version(
+        artist_dir, COUNTER_NAMESPACES, LAYOUT_VERSION,
+    ):
+        raise RuntimeError(
+            "El proyecto necesita la migración de organización v2 antes de importar."
+        )
 
     # Cargar hashes existentes del artista
     existing_hashes = await get_all_hashes(artist_dir)
@@ -112,8 +122,11 @@ async def organize(
                 continue
 
             # Obtener contador y construir nombre final
-            counter = await next_counter(artist_dir)
-            final_name = build_filename(artist_name, counter, src_file.name)
+            spec = route(src_file.name)
+            counter = await next_counter(artist_dir, spec.key)
+            basename = routed_name(artist_name, counter, src_file.name)
+            dest_dir, final_name = destination(artist_dir, basename)
+            dest_dir.mkdir(parents=True, exist_ok=True)
             dest_file = artist_dir / final_name
 
             # Mover el archivo

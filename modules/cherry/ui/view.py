@@ -84,6 +84,8 @@ class CherryView(QWidget):
     _filter_saved    = Signal(int, str)     # perfil, ext_filter guardado
     _profile_deleted = Signal(int)          # perfil que ya no está en el índice
     _archive_reactivated = Signal(int, int) # perfil, filas devueltas a la cola
+    _archives_finished = Signal(str, object, str)
+    _archives_progress = Signal(str)
     _load_failed    = Signal(str)
 
     def __init__(self, context: dict | None = None, runtime: CherryRuntime | None = None) -> None:
@@ -109,6 +111,9 @@ class CherryView(QWidget):
         self._started = False
         self._auth_boxes: dict[int, QMessageBox] = {}
         self._archive_check_busy = False
+        self._maintenance_busy = False
+        self._maintenance_future = None
+        self._preparing_download = False
 
         super().__init__()
 
@@ -166,6 +171,8 @@ class CherryView(QWidget):
         self._filter_saved.connect(self._on_filter_saved)
         self._profile_deleted.connect(self._on_profile_deleted)
         self._archive_reactivated.connect(self._on_archive_reactivated)
+        self._archives_finished.connect(self._on_archives_finished)
+        self._archives_progress.connect(self._on_archives_progress)
         self._load_failed.connect(self._on_load_failed)
         self._legacy.state_changed.connect(self._on_legacy_state)
 
@@ -464,6 +471,15 @@ class CherryView(QWidget):
         ))
         self._btn_delete.clicked.connect(self._delete_profile)
         actions.addWidget(self._btn_delete, 2, 1)
+        self._btn_archives = QPushButton(self.tr(
+            "cherry.archives_process", "Organize and extract ZIP/RAR"))
+        self._btn_archives.setToolTip(self.tr(
+            "cherry.archives_process_tip",
+            "Only this project: organizes files by type, extracts ZIP/RAR from Comprimidos, "
+            "keeps one copy per hash and deletes verified archives while retaining their "
+            "download history. Unavailable during downloads."))
+        self._btn_archives.clicked.connect(self._process_archives)
+        actions.addWidget(self._btn_archives, 3, 0, 1, 2)
         lay.addLayout(actions)
 
         lay.addStretch(1)
@@ -603,6 +619,8 @@ class CherryView(QWidget):
 
     def shutdown(self) -> None:
         """La llama el módulo al descargarse: para el loop y su hilo."""
+        if self._maintenance_future is not None:
+            self._maintenance_future.cancel()
         if self._queue.is_running:
             self._queue.cancel()
         self._runtime.stop()
@@ -708,12 +726,15 @@ class CherryView(QWidget):
         self._load_ext_filter(stored)
 
     def _on_load_failed(self, message: str) -> None:
+        self._preparing_download = False
         self._busy_refresh(False)
+        self._update_actions()
         self._set_status(
             self.tr("cherry.status_error", "Error: {msg}").format(msg=message), flash=True)
 
     def _on_legacy_state(self, running: bool, key: str, value) -> None:
         self._btn_legacy.setEnabled(not running)
+        self._update_actions()
         default = {
             "cherry.status_running": "Running in its own window…",
             "cherry.status_idle": "Not running",
@@ -851,7 +872,13 @@ class CherryView(QWidget):
 
     def _update_actions(self) -> None:
         profile = self._current_profile()
-        running = self._queue.is_running or self._bridge.is_busy
+        running = (self._queue.is_running or self._bridge.is_busy
+                   or self._maintenance_busy or self._preparing_download)
+        self._btn_archives.setEnabled(
+            bool(profile and profile.get("folder_exists")) and not running
+            and not self._legacy.is_running and not self._archive_check_busy)
+        self._btn_dups.setEnabled(not running)
+        self._btn_legacy.setEnabled(not running and not self._legacy.is_running)
         self._btn_open.setEnabled(bool(profile and profile.get("folder_exists")))
         self._btn_scan.setEnabled(bool(profile) and not running)
         self._btn_download.setEnabled(bool(profile) and not running)
@@ -864,7 +891,8 @@ class CherryView(QWidget):
             bool(profile and waiting) and not running and not self._archive_check_busy
         )
         self._btn_all.setEnabled(bool(self._profiles) and not running)
-        self._btn_cancel.setEnabled(running)
+        self._btn_cancel.setEnabled(
+            self._queue.is_running or self._bridge.is_busy or self._maintenance_busy)
         self._btn_new.setEnabled(not running)
         self._btn_delete.setEnabled(bool(profile) and not running)
         self._btn_add_url.setEnabled(bool(profile) and not running)
@@ -1118,6 +1146,67 @@ class CherryView(QWidget):
         self._set_status(self.tr("cherry.deleted", "Project removed."), flash=True)
         self.refresh()
 
+    def _process_archives(self) -> None:
+        profile = self._current_profile()
+        if (not profile or self._maintenance_busy or self._preparing_download
+                or self._queue.is_running or self._bridge.is_busy
+                or self._legacy.is_running or self._archive_check_busy):
+            return
+        if not self._runtime.start():
+            return
+        self._maintenance_busy = True
+        self._update_actions()
+        self._btn_console.setChecked(True)
+        folder = str(profile["folder_path"])
+        self._panel.append_log(self.tr(
+            "cherry.archives_start", "Organizing project: {folder}").format(folder=folder))
+        try:
+            self._maintenance_future = self._runtime.submit(self._archives_async(
+                folder, profile.get("display_name") or "artist"))
+        except Exception as exc:
+            self._on_archives_finished(folder, None, str(exc))
+
+    async def _archives_async(self, folder: str, artist: str) -> None:
+        import asyncio
+        from third_party.cherry_dl.archives import process_project
+        result, error = None, ""
+        try:
+            result = await process_project(Path(folder), artist, self._archives_progress.emit)
+        except asyncio.CancelledError:
+            error = self.tr("cherry.archives_cancelled", "Cancelled. Run the action again to resume.")
+        except Exception as exc:
+            error = str(exc)
+        finally:
+            self._archives_finished.emit(folder, result, error)
+
+    def _on_archives_progress(self, name: str) -> None:
+        text = self.tr("cherry.archives_working", "Extracting: {name}").format(name=name)
+        self._panel.set_phase(text)
+        self._panel.append_log(text)
+        self._set_status(text)
+
+    def _on_archives_finished(self, folder: str, result, error: str) -> None:
+        self._maintenance_busy = False
+        self._maintenance_future = None
+        if result is not None:
+            text = self.tr(
+                "cherry.archives_done",
+                "Archives: {p} processed, {a} files added, {d} duplicates, "
+                "{o} organized, {e} pending with errors.").format(
+                    p=result.processed, a=result.added, d=result.duplicates,
+                    o=result.organized, e=len(result.errors))
+            self._panel.append_log(text, "ok" if not result.errors else "warn")
+            for detail in result.errors:
+                self._panel.append_log(detail, "warn")
+        else:
+            text = error
+            self._panel.append_log(error, "warn")
+        self._panel.set_phase(text)
+        self._set_status(text)
+        self._announce_folder({"folder_path": folder})
+        self._update_actions()
+        self._reload_detail()
+
     def _open_settings(self) -> None:
         """Ajustes del motor. Al guardar cambia la carpeta donde NACEN los
         proyectos nuevos, así que la vista previa de carpeta del alta ya no
@@ -1127,6 +1216,8 @@ class CherryView(QWidget):
             self._set_status(self.tr("cherry.settings_saved", "Settings saved."), flash=True)
 
     def _open_duplicates(self) -> None:
+        if self._maintenance_busy or self._preparing_download:
+            return
         if not self._runtime.start():
             self._set_status(self.tr("cherry.runtime_failed", "Could not start the async runtime."))
             return
@@ -1382,13 +1473,15 @@ class CherryView(QWidget):
     def _start(
         self, profile_ids: list[int], scan_only: bool, batch: bool = False,
     ) -> None:
-        if self._queue.is_running or self._bridge.is_busy:
+        if (self._queue.is_running or self._bridge.is_busy
+                or self._maintenance_busy or self._preparing_download):
             self._set_status(self.tr("cherry.dl_busy", "A download is already running."))
             return
         if not self._runtime.start():
             self._set_status(self.tr("cherry.runtime_failed", "Could not start the async runtime."))
             return
 
+        self._preparing_download = True
         self._panel.reset()
         self._panel.set_phase(self.tr("cherry.dl_preparing", "Loading profile sources…"))
         self._btn_console.setChecked(True)  # si estaba plegada, ahora interesa
@@ -1414,6 +1507,10 @@ class CherryView(QWidget):
     def _on_details_ready(
         self, rows: list, scan_only: bool, batch: bool,
     ) -> None:
+        self._preparing_download = False
+        if self._maintenance_busy:
+            self._update_actions()
+            return
         if not rows:
             self._set_status(self.tr("cherry.dl_nothing", "Nothing to download."))
             self._update_actions()
@@ -1442,6 +1539,11 @@ class CherryView(QWidget):
         return {"ext_filter": ext_logic.effective(stored)}
 
     def _cancel(self) -> None:
+        if self._maintenance_future is not None:
+            self._maintenance_future.cancel()
+            self._btn_cancel.setEnabled(False)
+            self._panel.set_phase(self.tr("cherry.dl_cancelling", "Cancelling…"))
+            return
         if self._queue.cancel() or self._bridge.cancel():
             self._panel.set_phase(self.tr("cherry.dl_cancelling", "Cancelling…"))
             self._set_status(self.tr("cherry.dl_cancelling", "Cancelling…"))
@@ -1577,6 +1679,8 @@ class CherryView(QWidget):
             self._set_status(self.tr("cherry.folder_missing", "Folder not found on disk"))
 
     def _launch_legacy(self) -> None:
+        if self._maintenance_busy or self._preparing_download:
+            return
         self._legacy.launch()
 
     def _busy_refresh(self, busy: bool) -> None:

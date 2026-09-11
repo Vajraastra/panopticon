@@ -17,14 +17,11 @@ Cuatro escenarios:
   2. **La migración falla** — el destino no tiene catálogo. Comprueba lo que este
      módulo cambió respecto al original: el índice NO se toca, así que los dos
      perfiles siguen vivos y el archivo sigue en su carpeta.
-  3. **La fusión no compacta** — el destino conserva su numeración y su contador
-     queda por delante del archivo migrado, que es lo que evita la colisión.
-  4. **Por qué no compacta** — ejerce `compact_folders` del motor a mano, sobre
-     una carpeta recién fusionada, para dejar medido el fallo que motivó la
-     decisión: la carpeta tiene a la vez archivos `nombre_00001.ext` y un
-     migrado `0001.ext` —dos convenciones del propio motor—, la compactación
-     solo ve la primera y deja el contador por detrás del migrado. La siguiente
-     fusión hacia ese destino lo sobrescribiría.
+  3. **La fusión no compacta** — el destino conserva su numeración y el
+     contador visual queda por delante del archivo migrado.
+  4. **Compatibilidad con compactación** — el archivo migrado usa la misma
+     convención visual que el destino, por lo que una compactación manual ya no
+     deja el contador detrás ni prepara una colisión.
 """
 
 from __future__ import annotations
@@ -66,6 +63,7 @@ async def make_project(
     recalcula nada.
     """
     from third_party.cherry_dl.catalog import add_file, init_catalog, set_meta_int
+    from third_party.cherry_dl.file_routing import LAYOUT_VERSION
     from third_party.cherry_dl.index import add_profile_url, create_profile
 
     folder = root / name
@@ -74,6 +72,8 @@ async def make_project(
         (folder / filename).write_text(file_hash, encoding="utf-8")
         await add_file(folder, file_hash, filename, None, len(file_hash), i)
     await set_meta_int(folder, "counter", counter)
+    await set_meta_int(folder, "counter:visual", counter)
+    await set_meta_int(folder, "layout_version", LAYOUT_VERSION)
 
     pid = await create_profile(index_db, name, folder, "patreon")
     await add_profile_url(index_db, pid, f"https://patreon.com/{name}", "patreon", name)
@@ -147,7 +147,7 @@ async def test_normal(root: Path, index_db: Path) -> None:
     check("hubo progreso", len(seen) == 3, f"{len(seen)} avisos")
     check("el preview acertó lo que se movería", result.moved == plan.movable)
 
-    check("el único llegó al destino", (dst / "0004.jpg").exists(),
+    check("el único llegó al destino", (dst / "artista_00004.jpg").exists(),
           f"hay {sorted(p.name for p in dst.iterdir())}")
     check("el único ya no está en el origen", not (src / "oficial_00002.jpg").exists())
     check("el huérfano se borró", not (src / "oficial_00001.jpg").exists())
@@ -220,9 +220,9 @@ async def test_no_compaction(root: Path, index_db: Path) -> None:
 
     check("fusionó", result.ok, str(result.errors))
     check("los originales conservan su nombre", (dst / "limpio_00001.jpg").exists())
-    check("el migrado se llama 0003.jpg", (dst / "0003.jpg").exists(),
+    check("el migrado conserva artista y se llama 00003", (dst / "limpio_00003.jpg").exists(),
           f"hay {sorted(p.name for p in dst.iterdir())}")
-    counter = await get_meta_int(dst, "counter")
+    counter = await get_meta_int(dst, "counter:visual")
     check("el contador quedó en 3, por delante del migrado", counter == 3,
           f"counter={counter}")
     check("merge_pair ya no acepta compactar",
@@ -231,7 +231,7 @@ async def test_no_compaction(root: Path, index_db: Path) -> None:
 
 
 async def test_why_no_compaction(root: Path, index_db: Path) -> None:
-    print("\n4. Por qué no compacta: el fallo del motor, medido")
+    print("\n4. La nomenclatura v2 es compatible con compactación")
     from modules.cherry.logic import merge as mg
     from third_party.cherry_dl.catalog import get_meta_int
     from third_party.cherry_dl.dedup import compact_folders
@@ -249,10 +249,10 @@ async def test_why_no_compaction(root: Path, index_db: Path) -> None:
     result = await mg.merge_pair(pair)
     check("fusionó", result.ok, str(result.errors))
 
-    migrated = dst / "0004.jpg"
-    check("el migrado entró como 0004.jpg", migrated.exists(),
+    migrated = dst / "hueco_00004.jpg"
+    check("el migrado entró con nombre visual uniforme", migrated.exists(),
           f"hay {sorted(p.name for p in dst.iterdir())}")
-    before = await get_meta_int(dst, "counter")
+    before = await get_meta_int(dst, "counter:visual")
     check("tras fusionar, el contador está por delante del migrado", before == 4,
           f"counter={before}")
 
@@ -262,15 +262,16 @@ async def test_why_no_compaction(root: Path, index_db: Path) -> None:
     check("compactar cerró el hueco: 00003 pasó a 00002",
           (dst / "hueco_00002.jpg").exists(),
           f"hay {sorted(p.name for p in dst.iterdir())}")
-    check("compactar NO renombró al migrado", migrated.exists(),
-          "el plan solo mira nombres con el patrón _00000.ext")
+    compacted_migrated = dst / "hueco_00003.jpg"
+    check("compactar incluyó al migrado", compacted_migrated.exists(),
+          "todos los visuales deben compartir el patrón artista_00000.ext")
 
-    after = await get_meta_int(dst, "counter")
-    next_name = f"{(after or 0) + 1:04d}.jpg"
+    after = await get_meta_int(dst, "counter:visual")
+    next_name = f"hueco_{(after or 0) + 1:05d}.jpg"
     check(
-        f"MEDIDO: el contador retrocede de {before} a {after} y {next_name} ya existe",
-        after == 3 and (dst / next_name).exists(),
-        "si el motor cambia esto, la decisión de no compactar se puede revisar",
+        f"el siguiente nombre tras compactar queda libre ({next_name})",
+        after == 4 and not (dst / next_name).exists(),
+        "la compactación no debe preparar una sobreescritura",
     )
 
 

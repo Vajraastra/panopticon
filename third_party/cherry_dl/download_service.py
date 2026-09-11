@@ -35,8 +35,17 @@ from .engine import DownloadEngine, ErrorKind
 from .downloads import (
     _build_local_hash_map,
     _passes_ext_filter,
-    build_filename,
 )
+from .file_routing import (
+    COUNTER_NAMESPACES,
+    LAYOUT_VERSION,
+    destination,
+    prepare_selected_folders,
+    relative_filename,
+    route,
+    routed_name,
+)
+from .archives import organize_project
 from .catalog import (
     ARCHIVE_RECHECK_BATCH,
     ScanCatalogBatch,
@@ -49,6 +58,7 @@ from .catalog import (
     get_pending_files,
     hash_exists,
     init_catalog,
+    ensure_layout_version,
     move_pending_to_back,
     next_counter,
     pending_count,
@@ -71,7 +81,7 @@ from .site_budget import (
     remaining as budget_remaining,
     spent_today as budget_spent_today,
 )
-from .site_throttle import SiteThrottle
+from .site_throttle import SiteThrottle, ThrottleDeferred
 from .site_policy import SourceCategory, declared_site_policy, resolve_site_policy
 from .live_metrics import SiteRunMetrics, append_metrics
 from .templates._registry import find_template, get_template
@@ -103,6 +113,28 @@ class Log:
     """Línea de log. level ∈ {info, dim, ok, warn, error}."""
     msg: str
     level: str = "info"
+
+
+async def _confirm_failed_probe_once(
+    permit,
+    result,
+    retry: Callable[[], Awaitable],
+    emit: "EmitFn",
+):
+    """Confirma un ``CDP Failed`` de sonda en una sesión nueva del navegador."""
+    if not (
+        permit is not None
+        and permit.probe
+        and not result.ok
+        and getattr(result, "failure_code", None) == "no_http_failed"
+    ):
+        return result
+    emit(Log(
+        "↻ La sonda falló sin respuesta HTTP; se confirma una vez con "
+        "una sesión nueva del navegador",
+        "warn",
+    ))
+    return await retry()
 
 
 @dataclass(frozen=True)
@@ -416,6 +448,37 @@ async def run_profile_download(
     config = config or load_config()
     folder = Path(profile["folder_path"])
 
+    if not scan_only:
+        folder.mkdir(parents=True, exist_ok=True)
+        await init_catalog(folder)
+        if not await ensure_layout_version(
+            folder, COUNTER_NAMESPACES, LAYOUT_VERSION,
+        ):
+            raise RuntimeError(
+                "El proyecto usa el esquema de nombres anterior y debe pasar "
+                "la migración de organización antes de descargar."
+            )
+        if ext_filter and not exclude_mode:
+            prepare_selected_folders(folder, ext_filter)
+        try:
+            repaired = await organize_project(folder)
+            if repaired.organized:
+                emit(Log(
+                    f"🗂 {repaired.organized} archivo(s) anterior(es) "
+                    "reubicados automáticamente por tipo",
+                    "dim",
+                ))
+        except Exception as exc:
+            log.exception(
+                "cherry: no se pudo reparar la organización | proyecto=%s",
+                folder,
+            )
+            emit(Log(
+                f"⚠ No se pudo reparar la organización anterior: "
+                f"{type(exc).__name__}: {exc}. La descarga continuará.",
+                "warn",
+            ))
+
     global_budget = (
         int(config.daily_limit_gb * 2**30)
         if config.daily_limit_enabled else 0
@@ -487,6 +550,18 @@ async def run_profile_download(
                 f"{meta['window'] / 3600:g} h alcanzada; reanuda "
                 f"automáticamente en {seconds / 60:.0f} min"
             )
+        elif kind == "quota_bytes":
+            msg = (
+                f"⏸ {site}: cuota de {meta['gigabytes']:g} GB en "
+                f"{meta['window'] / 3600:g} h alcanzada; reanuda "
+                f"automáticamente en {seconds / 60:.0f} min"
+            )
+        elif kind == "quota_count":
+            msg = (
+                f"⏸ {site}: cuota de {meta['limit']} descargas en "
+                f"{meta['window'] / 3600:g} h alcanzada; reanuda "
+                f"automáticamente en {seconds / 60:.0f} min"
+            )
         else:
             msg = (
                 f"⏸ {site}: servidor de archivos aún sin respuesta; "
@@ -504,6 +579,22 @@ async def run_profile_download(
         )
         log.warning(msg)
         emit(Log(msg, "warn"))
+
+    def _defer_throttled_batch(site: str, exc: ThrottleDeferred) -> None:
+        meta = throttle_meta[site]
+        if exc.kind == "quota_bytes":
+            reason = f"alcanzó {meta['gigabytes']:g} GB en su ventana móvil"
+        elif exc.kind == "quota_count":
+            reason = f"alcanzó {meta['limit']} descargas en su ventana móvil"
+        else:
+            reason = "su sonda de archivos sigue en enfriamiento"
+        blocked_sites[site] = reason
+        emit(SiteBlocked(site, 0, reason))
+        emit(Log(
+            f"⏭ {site}: {reason}; esta pasada continúa sin esperar "
+            f"{exc.seconds / 60:.0f} min. La cola se conserva.",
+            "warn",
+        ))
 
     sources = ordered_sources(selected_urls)
     if source_categories is None and sources != profile["urls"]:
@@ -647,12 +738,20 @@ async def run_profile_download(
             if template.name == "pawchive":
                 window_limit = config.pawchive.downloads_per_window
                 window_seconds = config.pawchive.window_hours * 60 * 60
+            byte_window_limit = (
+                int(config.pawchive.gigabytes_per_window * 1024**3)
+                if template.name == "pawchive" else 0
+            )
             failure_codes = transfer_policy.throttle_failure_codes
             throttle = None
             if window_limit or failure_codes:
                 throttle_meta[template.name] = {
                     "limit": window_limit,
                     "window": window_seconds,
+                    "gigabytes": (
+                        config.pawchive.gigabytes_per_window
+                        if template.name == "pawchive" else 0
+                    ),
                     "streak": transfer_policy.throttle_failure_streak,
                     "codes": failure_codes,
                 }
@@ -661,6 +760,7 @@ async def run_profile_download(
                     throttle = SiteThrottle(
                         template.name,
                         limit=window_limit,
+                        byte_limit=byte_window_limit,
                         window_seconds=window_seconds,
                         failure_threshold=transfer_policy.throttle_failure_streak,
                         failure_window_seconds=transfer_policy.throttle_failure_window,
@@ -1133,9 +1233,13 @@ async def run_profile_download(
                             _counters()
                             continue
 
-                        counter = await next_counter(folder)
-                        final_name = build_filename(
+                        file_route = route(fi.filename)
+                        counter = await next_counter(folder, file_route.key)
+                        final_name = routed_name(
                             artist_info.name, counter, fi.filename,
+                        )
+                        download_folder, catalog_name = destination(
+                            folder, final_name,
                         )
                         emit(WorkerStart(slot_id, fi.filename))
 
@@ -1148,14 +1252,16 @@ async def run_profile_download(
                             throttle_permit = await throttle.acquire(
                                 lambda kind, seconds: _throttle_wait(
                                     template.name, kind, seconds,
-                                )
+                                ),
+                                expected_bytes=fi.remote_size,
+                                wait=(source_categories is None),
                             )
 
-                        try:
-                            result = await asyncio.wait_for(
+                        async def _download_current_file():
+                            return await asyncio.wait_for(
                                 engine.download(
                                     url=fi.url,
-                                    dest_dir=folder,
+                                    dest_dir=download_folder,
                                     filename=final_name,
                                     on_progress=make_cb(slot_id),
                                     extra_headers=fi.extra_headers or None,
@@ -1165,6 +1271,13 @@ async def run_profile_download(
                                     on_observation=source_metrics.observe,
                                 ),
                                 timeout=7200.0,
+                            )
+
+                        try:
+                            result = await _download_current_file()
+                            result = await _confirm_failed_probe_once(
+                                throttle_permit, result,
+                                _download_current_file, emit,
                             )
                         except asyncio.TimeoutError:
                             if throttle is not None:
@@ -1192,6 +1305,7 @@ async def run_profile_download(
                                     and getattr(result, "failure_code", None)
                                     in failure_codes
                                 ),
+                                transferred_bytes=result.file_size,
                             )
                             if trip is not None:
                                 _report_throttle_trip(template.name, trip.seconds)
@@ -1332,7 +1446,8 @@ async def run_profile_download(
                         # Catalogar.
                         if result.file_hash in local_hashes:
                             old_path = local_hashes[result.file_hash]
-                            new_path = folder / final_name
+                            new_path = folder / catalog_name
+                            new_path.parent.mkdir(parents=True, exist_ok=True)
                             try:
                                 old_path.replace(new_path)
                                 local_hashes[result.file_hash] = new_path
@@ -1348,7 +1463,7 @@ async def run_profile_download(
                                 renamed = False
                             await add_file(
                                 artist_dir=folder, file_hash=result.file_hash,
-                                filename=final_name, url_source=fi.dedup_key,
+                                filename=catalog_name, url_source=fi.dedup_key,
                                 file_size=result.file_size, counter=counter,
                                 is_preview=fi.is_preview,
                                 content_service=fi.content_service,
@@ -1371,7 +1486,7 @@ async def run_profile_download(
                         else:
                             await add_file(
                                 artist_dir=folder, file_hash=result.file_hash,
-                                filename=final_name, url_source=fi.dedup_key,
+                                filename=catalog_name, url_source=fi.dedup_key,
                                 file_size=result.file_size, counter=counter,
                                 is_preview=fi.is_preview,
                                 content_service=fi.content_service,
@@ -1385,11 +1500,14 @@ async def run_profile_download(
                             await remove_pending(folder, fi.dedup_key)
                             local_hashes[result.file_hash] = result.dest
                             summ.downloaded += 1
-                            emit(WorkerDone(slot_id, final_name, "✓"))
-                            emit(Log(f"✓ {fi.filename[:40]}  →  {final_name}", "ok"))
+                            emit(WorkerDone(slot_id, catalog_name, "✓"))
+                            emit(Log(f"✓ {fi.filename[:40]}  →  {catalog_name}", "ok"))
 
                         _counters()
 
+                    except ThrottleDeferred as exc:
+                        _defer_throttled_batch(template.name, exc)
+                        emit(WorkerDone(slot_id, fi.filename, "⏭"))
                     except asyncio.CancelledError:
                         if throttle is not None:
                             await throttle.abandon(locals().get("throttle_permit"))
@@ -1461,10 +1579,14 @@ async def run_profile_download(
                         throttle_permit = await src_throttle.acquire(
                             lambda kind, seconds: _throttle_wait(
                                 src_site, kind, seconds,
-                            )
+                            ),
+                            expected_bytes=file_info.remote_size,
+                            wait=(source_categories is None),
                         )
-                    result = await asyncio.wait_for(
-                        engine.download(
+
+                    async def _download_deferred_file():
+                        return await asyncio.wait_for(
+                            engine.download(
                             url=file_info.url, dest_dir=dest_folder, filename=tmp_name,
                             extra_headers=file_info.extra_headers or None,
                             total_timeout=300.0,
@@ -1473,6 +1595,16 @@ async def run_profile_download(
                         ),
                         timeout=7200.0,
                     )
+
+                    result = await _download_deferred_file()
+                    result = await _confirm_failed_probe_once(
+                        throttle_permit, result,
+                        _download_deferred_file, emit,
+                    )
+                except ThrottleDeferred as exc:
+                    _defer_throttled_batch(src_site, exc)
+                    emit(WorkerDone(0, file_info.filename, "⏭"))
+                    continue
                 except asyncio.TimeoutError:
                     if src_throttle is not None:
                         await src_throttle.finish(
@@ -1496,23 +1628,28 @@ async def run_profile_download(
                             not result.ok
                             and getattr(result, "failure_code", None) in src_codes
                         ),
+                        transferred_bytes=result.file_size,
                     )
                     if trip is not None:
                         _report_throttle_trip(src_site, trip.seconds)
                 if result.ok and result.file_hash:
                     _record_global_download(result.file_size)
-                    counter = await next_counter(dest_folder)
-                    final_name = build_filename(
+                    file_route = route(file_info.filename)
+                    counter = await next_counter(dest_folder, file_route.key)
+                    final_name = routed_name(
                         a_info.name, counter, file_info.filename,
                     )
+                    catalog_name = relative_filename(final_name)
                     if result.dest and result.dest.exists():
                         try:
-                            result.dest.replace(dest_folder / final_name)
+                            target = dest_folder / catalog_name
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            result.dest.replace(target)
                         except OSError:
-                            final_name = tmp_name
+                            catalog_name = result.dest.relative_to(dest_folder).as_posix()
                     await add_file(
                         artist_dir=dest_folder, file_hash=result.file_hash,
-                        filename=final_name, url_source=file_info.dedup_key,
+                        filename=catalog_name, url_source=file_info.dedup_key,
                         file_size=result.file_size, counter=counter,
                         is_preview=file_info.is_preview,
                         content_service=file_info.content_service,
@@ -1525,8 +1662,8 @@ async def run_profile_download(
                     )
                     await remove_pending(dest_folder, file_info.dedup_key)
                     summ.downloaded += 1
-                    emit(WorkerDone(0, final_name, "✓"))
-                    emit(Log(f"✓ {final_name} (reintento)", "ok"))
+                    emit(WorkerDone(0, catalog_name, "✓"))
+                    emit(Log(f"✓ {catalog_name} (reintento)", "ok"))
                     if global_state["reached"]:
                         _counters()
                         break

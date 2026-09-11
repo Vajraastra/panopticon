@@ -39,11 +39,15 @@ from ..catalog import (
     add_file, add_pending, clean_pending_catalog_overlap,
     compare_catalogs, compare_by_hash_join,
     get_all_files, get_meta_int, get_pending_files, get_stats,
-    hash_exists, init_catalog, migrate_unique_files, next_counter,
+    ensure_layout_version, hash_exists, init_catalog, migrate_unique_files, next_counter,
     pending_count, pending_url_exists, remove_pending, set_meta_int, url_exists,
 )
 from ..config import INDEX_DB, load_config, save_config
 from ..downloads import EXT_GROUPS, _decode_profile_filter, _encode_profile_filter
+from ..file_routing import (
+    COUNTER_NAMESPACES, LAYOUT_VERSION, destination, prepare_selected_folders,
+    route, routed_name,
+)
 from ..dedup import (
     compact_folders as _compact_folders,
     dup_keep_remove as _dup_keep_remove,
@@ -2184,7 +2188,6 @@ class ArtistScreen(Screen):
             _build_local_hash_map,
             _parse_ext_filter,
             _passes_ext_filter,
-            build_filename,
         )
         from ..index import (
             get_or_create_artist,
@@ -2279,6 +2282,14 @@ class ArtistScreen(Screen):
 
                 folder.mkdir(parents=True, exist_ok=True)
                 await init_catalog(folder)
+                if not await ensure_layout_version(
+                    folder, COUNTER_NAMESPACES, LAYOUT_VERSION,
+                ):
+                    raise RuntimeError(
+                        "El proyecto necesita la migración de organización v2."
+                    )
+                if ext_filter:
+                    prepare_selected_folders(folder, ext_filter)
                 await init_index(INDEX_DB)
                 site_id = await get_or_create_site(INDEX_DB, artist_info.site)
                 await get_or_create_artist(
@@ -2568,8 +2579,13 @@ class ArtistScreen(Screen):
                                 )
                                 continue
 
-                            counter    = await next_counter(folder)
-                            final_name = build_filename(artist_info.name, counter, fi.filename)
+                            spec = route(fi.filename)
+                            counter = await next_counter(folder, spec.key)
+                            basename = routed_name(
+                                artist_info.name, counter, fi.filename,
+                            )
+                            download_dir, final_name = destination(folder, basename)
+                            download_dir.mkdir(parents=True, exist_ok=True)
 
                             if slot_id < len(self._worker_rows):
                                 self._worker_rows[slot_id].start(fi.filename)
@@ -2591,8 +2607,8 @@ class ArtistScreen(Screen):
                                 result = await asyncio.wait_for(
                                     engine.download(
                                         url=fi.url,
-                                        dest_dir=folder,
-                                        filename=final_name,
+                                        dest_dir=download_dir,
+                                        filename=basename,
                                         on_progress=make_cb(slot_id),
                                         extra_headers=fi.extra_headers or None,
                                         total_timeout=300.0,
@@ -2834,8 +2850,13 @@ class ArtistScreen(Screen):
                         continue
                     if result.ok and result.file_hash:
                         # Asignar contador post-éxito y renombrar el archivo temporal
-                        counter    = await next_counter(dest_folder)
-                        final_name = build_filename(a_info.name, counter, file_info.filename)
+                        spec = route(file_info.filename)
+                        counter = await next_counter(dest_folder, spec.key)
+                        basename = routed_name(
+                            a_info.name, counter, file_info.filename,
+                        )
+                        final_dir, final_name = destination(dest_folder, basename)
+                        final_dir.mkdir(parents=True, exist_ok=True)
                         if result.dest and result.dest.exists():
                             try:
                                 result.dest.replace(dest_folder / final_name)
@@ -3648,7 +3669,7 @@ class BatchScreen(Screen):
         """
         import hashlib as _hl
         import json as _json
-        from ..downloads import build_filename, _passes_ext_filter
+        from ..downloads import _passes_ext_filter
 
         pu_id        = pu.get("id")
         pending_list = await get_pending_files(folder, pu_id)
@@ -3873,8 +3894,11 @@ class BatchScreen(Screen):
                 continue
 
             # Post-éxito: asignar contador y renombrar temporal
-            counter    = await next_counter(folder)
-            final_name = build_filename(artist_name, counter, filename_hint)
+            spec = route(filename_hint)
+            counter = await next_counter(folder, spec.key)
+            basename = routed_name(artist_name, counter, filename_hint)
+            final_dir, final_name = destination(folder, basename)
+            final_dir.mkdir(parents=True, exist_ok=True)
 
             if result.file_hash in local_hashes:
                 old_path = local_hashes[result.file_hash]
@@ -3993,6 +4017,13 @@ class BatchScreen(Screen):
                         folder = Path(profile["folder_path"])
                         folder.mkdir(parents=True, exist_ok=True)
                         await init_catalog(folder)
+                        if not await ensure_layout_version(
+                            folder, COUNTER_NAMESPACES, LAYOUT_VERSION,
+                        ):
+                            self._log(
+                                "  [red]✗ Requiere migración de organización v2[/]"
+                            )
+                            continue
 
                         pos = f"{idx + 1}/{len(to_process)}"
                         self._log(f"\n[bold]▶ {name}[/]  [{pos}]")
@@ -4017,6 +4048,9 @@ class BatchScreen(Screen):
                         else:
                             eff_ext_filter   = ext_filter or set()
                             eff_exclude_mode = exclude_mode
+
+                        if eff_ext_filter and not eff_exclude_mode:
+                            prepare_selected_folders(folder, eff_ext_filter)
 
                         # ── Fase 1: scan si pending_queue vacía ────────────
                         total_pending = 0

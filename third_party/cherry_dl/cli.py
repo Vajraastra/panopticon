@@ -56,8 +56,12 @@ async def _download(url: str, workers: int | None, prescan: str | None = None) -
     from .config import load_config, ensure_dirs, INDEX_DB
     from .engine import DownloadEngine, make_progress
     from .templates._registry import get_template
-    from .catalog import init_catalog, hash_exists, add_file, next_counter
-    from .downloads import build_filename
+    from .catalog import (
+        add_file, ensure_layout_version, hash_exists, init_catalog, next_counter,
+    )
+    from .file_routing import (
+        COUNTER_NAMESPACES, LAYOUT_VERSION, destination, route, routed_name,
+    )
     from .index import init_index, get_or_create_site, get_or_create_artist
     from .site_budget import GLOBAL_BUDGET_KEY, add as budget_add, remaining as budget_remaining
 
@@ -103,6 +107,14 @@ async def _download(url: str, workers: int | None, prescan: str | None = None) -
 
         # Inicializar catálogo e índice
         await init_catalog(artist_dir)
+        if not await ensure_layout_version(
+            artist_dir, COUNTER_NAMESPACES, LAYOUT_VERSION,
+        ):
+            console.print(
+                "[red]✗ El proyecto necesita la migración de organización v2 "
+                "antes de descargar.[/red]"
+            )
+            raise typer.Exit(1)
         await init_index(INDEX_DB)
         site_id = await get_or_create_site(INDEX_DB, artist.site)
         await get_or_create_artist(
@@ -148,13 +160,16 @@ async def _download(url: str, workers: int | None, prescan: str | None = None) -
 
             async for file_info in template.iter_files(artist):
                 # Obtener contador y construir nombre final antes de descargar
-                counter = await next_counter(artist_dir)
-                final_name = build_filename(artist.name, counter, file_info.filename)
+                spec = route(file_info.filename)
+                counter = await next_counter(artist_dir, spec.key)
+                basename = routed_name(artist.name, counter, file_info.filename)
+                dest_dir, final_name = destination(artist_dir, basename)
+                dest_dir.mkdir(parents=True, exist_ok=True)
 
                 result = await engine.download(
                     url=file_info.url,
-                    dest_dir=artist_dir,
-                    filename=final_name,
+                    dest_dir=dest_dir,
+                    filename=basename,
                     progress=progress,
                     transport=getattr(template, "download_transport", "http"),
                     browser_origin=getattr(template, "browser_origin", ""),
@@ -376,6 +391,10 @@ def config_show():
         "pawchive_downloads_per_window",
         str(config.pawchive.downloads_per_window),
     )
+    table.add_row(
+        "pawchive_gigabytes_per_window",
+        f"{config.pawchive.gigabytes_per_window:g} GB",
+    )
     table.add_row("pawchive_window_hours", f"{config.pawchive.window_hours:g} h")
     table.add_row("delay_min", f"{config.network.delay_min}s")
     table.add_row("delay_max", f"{config.network.delay_max}s")
@@ -393,7 +412,8 @@ def config_set(
         help=(
             "Clave a modificar (download_dir, workers, timeout, "
             "daily_limit_enabled, daily_limit_gb, "
-            "pawchive_downloads_per_window, pawchive_window_hours)"
+            "pawchive_downloads_per_window, pawchive_gigabytes_per_window, "
+            "pawchive_window_hours)"
         ),
     ),
     value: str = typer.Argument(..., help="Nuevo valor"),

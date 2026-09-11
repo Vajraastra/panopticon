@@ -43,6 +43,8 @@ def load() -> dict:
         "daily_limit_gb": float(cfg.daily_limit_gb),
         "pawchive_downloads_per_window": int(
             cfg.pawchive.downloads_per_window),
+        "pawchive_gigabytes_per_window": float(
+            cfg.pawchive.gigabytes_per_window),
         "pawchive_window_hours": float(cfg.pawchive.window_hours),
     }
 
@@ -54,6 +56,7 @@ def save(
     daily_limit_enabled: bool = False,
     daily_limit_gb: float = 100.0,
     pawchive_downloads_per_window: int = 300,
+    pawchive_gigabytes_per_window: float = 25.0,
     pawchive_window_hours: float = 3.0,
 ) -> dict:
     """Guarda los ajustes conservando el resto del TOML.
@@ -68,6 +71,8 @@ def save(
         raise ValueError("El límite diario debe ser mayor que cero")
     if int(pawchive_downloads_per_window) <= 0:
         raise ValueError("La cuota de Pawchive debe ser mayor que cero")
+    if float(pawchive_gigabytes_per_window) <= 0:
+        raise ValueError("La cuota en GB de Pawchive debe ser mayor que cero")
     if float(pawchive_window_hours) <= 0:
         raise ValueError("La ventana de Pawchive debe ser mayor que cero")
     from third_party.cherry_dl.config import PawchiveConfig
@@ -80,6 +85,7 @@ def save(
         "daily_limit_gb": float(daily_limit_gb),
         "pawchive": PawchiveConfig(
             downloads_per_window=int(pawchive_downloads_per_window),
+            gigabytes_per_window=float(pawchive_gigabytes_per_window),
             window_hours=float(pawchive_window_hours),
         ),
     })

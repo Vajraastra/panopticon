@@ -531,11 +531,12 @@ def test_a5() -> None:
 
     # ── ajustes ────────────────────────────────────────────────────────────
     cfg = settings.load()
-    check("los ajustes traen las siete claves",
+    check("los ajustes traen las ocho claves",
           set(cfg) == {
               "download_dir", "workers", "timeout",
               "daily_limit_enabled", "daily_limit_gb",
-              "pawchive_downloads_per_window", "pawchive_window_hours",
+              "pawchive_downloads_per_window",
+              "pawchive_gigabytes_per_window", "pawchive_window_hours",
           }, f"({sorted(cfg)})")
     check("workers es un entero >= 1",
           isinstance(cfg["workers"], int) and cfg["workers"] >= 1, f"({cfg['workers']})")
@@ -549,9 +550,12 @@ def test_a5() -> None:
     check("Pawchive conserva la recomendación 300/3 como valores válidos",
           isinstance(cfg["pawchive_downloads_per_window"], int)
           and cfg["pawchive_downloads_per_window"] > 0
+          and isinstance(cfg["pawchive_gigabytes_per_window"], float)
+          and cfg["pawchive_gigabytes_per_window"] > 0
           and isinstance(cfg["pawchive_window_hours"], float)
           and cfg["pawchive_window_hours"] > 0,
           f"({cfg['pawchive_downloads_per_window']=}, "
+          f"{cfg['pawchive_gigabytes_per_window']=}, "
           f"{cfg['pawchive_window_hours']=})")
     check("la carpeta de descargas coincide con la del motor",
           settings.download_root() == Path(cfg["download_dir"]),

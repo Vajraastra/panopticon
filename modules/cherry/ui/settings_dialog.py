@@ -103,6 +103,13 @@ class SettingsDialog(QDialog):
         ))
         self._pawchive_downloads.setValue(
             current["pawchive_downloads_per_window"])
+        self._pawchive_gigabytes = QDoubleSpinBox()
+        self._pawchive_gigabytes.setRange(0.1, 10000.0)
+        self._pawchive_gigabytes.setDecimals(1)
+        self._pawchive_gigabytes.setSingleStep(5.0)
+        self._pawchive_gigabytes.setSuffix(" GB")
+        self._pawchive_gigabytes.setValue(
+            current["pawchive_gigabytes_per_window"])
         self._pawchive_hours = QDoubleSpinBox()
         self._pawchive_hours.setRange(0.25, 168.0)
         self._pawchive_hours.setDecimals(2)
@@ -113,12 +120,18 @@ class SettingsDialog(QDialog):
         self._pawchive_hours.setValue(current["pawchive_window_hours"])
         pawchive_tip = self.tr(
             "cherry.settings_pawchive_tip",
-            "Pawchive only. Recommended: 300 downloads per 3 hours. "
-            "Its combined bandwidth remains capped at 2 MB/s.",
+            "Pawchive only. It pauses at whichever comes first: the file "
+            "count or transferred GB. Its combined bandwidth remains capped "
+            "at 2 MB/s.",
         )
         self._pawchive_downloads.setToolTip(pawchive_tip)
+        self._pawchive_gigabytes.setToolTip(pawchive_tip)
         self._pawchive_hours.setToolTip(pawchive_tip)
         pawchive_row.addWidget(self._pawchive_downloads)
+        pawchive_row.addWidget(QLabel(self.tr(
+            "cherry.settings_pawchive_or", "or",
+        )))
+        pawchive_row.addWidget(self._pawchive_gigabytes)
         pawchive_row.addWidget(QLabel(self.tr(
             "cherry.settings_pawchive_every", "every",
         )))
@@ -132,8 +145,8 @@ class SettingsDialog(QDialog):
 
         recommended = QLabel(self.tr(
             "cherry.settings_pawchive_recommended",
-            "Recommended default: 300 downloads / 3 hours · fixed 2 MB/s "
-            "shared by Pawchive workers.",
+            "Recommended default: 300 downloads or 25 GB / 3 hours · fixed "
+            "2 MB/s shared by Pawchive workers.",
         ))
         recommended.setWordWrap(True)
         recommended.setStyleSheet(
@@ -200,6 +213,7 @@ class SettingsDialog(QDialog):
                 self._daily_limit_enabled.isChecked(),
                 self._daily_limit_gb.value(),
                 self._pawchive_downloads.value(),
+                self._pawchive_gigabytes.value(),
                 self._pawchive_hours.value(),
             )
         except Exception as exc:

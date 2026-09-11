@@ -733,8 +733,9 @@
   "cherry.settings_pawchive_files_suffix": " files",
   "cherry.settings_pawchive_hours_suffix": " h",
   "cherry.settings_pawchive_every": "every",
-  "cherry.settings_pawchive_tip": "Pawchive only. Recommended: 300 downloads per 3 hours. Its combined bandwidth remains capped at 2 MB/s.",
-  "cherry.settings_pawchive_recommended": "Recommended default: 300 downloads / 3 hours · fixed 2 MB/s shared by Pawchive workers.",
+  "cherry.settings_pawchive_tip": "Pawchive only. It pauses at whichever happens first: the file count or transferred GB. Its combined bandwidth remains capped at 2 MB/s.",
+  "cherry.settings_pawchive_recommended": "Recommended default: 300 downloads or 25 GB / 3 hours · fixed 2 MB/s shared by Pawchive workers.",
+  "cherry.settings_pawchive_or": "or",
   "cherry.settings_note": "Changing the download folder does not move anything: existing projects keep the path they were created with, and only new ones land here. Saved to {file}, shared with the standalone cherry-dl.",
   "cherry.settings_dir_empty": "The download folder cannot be empty.",
   "cherry.settings_dir_missing": "“{f}” does not exist. Create it first, or pick another one.",
@@ -1048,5 +1049,11 @@
   "gallery.page_next_tip": "Next page of images.",
   "cherry.dl_site_blocked": "⛔ {site} refused {n} times — abandoned",
   "cherry.dl_site_blocked_log": "⛔ {site} refused {n} downloads in a row. The site is abandoned for this run; the files stay queued for another day.",
-  "cherry.dl_site_budget": "⏸ {site} — daily budget spent"
+  "cherry.dl_site_budget": "⏸ {site} — daily budget spent",
+  "cherry.archives_process": "Organize and extract ZIP/RAR",
+  "cherry.archives_process_tip": "Only this project: organizes files by type, extracts ZIP/RAR from Comprimidos, keeps one copy per hash and deletes verified archives while retaining their download history. Unavailable during downloads.",
+  "cherry.archives_start": "Organizing project: {folder}",
+  "cherry.archives_cancelled": "Cancelled. Run the action again to resume.",
+  "cherry.archives_working": "Extracting: {name}",
+  "cherry.archives_done": "Archives: {p} processed, {a} files added, {d} duplicates, {o} organized, {e} pending with errors."
 }

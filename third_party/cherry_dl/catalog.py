@@ -355,7 +355,7 @@ async def read_profile_meta(artist_dir: Path) -> dict | None:
 
 # ── Contador global del artista ────────────────────────────────────────────────
 
-async def next_counter(artist_dir: Path) -> int:
+async def next_counter(artist_dir: Path, namespace: str | None = None) -> int:
     """
     Incrementa atómicamente y retorna el siguiente número secuencial del artista.
 
@@ -363,20 +363,83 @@ async def next_counter(artist_dir: Path) -> int:
     en una sola instrucción atómica — sin gap entre escritura y lectura que
     otro worker pudiera aprovechar para obtener el mismo contador.
     """
+    key = "counter" if namespace is None else f"counter:{namespace}"
     db_path = artist_dir / CATALOG_NAME
     async with _db(db_path) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES (?, 0)", (key,)
+        )
         async with db.execute(
-            "UPDATE meta SET value = value + 1 WHERE key = 'counter' RETURNING value"
+            "UPDATE meta SET value = value + 1 WHERE key = ? RETURNING value",
+            (key,),
         ) as cur:
             row = await cur.fetchone()
         await db.commit()
 
     if row is None:
         raise RuntimeError(
-            f"catalog.db corrompido: falta la fila 'counter' en meta ({db_path}). "
+            f"catalog.db corrompido: falta la fila {key!r} en meta ({db_path}). "
             "Borra el archivo para regenerarlo."
         )
     return row[0]
+
+
+async def ensure_layout_version(
+    artist_dir: Path,
+    namespaces: tuple[str, ...],
+    version: int,
+) -> bool:
+    """Inicializa catálogos vacíos; uno con archivos exige migración explícita."""
+    db_path = artist_dir / CATALOG_NAME
+    async with _db(db_path) as db:
+        async with db.execute(
+            "SELECT value FROM meta WHERE key = 'layout_version'"
+        ) as cur:
+            row = await cur.fetchone()
+        if row and int(row[0]) >= version:
+            return True
+        async with db.execute("SELECT 1 FROM files LIMIT 1") as cur:
+            has_files = await cur.fetchone() is not None
+        if has_files:
+            return False
+        await db.executemany(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES (?, 0)",
+            [(f"counter:{name}",) for name in namespaces],
+        )
+        await db.execute(
+            "INSERT INTO meta (key, value) VALUES ('layout_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (version,),
+        )
+        await db.commit()
+    return True
+
+
+async def apply_layout_version(
+    artist_dir: Path,
+    updates: list[tuple[str, int, str]],
+    counters: dict[str, int],
+    version: int,
+) -> None:
+    """Confirma rutas/contadores de una migración ya aplicada en disco."""
+    db_path = artist_dir / CATALOG_NAME
+    async with _db(db_path) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        await db.executemany(
+            "UPDATE files SET filename = ?, counter = ? WHERE hash = ?",
+            updates,
+        )
+        await db.executemany(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [(f"counter:{name}", int(value)) for name, value in counters.items()],
+        )
+        await db.execute(
+            "INSERT INTO meta (key, value) VALUES ('layout_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (version,),
+        )
+        await db.commit()
 
 
 # ── Consultas ──────────────────────────────────────────────────────────────────
@@ -815,6 +878,26 @@ async def add_file(
         await db.commit()
 
 
+async def relocate_file(artist_dir: Path, file_hash: str, filename: str) -> None:
+    """Actualiza sólo la ruta después de organizar un archivo; conserva su identidad."""
+    async with _db(artist_dir / CATALOG_NAME) as db:
+        await db.execute("UPDATE files SET filename = ? WHERE hash = ?", (filename, file_hash))
+        await db.commit()
+
+
+async def copy_content_aliases(source: Path, destination: Path, file_hash: str) -> None:
+    """Preserva las identidades de una descarga al migrar su recibo."""
+    async with _db(source / CATALOG_NAME) as db:
+        async with db.execute(
+            "SELECT service, post_id, original_filename, content_role, "
+            "content_position, remote_size FROM content_aliases WHERE file_hash = ?",
+            (file_hash,),
+        ) as cursor:
+            aliases = await cursor.fetchall()
+    for service, post_id, name, role, position, size in aliases:
+        await add_content_alias(destination, file_hash, service, post_id, name, role, position, size)
+
+
 async def get_all_files(artist_dir: Path) -> list[dict]:
     """
     Retorna todos los registros del catálogo como lista de dicts.
@@ -826,7 +909,7 @@ async def get_all_files(artist_dir: Path) -> list[dict]:
     async with _db(db_path) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT hash, filename, url_source, file_size, counter, is_preview, "
+            "SELECT hash, filename, url_source, date_added, file_size, counter, is_preview, "
             "content_service, post_id, content_role, content_position FROM files"
         ) as cur:
             rows = await cur.fetchall()
@@ -1659,6 +1742,21 @@ async def migrate_unique_files(
         errors         — lista de strings describiendo fallos
         orphaned_paths — rutas físicas de los archivos huérfanos en src
     """
+    from .file_routing import (
+        COUNTER_NAMESPACES, LAYOUT_VERSION, destination, route, routed_name,
+    )
+
+    if not await ensure_layout_version(
+        folder_dst, COUNTER_NAMESPACES, LAYOUT_VERSION,
+    ):
+        return {
+            "moved": 0, "orphaned": 0, "purged": 0,
+            "errors": ["El destino necesita la migración de organización v2."],
+            "orphaned_paths": [],
+        }
+    profile_meta = await read_profile_meta(folder_dst) or {}
+    artist_name = profile_meta.get("display_name") or folder_dst.name
+
     src_files = await get_all_files(folder_src)
     total = len(src_files)
 
@@ -1685,11 +1783,11 @@ async def migrate_unique_files(
             continue
 
         try:
-            ctr  = await next_counter(folder_dst)
-            ext  = Path(f["filename"]).suffix
-            pad  = max(4, len(str(ctr)))
-            marker = "preview_" if f.get("is_preview") else ""
-            new_name = f"{marker}{ctr:0{pad}d}{ext}"
+            spec = route(f["filename"])
+            ctr = await next_counter(folder_dst, spec.key)
+            basename = routed_name(artist_name, ctr, f["filename"])
+            new_dir, new_name = destination(folder_dst, basename)
+            new_dir.mkdir(parents=True, exist_ok=True)
             new_path = folder_dst / new_name
 
             await asyncio.to_thread(shutil.move, str(src_path), str(new_path))
@@ -1708,6 +1806,13 @@ async def migrate_unique_files(
 
         if on_progress:
             on_progress(i + 1, total)
+
+    if not errors:
+        from .archives import migrate_history
+        try:
+            await migrate_history(folder_src, folder_dst)
+        except Exception as exc:
+            errors.append(f"Historial de comprimidos: {exc}")
 
     return {
         "moved":          moved,

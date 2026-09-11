@@ -73,6 +73,21 @@ uv run python main.py
 
 ---
 
+## Cherry-DL: organize and extract archives
+
+Select a project and click **Organize and extract ZIP/RAR** in its inspector.
+This is a manual action, unavailable while downloads are running. Images stay in
+the project root; other cataloged files move to `Comprimidos/`, `Proyectos/`, `Videos/`,
+`Audio/`, `Documentos/` or `Otros/`. ZIP/RAR files in `Comprimidos/` are extracted and deduplicated
+by SHA-256, using Cherry's existing numbering and catalog.
+
+An archive is deleted only after every extracted file is verified. Its download
+record and `.cherry-archives/` manifest remain, preventing a new download. Keep that
+folder alongside `catalog.db`. Failed, password-protected or split archives stay
+available for another manual attempt. Nested archives are available for the next
+manual pass. Installation is automatic through `run.bat`; no system 7-Zip or
+WinRAR is required.
+
 ## License
 
 Business Source License 1.1 — free for non-commercial use.  

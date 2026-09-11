@@ -27,6 +27,23 @@
 
 ## Divergencias respecto a `befa56d`
 
+### `site_throttle.py` — ventana móvil por archivos o GB (2026-09-10)
+
+Pawchive se detiene cuando ocurre primero uno de dos topes configurables dentro
+de la misma ventana: cantidad de transferencias completadas o GB transferidos.
+El tamaño remoto anunciado se reserva antes de iniciar cada archivo, evitando
+que los dos workers crucen juntos el presupuesto con ZIP/RAR grandes; los
+archivos sin tamaño conocido registran sus bytes reales al terminar.
+
+El estado persistente conserva compatibilidad con ejecuciones anteriores. En
+una descarga individual la cuota continúa esperando de forma cancelable; en
+batch se difiere Pawchive y se continúa con el siguiente trabajo sin congelar
+toda la cola. Los archivos fallidos mantienen su comportamiento FIFO: pasan al
+fondo mediante `queue_position`, mientras una cuota no altera sus posiciones.
+
+Valor inicial: 300 archivos o 25 GB cada 3 horas, lo que ocurra primero. Ambos
+límites y las horas se editan desde Ajustes.
+
 ### Nombre de artista desde una fuente Pawchive (2026-09-09)
 
 El alta de un proyecto ya no depende primero del índice global de creadores de Pawchive. Consulta
@@ -584,3 +601,61 @@ La invalidación también queda ligada a la instancia concreta que falló. Un wo
 puede cerrar el navegador de reemplazo que otro worker haya creado mientras procesaba el fallo.
 Regresiones: `scripts/cherry_lifecycle_selftest.py` (13/13) y navegador real
 `scripts/cherry_browser_toytest.py` (51/51).
+
+### Confirmación de sonda y batch no bloqueante (2026-09-10)
+
+Un `no_http_failed` durante la sonda del cortacircuitos se repite una sola vez después de que el
+engine descarte la sesión Chromium afectada. Sólo el resultado de esa sesión limpia decide si el
+cooldown aumenta. Las descargas ordinarias no se duplican. En ejecución batch, tanto la cola
+principal como la diferida adquieren la cuota/circuito con `wait=False`; si no hay permiso,
+conservan la fila y terminan la pasada del sitio en vez de dormir todo el trabajo.
+
+## Organización manual ZIP/RAR por proyecto (2026-09-10)
+
+archives.py reutiliza next_counter, build_filename y add_file para incorporar los miembros
+extraídos. Conserva el registro original del comprimido y un manifiesto lateral, verifica
+las copias físicas antes de borrar y recupera incorporaciones/movimientos interrumpidos.
+archive_reader.py aísla ZIP y UnRAR incluido en el venv, con límites de extracción y cierre
+del proceso al cancelar. No se engancha a download_service ni cambia el schema del catálogo.
+
+catalog.relocate_file mantiene las rutas al organizar por tipo; migrate_unique_files
+transporta los recibos completos y sus alias para conservar la omisión de descargas.
+La UI nativa ofrece la acción sólo para el proyecto seleccionado, con exclusión mutua
+frente a descargas, preparación, GUI clásica y fusión. Instalación por requirements/run.bat.
+
+Verificación Windows: comprimidos/interfaz 55/55, catálogo 521/521, alias 39/39,
+fusión 38/38 e interfaz existente 20/20. Tooltips Cherry 32/32; prueba RAR sin PATH.
+
+Organización de proyectos (2026-09-10): `organize_project()` crea las subcarpetas
+solo cuando hacen falta y actualiza el catálogo sin extraer. Las imágenes detectables
+por firma permanecen en la raíz aunque no tengan extensión. Prueba combinada: 60/60.
+
+Enrutamiento automático (2026-09-11): `file_routing.py` concentra la misma clasificación
+para mantenimiento y descarga. Al iniciar un proyecto, el servicio reubica los archivos
+catalogados antiguos que quedaron en la raíz y crea las carpetas no visuales elegidas en
+el filtro. Las descargas nuevas escriben directamente en su carpeta y `files.filename`
+guarda la ruta relativa; imágenes y animaciones permanecen en la raíz. La reparación no
+extrae ni borra paquetes y, si falla, informa el problema sin impedir nuevas descargas.
+Verificación: archivos/interfaz 65/65, puente 99/99, planificador 36/36, motor 44/44 y
+catálogo 521/521.
+
+### Organización y nomenclatura v2 (2026-09-11)
+
+Las imágenes y animaciones son el contenido primario: permanecen en la raíz y conservan
+`Artista_00001.ext`. Los demás tipos viven en `Comprimidos`, `Proyectos`, `Videos`, `Audio`,
+`Documentos` u `Otros`, con nombre `tipo-Artista-00001.ext` (`arc`, `pro`, `vid`, `aud`,
+`doc`, `otr`) y contador independiente por categoría. PSD, PSB, CLIP y LIP comparten
+`Proyectos`; los comprimidos conservan su identidad aunque después se extraigan a imágenes.
+
+No se añadió una columna de tipo ni se cambió el schema: la categoría se deriva de la
+extensión y `catalog.db.meta` guarda `layout_version=2` y `counter:<categoría>`. Un catálogo
+antiguo no vacío queda bloqueado para descargar hasta migrarlo; uno nuevo crea el layout y
+las subcarpetas seleccionadas automáticamente. CLI, TUI, importador, extracción, descarga
+nativa y fusión usan la misma ruta centralizada.
+
+`layout_migration.py` y `scripts/cherry_layout_v2.py` hacen plan, respaldo, staging,
+actualización atómica del catálogo y reanudación tras interrupción. La biblioteca real se
+migró con respaldo por proyecto: 65 proyectos, 116,738 filas, 2,855 rutas actualizadas y
+2,189 archivos físicos renombrados, sin errores. Una segunda auditoría produjo cero cambios.
+Verificación temporal: archivos/importador/interfaz 88/88, catálogo 521/521, fusión 38/38,
+puente 99/99, planificador 36/36, motor 44/44 y pulida funcional 23/23.

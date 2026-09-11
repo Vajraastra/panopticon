@@ -68,6 +68,9 @@ bytes:
   - `max_bytes_per_sec = 2 MB/s` agregado. Las 3.854 MB de esa tarde habrían
     tardado 32 minutos en vez de 6, y el día entero no pasaría de 172 GB en vez
     de proyectar casi un tera.
+  - Ventana móvil configurable por archivos **o GB**, lo que ocurra primero.
+    El tamaño anunciado se reserva antes de iniciar archivos grandes para que
+    los dos workers no crucen juntos el límite.
   - Sin presupuesto diario. David decidió retirarlo después de comprobar que
     20 archivos cargaban sin rechazo con 2 workers, 2 MB/s y pausa entre tandas.
     Si una prueba viva muestra que el volumen acumulado también molesta, se

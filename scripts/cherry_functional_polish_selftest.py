@@ -58,17 +58,22 @@ async def main() -> None:
             defaults = config.UserConfig(download_dir=str(work))
             check(defaults.pawchive.downloads_per_window == 300,
                   "la cuota recomendada debe ser 300")
+            check(defaults.pawchive.gigabytes_per_window == 25.0,
+                  "la cuota recomendada debe ser 25 GB")
             check(defaults.pawchive.window_hours == 3.0,
                   "la ventana recomendada debe ser de 3 horas")
             custom = defaults.model_copy(update={
                 "pawchive": config.PawchiveConfig(
-                    downloads_per_window=425, window_hours=4.5,
+                    downloads_per_window=425, gigabytes_per_window=18.5,
+                    window_hours=4.5,
                 ),
             })
             config.save_config(custom)
             loaded = config.load_config()
             check(loaded.pawchive.downloads_per_window == 425,
                   "la cuota debe sobrevivir al TOML")
+            check(loaded.pawchive.gigabytes_per_window == 18.5,
+                  "la cuota en GB debe sobrevivir al TOML")
             check(loaded.pawchive.window_hours == 4.5,
                   "la ventana debe sobrevivir al TOML")
             text = config.CONFIG_FILE.read_text(encoding="utf-8")
@@ -139,6 +144,8 @@ async def main() -> None:
             dialog = SettingsDialog()
             check(dialog._pawchive_downloads.value() == 425,
                   "Ajustes debe mostrar la cuota persistida")
+            check(dialog._pawchive_gigabytes.value() == 18.5,
+                  "Ajustes debe mostrar la cuota persistida en GB")
             check(dialog._pawchive_hours.value() == 4.5,
                   "Ajustes debe mostrar la ventana persistida")
             dialog.close()

@@ -12,7 +12,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "third_party"))
 
-from cherry_dl.site_throttle import SiteThrottle  # noqa: E402
+from cherry_dl.site_throttle import SiteThrottle, ThrottleDeferred  # noqa: E402
+from cherry_dl.download_service import (  # noqa: E402
+    Log,
+    _confirm_failed_probe_once,
+)
+from cherry_dl.engine import DownloadResult, ErrorKind  # noqa: E402
 
 
 for _stream in (sys.stdout, sys.stderr):
@@ -49,9 +54,12 @@ class FakeTime:
         await asyncio.sleep(0)
 
 
-def make(path: Path, fake: FakeTime, *, limit: int = 300) -> SiteThrottle:
+def make(
+    path: Path, fake: FakeTime, *, limit: int = 300, byte_limit: int = 0,
+) -> SiteThrottle:
     return SiteThrottle(
-        "pawchive", limit=limit, window_seconds=10_800,
+        "pawchive", limit=limit, byte_limit=byte_limit,
+        window_seconds=10_800,
         failure_threshold=5, failure_window_seconds=120,
         cooldowns=(900, 1800, 3600, 10_800), path=path,
         clock=fake.clock, sleeper=fake.sleep,
@@ -71,7 +79,8 @@ async def main() -> int:
             await gate.finish(permit, success=True)
         fourth = await gate.acquire(lambda kind, secs: notices.append((kind, secs)))
         check(fake.sleeps == [10_800], "la cuarta espera hasta vencer la ventana")
-        check(notices[-1][0] == "quota", "la espera se identifica como cuota")
+        check(notices[-1][0] == "quota_count",
+              "la espera se identifica como cuota de archivos")
         await gate.finish(fourth, success=False)
 
         persisted = json.loads(state.read_text(encoding="utf-8"))
@@ -89,7 +98,56 @@ async def main() -> int:
         check(second.active, "un intento fallido devuelve el cupo al siguiente worker")
         await reserve_gate.abandon(second)
 
-        print("\n[2] Sólo la firma específica arma la racha")
+        print("\n[2] La primera cuota entre archivos o bytes detiene la ventana")
+        byte_state = tmp / "bytes.json"
+        byte_gate = make(byte_state, fake, limit=50, byte_limit=100)
+        first = await byte_gate.acquire(expected_bytes=60)
+        await byte_gate.finish(first, success=True, transferred_bytes=60)
+        second = await byte_gate.acquire(
+            lambda kind, secs: notices.append((kind, secs)), expected_bytes=50,
+        )
+        check(fake.sleeps[-1] == 10_800,
+              "el tamaño anunciado espera antes de superar los bytes")
+        check(notices[-1][0] == "quota_bytes",
+              "la espera distingue la cuota de bytes")
+        await byte_gate.finish(second, success=True, transferred_bytes=50)
+        persisted = json.loads(byte_state.read_text(encoding="utf-8"))
+        check(persisted["pawchive"]["transfers"][-1]["bytes"] == 50,
+              "el tamaño real queda persistido")
+
+        reserved_state = tmp / "byte-reservations.json"
+        reserved_gate = make(reserved_state, fake, limit=50, byte_limit=100)
+        large = await reserved_gate.acquire(expected_bytes=70)
+        waiting_bytes = asyncio.create_task(
+            reserved_gate.acquire(expected_bytes=40)
+        )
+        await asyncio.sleep(0)
+        check(not waiting_bytes.done(),
+              "dos workers no pueden reservar juntos más bytes que el tope")
+        await reserved_gate.finish(large, success=False)
+        released = await waiting_bytes
+        check(released.reserved_bytes == 40,
+              "un fallo libera la reserva de bytes")
+        await reserved_gate.abandon(released)
+
+        batch_state = tmp / "batch-bytes.json"
+        batch_gate = make(batch_state, fake, limit=50, byte_limit=100)
+        completed = await batch_gate.acquire(expected_bytes=100)
+        await batch_gate.finish(
+            completed, success=True, transferred_bytes=100,
+        )
+        before = list(fake.sleeps)
+        try:
+            await batch_gate.acquire(expected_bytes=1, wait=False)
+            deferred = None
+        except ThrottleDeferred as exc:
+            deferred = exc
+        check(deferred is not None and deferred.kind == "quota_bytes",
+              "el batch recibe un diferido al alcanzar los GB")
+        check(fake.sleeps == before,
+              "el batch continúa sin dormir durante la ventana")
+
+        print("\n[3] Sólo la firma específica arma la racha")
         state.unlink(missing_ok=True)
         fake.now += 1
         gate = make(state, fake)
@@ -104,7 +162,7 @@ async def main() -> int:
             trip = await gate.finish(permit, success=False, throttle_failure=True)
         check(trip is None, "un 404/error distinto rompe la racha")
 
-        print("\n[3] Cinco fallos, sonda única y espera progresiva")
+        print("\n[4] Cinco fallos, sonda única y espera progresiva")
         permit = await gate.acquire()
         trip = await gate.finish(permit, success=False, throttle_failure=True)
         check(trip is not None and trip.seconds == 900,
@@ -121,7 +179,7 @@ async def main() -> int:
         check(not normal.probe, "una sonda exitosa cierra el circuito")
         await gate.abandon(normal)
 
-        print("\n[4] Un éxito anterior no deshace un corte nuevo")
+        print("\n[5] Un éxito anterior no deshace un corte nuevo")
         stale_state = tmp / "stale-success.json"
         stale_gate = make(stale_state, fake)
         in_flight = [await stale_gate.acquire() for _ in range(6)]
@@ -138,11 +196,42 @@ async def main() -> int:
         check(probe.probe, "después del enfriamiento sigue exigiendo una sonda")
         await stale_gate.finish(probe, success=True)
 
-        print("\n[5] El estado sobrevive a otra instancia")
+        print("\n[6] El estado sobrevive a otra instancia")
         reloaded = make(state, fake)
         permit = await reloaded.acquire()
         check(not permit.probe, "la instancia nueva lee un circuito cerrado")
         await reloaded.abandon(permit)
+
+        print("\n[7] Una sonda CDP Failed exige confirmación independiente")
+        events = []
+        retry_calls = 0
+
+        async def retry_ok():
+            nonlocal retry_calls
+            retry_calls += 1
+            return DownloadResult("https://file.test/ok", "ok.jpg")
+
+        failed = DownloadResult(
+            "https://file.test/fail", "fail.jpg",
+            error="sin estado HTTP · reason=Failed",
+            error_kind=ErrorKind.NETWORK,
+            failure_code="no_http_failed",
+        )
+        probe = type("Probe", (), {"probe": True})()
+        confirmed = await _confirm_failed_probe_once(
+            probe, failed, retry_ok, events.append,
+        )
+        check(confirmed.ok and retry_calls == 1,
+              "la sonda se repite una sola vez y acepta el segundo resultado")
+        check(any(isinstance(event, Log) for event in events),
+              "la confirmación queda visible en el log")
+
+        normal = type("Permit", (), {"probe": False})()
+        unchanged = await _confirm_failed_probe_once(
+            normal, failed, retry_ok, events.append,
+        )
+        check(unchanged is failed and retry_calls == 1,
+              "un fallo ordinario no duplica todas las descargas")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

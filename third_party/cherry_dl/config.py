@@ -45,12 +45,12 @@ class PawchiveConfig(BaseModel):
     """Frenos ajustables del archivo público Pawchive.
 
     El techo de caudal permanece en el template: 2 MiB/s entre todos los
-    workers. Solo la ventana móvil se expone porque es el dato que podremos
-    afinar con observaciones reales sin alterar el comportamiento de los demás
-    servicios.
+    workers. La ventana móvil se detiene cuando llegue primero a su cantidad
+    de descargas o a sus GB transferidos.
     """
 
     downloads_per_window: int = Field(300, ge=1, le=100_000)
+    gigabytes_per_window: float = Field(25.0, gt=0, le=10_000)
     window_hours: float = Field(3.0, gt=0, le=168)
 
 
@@ -137,6 +137,7 @@ def save_config(config: UserConfig) -> None:
         f"stall_timeout = {config.network.stall_timeout}\n",
         "\n[pawchive]\n",
         f"downloads_per_window = {config.pawchive.downloads_per_window}\n",
+        f"gigabytes_per_window = {config.pawchive.gigabytes_per_window}\n",
         f"window_hours = {config.pawchive.window_hours}\n",
     ]
 
@@ -188,11 +189,23 @@ def set_config_value(key: str, value: str) -> UserConfig:
                     "window_hours": hours,
                 }),
             })
+        case "pawchive_gigabytes_per_window":
+            amount = float(value)
+            if not math.isfinite(amount) or amount <= 0:
+                raise ValueError(
+                    "pawchive_gigabytes_per_window debe ser mayor que cero"
+                )
+            config = config.model_copy(update={
+                "pawchive": config.pawchive.model_copy(update={
+                    "gigabytes_per_window": amount,
+                }),
+            })
         case _:
             raise ValueError(
                 f"Clave desconocida: '{key}'. Válidas: download_dir, workers, "
                 "timeout, daily_limit_enabled, daily_limit_gb, "
-                "pawchive_downloads_per_window, pawchive_window_hours"
+                "pawchive_downloads_per_window, "
+                "pawchive_gigabytes_per_window, pawchive_window_hours"
             )
 
     save_config(config)

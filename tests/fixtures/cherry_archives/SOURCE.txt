@@ -1,0 +1,10 @@
+RAR fixtures from https://github.com/markokr/rarfile/tree/master/test/files
+Retrieved 2026-09-10. Redistributed under the accompanying ISC LICENSE.
+Used as archive data only; tests require no external archiver or network.
+
+rar3-solid.rar: SHA256 0944932546b994f282cdb3ac724112c312d406b4c1aecfe1eaf9e734e8f96aa2
+rar5-blake.rar: SHA256 adf5771968bd2dd44b1554728858f8d5bf84fa9e29abe2682f1bc979b7d03069
+rar5-crc.rar: SHA256 9e42359428fe8d6c364536a3fe2ff4b705b4af63dfe0f56bd5cac8d042abd803
+rar5-dups.rar: SHA256 60a752ef7f0373d881171dcb068810fe12a698b53f2bbce93ae4fb1b4e68cf8e
+rar5-hlink.rar: SHA256 c7c2db6fb021e89198da80d4b903d4a46b692c2f31fec64cb53c7e37af7a51f4
+rar5-hpsw.rar: SHA256 9aff93dfd85b1e44daeef233105831999a2076299997b7790e1cf1fd557a4457
