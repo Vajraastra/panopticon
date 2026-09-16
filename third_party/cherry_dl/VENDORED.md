@@ -619,7 +619,8 @@ La misma URL fallida respondió `206 Partial Content` a una petición HTTP direc
 un `User-Agent` `Panopticon-CherryDL/0.1` enlazado al repositorio.
 
 Pawchive usa ahora el transporte HTTP normal con ese identificador. El mismo `User-Agent` declara
-la política efectiva de la ejecución en inglés legible (caudal, concurrencia, archivos/GB y horas
+la política efectiva de la ejecución en inglés legible (caudal sostenido, concurrencia,
+archivos/GB y horas
 de ventana), de modo que el operador pueda verla en sus registros incluso cuando David cambie
 Ajustes. Se conserva
 `Referer`, ritmo, pool, caudal, pausa y ventana. Se retira la firma `no_http_failed`: pertenecía

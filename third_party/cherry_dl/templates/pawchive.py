@@ -356,7 +356,7 @@ def _download_user_agent(engine) -> str:
     hours = float(getattr(pawchive, "window_hours", 3.0))
     hour_word = "hour" if hours == 1 else "hours"
     return (
-        f"{_DOWNLOAD_USER_AGENT_BASE}; policy: max 2 MiB/s; "
+        f"{_DOWNLOAD_USER_AGENT_BASE}; policy: 2 MiB/s sustained bandwidth; "
         f"max 2 concurrent downloads; max {count} files or {gib:g} GiB "
         f"per {hours:g} {hour_word})"
     )

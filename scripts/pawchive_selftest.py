@@ -253,7 +253,7 @@ async def main() -> int:
     user_agent = z.extra_headers.get("User-Agent", "")
     chk(user_agent.startswith("Panopticon-CherryDL/"),
         "se identifica como descargador, sin fingir ser navegador")
-    chk(("policy: max 2 MiB/s; max 2 concurrent downloads; "
+    chk(("policy: 2 MiB/s sustained bandwidth; max 2 concurrent downloads; "
          "max 500 files or 25 GiB per 3 hours") in user_agent,
         "declara en inglés los límites efectivos por defecto")
     chk(z.dedup_key == "pawchive://patreon/30500811/post/168501262/attachment/1",
