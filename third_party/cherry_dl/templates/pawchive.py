@@ -17,8 +17,7 @@ Verificado en vivo el 2026-09-05:
     que el dedup por hash funciona antes de descargar.
   - Los archivos NO se sirven desde el dominio principal: van por
     `https://file.pawchive.pw/data{path}`, con soporte de Range (206).
-  - El host de archivos corre DDoS-Guard (el principal, Cloudflare), así que
-    aplica el mismo bypass `Accept: text/css` y las cookies DDG del engine.
+  - El host de archivos corre DDoS-Guard (el principal, Cloudflare).
 
 ## El ritmo lo puso su administrador
 
@@ -80,6 +79,12 @@ El techo de caudal es nuestra estimación de lo razonable, no una cifra dada por
 el administrador. Puede moverse hacia abajo sin preguntar; subirlo requiere una
 nueva prueba deliberada.
 
+El 2026-09-16 el operador cambió la política del host de archivos: los clientes
+automatizados deben identificarse y no fingir ser un navegador. El transporte
+CDP empezó a recibir `reason=Failed` sin estado HTTP; la misma URL respondió
+`206` por HTTP directo con el User-Agent identificable de abajo. Por eso los
+archivos ya no pasan por Chromium.
+
 ## `preview_only`
 
 El listado paginado expone `preview_state: "pending"` / `has_full: false`; las
@@ -110,6 +115,10 @@ _BASE = "https://pawchive.pw"
 # devuelve 404 para esas rutas; `img.pawchive.pw` sirve únicamente miniaturas.
 _FILES = "https://file.pawchive.pw"
 _SERVICES = frozenset(["patreon", "fanbox"])
+_DOWNLOAD_USER_AGENT_BASE = (
+    "Panopticon-CherryDL/0.1 "
+    "(contact: https://github.com/Vajraastra/panopticon"
+)
 
 # URL válida: https://pawchive.pw/{service}/user/{id}
 _URL_RE = re.compile(
@@ -166,15 +175,15 @@ class PawchiveTemplate(SiteTemplate):
         max_bytes_per_sec=2 * 1024**2,
         daily_byte_budget=0,
         # Fallbacks; download_service usa la ventana ajustable de config.
-        download_window_limit=300,
+        download_window_limit=500,
         download_window_seconds=3 * 60 * 60,
-        # `headers_timeout` puede ser red local; la firma remota fue CDP Failed.
-        throttle_failure_codes=frozenset({"no_http_failed"}),
+        # HTTP directo conserva estados reales; no se arma un circuito con
+        # errores ambiguos de red. Los 403/429 siguen su manejo normal.
+        throttle_failure_codes=frozenset(),
         throttle_failure_streak=5,
         throttle_failure_window=120.0,
         throttle_cooldowns=(15 * 60, 30 * 60, 60 * 60, 3 * 60 * 60),
-        transport="browser_image",
-        browser_origin=_BASE + "/",
+        transport="http",
     )
     provides_file_hashes = True  # el hash SHA-256 viene en el path
     scan_page_delay = 0.0        # lo espacia el pacer; sumar aquí sería doble
@@ -302,6 +311,7 @@ class PawchiveTemplate(SiteTemplate):
         service = artist.service
         creator_id = artist.artist_id
         offset = 0
+        download_user_agent = _download_user_agent(self.engine)
 
         while True:
             url = (
@@ -327,7 +337,9 @@ class PawchiveTemplate(SiteTemplate):
                     pub = parse_date_utc(post.get("published", ""))
                     if pub is not None and pub < since:
                         return  # newest-first → no hay nada más reciente detrás
-                for file_info in _extract_files_from_post(post, artist):
+                for file_info in _extract_files_from_post(
+                    post, artist, download_user_agent,
+                ):
                     yield file_info
 
             offset += _PAGE_SIZE
@@ -335,7 +347,24 @@ class PawchiveTemplate(SiteTemplate):
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _extract_files_from_post(post: dict, artist: ArtistInfo):
+def _download_user_agent(engine) -> str:
+    """Identifica el cliente y declara la política efectiva a Pawchive."""
+    config = getattr(engine, "config", None)
+    pawchive = getattr(config, "pawchive", None)
+    count = int(getattr(pawchive, "downloads_per_window", 500))
+    gib = float(getattr(pawchive, "gigabytes_per_window", 25.0))
+    hours = float(getattr(pawchive, "window_hours", 3.0))
+    hour_word = "hour" if hours == 1 else "hours"
+    return (
+        f"{_DOWNLOAD_USER_AGENT_BASE}; policy: max 2 MiB/s; "
+        f"max 2 concurrent downloads; max {count} files or {gib:g} GiB "
+        f"per {hours:g} {hour_word})"
+    )
+
+
+def _extract_files_from_post(
+    post: dict, artist: ArtistInfo, download_user_agent: str,
+):
     """
     Genera un FileInfo por cada archivo descargable del post: el `file`
     principal y cada uno de sus `attachments`.
@@ -346,7 +375,10 @@ def _extract_files_from_post(post: dict, artist: ArtistInfo):
     post_id = str(post.get("id", ""))
     post_title = post.get("title", "")
     date_published = post.get("published", "")
-    referer = {"Referer": artist.url}
+    request_headers = {
+        "Referer": artist.url,
+        "User-Agent": download_user_agent,
+    }
     preview_state = str(post.get("preview_state") or "").strip().casefold()
     post_is_preview = preview_state == "pending" or post.get("has_full") is False
 
@@ -388,7 +420,7 @@ def _extract_files_from_post(post: dict, artist: ArtistInfo):
             post_title=post_title,
             date_published=date_published,
             remote_hash=_hash_from_path(path) or "",
-            extra_headers=referer,
+            extra_headers=request_headers,
         )
 
 

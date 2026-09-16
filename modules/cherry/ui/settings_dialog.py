@@ -145,7 +145,7 @@ class SettingsDialog(QDialog):
 
         recommended = QLabel(self.tr(
             "cherry.settings_pawchive_recommended",
-            "Recommended default: 300 downloads or 25 GB / 3 hours · fixed "
+            "Recommended default: 500 downloads or 25 GB / 3 hours · fixed "
             "2 MB/s shared by Pawchive workers.",
         ))
         recommended.setWordWrap(True)

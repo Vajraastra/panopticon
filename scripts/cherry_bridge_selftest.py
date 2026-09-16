@@ -547,7 +547,7 @@ def test_a5() -> None:
           and isinstance(cfg["daily_limit_gb"], float)
           and cfg["daily_limit_gb"] > 0,
           f"({cfg['daily_limit_enabled']=}, {cfg['daily_limit_gb']=})")
-    check("Pawchive conserva la recomendación 300/3 como valores válidos",
+    check("Pawchive conserva la recomendación 500/3 como valores válidos",
           isinstance(cfg["pawchive_downloads_per_window"], int)
           and cfg["pawchive_downloads_per_window"] > 0
           and isinstance(cfg["pawchive_gigabytes_per_window"], float)

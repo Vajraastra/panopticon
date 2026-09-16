@@ -41,7 +41,7 @@ batch se difiere Pawchive y se continúa con el siguiente trabajo sin congelar
 toda la cola. Los archivos fallidos mantienen su comportamiento FIFO: pasan al
 fondo mediante `queue_position`, mientras una cuota no altera sus posiciones.
 
-Valor inicial: 300 archivos o 25 GB cada 3 horas, lo que ocurra primero. Ambos
+Valor actual: 500 archivos o 25 GB cada 3 horas, lo que ocurra primero. Ambos
 límites y las horas se editan desde Ajustes.
 
 ### Nombre de artista desde una fuente Pawchive (2026-09-09)
@@ -609,6 +609,22 @@ engine descarte la sesión Chromium afectada. Sólo el resultado de esa sesión 
 cooldown aumenta. Las descargas ordinarias no se duplican. En ejecución batch, tanto la cola
 principal como la diferida adquieren la cuota/circuito con `wait=False`; si no hay permiso,
 conservan la fila y terminan la pasada del sitio en vez de dormir todo el trabajo.
+
+### Pawchive vuelve a HTTP identificable (2026-09-16)
+
+El operador cambió el host de archivos y pidió que las herramientas se identifiquen mediante
+`User-Agent` y no finjan ser navegadores. El transporte Chromium/CDP empezó a devolver
+`reason=Failed` sin estado HTTP después de una tanda grande, aunque página y API seguían en 200.
+La misma URL fallida respondió `206 Partial Content` a una petición HTTP directa de un byte con
+un `User-Agent` `Panopticon-CherryDL/0.1` enlazado al repositorio.
+
+Pawchive usa ahora el transporte HTTP normal con ese identificador. El mismo `User-Agent` declara
+la política efectiva de la ejecución en inglés legible (caudal, concurrencia, archivos/GB y horas
+de ventana), de modo que el operador pueda verla en sus registros incluso cuando David cambie
+Ajustes. Se conserva
+`Referer`, ritmo, pool, caudal, pausa y ventana. Se retira la firma `no_http_failed`: pertenecía
+a CDP y no debe convertir un fallo local de red en un bloqueo remoto cuando HTTP ya entrega
+estados reales.
 
 ## Organización manual ZIP/RAR por proyecto (2026-09-10)
 

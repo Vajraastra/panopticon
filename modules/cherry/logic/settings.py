@@ -55,7 +55,7 @@ def save(
     timeout: int,
     daily_limit_enabled: bool = False,
     daily_limit_gb: float = 100.0,
-    pawchive_downloads_per_window: int = 300,
+    pawchive_downloads_per_window: int = 500,
     pawchive_gigabytes_per_window: float = 25.0,
     pawchive_window_hours: float = 3.0,
 ) -> dict:

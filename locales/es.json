@@ -734,7 +734,7 @@
   "cherry.settings_pawchive_hours_suffix": " h",
   "cherry.settings_pawchive_every": "cada",
   "cherry.settings_pawchive_tip": "Solo Pawchive. Se pausa con lo que ocurra primero: cantidad de archivos o GB transferidos. Su ancho de banda combinado permanece limitado a 2 MB/s.",
-  "cherry.settings_pawchive_recommended": "Valor recomendado: 300 descargas o 25 GB / 3 horas · 2 MB/s fijos compartidos por los workers de Pawchive.",
+  "cherry.settings_pawchive_recommended": "Valor recomendado: 500 descargas o 25 GB / 3 horas · 2 MB/s fijos compartidos por los workers de Pawchive.",
   "cherry.settings_pawchive_or": "o",
   "cherry.settings_note": "Cambiar la carpeta de descargas no mueve nada: los proyectos que ya existen conservan la ruta con la que se crearon, y solo los nuevos van a parar aquí. Se guarda en {file}, compartido con el cherry-dl autónomo.",
   "cherry.settings_dir_empty": "La carpeta de descargas no puede estar vacía.",

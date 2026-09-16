@@ -127,14 +127,14 @@ def main() -> None:
           "Pawchive conserva 2 MiB/s agregados")
     check(transfer.post_download_delay == 5.0,
           "Pawchive conserva cinco segundos post-descarga")
-    check(transfer.download_window_limit == 300,
-          "Pawchive conserva la ventana recomendada de 300")
+    check(transfer.download_window_limit == 500,
+          "Pawchive conserva la ventana recomendada de 500")
     check(transfer.download_window_seconds == 3 * 60 * 60,
           "Pawchive conserva la ventana de tres horas")
-    check(transfer.throttle_failure_codes == frozenset({"no_http_failed"}),
-          "Pawchive conserva la firma del cortacircuitos")
-    check(transfer.transport == "browser_image",
-          "Pawchive conserva el transporte de navegador")
+    check(transfer.throttle_failure_codes == frozenset(),
+          "Pawchive no trata errores ambiguos de red como bloqueo")
+    check(transfer.transport == "http",
+          "Pawchive usa HTTP directo identificable")
 
     engine = DownloadEngine(cfg)
     engine.set_scan_policy(patreon.scan)

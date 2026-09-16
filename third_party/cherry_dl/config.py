@@ -49,7 +49,7 @@ class PawchiveConfig(BaseModel):
     de descargas o a sus GB transferidos.
     """
 
-    downloads_per_window: int = Field(300, ge=1, le=100_000)
+    downloads_per_window: int = Field(500, ge=1, le=100_000)
     gigabytes_per_window: float = Field(25.0, gt=0, le=10_000)
     window_hours: float = Field(3.0, gt=0, le=168)
 

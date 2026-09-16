@@ -24,6 +24,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -48,6 +49,7 @@ from cherry_dl.templates.kemono import KemonoTemplate                     # noqa
 from cherry_dl.templates.patreon import PatreonTemplate                   # noqa: E402
 from cherry_dl.templates.pawchive import (                                # noqa: E402
     PawchiveTemplate,
+    _download_user_agent,
     _hash_from_path,
 )
 
@@ -179,13 +181,12 @@ async def main() -> int:
         "min_request_interval = 1 s (1 petición/s)")
     chk(PawchiveTemplate.post_download_delay == 5.0,
         "espera 5 s desde el final de un archivo antes de iniciar otro")
-    chk(PawchiveTemplate.download_window_limit == 300,
-        "máximo de 300 transferencias por ventana")
+    chk(PawchiveTemplate.download_window_limit == 500,
+        "máximo de 500 transferencias por ventana")
     chk(PawchiveTemplate.download_window_seconds == 3 * 60 * 60,
         "la ventana móvil dura 3 horas")
-    chk(PawchiveTemplate.throttle_failure_codes
-        == frozenset({"no_http_failed"}),
-        "sólo Failed sin HTTP arma el cortacircuitos")
+    chk(PawchiveTemplate.throttle_failure_codes == frozenset(),
+        "HTTP directo no arma circuito con fallos ambiguos de red")
     chk(PawchiveTemplate.throttle_failure_streak == 5,
         "cinco fallos consecutivos; uno aislado no pausa")
     chk(PawchiveTemplate.throttle_cooldowns
@@ -195,6 +196,15 @@ async def main() -> int:
         "scan_page_delay = 0: lo espacia el pacer, no un sleep propio")
     chk(PawchiveTemplate.provides_file_hashes is True,
         "declara que expone hashes → dedup antes de descargar")
+    custom_ua = _download_user_agent(SimpleNamespace(config=SimpleNamespace(
+        pawchive=SimpleNamespace(
+            downloads_per_window=500,
+            gigabytes_per_window=25.0,
+            window_hours=3.0,
+        )
+    )))
+    chk("max 500 files or 25 GiB per 3 hours" in custom_ua,
+        "el User-Agent refleja los límites ajustados por el usuario")
 
     eng = EngineFalso()
     t = PawchiveTemplate(eng)
@@ -240,6 +250,12 @@ async def main() -> int:
     chk(z.url.endswith("?f=NC_Senpai-San.zip"), "lleva el ?f= que usa la propia web")
     chk(z.remote_hash == H2, "el hash sale del path, antes de descargar")
     chk(z.extra_headers.get("Referer") == a.url, "manda Referer del creador")
+    user_agent = z.extra_headers.get("User-Agent", "")
+    chk(user_agent.startswith("Panopticon-CherryDL/"),
+        "se identifica como descargador, sin fingir ser navegador")
+    chk(("policy: max 2 MiB/s; max 2 concurrent downloads; "
+         "max 500 files or 25 GiB per 3 hours") in user_agent,
+        "declara en inglés los límites efectivos por defecto")
     chk(z.dedup_key == "pawchive://patreon/30500811/post/168501262/attachment/1",
         "la identidad Pawchive es estable entre preview y original")
     raro = next(f for f in files if f.filename.startswith("y"))
@@ -332,10 +348,10 @@ async def main() -> int:
         "techo de 2 MB/s agregado")
     chk(PawchiveTemplate.daily_byte_budget == 0,
         "sin presupuesto diario; mandan caudal, pool y pausa")
-    chk(PawchiveTemplate.download_transport == "browser_image",
-        "los archivos usan el transporte de subrecurso de navegador")
-    chk(PawchiveTemplate.browser_origin == "https://pawchive.pw/",
-        "el navegador nace en la raíz de Pawchive")
+    chk(PawchiveTemplate.download_transport == "http",
+        "los archivos usan HTTP directo identificable")
+    chk(not PawchiveTemplate.browser_origin,
+        "Pawchive ya no finge una sesión de navegador")
     # La aritmética que justifica que existan: cumplir 1 petición/s con los
     # archivos de esa tarde daba diez veces el caudal que ahora se permite.
     medido = 3854 * 2**20 / 360          # 3.854 MB en 6 minutos, medidos en disco

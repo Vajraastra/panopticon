@@ -56,8 +56,8 @@ async def main() -> None:
             config.INDEX_DB = config.CHERRY_DIR / "index.db"
 
             defaults = config.UserConfig(download_dir=str(work))
-            check(defaults.pawchive.downloads_per_window == 300,
-                  "la cuota recomendada debe ser 300")
+            check(defaults.pawchive.downloads_per_window == 500,
+                  "la cuota recomendada debe ser 500")
             check(defaults.pawchive.gigabytes_per_window == 25.0,
                   "la cuota recomendada debe ser 25 GB")
             check(defaults.pawchive.window_hours == 3.0,

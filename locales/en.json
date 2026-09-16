@@ -734,7 +734,7 @@
   "cherry.settings_pawchive_hours_suffix": " h",
   "cherry.settings_pawchive_every": "every",
   "cherry.settings_pawchive_tip": "Pawchive only. It pauses at whichever happens first: the file count or transferred GB. Its combined bandwidth remains capped at 2 MB/s.",
-  "cherry.settings_pawchive_recommended": "Recommended default: 300 downloads or 25 GB / 3 hours · fixed 2 MB/s shared by Pawchive workers.",
+  "cherry.settings_pawchive_recommended": "Recommended default: 500 downloads or 25 GB / 3 hours · fixed 2 MB/s shared by Pawchive workers.",
   "cherry.settings_pawchive_or": "or",
   "cherry.settings_note": "Changing the download folder does not move anything: existing projects keep the path they were created with, and only new ones land here. Saved to {file}, shared with the standalone cherry-dl.",
   "cherry.settings_dir_empty": "The download folder cannot be empty.",
