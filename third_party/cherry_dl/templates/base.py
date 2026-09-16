@@ -174,6 +174,12 @@ class SiteTemplate(ABC):
     download_transport: str = "http"
     browser_origin: str = ""
 
+    def transfer_headers(
+        self, artist: ArtistInfo, stored: dict | None = None,
+    ) -> dict:
+        """Actualiza encabezados justo antes de transferir una fila en cola."""
+        return dict(stored or {})
+
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
         if "category" in cls.__dict__:

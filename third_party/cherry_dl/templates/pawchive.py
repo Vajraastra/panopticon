@@ -188,6 +188,15 @@ class PawchiveTemplate(SiteTemplate):
     provides_file_hashes = True  # el hash SHA-256 viene en el path
     scan_page_delay = 0.0        # lo espacia el pacer; sumar aquí sería doble
 
+    def transfer_headers(
+        self, artist: ArtistInfo, stored: dict | None = None,
+    ) -> dict:
+        """Inyecta la identidad vigente incluso en colas creadas antes del UA."""
+        headers = dict(stored or {})
+        headers["Referer"] = artist.url or (_BASE + "/")
+        headers["User-Agent"] = _download_user_agent(self.engine)
+        return headers
+
     # ── Detección ──────────────────────────────────────────────────────────────
 
     @classmethod

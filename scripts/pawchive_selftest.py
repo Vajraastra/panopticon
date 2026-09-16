@@ -256,6 +256,9 @@ async def main() -> int:
     chk(("policy: 2 MiB/s sustained bandwidth; max 2 concurrent downloads; "
          "max 500 files or 25 GiB per 3 hours") in user_agent,
         "declara en inglés los límites efectivos por defecto")
+    legacy_headers = t.transfer_headers(a, {"Referer": a.url})
+    chk(legacy_headers.get("User-Agent") == user_agent,
+        "una fila antigua recibe el User-Agent vigente al transferirse")
     chk(z.dedup_key == "pawchive://patreon/30500811/post/168501262/attachment/1",
         "la identidad Pawchive es estable entre preview y original")
     raro = next(f for f in files if f.filename.startswith("y"))

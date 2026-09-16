@@ -628,6 +628,12 @@ a CDP y no debe convertir un fallo local de red en un bloqueo remoto cuando HTTP
 estados reales. Al construir la nueva política se limpia cualquier circuito CDP persistido, sin
 borrar las transferencias que alimentan la ventana de archivos/GB.
 
+Las filas que ya estaban en `pending_queue` conservaban el JSON de encabezados capturado al
+descubrirlas y, por tanto, sólo enviaban `Referer`. El servicio aplica ahora el hook
+`transfer_headers()` al reconstruir cada `FileInfo`: Pawchive inyecta el `User-Agent` vigente justo
+antes de descargar, también para colas antiguas y para sus reintentos diferidos. No se reescriben
+manualmente las bases ni se depende de que el scan vuelva a insertar la fila.
+
 ## Organización manual ZIP/RAR por proyecto (2026-09-10)
 
 archives.py reutiliza next_counter, build_filename y add_file para incorporar los miembros

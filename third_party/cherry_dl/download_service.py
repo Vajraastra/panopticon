@@ -1160,7 +1160,9 @@ async def run_profile_download(
                             ),
                             remote_size=pf.get("remote_size"),
                             is_preview=bool(pf.get("is_preview")),
-                            extra_headers=extra,
+                            extra_headers=template.transfer_headers(
+                                artist_info, extra,
+                            ),
                         )
                         # La cola llena es backpressure normal: un archivo grande
                         # de Pawchive puede ocupar ambos workers durante bastante
