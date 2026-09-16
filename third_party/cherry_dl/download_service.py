@@ -766,6 +766,12 @@ async def run_profile_download(
                         failure_window_seconds=transfer_policy.throttle_failure_window,
                         cooldowns=transfer_policy.throttle_cooldowns,
                     )
+                    if not failure_codes:
+                        # La política pudo retirar un cortacircuitos anterior
+                        # (Pawchive dejó CDP en 2026-09-16). Su enfriamiento
+                        # persistido ya no debe bloquear el transporte nuevo;
+                        # las cuotas de archivos y bytes se conservan.
+                        await throttle.clear_circuit()
                     throttles[template.name] = throttle
 
             # ── Resolver artista (puede disparar lazy auth / modal) ─────────

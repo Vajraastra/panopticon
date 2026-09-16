@@ -179,6 +179,26 @@ async def main() -> int:
         check(not normal.probe, "una sonda exitosa cierra el circuito")
         await gate.abandon(normal)
 
+        print("\n[4b] Retirar la firma limpia sólo el circuito heredado")
+        legacy_state = tmp / "legacy-circuit.json"
+        legacy_state.write_text(json.dumps({"pawchive": {
+            "successes": [fake.now],
+            "transfers": [{"at": fake.now, "bytes": 1234}],
+            "failure_streak": 0,
+            "last_failure": fake.now,
+            "circuit_open": True,
+            "cooldown_until": fake.now + 10_800,
+            "cooldown_level": 4,
+        }}), encoding="utf-8")
+        legacy_gate = make(legacy_state, fake)
+        await legacy_gate.clear_circuit()
+        persisted = json.loads(legacy_state.read_text(encoding="utf-8"))["pawchive"]
+        check(not persisted["circuit_open"] and persisted["cooldown_until"] == 0,
+              "el enfriamiento obsoleto desaparece de inmediato")
+        check(len(persisted["successes"]) == 1
+              and persisted["transfers"][0]["bytes"] == 1234,
+              "la ventana de archivos y bytes permanece intacta")
+
         print("\n[5] Un éxito anterior no deshace un corte nuevo")
         stale_state = tmp / "stale-success.json"
         stale_gate = make(stale_state, fake)

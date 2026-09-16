@@ -181,6 +181,20 @@ class SiteThrottle:
             self._last_notice = key
             callback(kind, max(0.0, until - now))
 
+    async def clear_circuit(self) -> None:
+        """Retira un circuito heredado sin alterar la cuota de archivos/bytes."""
+        async with self._condition:
+            data, state = self._read()
+            state["failure_streak"] = 0
+            state["last_failure"] = 0.0
+            state["circuit_open"] = False
+            state["cooldown_until"] = 0.0
+            state["cooldown_level"] = 0
+            self._probe_in_flight = False
+            self._last_notice = None
+            _write(self.path, data)
+            self._condition.notify_all()
+
     async def acquire(
         self, on_wait: WaitFn | None = None, *, expected_bytes: int | None = None,
         wait: bool = True,

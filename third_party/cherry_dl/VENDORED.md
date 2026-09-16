@@ -624,7 +624,8 @@ de ventana), de modo que el operador pueda verla en sus registros incluso cuando
 Ajustes. Se conserva
 `Referer`, ritmo, pool, caudal, pausa y ventana. Se retira la firma `no_http_failed`: pertenecía
 a CDP y no debe convertir un fallo local de red en un bloqueo remoto cuando HTTP ya entrega
-estados reales.
+estados reales. Al construir la nueva política se limpia cualquier circuito CDP persistido, sin
+borrar las transferencias que alimentan la ventana de archivos/GB.
 
 ## Organización manual ZIP/RAR por proyecto (2026-09-10)
 
