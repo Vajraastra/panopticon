@@ -1213,6 +1213,7 @@ class CherryView(QWidget):
         diría lo mismo; nada que refrescar en la tabla."""
         dialog = SettingsDialog(self._theme, self._lm, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._panel.refresh_pawchive_quota()
             self._set_status(self.tr("cherry.settings_saved", "Settings saved."), flash=True)
 
     def _open_duplicates(self) -> None:

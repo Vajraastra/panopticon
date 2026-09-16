@@ -260,17 +260,17 @@ archivo completo corrompería el vídeo. Banco Chromium: 26/26.
 
 ### `site_throttle.py` — ventana configurable y sonda automática (2026-09-06/07)
 
-La instrumentación mostró la causa que antes se escondía: después de algo más de 300
-transferencias, `file.pawchive.pw` dejó de entregar cabeceras (`reason=Failed` y timeout) y se
-recuperó solo horas después. La cuota nueva permite como máximo **300 transferencias exitosas en
-cualquier ventana móvil de 3 horas**, global para Pawchive y persistente en
+La instrumentación mostró la causa que antes se escondía: después de una tanda grande,
+`file.pawchive.pw` dejó de entregar cabeceras (`reason=Failed` y timeout) y se recuperó solo horas
+después. La cuota nueva limita las transferencias exitosas por cantidad de archivos y bytes en
+una ventana móvil configurable, global para Pawchive y persistente en
 `~/.cherry-dl/site_throttle.json`. Cada worker reserva cupo antes de pedir; dos workers no pueden
 cruzar juntos el límite y un intento fallido devuelve su reserva.
 
-Los valores siguen siendo **300 / 3 h** por defecto y la UI los marca expresamente como
-recomendados, pero ahora viven en `[pawchive] downloads_per_window` y `window_hours` dentro de
-`config.toml`. El cambio sólo afecta a Pawchive. Su techo agregado de **2 MB/s** permanece fijo en
-el template; los demás servicios continúan sin límite de caudal propio.
+Los valores recomendados son **500 archivos o 25 GiB / 3 h** y viven en `[pawchive]`
+(`downloads_per_window`, `gigabytes_per_window`, `window_hours`) dentro de `config.toml`. El cambio
+sólo afecta a Pawchive. Su techo agregado de **2 MiB/s** permanece fijo en el template; los demás
+servicios continúan bajo sus propias políticas.
 
 El cortacircuitos cuenta únicamente cinco firmas CDP `no_http_failed` dentro de dos minutos. El
 timeout de cabeceras se conserva en el diagnóstico pero no cuenta, porque también puede venir de
@@ -633,6 +633,15 @@ descubrirlas y, por tanto, sólo enviaban `Referer`. El servicio aplica ahora el
 `transfer_headers()` al reconstruir cada `FileInfo`: Pawchive inyecta el `User-Agent` vigente justo
 antes de descargar, también para colas antiguas y para sus reintentos diferidos. No se reescriben
 manualmente las bases ni se depende de que el scan vuelva a insertar la fila.
+
+### `site_throttle.py` + UI nativa — medidor visual de cuota Pawchive (2026-09-16)
+
+`QuotaSnapshot` expone una lectura no destructiva del mismo estado móvil que bloquea las
+descargas: bytes y archivos terminados, reservas activas y tiempo hasta la próxima liberación.
+La consola lo muestra siempre y lo actualiza durante las transferencias mediante `QuotaStatus`;
+los bytes en vuelo se señalan como provisionales y sólo pasan al total persistido al terminar el
+archivo. La lectura y el evento existen únicamente para la cuota configurada de Pawchive: ningún
+límite ni contador se comparte con otros sitios.
 
 ## Organización manual ZIP/RAR por proyecto (2026-09-10)
 

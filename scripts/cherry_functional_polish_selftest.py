@@ -171,6 +171,17 @@ async def main() -> None:
             panel._on_job_progress(3, 8)
             check(panel._batch_bar.isVisible() and panel._batch_bar.value() == 3,
                   "la barra batch debe contar trabajos programados")
+            from third_party.cherry_dl.site_throttle import QuotaSnapshot
+            snapshot = QuotaSnapshot(
+                "pawchive", 20, 500, 102_606_226, 25 * 1024**3,
+                1, 10_800, 9_900,
+            )
+            panel._set_quota(snapshot, 2**20)
+            check("24.903 GB" in panel._quota.text()
+                  and "479 files" in panel._quota.text(),
+                  "el medidor Pawchive descuenta cuota persistida y bytes en vuelo")
+            check("2 h 45 min" in panel._quota.text(),
+                  "el medidor muestra cuándo se libera la próxima cuota")
             panel.close()
 
             class CreatedProbe:

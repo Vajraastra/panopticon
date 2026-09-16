@@ -115,6 +115,27 @@ async def main() -> int:
         check(persisted["pawchive"]["transfers"][-1]["bytes"] == 50,
               "el tamaño real queda persistido")
 
+        snapshot_state = tmp / "snapshot.json"
+        snapshot_gate = make(
+            snapshot_state, fake, limit=5, byte_limit=100,
+        )
+        active = await snapshot_gate.acquire(expected_bytes=40)
+        snap = snapshot_gate.snapshot()
+        check(snap.active_files == 1 and snap.used_files == 0,
+              "el snapshot distingue una reserva de una descarga terminada")
+        await snapshot_gate.finish(
+            active, success=True, transferred_bytes=40,
+        )
+        snap = snapshot_gate.snapshot()
+        check(snap.used_files == 1 and snap.used_bytes == 40,
+              "el snapshot usa exactamente la cuota persistida")
+        check(round(snap.next_release_seconds) == 10_800,
+              "el snapshot anuncia la próxima liberación de la ventana")
+        fake.now += 10_801
+        snap = snapshot_gate.snapshot()
+        check(snap.used_files == 0 and snap.used_bytes == 0,
+              "el snapshot poda consumo vencido sin una descarga nueva")
+
         reserved_state = tmp / "byte-reservations.json"
         reserved_gate = make(reserved_state, fake, limit=50, byte_limit=100)
         large = await reserved_gate.acquire(expected_bytes=70)

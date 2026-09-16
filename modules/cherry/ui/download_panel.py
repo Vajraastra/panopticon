@@ -82,12 +82,21 @@ class DownloadPanel(QWidget):
         self._lm = locale
         self._rows: list[_WorkerRow] = []
         self._cooldown_left = 0
+        self._quota_state = None
+        self._quota_in_flight = 0
+        self._quota_next_release = 0
 
         self._build_ui()
 
         self._cooldown_timer = QTimer(self)
         self._cooldown_timer.setInterval(1000)
         self._cooldown_timer.timeout.connect(self._tick_cooldown)
+
+        self._quota_timer = QTimer(self)
+        self._quota_timer.setInterval(1000)
+        self._quota_timer.timeout.connect(self._tick_quota)
+        self._quota_timer.start()
+        self.refresh_pawchive_quota()
 
     # ── i18n / tema ───────────────────────────────────────────────────────
     def tr(self, key: str, default: str) -> str:
@@ -133,6 +142,19 @@ class DownloadPanel(QWidget):
         self._counters = QLabel("")
         self._counters.setStyleSheet("font-size: 13px;")
         lay.addWidget(self._counters)
+
+        self._quota = QLabel("")
+        self._quota.setWordWrap(True)
+        self._quota.setStyleSheet(
+            f"color: {self._color('accent_info', '#55aaff')}; font-size: 12px;"
+        )
+        self._quota.setToolTip(self.tr(
+            "cherry.dl_pawchive_quota_tip",
+            "Pawchive only. Completed files come from the persistent rolling "
+            "window; bytes still downloading are provisional and are committed "
+            "only when the transfer finishes.",
+        ))
+        lay.addWidget(self._quota)
 
         self._file_bar = QProgressBar()
         self._file_bar.setFormat(self.tr(
@@ -187,6 +209,7 @@ class DownloadPanel(QWidget):
         bridge.counters.connect(self._on_counters)
         bridge.source_done.connect(self._on_source_done)
         bridge.site_blocked.connect(self._on_site_blocked)
+        bridge.quota_status.connect(self._on_quota_status)
         if queue is not None:
             queue.profile_started.connect(self._on_profile_started)
             queue.job_progress.connect(self._on_job_progress)
@@ -203,6 +226,7 @@ class DownloadPanel(QWidget):
         self.set_phase(self.tr("cherry.dl_starting", "Starting…"))
         for row in self._rows:
             row.idle()
+        self.refresh_pawchive_quota()
 
     def set_phase(self, text: str) -> None:
         self._phase.setText(text)
@@ -252,6 +276,102 @@ class DownloadPanel(QWidget):
             f'<span style="color:{warn if errors else dim}">✗ {errors}</span>&nbsp;&nbsp;'
             f'<span style="color:{dim}">⏸ {deferred}</span>'
         )
+
+    def refresh_pawchive_quota(self) -> None:
+        """Lee el mismo estado persistente que hace cumplir el motor."""
+        try:
+            from third_party.cherry_dl import config as cherry_config
+            from third_party.cherry_dl.site_throttle import SiteThrottle
+
+            cfg = cherry_config.load_config().pawchive
+            gate = SiteThrottle(
+                "pawchive",
+                limit=cfg.downloads_per_window,
+                byte_limit=int(cfg.gigabytes_per_window * 1024**3),
+                window_seconds=cfg.window_hours * 60 * 60,
+                failure_threshold=1,
+                failure_window_seconds=0,
+                cooldowns=(0,),
+                path=cherry_config.CHERRY_DIR / "site_throttle.json",
+            )
+            self._set_quota(gate.snapshot(), 0)
+        except Exception:
+            # El medidor nunca debe impedir abrir Cherry si el config quedó
+            # temporalmente ilegible; el diálogo de ajustes dará el error útil.
+            self._quota.setVisible(False)
+
+    def _on_quota_status(self, event) -> None:
+        self._set_quota(event.snapshot, event.in_flight_bytes)
+
+    def _set_quota(self, snapshot, in_flight_bytes: int) -> None:
+        if snapshot.site != "pawchive":
+            return
+        self._quota_state = snapshot
+        self._quota_in_flight = max(0, int(in_flight_bytes))
+        self._quota_next_release = max(
+            0, int(round(snapshot.next_release_seconds)),
+        )
+        self._render_quota()
+        self._quota.setVisible(True)
+
+    def _render_quota(self) -> None:
+        state = self._quota_state
+        if state is None:
+            self._quota.setVisible(False)
+            return
+        projected = state.used_bytes + self._quota_in_flight
+        remaining = max(0, state.byte_limit - projected)
+        files_left = max(
+            0, state.file_limit - state.used_files - state.active_files,
+        )
+        release = (
+            self._format_duration(self._quota_next_release)
+            if self._quota_next_release > 0
+            else self.tr("cherry.dl_quota_no_release", "no usage yet")
+        )
+        active = ""
+        if self._quota_in_flight:
+            active = self.tr(
+                "cherry.dl_quota_active", " · {gb:.3f} GB downloading",
+            ).format(gb=self._quota_in_flight / 2**30)
+        self._quota.setText(self.tr(
+            "cherry.dl_pawchive_quota",
+            "Pawchive · {remaining:.3f} GB remaining of {limit:g} · "
+            "{files} files remaining of {file_limit} · {hours:g} h rolling "
+            "window · next release: {release}{active}",
+        ).format(
+            remaining=remaining / 2**30,
+            limit=state.byte_limit / 2**30,
+            files=files_left,
+            file_limit=state.file_limit,
+            hours=state.window_seconds / 3600,
+            release=release,
+            active=active,
+        ))
+
+    def _tick_quota(self) -> None:
+        if self._quota_state is None or self._quota_next_release <= 0:
+            return
+        self._quota_next_release -= 1
+        if self._quota_next_release <= 0:
+            self.refresh_pawchive_quota()
+        else:
+            self._render_quota()
+
+    def _format_duration(self, seconds: int) -> str:
+        hours, remainder = divmod(max(0, int(seconds)), 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            return self.tr(
+                "cherry.dl_quota_time_hm", "{h} h {m} min",
+            ).format(h=hours, m=minutes)
+        if minutes:
+            return self.tr(
+                "cherry.dl_quota_time_ms", "{m} min {s} s",
+            ).format(m=minutes, s=secs)
+        return self.tr(
+            "cherry.dl_quota_time_s", "{s} s",
+        ).format(s=secs)
 
     def _ensure_slots(self, count: int) -> None:
         dim = self._color("text_dim", "#888")

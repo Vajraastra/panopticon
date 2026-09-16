@@ -35,6 +35,20 @@ class CircuitTrip:
     level: int
 
 
+@dataclass(frozen=True)
+class QuotaSnapshot:
+    """Lectura puntual de una ventana móvil, incluida su cuota en vuelo."""
+
+    site: str
+    used_files: int
+    file_limit: int
+    used_bytes: int
+    byte_limit: int
+    active_files: int
+    window_seconds: float
+    next_release_seconds: float
+
+
 class ThrottleDeferred(Exception):
     """Una ejecución batch debe continuar en vez de dormir por esta cuota."""
 
@@ -180,6 +194,34 @@ class SiteThrottle:
         if callback is not None and key != self._last_notice:
             self._last_notice = key
             callback(kind, max(0.0, until - now))
+
+    def snapshot(self) -> QuotaSnapshot:
+        """Devuelve el consumo vigente sin alterar la cuota persistida.
+
+        ``used_bytes`` contiene sólo transferencias terminadas: los bytes que
+        todavía viajan se añaden en el evento de progreso del servicio. Esto
+        mantiene el medidor auditable contra el JSON y evita contar dos veces
+        un archivo cuando pasa de en vuelo a terminado.
+        """
+        _data, state = self._read()
+        now = self._clock()
+        self._prune(state, now)
+        expirations = [
+            float(value) + self.window_seconds
+            for value in state["successes"]
+        ]
+        return QuotaSnapshot(
+            site=self.site,
+            used_files=len(state["successes"]),
+            file_limit=self.limit,
+            used_bytes=sum(item["bytes"] for item in state["transfers"]),
+            byte_limit=self.byte_limit,
+            active_files=self._reservations,
+            window_seconds=self.window_seconds,
+            next_release_seconds=(
+                max(0.0, min(expirations) - now) if expirations else 0.0
+            ),
+        )
 
     async def clear_circuit(self) -> None:
         """Retira un circuito heredado sin alterar la cuota de archivos/bytes."""

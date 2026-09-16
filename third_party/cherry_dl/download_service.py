@@ -24,6 +24,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
@@ -240,10 +241,23 @@ class SiteMetrics:
     values: dict
 
 
+@dataclass(frozen=True)
+class QuotaStatus:
+    """Estado visual de la ventana móvil de un sitio.
+
+    El snapshot persistido sólo contiene transferencias terminadas;
+    ``in_flight_bytes`` hace visible lo recibido por los workers actuales sin
+    adelantarlo en la contabilidad definitiva.
+    """
+    snapshot: object
+    in_flight_bytes: int = 0
+
+
 DownloadEvent = Union[
     Log, WorkersResolved, SourceStarted, Cooldown, BatchInfo, FileProgress,
     WorkerStart, WorkerProgress, WorkerDone, WorkerIdle,
     Counters, SourceDone, ScanComplete, ScanProgress, SiteBlocked, SiteMetrics,
+    QuotaStatus,
 ]
 
 EmitFn = Callable[[DownloadEvent], None]
@@ -744,6 +758,28 @@ async def run_profile_download(
             )
             failure_codes = transfer_policy.throttle_failure_codes
             throttle = None
+            quota_progress: dict[int, int] = {}
+            quota_notice_at = 0.0
+
+            def _emit_quota_status(*, force: bool = False) -> None:
+                """Publica Pawchive como máximo cuatro veces por segundo.
+
+                Los callbacks de progreso llegan por chunk; sin este freno el
+                contador visual podría atascar el bucle de Qt igual que antes
+                lo hacían las barras de cada worker.
+                """
+                nonlocal quota_notice_at
+                if template.name != "pawchive" or throttle is None:
+                    return
+                now = time.monotonic()
+                if not force and now - quota_notice_at < 0.25:
+                    return
+                quota_notice_at = now
+                emit(QuotaStatus(
+                    throttle.snapshot(),
+                    sum(max(0, value) for value in quota_progress.values()),
+                ))
+
             if window_limit or failure_codes:
                 throttle_meta[template.name] = {
                     "limit": window_limit,
@@ -773,6 +809,7 @@ async def run_profile_download(
                         # las cuotas de archivos y bytes se conservan.
                         await throttle.clear_circuit()
                     throttles[template.name] = throttle
+                _emit_quota_status(force=True)
 
             # ── Resolver artista (puede disparar lazy auth / modal) ─────────
             pixiv_auth_refreshed = False
@@ -1253,6 +1290,9 @@ async def run_profile_download(
 
                         def make_cb(s: int) -> Callable[[int, int], None]:
                             def cb(done: int, total: int) -> None:
+                                if template.name == "pawchive":
+                                    quota_progress[s] = max(0, int(done))
+                                    _emit_quota_status()
                                 emit(WorkerProgress(s, done, total))
                             return cb
 
@@ -1264,6 +1304,7 @@ async def run_profile_download(
                                 expected_bytes=fi.remote_size,
                                 wait=(source_categories is None),
                             )
+                            _emit_quota_status(force=True)
 
                         async def _download_current_file():
                             return await asyncio.wait_for(
@@ -1293,6 +1334,8 @@ async def run_profile_download(
                                     throttle_permit, success=False,
                                     throttle_failure=False,
                                 )
+                                quota_progress.pop(slot_id, None)
+                                _emit_quota_status(force=True)
                             emit(WorkerDone(slot_id, fi.filename, "⏸"))
                             emit(Log(f"⏸ {fi.filename[:55]}  [timeout — diferido]", "warn"))
                             await move_pending_to_back(folder, fi.dedup_key)
@@ -1315,6 +1358,8 @@ async def run_profile_download(
                                 ),
                                 transferred_bytes=result.file_size,
                             )
+                            quota_progress.pop(slot_id, None)
+                            _emit_quota_status(force=True)
                             if trip is not None:
                                 _report_throttle_trip(template.name, trip.seconds)
 
