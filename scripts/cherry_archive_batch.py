@@ -12,6 +12,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+# La consola clásica de Windows puede seguir en cp1252 aunque un perfil tenga
+# emoji. Mostrar su escape es preferible a abortar todo el inventario batch.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="backslashreplace")
+
 
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
