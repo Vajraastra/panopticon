@@ -332,7 +332,7 @@ class DownloadEngine:
         #
         # Timeouts: connect/write/pool = config.timeout (corto). read = None
         # A PROPÓSITO: el read-timeout de httpx (vía anyio) arma un timer por
-        # CADA lectura del stream, y bajo qasync cada timer es un timer de
+        # CADA lectura del stream; convertir cada chunk en un timer de
         # Windows que solo se libera al dispararse, no al cancelarse. A ~160
         # lecturas/s eso fuga miles de timers y agota los USER handles del
         # proceso ("QEventDispatcherWin32: Failed to create a timer") → crash de
@@ -902,7 +902,7 @@ class DownloadEngine:
                     )
 
                 # Timeout total del engine: retornar limpiamente antes de que el
-                # asyncio.wait_for del TUI dispare CancelledError. En Python 3.12
+                # asyncio.wait_for exterior dispare CancelledError. En Python 3.12
                 # httpx puede re-crear CancelledError al hacer cleanup de streams
                 # HTTP/2, lo que impide que wait_for lo convierta correctamente a
                 # TimeoutError y causa que el worker desaparezca sin log.
@@ -1113,7 +1113,7 @@ class DownloadEngine:
                         _stall = self._stall_timeout
                         _loop = asyncio.get_running_loop()
                         # Reprogramar el watchdog COMO MUCHO cada _resched_every s, NO
-                        # por chunk. Bajo qasync cada reschedule (call_at → startTimer)
+                        # por chunk. Cada reschedule del loop
                         # crea un timer de Windows que solo se libera cuando SE DISPARA,
                         # no cuando se cancela. Reprogramar por chunk (~160/s a 10 MB/s)
                         # acumula miles de timers vivos (cada uno dura _stall segundos)

@@ -3,7 +3,7 @@ Puente entre `download_service.run_profile_download` y el hilo GUI (A1.2-A1.4).
 
 El motor de cherry-dl publica su progreso llamando a un callback `emit(evento)`
 con 13 dataclasses distintas. Su docstring dice que `emit` "es síncrono y seguro
-para tocar widgets directamente" — cierto bajo qasync, donde todo comparte el
+para tocar widgets directamente" — cierto cuando asyncio comparte el
 hilo GUI, y **falso aquí**: en Panopticon la corrutina corre en el loop de
 `CherryRuntime`, es decir, en otro hilo. Tocar un widget desde ahí es corrupción
 de memoria, no una excepción.

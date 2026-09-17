@@ -98,7 +98,7 @@ class PatreonTemplate(SiteTemplate):
     Template de descarga para Patreon.
 
     max_workers=2 es un límite rígido. Si el perfil tiene workers=5,
-    el TUI lo capará a 2 al detectar este atributo.
+    el motor lo limita a 2 al detectar este atributo.
     """
 
     name        = "patreon"

@@ -4,7 +4,7 @@ Escrituras en `index.db`: crear perfiles y añadir fuentes.
 **Excepción deliberada a la regla del proyecto** (David, 2026-09-02). La regla
 dice que Panopticon nunca escribe los archivos de cherry-dl; la excepción es que
 dar de alta un proyecto y añadirle URLs *es* la operación central del programa,
-y un wrapper que no la tiene obliga a abrir la GUI clásica para lo más básico.
+y un wrapper que no la tiene no puede sustituir la aplicación autónoma.
 
 Lo que la regla protege sigue intacto: **cero SQL propio y cero cambios de
 schema**. Todo pasa por la API de alto nivel del motor —la misma que llama su

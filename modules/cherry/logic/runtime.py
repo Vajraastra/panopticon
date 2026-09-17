@@ -3,7 +3,7 @@ Runtime asyncio de cherry-dl dentro de Panopticon (fase A1.1 / A1.4).
 
 `third_party/cherry_dl/` es asíncrono de arriba a abajo: incluso listar los
 perfiles (`index.list_profiles`) es una corrutina. Panopticon, en cambio, es
-Qt síncrono y su `main.py` NO adopta qasync (decisión cerrada, §4 de
+Qt síncrono y su `main.py` mantiene asyncio fuera del hilo GUI (decisión cerrada, §4 de
 CHERRY_FUSION_DESIGN.md: sería invasivo para los 13 módulos). El puente es
 este: un QThread propietario de un event loop asyncio persistente al que el
 hilo GUI le entrega corrutinas.

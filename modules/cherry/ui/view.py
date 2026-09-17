@@ -60,7 +60,6 @@ from ..logic.download_queue import DownloadQueue
 from ..logic.runtime import CherryRuntime
 from .download_panel import DownloadPanel
 from .duplicates_dialog import DuplicatesDialog
-from .legacy_gui import LOG_NAME, LegacyGuiLauncher
 from .profile_dialogs import AddUrlDialog, NewProfileDialog
 from .settings_dialog import SettingsDialog
 
@@ -96,8 +95,6 @@ class CherryView(QWidget):
 
         # El runtime lo inyecta el módulo (es suyo: lo para en `on_unload`).
         self._runtime = runtime or CherryRuntime()
-        self._legacy = LegacyGuiLauncher()
-
         self._bridge = DownloadBridge(self._runtime)
         self._queue = DownloadQueue(self._bridge)
 
@@ -174,8 +171,6 @@ class CherryView(QWidget):
         self._archives_finished.connect(self._on_archives_finished)
         self._archives_progress.connect(self._on_archives_progress)
         self._load_failed.connect(self._on_load_failed)
-        self._legacy.state_changed.connect(self._on_legacy_state)
-
         self._bridge.auth_required.connect(self._on_auth_required)
         self._bridge.auth_aborted.connect(self._on_auth_aborted)
         self._queue.profile_finished.connect(self._on_profile_finished)
@@ -340,16 +335,6 @@ class CherryView(QWidget):
         self._btn_refresh.clicked.connect(self.refresh)
         lay.addWidget(self._btn_refresh)
 
-        # La GUI clásica ya solo sirve para fusionar proyectos; hasta que llegue
-        # A5b se queda, pero como último botón y sin la nota que ocupaba media
-        # barra lateral: lo que decía ya no es cierto.
-        self._btn_legacy = QPushButton(self.tr("cherry.launch", "Classic GUI"))
-        self._btn_legacy.setToolTip(self.tr(
-            "cherry.legacy_note_short",
-            "Only merging projects still needs the classic window.",
-        ))
-        self._btn_legacy.clicked.connect(self._launch_legacy)
-        lay.addWidget(self._btn_legacy)
         return bar
 
     # ── Zona 2: inspector del proyecto seleccionado ───────────────────────
@@ -633,7 +618,7 @@ class CherryView(QWidget):
             self._apply_filters()
             self._set_status(self.tr(
                 "cherry.no_index",
-                "No index found at ~/.cherry-dl/index.db — create a profile in the classic GUI first.",
+                "No index found at ~/.cherry-dl/index.db — create a project with New project.",
             ))
             return
 
@@ -731,19 +716,6 @@ class CherryView(QWidget):
         self._update_actions()
         self._set_status(
             self.tr("cherry.status_error", "Error: {msg}").format(msg=message), flash=True)
-
-    def _on_legacy_state(self, running: bool, key: str, value) -> None:
-        self._btn_legacy.setEnabled(not running)
-        self._update_actions()
-        default = {
-            "cherry.status_running": "Running in its own window…",
-            "cherry.status_idle": "Not running",
-            "cherry.status_exit_error": "Exited with error (code {code}) — see logs/{log}",
-            "cherry.status_launch_failed": "Failed to start — see logs/{log}",
-        }[key]
-        self._set_status(self.tr(key, default).format(code=value, log=LOG_NAME))
-        if not running:
-            self.refresh()  # la GUI clásica pudo crear o sincronizar perfiles
 
     # ── Tabla y filtros ───────────────────────────────────────────────────
     def _rebuild_site_combo(self) -> None:
@@ -876,9 +848,8 @@ class CherryView(QWidget):
                    or self._maintenance_busy or self._preparing_download)
         self._btn_archives.setEnabled(
             bool(profile and profile.get("folder_exists")) and not running
-            and not self._legacy.is_running and not self._archive_check_busy)
+            and not self._archive_check_busy)
         self._btn_dups.setEnabled(not running)
-        self._btn_legacy.setEnabled(not running and not self._legacy.is_running)
         self._btn_open.setEnabled(bool(profile and profile.get("folder_exists")))
         self._btn_scan.setEnabled(bool(profile) and not running)
         self._btn_download.setEnabled(bool(profile) and not running)
@@ -1150,7 +1121,7 @@ class CherryView(QWidget):
         profile = self._current_profile()
         if (not profile or self._maintenance_busy or self._preparing_download
                 or self._queue.is_running or self._bridge.is_busy
-                or self._legacy.is_running or self._archive_check_busy):
+                or self._archive_check_busy):
             return
         if not self._runtime.start():
             return
@@ -1678,11 +1649,6 @@ class CherryView(QWidget):
         profile = self._current_profile()
         if profile and not CachePaths.open_folder(Path(profile["folder_path"])):
             self._set_status(self.tr("cherry.folder_missing", "Folder not found on disk"))
-
-    def _launch_legacy(self) -> None:
-        if self._maintenance_busy or self._preparing_download:
-            return
-        self._legacy.launch()
 
     def _busy_refresh(self, busy: bool) -> None:
         self._btn_refresh.setEnabled(not busy)

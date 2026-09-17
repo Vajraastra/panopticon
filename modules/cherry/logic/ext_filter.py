@@ -10,8 +10,7 @@ en español fijo y Panopticon tiene `locales/`.
 
 **Escribe `index.db`**, y por eso vive junto a `profile_writes.py`: es la misma
 excepción acordada (David, 2026-09-02), extendida al filtro por la misma razón
-—elegir qué tipos bajar es parte de dar de alta un proyecto, y dejarlo fuera
-obligaba a abrir la GUI clásica para lo más básico— y con el mismo límite: se
+—elegir qué tipos bajar es parte de dar de alta un proyecto— y con el mismo límite: se
 llama a `index.update_profile_ext_filter`, la API de alto nivel del motor. Cero
 SQL propio, cero cambios de schema.
 

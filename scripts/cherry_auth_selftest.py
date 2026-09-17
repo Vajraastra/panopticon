@@ -477,50 +477,12 @@ async def test_initial_pixiv_reauth_forces_full_scan() -> None:
           any("historial completo" in msg for msg in messages))
 
 
-async def test_legacy_gui_pixiv() -> None:
-    print("\n[4] La GUI clásica no conserva guards exclusivos de Patreon")
-    from third_party.cherry_dl.gui.views.artist_detail_view import ArtistDetailView
-    from third_party.cherry_dl.gui.views.batch_view import BatchView
-
-    calls = []
-    old_guided = pixiv_auth.guided_login_pixiv
-
-    async def fake_guided(*, on_status=None):
-        calls.append("pixiv")
-        if on_status:
-            on_status("sesión sintética")
-        return {"refresh_token": "legacy-refresh"}
-
-    class Probe:
-        def __init__(self):
-            self.logs = []
-
-        def _append_log(self, message):
-            self.logs.append(message)
-
-    pixiv_auth.guided_login_pixiv = fake_guided
-    try:
-        detail = Probe()
-        batch = Probe()
-        detail_ok = await ArtistDetailView._resolve_auth(detail, "pixiv")
-        batch_ok = await BatchView._resolve_auth(batch, "pixiv")
-    finally:
-        pixiv_auth.guided_login_pixiv = old_guided
-
-    check("la descarga individual acepta Pixiv", detail_ok)
-    check("la descarga por lotes acepta Pixiv", batch_ok)
-    check("ambas rutas ejecutan el login Pixiv", calls == ["pixiv", "pixiv"])
-    check("ninguna informa que Pixiv no esté soportado",
-          not any("no soportada" in msg for msg in detail.logs + batch.logs))
-
-
 async def main() -> int:
     test_browser_compatibility_order()
     await test_content_encoding_negotiation()
     await test_patreon_rejected_cookie()
     await test_mid_scan_reauth()
     await test_initial_pixiv_reauth_forces_full_scan()
-    await test_legacy_gui_pixiv()
     print(f"\n{_ok} ok, {_fail} fallo(s)")
     return 1 if _fail else 0
 

@@ -1,8 +1,8 @@
 """
 Helpers puros de detección y fusión de perfiles duplicados.
 
-Compartidos entre la GUI (`gui/views/duplicates_view.py`) y la TUI (que los
-reimporta). La lógica de BD vive en `catalog.py` (compare_by_hash_join,
+Consumidos por la detección nativa de duplicados. La lógica de BD vive en
+`catalog.py` (compare_by_hash_join,
 migrate_unique_files) e `index.py` (merge_profiles, exclusiones); aquí solo
 viven los helpers de orquestación sin estado.
 """

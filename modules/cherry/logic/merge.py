@@ -1,7 +1,7 @@
 """
 Fusionar dos proyectos en uno — fase 2 de A5.
 
-Es la parte destructiva del módulo y la última que quedaba en la GUI clásica:
+Es la parte destructiva del módulo:
 **mueve archivos entre carpetas de disco y no tiene deshacer**. Todo el trabajo
 real lo hacen funciones del motor; aquí solo se orquestan, en un orden distinto
 al suyo y por un motivo de seguridad que se explica abajo.
@@ -48,7 +48,7 @@ con un `shutil.move`, sin aviso. Fusionar dos veces contra el mismo destino no
 es raro: es lo que pasa al limpiar tres proyectos del mismo artista.
 
 Una descarga normal no colisiona (su nombre lleva prefijo), así que compactar
-desde la GUI clásica o la TUI, sin fusión de por medio, sigue siendo válido.
+mediante la API de mantenimiento, sin fusión de por medio, sigue siendo válido.
 
 ## Lo que este módulo NO hace
 

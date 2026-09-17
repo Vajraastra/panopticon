@@ -116,7 +116,7 @@ _BASE = "https://pawchive.pw"
 _FILES = "https://file.pawchive.pw"
 _SERVICES = frozenset(["patreon", "fanbox"])
 _DOWNLOAD_USER_AGENT_BASE = (
-    "Panopticon-CherryDL/0.1 "
+    "Cherry-DL/0.1 "
     "(contact: https://github.com/Vajraastra/panopticon"
 )
 

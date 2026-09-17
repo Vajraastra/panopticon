@@ -16,8 +16,8 @@
    - Sigue vigente el espíritu de CF2: **nada de cambios cosméticos ni refactors de gusto.** Se
      toca lo que está roto y se explica por qué.
 2. Corre sobre el **pool de dependencias de Panopticon** (`requirements.txt` raíz). Deps
-   añadidas por esta copia: httpx[http2], aiosqlite, typer, rich, pydantic, tenacity, qasync,
-   browser-cookie3, nodriver. (`textual` NO se instala: la TUI legacy no funciona aquí.)
+   añadidas por esta copia: httpx[http2], aiosqlite, typer, rich, pydantic, tenacity,
+   browser-cookie3, nodriver.
 3. Se importa añadiendo `third_party/` a `sys.path`/`PYTHONPATH` (el paquete usa imports
    relativos; el único absoluto es `__main__.py`).
 4. El estado vive en `~/.cherry-dl/` (config, index.db, sesión) — **compartido con el
@@ -616,7 +616,7 @@ El operador cambió el host de archivos y pidió que las herramientas se identif
 `User-Agent` y no finjan ser navegadores. El transporte Chromium/CDP empezó a devolver
 `reason=Failed` sin estado HTTP después de una tanda grande, aunque página y API seguían en 200.
 La misma URL fallida respondió `206 Partial Content` a una petición HTTP directa de un byte con
-un `User-Agent` `Panopticon-CherryDL/0.1` enlazado al repositorio.
+un `User-Agent` `Cherry-DL/0.1` enlazado al repositorio.
 
 Pawchive usa ahora el transporte HTTP normal con ese identificador. El mismo `User-Agent` declara
 la política efectiva de la ejecución en inglés legible (caudal sostenido, concurrencia,
@@ -654,7 +654,7 @@ del proceso al cancelar. No se engancha a download_service ni cambia el schema d
 catalog.relocate_file mantiene las rutas al organizar por tipo; migrate_unique_files
 transporta los recibos completos y sus alias para conservar la omisión de descargas.
 La UI nativa ofrece la acción sólo para el proyecto seleccionado, con exclusión mutua
-frente a descargas, preparación, GUI clásica y fusión. Instalación por requirements/run.bat.
+frente a descargas, preparación y fusión. Instalación por requirements/run.bat.
 
 Verificación Windows: comprimidos/interfaz 55/55, catálogo 521/521, alias 39/39,
 fusión 38/38 e interfaz existente 20/20. Tooltips Cherry 32/32; prueba RAR sin PATH.
@@ -683,7 +683,7 @@ Las imágenes y animaciones son el contenido primario: permanecen en la raíz y 
 No se añadió una columna de tipo ni se cambió el schema: la categoría se deriva de la
 extensión y `catalog.db.meta` guarda `layout_version=2` y `counter:<categoría>`. Un catálogo
 antiguo no vacío queda bloqueado para descargar hasta migrarlo; uno nuevo crea el layout y
-las subcarpetas seleccionadas automáticamente. CLI, TUI, importador, extracción, descarga
+las subcarpetas seleccionadas automáticamente. CLI, importador, extracción, descarga
 nativa y fusión usan la misma ruta centralizada.
 
 `layout_migration.py` y `scripts/cherry_layout_v2.py` hacen plan, respaldo, staging,
@@ -692,3 +692,16 @@ migró con respaldo por proyecto: 65 proyectos, 116,738 filas, 2,855 rutas actua
 2,189 archivos físicos renombrados, sin errores. Una segunda auditoría produjo cero cambios.
 Verificación temporal: archivos/importador/interfaz 88/88, catálogo 521/521, fusión 38/38,
 puente 99/99, planificador 36/36, motor 44/44 y pulida funcional 23/23.
+
+### Panopticon pasa a ser la única interfaz (2026-09-16)
+
+La UI nativa ya cubre altas, fuentes, ajustes, autenticación, descarga, mantenimiento y fusión.
+Se retiraron la GUI qasync, la TUI Textual, sus comandos `gui`/`tui`, el launcher transicional y
+la dependencia `qasync`. El CLI se conserva únicamente para mantenimiento y migraciones.
+
+La única capacidad no portada era clasificar en lote todos los pares por solapamiento de hashes;
+se aceptó diferirla a M4, que resolverá la misma pregunta sobre `panopticon.db`. La comparación de
+una fusión concreta sigue mostrando hashes compartidos antes de tocar archivos.
+
+Pawchive recibe `Cherry-DL/0.1` como identidad del descargador. El enlace de contacto sigue
+apuntando al repositorio de Panopticon, pero el producto declarado al servidor ya no es Panopticon.

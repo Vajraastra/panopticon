@@ -9,11 +9,10 @@ class CherryModule(BaseModule):
     """
     Cherry-DL — descargador masivo de colecciones (Kemono/Patreon/Pixiv).
 
-    Wrapper sobre el motor vendorizado en `third_party/cherry_dl/`, que no se
-    modifica (CF2 de CHERRY_FUSION_DESIGN.md). La UI es nativa (CF12): la vista
+    Módulo nativo sobre el motor vendorizado en `third_party/cherry_dl/`. La vista
     de perfiles lee `index.db` a través de `CherryRuntime`, el hilo que hospeda
-    el event loop asyncio del que depende todo el motor. La descarga todavía se
-    hace desde la GUI clásica, que la vista lanza aparte hasta que llegue A3.
+    el event loop asyncio del que depende todo el motor. Altas, ajustes, descarga,
+    mantenimiento y fusión se realizan desde Panopticon.
 
     El runtime es del módulo, no de la vista: así hay un solo loop por sesión y
     un dueño claro que lo apaga en `on_unload`.

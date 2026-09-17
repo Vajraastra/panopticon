@@ -6,7 +6,7 @@ Flujo en ensure_patreon_session():
   2. browser_cookie3: leer cookies de Firefox/Chrome/Brave/Edge
      →  si encuentra session_id: guardar en session.json y continuar
   3. login guiado (navegador real + CDP)  →  captura session_id y continúa
-  4. raise NeedsManualAuth  →  sin navegador; TUI muestra PatreonAuthModal
+  4. raise NeedsManualAuth  →  Panopticon solicita autenticación al usuario
 
 Firefox se intenta antes que Chrome en Linux porque no requiere keyring.
 Chrome/Brave/Edge requieren GNOME Keyring o KWallet desbloqueados
@@ -50,7 +50,7 @@ _BROWSER_LOADERS = [
 class NeedsManualAuth(Exception):
     """
     No se encontró sesión activa de Patreon en el navegador.
-    La TUI debe mostrar PatreonAuthModal para que el usuario inicie sesión.
+    El consumidor debe solicitar al usuario que inicie sesión.
     """
 
 

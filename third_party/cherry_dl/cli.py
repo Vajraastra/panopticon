@@ -1011,46 +1011,6 @@ def _list_templates() -> str:
     return ", ".join(list_templates())
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-# GUI
-# ════════════════════════════════════════════════════════════════════════════════
-
-@app.command()
-def gui():
-    """Lanza la interfaz gráfica oficial (PySide6)."""
-    try:
-        from .gui.app import run_app
-    except ImportError:
-        console.print("[red]✗ GUI no disponible.[/red]")
-        console.print("  Ejecuta: [bold]./run.sh[/bold] para instalar dependencias (PySide6).")
-        raise typer.Exit(1)
-    run_app()
-
-
-@app.command()
-def tui():
-    """[LEGADO] Lanza la interfaz de texto (Textual TUI). Usa 'gui' (oficial)."""
-    import time
-
-    console.print()
-    console.print("[yellow][!] La TUI Textual esta DEPRECADA.[/yellow]")
-    console.print("  La interfaz oficial es la GUI: [bold]cherry-dl gui[/bold]")
-    console.print("  Esta TUI se mantiene solo como referencia.")
-    console.print("[dim]  Continuando en 3s...  (Ctrl-C para cancelar)[/dim]")
-    try:
-        time.sleep(3)
-    except KeyboardInterrupt:
-        raise typer.Exit(0)
-
-    try:
-        from .tui.app import run
-    except ImportError:
-        console.print("[red]✗ TUI no disponible.[/red]")
-        console.print("  Ejecuta: [bold]./run.sh[/bold] para instalar dependencias (textual).")
-        raise typer.Exit(1)
-    run()
-
-
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

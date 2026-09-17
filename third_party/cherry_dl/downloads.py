@@ -1,10 +1,10 @@
 """
 Helpers de descarga compartidos, agnósticos de UI.
 
-Reúne las utilidades que usan tanto la TUI como la GUI (y el CLI/organizer):
+Reúne las utilidades que usan el servicio, el CLI y el organizador:
 construcción de nombres de archivo, filtros por extensión y mapeo de hashes
 locales. Antes vivían en `gui/bridge.py` (módulo de la GUI Dear PyGui original);
-se extrajeron aquí para romper la dependencia invertida TUI → gui.
+se mantienen aquí para no acoplar el motor a una interfaz.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def build_filename(artist_name: str, counter: int, original_filename: str) -> st
 # ── Filtros por extensión ──────────────────────────────────────────────────────
 
 # Grupos de extensiones para el filtro de batch/perfil.
-# Compartido entre el servicio de descarga y las UIs (TUI/GUI).
+# Compartido entre el servicio de descarga y sus consumidores.
 # Las extensiones se almacenan SIN punto; el punto lo agrega `_parse_ext_filter`.
 EXT_GROUPS: dict[str, tuple[str, set[str]]] = {
     "images":  ("Imágenes",          {"jpg","jpeg","png","webp","bmp","tiff","tif","avif","jxl"}),

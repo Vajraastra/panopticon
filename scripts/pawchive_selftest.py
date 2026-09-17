@@ -251,7 +251,7 @@ async def main() -> int:
     chk(z.remote_hash == H2, "el hash sale del path, antes de descargar")
     chk(z.extra_headers.get("Referer") == a.url, "manda Referer del creador")
     user_agent = z.extra_headers.get("User-Agent", "")
-    chk(user_agent.startswith("Panopticon-CherryDL/"),
+    chk(user_agent.startswith("Cherry-DL/"),
         "se identifica como descargador, sin fingir ser navegador")
     chk(("policy: 2 MiB/s sustained bandwidth; max 2 concurrent downloads; "
          "max 500 files or 25 GiB per 3 hours") in user_agent,

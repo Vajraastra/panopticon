@@ -1,8 +1,7 @@
 """
 Servicio de descarga compartido, agnóstico de UI.
 
-Encapsula el flujo canónico de descarga en dos fases (extraído de la TUI, que
-queda como referencia hasta deprecarse):
+Encapsula el flujo canónico de descarga en dos fases:
 
     scan API (iter_files, since=last_synced)  →  pending_queue
       → cooldown si el scan fue agresivo (politeness)
@@ -10,8 +9,8 @@ queda como referencia hasta deprecarse):
       → cola diferida (errores temporales)
       → update last_synced + file_count
 
-La UI no conoce asyncio: pasa un callback `emit(evento)` y recibe eventos
-tipados (ver más abajo). Todo corre en un único event loop (qasync/textual),
+La interfaz no conoce asyncio: pasa un callback `emit(evento)` y recibe eventos
+tipados (ver más abajo). Todo corre en un único event loop,
 por lo que `emit` es síncrono y seguro para tocar widgets directamente.
 
 Cancelación: cancelar la task que await-ea `run_profile_download` — el flujo
