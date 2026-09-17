@@ -64,6 +64,7 @@ class DownloadQueue(QObject):
     """Ejecuta perfiles detallados en pasadas globales y de forma secuencial."""
 
     profile_started = Signal(int, int, str)
+    active_profile_changed = Signal(object)  # profile id while active, else None
     job_progress = Signal(int, int)  # trabajos terminados, trabajos totales
     profile_finished = Signal(object, object)
     queue_finished = Signal(object)
@@ -170,6 +171,7 @@ class DownloadQueue(QObject):
     def _advance(self) -> bool:
         if self._cancelling or not self._pending:
             self._current = None
+            self.active_profile_changed.emit(None)
             (self.queue_cancelled if self._cancelling else self.queue_finished).emit(
                 self._totals
             )
@@ -180,6 +182,7 @@ class DownloadQueue(QObject):
         state = job.state
         state.started = True
         profile = state.profile
+        self.active_profile_changed.emit(profile["id"])
         self.profile_started.emit(state.position, self._total, profile["display_name"])
         params = dict(self._params)
         if self._params_for is not None:
@@ -192,6 +195,7 @@ class DownloadQueue(QObject):
             return True
 
         self._current = None
+        self.active_profile_changed.emit(None)
         self._totals.failed.append((profile["display_name"], "no se pudo iniciar"))
         self._pending.clear()
         self.queue_finished.emit(self._totals)
@@ -237,6 +241,7 @@ class DownloadQueue(QObject):
             return
         self._current.state.failed = True
         self._current = None
+        self.active_profile_changed.emit(None)
         self._cancelling = True
         self._pending.clear()
         # Una pasada previa pudo haber escrito archivos: cada perfil tocado

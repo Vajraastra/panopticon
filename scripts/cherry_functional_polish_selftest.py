@@ -15,6 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from modules.cherry.logic import profile_writes  # noqa: E402
@@ -183,6 +184,42 @@ async def main() -> None:
             check("2 h 45 min" in panel._quota.text(),
                   "el medidor muestra cuándo se libera la próxima cuota")
             panel.close()
+
+            view = CherryView()
+            view._profiles = [
+                {
+                    "id": 2, "display_name": "Zeta", "folder_path": "X:/Zeta",
+                    "primary_site": "pixiv", "url_count": 1,
+                    "last_checked": None, "folder_exists": True,
+                    "awaiting_archive_count": 0,
+                },
+                {
+                    "id": 1, "display_name": "Alpha", "folder_path": "X:/Alpha",
+                    "primary_site": "patreon", "url_count": 2,
+                    "last_checked": None, "folder_exists": True,
+                    "awaiting_archive_count": 3,
+                },
+            ]
+            view._rebuild_site_combo()
+            view._apply_filters()
+            check(view._table.horizontalHeaderItem(0).text() == "Name",
+                  "la primera columna debe identificarse como nombre")
+            check([p["display_name"] for p in view._profiles_in_table_order()]
+                  == ["Alpha", "Zeta"],
+                  "la tabla debe iniciar ordenada por nombre aunque haya marcadores")
+            view._on_active_profile_changed(2)
+            zeta_row = next(
+                row for row in range(view._table.rowCount())
+                if view._table.item(row, 0).data(Qt.UserRole) == 2
+            )
+            check(view._table.item(zeta_row, 0).font().bold(),
+                  "el perfil activo debe destacar su nombre")
+            check(view._table.item(zeta_row, 1).background().color().alpha() > 0,
+                  "el perfil activo debe resaltar la fila completa")
+            view._on_active_profile_changed(None)
+            check(not view._table.item(zeta_row, 0).font().bold(),
+                  "el resaltado debe retirarse al terminar el trabajo")
+            view.close()
 
             class CreatedProbe:
                 _selected_id = None

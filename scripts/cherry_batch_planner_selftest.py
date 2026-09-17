@@ -86,11 +86,13 @@ def test_global_order_and_aggregation() -> None:
     finished: list[tuple[str, object]] = []
     ended: list[object] = []
     progress: list[tuple[int, int]] = []
+    active: list[int | None] = []
     queue.profile_finished.connect(
         lambda item, summary: finished.append((item["display_name"], summary))
     )
     queue.queue_finished.connect(ended.append)
     queue.job_progress.connect(lambda done, total: progress.append((done, total)))
+    queue.active_profile_changed.connect(active.append)
     rows = [
         profile(1, "A", [
             source("https://pawchive.pw/patreon/user/1", 11),
@@ -130,6 +132,8 @@ def test_global_order_and_aggregation() -> None:
           "el resumen final no contó perfiles completos")
     check(progress[0] == (0, 4), f"el total de trabajos no es exacto: {progress}")
     check(progress[-1] == (4, 4), f"la barra no terminó completa: {progress}")
+    check(active == [1, 2, 2, 1, None],
+          f"el perfil visualmente activo no siguió el batch: {active}")
 
 
 def test_failure_isolation() -> None:

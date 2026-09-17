@@ -789,7 +789,7 @@
   "cherry.merge_progress": "Moviendo archivos… {done} de {total}",
   "cherry.merge_done": "✓ Fusionado en {keep} · {moved} archivos movidos, {dup} ya estaban ahí.",
   "cherry.merge_failed": "La fusión se detuvo y no se fusionó nada — los dos proyectos están intactos. {msg}",
-  "cherry.col_name": "Perfil",
+  "cherry.col_name": "Nombre",
   "cherry.col_site": "Sitio",
   "cherry.col_sources": "Fuentes",
   "cherry.col_checked": "Último chequeo",

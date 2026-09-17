@@ -69,6 +69,17 @@ log = logging.getLogger(__name__)
 # cabecera, que está traducido).
 COL_NAME, COL_SITE, COL_SOURCES, COL_CHECKED, COL_FOLDER = range(5)
 SOURCE_DATA_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+NAME_SORT_ROLE = SOURCE_DATA_ROLE + 1
+
+
+class _ProfileNameItem(QTableWidgetItem):
+    """Muestra marcadores sin dejar que alteren el orden por nombre."""
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        left = str(self.data(NAME_SORT_ROLE) or "").casefold()
+        right = str(other.data(NAME_SORT_ROLE) or "").casefold()
+        return left < right
+
 
 class CherryView(QWidget):
     """Lista de perfiles de cherry-dl, en vivo sobre `index.db`."""
@@ -100,6 +111,7 @@ class CherryView(QWidget):
 
         self._profiles: list[dict] = []
         self._selected_id: int | None = None
+        self._active_profile_id: int | None = None
         # Último filtro conocido por perfil, con la edición de la UI ya
         # aplicada. La descarga lo prefiere sobre lo que traiga la lectura
         # de `index.db`: guardar es una corrutina, y entre marcar una
@@ -174,6 +186,7 @@ class CherryView(QWidget):
         self._bridge.auth_required.connect(self._on_auth_required)
         self._bridge.auth_aborted.connect(self._on_auth_aborted)
         self._queue.profile_finished.connect(self._on_profile_finished)
+        self._queue.active_profile_changed.connect(self._on_active_profile_changed)
         self._queue.queue_finished.connect(self._on_queue_finished)
         self._queue.queue_cancelled.connect(self._on_queue_cancelled)
 
@@ -206,7 +219,7 @@ class CherryView(QWidget):
     def _build_table(self) -> QTableWidget:
         table = QTableWidget(0, 5)
         table.setHorizontalHeaderLabels([
-            self.tr("cherry.col_name", "Profile"),
+            self.tr("cherry.col_name", "Name"),
             self.tr("cherry.col_site", "Site"),
             self.tr("cherry.col_sources", "Sources"),
             self.tr("cherry.col_checked", "Last checked"),
@@ -226,10 +239,13 @@ class CherryView(QWidget):
         header.setSectionResizeMode(COL_SOURCES, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(COL_CHECKED, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(COL_FOLDER, QHeaderView.Stretch)
+        header.setSortIndicator(COL_NAME, Qt.AscendingOrder)
+        header.setSortIndicatorShown(True)
         table.setColumnWidth(COL_NAME, 220)
 
         table.itemSelectionChanged.connect(self._on_selection_changed)
         table.doubleClicked.connect(self._open_folder)
+        table.sortItems(COL_NAME, Qt.AscendingOrder)
         return table
 
     # ── Zona 1: barra superior ────────────────────────────────────────────
@@ -760,10 +776,11 @@ class CherryView(QWidget):
 
         for row, p in enumerate(rows):
             waiting = int(p.get("awaiting_archive_count", 0))
-            name = QTableWidgetItem(
+            name = _ProfileNameItem(
                 f"◷ {p['display_name']} ({waiting})" if waiting else p["display_name"]
             )
             name.setData(Qt.UserRole, p["id"])
+            name.setData(NAME_SORT_ROLE, p["display_name"])
             if waiting:
                 name.setForeground(QBrush(QColor(warn)))
                 name.setToolTip(self.tr(
@@ -792,6 +809,7 @@ class CherryView(QWidget):
             table.setItem(row, COL_FOLDER, folder)
 
         table.setSortingEnabled(True)
+        self._apply_active_profile_style()
         shown = self.tr("cherry.showing", "Showing {n} of {total}")
         self._count_label.setText(shown.format(n=len(rows), total=len(self._profiles)))
         self._btn_all.setText(
@@ -821,6 +839,39 @@ class CherryView(QWidget):
             return None
         pid = item.data(Qt.UserRole)
         return next((p for p in self._profiles if p["id"] == pid), None)
+
+    def _profiles_in_table_order(self) -> list[dict]:
+        """Perfiles visibles en el mismo orden que el usuario ve en la tabla."""
+        by_id = {p["id"]: p for p in self._profiles}
+        ordered = []
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, COL_NAME)
+            if item is not None and item.data(Qt.UserRole) in by_id:
+                ordered.append(by_id[item.data(Qt.UserRole)])
+        return ordered
+
+    def _on_active_profile_changed(self, profile_id: object) -> None:
+        self._active_profile_id = int(profile_id) if profile_id is not None else None
+        self._apply_active_profile_style()
+
+    def _apply_active_profile_style(self) -> None:
+        """Resalta el trabajo actual sin introducir colores ajenos al tema."""
+        active = QColor(self._color("accent_main", "#00ffcc"))
+        active.setAlpha(45)
+        active_brush = QBrush(active)
+        empty_brush = QBrush()
+        for row in range(self._table.rowCount()):
+            name = self._table.item(row, COL_NAME)
+            if name is None:
+                continue
+            is_active = name.data(Qt.UserRole) == self._active_profile_id
+            for column in range(self._table.columnCount()):
+                item = self._table.item(row, column)
+                if item is not None:
+                    item.setBackground(active_brush if is_active else empty_brush)
+            font = name.font()
+            font.setBold(is_active)
+            name.setFont(font)
 
     def _on_selection_changed(self) -> None:
         profile = self._current_profile()
@@ -1422,7 +1473,9 @@ class CherryView(QWidget):
         self._start([profile_id], scan_only=False)
 
     def _start_all_visible(self) -> None:
-        rows = self._visible_profiles()
+        # El batch conserva el orden que muestra la tabla, incluido el elegido
+        # al pulsar cualquier cabecera.
+        rows = self._profiles_in_table_order()
         if not rows:
             return
         if len(rows) > 1:

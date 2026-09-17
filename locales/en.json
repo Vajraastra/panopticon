@@ -789,7 +789,7 @@
   "cherry.merge_progress": "Moving files… {done} of {total}",
   "cherry.merge_done": "✓ Merged into {keep} · {moved} files moved, {dup} were already there.",
   "cherry.merge_failed": "Merge stopped and nothing was merged — both projects are intact. {msg}",
-  "cherry.col_name": "Profile",
+  "cherry.col_name": "Name",
   "cherry.col_site": "Site",
   "cherry.col_sources": "Sources",
   "cherry.col_checked": "Last checked",
