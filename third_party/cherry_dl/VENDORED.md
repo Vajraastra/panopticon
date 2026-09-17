@@ -705,3 +705,23 @@ una fusión concreta sigue mostrando hashes compartidos antes de tocar archivos.
 
 Pawchive recibe `Cherry-DL/0.1` como identidad del descargador. El enlace de contacto sigue
 apuntando al repositorio de Panopticon, pero el producto declarado al servidor ya no es Panopticon.
+
+### Mantenimiento completo por proyecto (2026-09-17)
+
+`archives.process_project()` ya no termina al extraer ZIP/RAR: invoca la misma operación
+recuperable que usará el batch. La primera ejecución de cada proyecto calcula SHA-256 de todos
+sus archivos numerados, conserva la copia exacta con contador menor, registra físicos que no
+figuraban en el catálogo y compacta por separado los siete contadores del layout v2. Las
+ejecuciones posteriores confían en los hashes del catálogo; una auditoría forzada permite revisar
+incorporaciones manuales.
+
+`project_maintenance.py` persiste plan, respaldo SQLite, staging y cuarentena dentro del proyecto.
+Sólo elimina la cuarentena después de verificar archivos, catálogo y recibos; una interrupción
+entre el movimiento físico y la transacción se reanuda con el mismo plan. `catalog.py` confirma
+rutas, altas recuperadas, contadores y marca de auditoría en una sola transacción.
+
+La UI ofrece la misma operación para el proyecto seleccionado y para todos los visibles. El batch
+de `modules/cherry/logic/archive_batch.py` no contiene una segunda implementación: itera perfiles,
+agrega resultados y aísla sus errores. `scripts/cherry_archive_batch.py` expone vista previa,
+selección por id, auditoría forzada, aplicación explícita y reporte JSON para controlar la primera
+limpieza real sin mantener lógica desechable.

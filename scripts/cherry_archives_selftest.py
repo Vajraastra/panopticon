@@ -26,6 +26,7 @@ from third_party.cherry_dl.file_routing import (
     routed_name,
 )
 from third_party.cherry_dl.layout_migration import migrate_project
+from modules.cherry.logic.archive_batch import process_profiles
 
 checks = 0
 
@@ -119,7 +120,7 @@ async def main():
         check(not result.errors, result.errors)
         check((result.processed, result.added, result.duplicates) == (1, 3, 2), result)
         check((folder / 'Proyectos/Landidzu_00002.psd').exists(), 'organize PSD')
-        check((folder / 'Landidzu_00004.png').exists(), 'incremental image')
+        check((folder / 'Landidzu_00003.png').exists(), 'incremental image compacted')
         check(not list(folder.glob('*.zip')), 'no ZIP at root')
         check(not list((folder / 'Comprimidos').glob('*.zip')), 'remove verified ZIP')
         check(not (base / 'escape.txt').exists(), 'no archive path traversal')
@@ -134,6 +135,105 @@ async def main():
         await batch.close()
         second = await arc.process_project(folder, 'Landidzu')
         check(second.processed == second.added == second.organized == 0, 'idempotent')
+
+        # La misma operación, aun sin comprimidos, hace la auditoría inicial:
+        # conserva la copia de número menor y compacta cada contador v2 aparte.
+        audit = base / 'Audit'
+        await cat.init_catalog(audit)
+        check(await cat.ensure_layout_version(
+            audit, COUNTER_NAMESPACES, LAYOUT_VERSION,
+        ), 'empty audit project adopts layout v2')
+        duplicate = b'exact duplicate'
+        duplicate_hash = hashlib.sha256(duplicate).hexdigest()
+        (audit / 'Audit_00001.png').write_bytes(duplicate)
+        (audit / 'Audit_00003.png').write_bytes(duplicate)
+        await cat.add_file(
+            audit, duplicate_hash, 'Audit_00003.png', file_size=len(duplicate), counter=3,
+        )
+        unique = b'unique visual'
+        unique_hash = hashlib.sha256(unique).hexdigest()
+        (audit / 'Audit_00005.png').write_bytes(unique)
+        await cat.add_file(
+            audit, unique_hash, 'Audit_00005.png', file_size=len(unique), counter=5,
+        )
+        projects = audit / 'Proyectos'
+        projects.mkdir()
+        project_a, project_b = b'project a', b'project b'
+        for counter, data in ((2, project_a), (4, project_b)):
+            name = f'Proyectos/pro-Audit-{counter:05d}.psd'
+            (audit / name).write_bytes(data)
+            await cat.add_file(
+                audit, hashlib.sha256(data).hexdigest(), name,
+                file_size=len(data), counter=counter,
+            )
+        receipt_dir = audit / arc.STATE_DIR
+        receipt_dir.mkdir()
+        receipt_path = receipt_dir / 'history.json'
+        receipt_path.write_text(json.dumps({
+            'archive': {}, 'state': 'completed',
+            'entries': [{'hash': unique_hash, 'target': 'Audit_00005.png', 'counter': 5}],
+        }), encoding='utf-8')
+        cleaned = await arc.process_project(audit, 'Audit')
+        check(not cleaned.errors and cleaned.audited == 5, cleaned)
+        check(cleaned.duplicates_removed == 1 and not (audit / 'Audit_00003.png').exists(),
+              'full audit removes the higher-numbered exact copy')
+        check((audit / 'Audit_00001.png').read_bytes() == duplicate
+              and (audit / 'Audit_00002.png').read_bytes() == unique,
+              'visual counter compacts around the retained lowest copy')
+        check((projects / 'pro-Audit-00001.psd').read_bytes() == project_a
+              and (projects / 'pro-Audit-00002.psd').read_bytes() == project_b,
+              'project counter compacts independently')
+        rows = {row['hash']: row for row in await cat.get_all_files(audit)}
+        check(rows[duplicate_hash]['filename'] == 'Audit_00001.png',
+              'catalog follows the retained lower-numbered copy')
+        receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+        check(receipt['entries'][0]['target'] == 'Audit_00002.png'
+              and receipt['entries'][0]['counter'] == 2,
+              'archive receipt follows compaction')
+        repeated = await arc.process_project(audit, 'Audit')
+        check(repeated.audited == repeated.duplicates_removed == repeated.compacted == 0,
+              'completed initial audit is not repeated automatically')
+
+        recovery = base / 'MaintenanceRecovery'
+        await cat.init_catalog(recovery)
+        await cat.ensure_layout_version(recovery, COUNTER_NAMESPACES, LAYOUT_VERSION)
+        same, other = b'recovery duplicate', b'recovery unique'
+        same_hash, other_hash = hashlib.sha256(same).hexdigest(), hashlib.sha256(other).hexdigest()
+        for name, data in (
+            ('Recovery_00001.png', same),
+            ('Recovery_00003.png', same),
+            ('Recovery_00005.png', other),
+        ):
+            (recovery / name).write_bytes(data)
+        await cat.add_file(recovery, same_hash, 'Recovery_00003.png', file_size=len(same), counter=3)
+        await cat.add_file(recovery, other_hash, 'Recovery_00005.png', file_size=len(other), counter=5)
+        real_apply_maintenance = cat.apply_project_maintenance
+        async def fail_maintenance(*_args, **_kwargs):
+            raise OSError('injected catalog boundary failure')
+        with patch.object(cat, 'apply_project_maintenance', fail_maintenance):
+            interrupted_cleanup = await arc.process_project(recovery, 'Recovery')
+        check(bool(interrupted_cleanup.errors), 'maintenance interruption surfaced')
+        pending_plan = json.loads(
+            (recovery / '.cherry-maintenance/plan.json').read_text(encoding='utf-8')
+        )
+        check(pending_plan['status'] == 'applying', 'maintenance plan remains resumable')
+        with patch.object(cat, 'apply_project_maintenance', real_apply_maintenance):
+            resumed_cleanup = await arc.process_project(recovery, 'Recovery')
+        check(not resumed_cleanup.errors, resumed_cleanup.errors)
+        check((recovery / 'Recovery_00001.png').read_bytes() == same
+              and (recovery / 'Recovery_00002.png').read_bytes() == other,
+              'maintenance resumes across the disk/catalog boundary')
+        check(not (recovery / '.cherry-maintenance/duplicates').exists(),
+              'verified duplicate quarantine is removed')
+        batch_steps = []
+        batch = await process_profiles([
+            {'id': 1, 'display_name': 'Audit', 'folder_path': str(audit)},
+            {'id': 2, 'display_name': 'Recovery', 'folder_path': str(recovery)},
+        ], on_profile=lambda position, total, profile_id, name: batch_steps.append(
+            (position, total, profile_id, name)))
+        check(batch.profiles == 2 and not batch.errors, batch.errors)
+        check(batch_steps == [(1, 2, 1, 'Audit'), (2, 2, 2, 'Recovery')],
+              'batch iterates the same per-project operation in order')
 
         legacy = base / 'Legacy'
         await cat.init_catalog(legacy)
@@ -228,7 +328,8 @@ async def main():
         count = await cat.get_meta_int(folder, 'counter')
         recovered = await arc.process_project(folder, 'Landidzu')
         check(not recovered.errors and recovered.processed == 1, 'resume succeeds')
-        check(await cat.get_meta_int(folder, 'counter') == count, 'reuse reserved counter')
+        check(await cat.get_meta_int(folder, 'counter') == count + 1,
+              'recovery incorporates one member without leaving a counter gap')
 
         # A stale DB hash must not authorize discarding the only correct copy.
         with zipfile.ZipFile(bundle, 'w') as z:
@@ -335,6 +436,7 @@ def ui_test():
             view._update_actions()
             check(view._btn_archives.isEnabled(), 'project action available')
             check(bool(view._btn_archives.toolTip()), 'action has tooltip')
+            check(bool(view._btn_archives_all.toolTip()), 'batch action has tooltip')
             view._preparing_download = True
             view._update_actions()
             check(not view._btn_archives.isEnabled(), 'blocked while preparing downloads')
@@ -352,7 +454,8 @@ def ui_test():
             # Cambiar de selección no cambia el proyecto capturado al hacer clic.
             selected = {'id': 200, 'folder_path': 'unrelated', 'folder_exists': True}
             wait_until(lambda: not view._maintenance_busy)
-            check(not source.exists() and (folder / 'Selected_00002.png').exists(), 'manual action extracts')
+            check(not source.exists() and (folder / 'Selected_00001.png').exists(),
+                  'manual action extracts and compacts')
             check(notified == [tmp], 'notifies original selected project')
             check(view._btn_download.isEnabled(), 'controls restored')
 

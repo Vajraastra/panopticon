@@ -31,6 +31,10 @@ class ArchiveResult:
     added: int = 0
     duplicates: int = 0
     organized: int = 0
+    audited: int = 0
+    duplicates_removed: int = 0
+    compacted: int = 0
+    registered: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -233,8 +237,14 @@ No recorre otros proyectos ni descarga nada.
     return result
 
 
-async def process_project(folder: Path, artist: str, emit: Callable[[str], None] = lambda _: None):
-    """Acción manual: organiza primero y después procesa ZIP/RAR.
+async def process_project(
+    folder: Path,
+    artist: str,
+    emit: Callable[[str], None] = lambda _: None,
+    *,
+    force_audit: bool = False,
+):
+    """Organiza, extrae, deduplica por hash y compacta un perfil.
 
     El llamador debe excluir descargas/fusiones durante toda la operación.
     """
@@ -244,11 +254,10 @@ async def process_project(folder: Path, artist: str, emit: Callable[[str], None]
     rows = await catalog.get_all_files(folder)
     known = {row["hash"]: row for row in rows}
     compressed = _inside(folder, "Comprimidos")
-    if not compressed.exists():
-        return result
     # Se admiten también paquetes que el usuario colocó manualmente aquí.
     by_name = {row["filename"]: row for row in rows}
-    for path in sorted(compressed.iterdir()):
+    compressed_files = sorted(compressed.iterdir()) if compressed.exists() else []
+    for path in compressed_files:
         if not path.is_file() or path.suffix.lower() not in ARCHIVES:
             continue
         row = None
@@ -275,6 +284,20 @@ async def process_project(folder: Path, artist: str, emit: Callable[[str], None]
                     saved = json.loads(receipt.read_text(encoding="utf-8"))
                     saved.update(state="error", error=str(exc))
                     _write(receipt, saved)
+    try:
+        from .project_maintenance import maintain_project
+        maintenance, _ = await maintain_project(
+            folder, artist, force_audit=force_audit, emit=emit,
+        )
+        result.audited += maintenance.audited
+        result.duplicates_removed += maintenance.duplicates_removed
+        result.compacted += maintenance.compacted
+        result.registered += maintenance.registered
+        result.errors.extend(maintenance.errors)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        result.errors.append(f"Mantenimiento: {exc}")
     return result
 
 

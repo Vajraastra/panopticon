@@ -96,6 +96,7 @@ class CherryView(QWidget):
     _archive_reactivated = Signal(int, int) # perfil, filas devueltas a la cola
     _archives_finished = Signal(str, object, str)
     _archives_progress = Signal(str)
+    _archive_batch_profile = Signal(int, int, int, str)
     _load_failed    = Signal(str)
 
     def __init__(self, context: dict | None = None, runtime: CherryRuntime | None = None) -> None:
@@ -182,6 +183,7 @@ class CherryView(QWidget):
         self._archive_reactivated.connect(self._on_archive_reactivated)
         self._archives_finished.connect(self._on_archives_finished)
         self._archives_progress.connect(self._on_archives_progress)
+        self._archive_batch_profile.connect(self._on_archive_batch_profile)
         self._load_failed.connect(self._on_load_failed)
         self._bridge.auth_required.connect(self._on_auth_required)
         self._bridge.auth_aborted.connect(self._on_auth_aborted)
@@ -327,6 +329,15 @@ class CherryView(QWidget):
             "project's filter and can be cancelled at any point."))
         self._btn_all.clicked.connect(self._start_all_visible)
         lay.addWidget(self._btn_all)
+
+        self._btn_archives_all = QPushButton(self.tr(
+            "cherry.archives_all", "Maintain visible"))
+        self._btn_archives_all.setToolTip(self.tr(
+            "cherry.archives_all_tip",
+            "Runs the same organize, extract, hash-deduplicate and compact operation "
+            "for every visible project, in the table order."))
+        self._btn_archives_all.clicked.connect(self._process_archives_batch)
+        lay.addWidget(self._btn_archives_all)
 
         self._btn_dups = QPushButton(self.tr("cherry.dups_open", "Find duplicate projects"))
         self._btn_dups.setToolTip(self.tr(
@@ -913,6 +924,7 @@ class CherryView(QWidget):
             bool(profile and waiting) and not running and not self._archive_check_busy
         )
         self._btn_all.setEnabled(bool(self._profiles) and not running)
+        self._btn_archives_all.setEnabled(bool(self._profiles) and not running)
         self._btn_cancel.setEnabled(
             self._queue.is_running or self._bridge.is_busy or self._maintenance_busy)
         self._btn_new.setEnabled(not running)
@@ -1188,6 +1200,58 @@ class CherryView(QWidget):
         except Exception as exc:
             self._on_archives_finished(folder, None, str(exc))
 
+    def _process_archives_batch(self) -> None:
+        profiles = [
+            profile for profile in self._profiles_in_table_order()
+            if profile.get("folder_exists")
+        ]
+        if (not profiles or self._maintenance_busy or self._preparing_download
+                or self._queue.is_running or self._bridge.is_busy
+                or self._archive_check_busy):
+            return
+        answer = QMessageBox.question(
+            self,
+            self.tr("cherry.archives_batch_title", "Maintain visible projects"),
+            self.tr(
+                "cherry.archives_batch_body",
+                "{n} visible projects will be processed in table order. ZIP/RAR files "
+                "will be extracted, exact duplicates will keep the lowest number and "
+                "each file counter will be compacted. Every project keeps a recovery "
+                "plan and catalog backup. Continue?",
+            ).format(n=len(profiles)),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes or not self._runtime.start():
+            return
+        self._maintenance_busy = True
+        self._on_active_profile_changed(profile["id"])
+        self._update_actions()
+        self._btn_console.setChecked(True)
+        try:
+            self._maintenance_future = self._runtime.submit(
+                self._archives_batch_async(profiles)
+            )
+        except Exception as exc:
+            self._on_archives_finished("", None, str(exc))
+
+    async def _archives_batch_async(self, profiles: list[dict]) -> None:
+        import asyncio
+        from ..logic.archive_batch import process_profiles
+        result, error = None, ""
+        try:
+            result = await process_profiles(
+                profiles,
+                on_profile=self._archive_batch_profile.emit,
+                on_file=self._archives_progress.emit,
+            )
+        except asyncio.CancelledError:
+            error = self.tr("cherry.archives_cancelled", "Cancelled. Run the action again to resume.")
+        except Exception as exc:
+            error = str(exc)
+        finally:
+            self._archives_finished.emit("", result, error)
+
     async def _archives_async(self, folder: str, artist: str) -> None:
         import asyncio
         from third_party.cherry_dl.archives import process_project
@@ -1202,7 +1266,18 @@ class CherryView(QWidget):
             self._archives_finished.emit(folder, result, error)
 
     def _on_archives_progress(self, name: str) -> None:
-        text = self.tr("cherry.archives_working", "Extracting: {name}").format(name=name)
+        text = self.tr("cherry.archives_working", "Processing: {name}").format(name=name)
+        self._panel.set_phase(text)
+        self._panel.append_log(text)
+        self._set_status(text)
+
+    def _on_archive_batch_profile(
+        self, position: int, total: int, profile_id: int, name: str,
+    ) -> None:
+        self._on_active_profile_changed(profile_id)
+        text = self.tr(
+            "cherry.archives_batch_progress", "Maintenance {position}/{total}: {name}",
+        ).format(position=position, total=total, name=name)
         self._panel.set_phase(text)
         self._panel.append_log(text)
         self._set_status(text)
@@ -1210,13 +1285,16 @@ class CherryView(QWidget):
     def _on_archives_finished(self, folder: str, result, error: str) -> None:
         self._maintenance_busy = False
         self._maintenance_future = None
+        self._on_active_profile_changed(None)
         if result is not None:
             text = self.tr(
                 "cherry.archives_done",
-                "Archives: {p} processed, {a} files added, {d} duplicates, "
-                "{o} organized, {e} pending with errors.").format(
+                "Archives: {p} processed, {a} files added, {d} archive duplicates; "
+                "maintenance: {r} exact copies removed, {c} renumbered, {u} recovered; "
+                "{o} organized, {e} errors.").format(
                     p=result.processed, a=result.added, d=result.duplicates,
-                    o=result.organized, e=len(result.errors))
+                    r=result.duplicates_removed, c=result.compacted,
+                    u=result.registered, o=result.organized, e=len(result.errors))
             self._panel.append_log(text, "ok" if not result.errors else "warn")
             for detail in result.errors:
                 self._panel.append_log(detail, "warn")
@@ -1225,7 +1303,10 @@ class CherryView(QWidget):
             self._panel.append_log(error, "warn")
         self._panel.set_phase(text)
         self._set_status(text)
-        self._announce_folder({"folder_path": folder})
+        for changed in getattr(result, "folders", []) if result is not None else []:
+            self._announce_folder({"folder_path": changed})
+        if folder:
+            self._announce_folder({"folder_path": folder})
         self._update_actions()
         self._reload_detail()
 

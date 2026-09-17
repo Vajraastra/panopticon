@@ -1051,10 +1051,15 @@
   "cherry.dl_site_blocked": "⛔ {site} refused {n} times — abandoned",
   "cherry.dl_site_blocked_log": "⛔ {site} refused {n} downloads in a row. The site is abandoned for this run; the files stay queued for another day.",
   "cherry.dl_site_budget": "⏸ {site} — daily budget spent",
-  "cherry.archives_process": "Organize and extract ZIP/RAR",
-  "cherry.archives_process_tip": "Only this project: organizes files by type, extracts ZIP/RAR from Comprimidos, keeps one copy per hash and deletes verified archives while retaining their download history. Unavailable during downloads.",
+  "cherry.archives_process": "Maintain this project",
+  "cherry.archives_process_tip": "Only this project: organizes files, extracts ZIP/RAR, keeps the lowest-numbered copy of each exact hash and compacts every file counter. Unavailable during downloads.",
+  "cherry.archives_all": "Maintain visible",
+  "cherry.archives_all_tip": "Runs the same organize, extract, exact-hash deduplicate and counter-compaction operation for every visible project, in the table order.",
+  "cherry.archives_batch_title": "Maintain visible projects",
+  "cherry.archives_batch_body": "{n} visible projects will be processed in table order. ZIP/RAR files will be extracted, exact duplicates will keep the lowest number and each file counter will be compacted. Every project keeps a recovery plan and catalog backup. Continue?",
+  "cherry.archives_batch_progress": "Maintenance {position}/{total}: {name}",
   "cherry.archives_start": "Organizing project: {folder}",
   "cherry.archives_cancelled": "Cancelled. Run the action again to resume.",
-  "cherry.archives_working": "Extracting: {name}",
-  "cherry.archives_done": "Archives: {p} processed, {a} files added, {d} duplicates, {o} organized, {e} pending with errors."
+  "cherry.archives_working": "Processing: {name}",
+  "cherry.archives_done": "Archives: {p} processed, {a} files added, {d} archive duplicates; maintenance: {r} exact copies removed, {c} renumbered, {u} recovered; {o} organized, {e} errors."
 }

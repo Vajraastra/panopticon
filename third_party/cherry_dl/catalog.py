@@ -442,6 +442,50 @@ async def apply_layout_version(
         await db.commit()
 
 
+async def apply_project_maintenance(
+    artist_dir: Path,
+    files: list[dict],
+    counters: dict[str, int],
+    audit_version: int,
+) -> None:
+    """Confirma deduplicación/compactación física en una transacción."""
+    db_path = artist_dir / CATALOG_NAME
+    async with _db(db_path) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        for item in files:
+            await db.execute(
+                "UPDATE files SET filename = '_purged_' || hash "
+                "WHERE filename = ? AND hash != ?",
+                (item["new"], item["hash"]),
+            )
+            await db.execute(
+                """
+                INSERT INTO files
+                    (hash, filename, url_source, date_added, file_size, counter)
+                VALUES (?, ?, NULL, ?, ?, ?)
+                ON CONFLICT(hash) DO UPDATE SET
+                    filename = excluded.filename,
+                    file_size = excluded.file_size,
+                    counter = excluded.counter
+                """,
+                (item["hash"], item["new"], int(time.time()),
+                 int(item["size"]), int(item["counter"])),
+            )
+        await db.executemany(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [("counter" if name == "legacy" else f"counter:{name}", int(value))
+             for name, value in counters.items()],
+        )
+        if audit_version:
+            await db.execute(
+                "INSERT INTO meta (key, value) VALUES ('maintenance_hash_audit', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (audit_version,),
+            )
+        await db.commit()
+
+
 # ── Consultas ──────────────────────────────────────────────────────────────────
 
 async def url_exists(

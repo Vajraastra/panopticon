@@ -1051,10 +1051,15 @@
   "cherry.dl_site_blocked": "⛔ {site} rechazó {n} veces — se abandona",
   "cherry.dl_site_blocked_log": "⛔ {site} rechazó {n} descargas seguidas. Se abandona el sitio en esta pasada; los archivos siguen en la cola para otro día.",
   "cherry.dl_site_budget": "⏸ {site} — presupuesto del día agotado",
-  "cherry.archives_process": "Organizar y descomprimir ZIP/RAR",
-  "cherry.archives_process_tip": "Sólo este proyecto: organiza por tipo, extrae ZIP/RAR de Comprimidos, conserva una copia por hash y elimina los paquetes verificados manteniendo su historial de descarga. No está disponible durante descargas.",
+  "cherry.archives_process": "Mantener este proyecto",
+  "cherry.archives_process_tip": "Sólo este proyecto: organiza archivos, extrae ZIP/RAR, conserva la copia de número menor para cada hash exacto y compacta todos los contadores. No está disponible durante descargas.",
+  "cherry.archives_all": "Mantener visibles",
+  "cherry.archives_all_tip": "Ejecuta la misma organización, extracción, deduplicación por hash exacto y compactación para todos los proyectos visibles, en el orden de la tabla.",
+  "cherry.archives_batch_title": "Mantener proyectos visibles",
+  "cherry.archives_batch_body": "Se procesarán {n} proyectos visibles en el orden de la tabla. Se extraerán los ZIP/RAR, los duplicados exactos conservarán el número menor y se compactará cada contador. Cada proyecto conserva un plan de recuperación y respaldo del catálogo. ¿Continuar?",
+  "cherry.archives_batch_progress": "Mantenimiento {position}/{total}: {name}",
   "cherry.archives_start": "Organizando proyecto: {folder}",
   "cherry.archives_cancelled": "Cancelado. Vuelve a ejecutar la acción para continuar.",
-  "cherry.archives_working": "Descomprimiendo: {name}",
-  "cherry.archives_done": "Comprimidos: {p} procesados, {a} archivos incorporados, {d} duplicados, {o} organizados, {e} pendientes con errores."
+  "cherry.archives_working": "Procesando: {name}",
+  "cherry.archives_done": "Comprimidos: {p} procesados, {a} archivos incorporados, {d} duplicados internos; mantenimiento: {r} copias exactas retiradas, {c} renumeradas, {u} recuperadas; {o} organizados, {e} errores."
 }
