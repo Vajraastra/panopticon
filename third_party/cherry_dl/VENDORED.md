@@ -709,11 +709,11 @@ apuntando al repositorio de Panopticon, pero el producto declarado al servidor y
 ### Mantenimiento completo por proyecto (2026-09-17)
 
 `archives.process_project()` ya no termina al extraer ZIP/RAR: invoca la misma operación
-recuperable que usará el batch. La primera ejecución de cada proyecto calcula SHA-256 de todos
-sus archivos numerados, conserva la copia exacta con contador menor, registra físicos que no
-figuraban en el catálogo y compacta por separado los siete contadores del layout v2. Las
-ejecuciones posteriores confían en los hashes del catálogo; una auditoría forzada permite revisar
-incorporaciones manuales.
+recuperable que usará el batch. La primera ejecución reconcilia todos los archivos numerados con
+los SHA-256 ya verificados de `catalog.db`, calcula sólo físicos no registrados o con tamaño
+distinto, conserva la copia exacta con contador menor y compacta por separado los siete contadores
+del layout v2. Una auditoría forzada relee cada byte cuando se necesite comprobar modificaciones
+externas; el modo normal sigue detectando incorporaciones manuales sin volver a leer cientos de GB.
 
 `project_maintenance.py` persiste plan, respaldo SQLite, staging y cuarentena dentro del proyecto.
 Sólo elimina la cuarentena después de verificar archivos, catálogo y recibos; una interrupción

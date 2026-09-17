@@ -1,9 +1,9 @@
 """Auditoría y compactación recuperable de un proyecto Cherry.
 
-La primera ejecución calcula SHA-256 de todo archivo numerado, conserva la copia
-con contador menor y registra archivos físicos que el catálogo no conocía. Las
-ejecuciones siguientes reutilizan los hashes del catálogo; ``force_audit`` permite
-repetir la revisión completa cuando se hayan añadido archivos manualmente.
+La primera ejecución reconcilia todos los archivos numerados con ``catalog.db``.
+Reutiliza SHA-256 ya verificados y sólo calcula archivos no registrados o cuyo
+tamaño cambió; ``force_audit`` vuelve a leer cada byte. En ambos casos conserva
+la copia exacta con contador menor y compacta la numeración.
 """
 from __future__ import annotations
 
@@ -158,25 +158,33 @@ async def plan_project(
         by_name[str(row["filename"]).casefold()].append(row)
     by_hash = {row["hash"]: row for row in rows}
     physical = _physical_files(folder)
-    full_audit = force_audit or (
+    initial_audit = (
         await catalog.get_meta_int(folder, AUDIT_META_KEY) or 0
     ) < AUDIT_VERSION
     errors: list[str] = []
     entries: list[dict] = []
+    hashed = 0
 
     for path in physical:
         relative = path.relative_to(folder).as_posix()
         candidates = by_name.get(relative.casefold(), [])
-        if full_audit:
-            emit(relative)
+        emit(relative)
+        expected_size = next((
+            int(row.get("file_size") or 0) for row in candidates
+            if int(row.get("file_size") or 0) > 0
+        ), 0)
+        must_hash = (
+            force_audit or not candidates
+            or (expected_size and expected_size != path.stat().st_size)
+        )
+        if must_hash:
             file_hash = await _hash(path)
+            hashed += 1
             matching = [row for row in candidates if row["hash"] == file_hash]
             if candidates and not matching:
                 errors.append(
                     f"El archivo cambió desde que fue catalogado: {relative}"
                 )
-        elif not candidates:
-            continue
         else:
             file_hash = candidates[0]["hash"]
         entries.append({
@@ -185,6 +193,7 @@ async def plan_project(
             "size": path.stat().st_size,
             "counter": _number(relative),
             "cataloged": file_hash in by_hash,
+            "hash_verified": must_hash,
         })
 
     grouped: dict[str, list[dict]] = defaultdict(list)
@@ -196,6 +205,14 @@ async def plan_project(
     for file_hash, copies in grouped.items():
         copies.sort(key=lambda item: (item["counter"], item["old"].casefold()))
         keeper = copies[0]
+        if len(copies) > 1 and not keeper["hash_verified"]:
+            actual = await _hash(_inside(folder, keeper["old"]))
+            hashed += 1
+            keeper["hash_verified"] = True
+            if actual != file_hash:
+                errors.append(
+                    f"El archivo cambió desde que fue catalogado: {keeper['old']}"
+                )
         keeper["cataloged"] = file_hash in by_hash
         keepers.append(keeper)
         duplicates.extend(copies[1:])
@@ -231,7 +248,9 @@ async def plan_project(
 
     return {
         "version": 1,
-        "audit_version": AUDIT_VERSION if full_audit else 0,
+        "audit_version": AUDIT_VERSION if initial_audit or force_audit else 0,
+        "reviewed": len(physical),
+        "hashed": hashed,
         "layout_v2": layout_v2,
         "project": artist,
         "folder": str(folder),
@@ -317,8 +336,10 @@ async def apply_plan(plan: dict) -> dict:
 
     for item in plan["files"]:
         target = _inside(folder, item["new"])
-        if not target.is_file() or await _hash(target) != item["hash"]:
+        if not target.is_file() or target.stat().st_size != int(item["size"]):
             raise ValueError(f"Falló la verificación final: {item['new']}")
+        if item.get("hash_verified") and await _hash(target) != item["hash"]:
+            raise ValueError(f"Falló el hash final: {item['new']}")
 
     plan["status"] = "verified"
     _write(plan_path, plan)
@@ -350,8 +371,8 @@ async def maintain_project(
     if apply and plan.get("status") != "completed":
         plan = await apply_plan(plan)
     result = MaintenanceResult(
-        audited=len(plan["files"]) + len(plan["duplicates"])
-        if plan.get("audit_version") else 0,
+        audited=(int(plan.get("reviewed") or 0) if plan.get("audit_version")
+                 else int(plan.get("hashed") or 0)),
         duplicates_removed=len(plan["duplicates"]),
         compacted=sum(item["old"] != item["new"] for item in plan["files"]),
         registered=sum(not item.get("cataloged") for item in plan["files"]),

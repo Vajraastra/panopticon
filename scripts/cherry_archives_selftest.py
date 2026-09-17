@@ -190,9 +190,18 @@ async def main():
         check(receipt['entries'][0]['target'] == 'Audit_00002.png'
               and receipt['entries'][0]['counter'] == 2,
               'archive receipt follows compaction')
+        audit_plan = json.loads(
+            (audit / '.cherry-maintenance/plan.json').read_text(encoding='utf-8')
+        )
+        check(audit_plan['reviewed'] == 5 and audit_plan['hashed'] == 1,
+              'initial audit reuses catalog hashes and reads only the untracked copy')
         repeated = await arc.process_project(audit, 'Audit')
         check(repeated.audited == repeated.duplicates_removed == repeated.compacted == 0,
               'completed initial audit is not repeated automatically')
+        from third_party.cherry_dl.project_maintenance import maintain_project
+        _, forced = await maintain_project(audit, 'Audit', force_audit=True, apply=False)
+        check(forced['reviewed'] == forced['hashed'] == 4,
+              'forced audit recalculates every remaining file')
 
         recovery = base / 'MaintenanceRecovery'
         await cat.init_catalog(recovery)
@@ -325,11 +334,12 @@ async def main():
             interrupted = await arc.process_project(folder, 'Landidzu')
         check(bool(interrupted.errors), 'injected failure')
         check((folder / 'Comprimidos/recover.zip').exists(), 'retain on failure')
-        count = await cat.get_meta_int(folder, 'counter')
         recovered = await arc.process_project(folder, 'Landidzu')
         check(not recovered.errors and recovered.processed == 1, 'resume succeeds')
-        check(await cat.get_meta_int(folder, 'counter') == count + 1,
-              'recovery incorporates one member without leaving a counter gap')
+        numbered = await cat.get_numbered_files(folder)
+        check([item[0] for item in numbered] == list(range(1, len(numbered) + 1))
+              and await cat.get_meta_int(folder, 'counter') == len(numbered),
+              'recovery incorporates the member without leaving a counter gap')
 
         # A stale DB hash must not authorize discarding the only correct copy.
         with zipfile.ZipFile(bundle, 'w') as z:

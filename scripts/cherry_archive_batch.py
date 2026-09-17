@@ -79,7 +79,7 @@ async def run(args: argparse.Namespace, target: Path) -> dict:
                 nonlocal seen
                 seen += 1
                 if seen % 500 == 0:
-                    print(f"    {seen} archivos hasheados", flush=True)
+                    print(f"    {seen} archivos revisados", flush=True)
 
             try:
                 plan = await plan_project(
@@ -92,7 +92,8 @@ async def run(args: argparse.Namespace, target: Path) -> dict:
                 report["projects"].append({
                     "id": profile["id"], "name": profile["display_name"],
                     "folder": profile["folder_path"],
-                    "audited": 0, "duplicates": 0, "renames": 0,
+                    "reviewed": 0, "hashed": 0,
+                    "duplicates": 0, "renames": 0,
                     "errors": [f"{type(exc).__name__}: {exc}"],
                 })
             else:
@@ -100,8 +101,8 @@ async def run(args: argparse.Namespace, target: Path) -> dict:
                     "id": profile["id"],
                     "name": profile["display_name"],
                     "folder": profile["folder_path"],
-                    "audited": len(plan["files"]) + len(plan["duplicates"])
-                    if plan["audit_version"] else 0,
+                    "reviewed": int(plan.get("reviewed") or 0),
+                    "hashed": int(plan.get("hashed") or 0),
                     "duplicates": len(plan["duplicates"]),
                     "renames": sum(item["old"] != item["new"] for item in plan["files"]),
                     "errors": plan["errors"],
