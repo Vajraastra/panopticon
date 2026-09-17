@@ -1225,7 +1225,7 @@ class CherryView(QWidget):
         if answer != QMessageBox.StandardButton.Yes or not self._runtime.start():
             return
         self._maintenance_busy = True
-        self._on_active_profile_changed(profile["id"])
+        self._on_active_profile_changed(profiles[0]["id"])
         self._update_actions()
         self._btn_console.setChecked(True)
         try:

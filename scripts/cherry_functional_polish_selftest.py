@@ -9,6 +9,7 @@ import sys
 import tempfile
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -16,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from modules.cherry.logic import profile_writes  # noqa: E402
 from modules.cherry.ui.download_panel import DownloadPanel  # noqa: E402
@@ -220,6 +221,72 @@ async def main() -> None:
             check(not view._table.item(zeta_row, 0).font().bold(),
                   "el resaltado debe retirarse al terminar el trabajo")
             view.close()
+
+            class BatchRuntimeProbe:
+                def __init__(self):
+                    self.submitted = []
+
+                @staticmethod
+                def start():
+                    return True
+
+                def submit(self, operation):
+                    self.submitted.append(operation)
+                    return "future"
+
+            class BatchProbe:
+                _maintenance_busy = False
+                _preparing_download = False
+                _archive_check_busy = False
+
+                def __init__(self):
+                    self._queue = type("Queue", (), {"is_running": False})()
+                    self._bridge = type("Bridge", (), {"is_busy": False})()
+                    self._runtime = BatchRuntimeProbe()
+                    self._btn_console = type(
+                        "ConsoleButton", (), {"setChecked": lambda _self, _checked: None}
+                    )()
+                    self.active = []
+                    self.actions_updated = False
+
+                @staticmethod
+                def tr(_key, default):
+                    return default
+
+                @staticmethod
+                def _profiles_in_table_order():
+                    return [
+                        {"id": 1, "display_name": "Alpha", "folder_exists": True},
+                        {"id": 2, "display_name": "Zeta", "folder_exists": True},
+                    ]
+
+                @staticmethod
+                def _archives_batch_async(profiles):
+                    return ("batch", profiles)
+
+                def _on_active_profile_changed(self, profile_id):
+                    self.active.append(profile_id)
+
+                def _update_actions(self):
+                    self.actions_updated = True
+
+                @staticmethod
+                def _on_archives_finished(_folder, _result, _error):
+                    raise AssertionError("el arranque batch no debe fallar")
+
+            batch = BatchProbe()
+            with patch(
+                "modules.cherry.ui.view.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ):
+                CherryView._process_archives_batch(batch)
+            check(batch.active == [1],
+                  "el batch debe resaltar el primer perfil visible antes de iniciar")
+            check(batch._runtime.submitted == [
+                ("batch", batch._profiles_in_table_order())
+            ], "el batch debe enviar todos los perfiles visibles en orden")
+            check(batch._maintenance_busy and batch.actions_updated,
+                  "el batch debe entrar en estado ocupado y actualizar acciones")
 
             class CreatedProbe:
                 _selected_id = None
