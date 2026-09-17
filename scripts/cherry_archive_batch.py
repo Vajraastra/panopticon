@@ -24,7 +24,17 @@ def arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def run(args: argparse.Namespace) -> dict:
+def write_report(target: Path, report: dict) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        json.dump(report, stream, ensure_ascii=False, indent=2)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, target)
+
+
+async def run(args: argparse.Namespace, target: Path) -> dict:
     from third_party.cherry_dl.config import INDEX_DB
     from third_party.cherry_dl.index import get_profile, list_profiles
 
@@ -57,16 +67,26 @@ async def run(args: argparse.Namespace) -> dict:
             on_file=lambda name: print(f"    {name}", flush=True),
         )
         report["summary"] = vars(result)
+        write_report(target, report)
     else:
         from third_party.cherry_dl.project_maintenance import plan_project
 
         for position, profile in enumerate(profiles, 1):
             print(f"[{position}/{len(profiles)}] {profile['display_name']}", flush=True)
+            seen = 0
+
+            def file_progress(_name: str) -> None:
+                nonlocal seen
+                seen += 1
+                if seen % 500 == 0:
+                    print(f"    {seen} archivos hasheados", flush=True)
+
             try:
                 plan = await plan_project(
                     Path(profile["folder_path"]),
                     profile["display_name"],
                     force_audit=args.force_audit,
+                    emit=file_progress,
                 )
             except Exception as exc:
                 report["projects"].append({
@@ -75,31 +95,26 @@ async def run(args: argparse.Namespace) -> dict:
                     "audited": 0, "duplicates": 0, "renames": 0,
                     "errors": [f"{type(exc).__name__}: {exc}"],
                 })
-                continue
-            report["projects"].append({
-                "id": profile["id"],
-                "name": profile["display_name"],
-                "folder": profile["folder_path"],
-                "audited": len(plan["files"]) + len(plan["duplicates"])
-                if plan["audit_version"] else 0,
-                "duplicates": len(plan["duplicates"]),
-                "renames": sum(item["old"] != item["new"] for item in plan["files"]),
-                "errors": plan["errors"],
-            })
+            else:
+                report["projects"].append({
+                    "id": profile["id"],
+                    "name": profile["display_name"],
+                    "folder": profile["folder_path"],
+                    "audited": len(plan["files"]) + len(plan["duplicates"])
+                    if plan["audit_version"] else 0,
+                    "duplicates": len(plan["duplicates"]),
+                    "renames": sum(item["old"] != item["new"] for item in plan["files"]),
+                    "errors": plan["errors"],
+                })
+            write_report(target, report)
     return report
 
 
 def main() -> None:
     args = arguments()
-    report = asyncio.run(run(args))
     target = args.report or ROOT / ".work" / "cherry-archive-batch-report.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(target.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8") as stream:
-        json.dump(report, stream, ensure_ascii=False, indent=2)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, target)
+    report = asyncio.run(run(args, target))
+    write_report(target, report)
     print(f"Reporte: {target}")
 
 
