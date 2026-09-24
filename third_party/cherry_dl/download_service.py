@@ -6,7 +6,7 @@ Encapsula el flujo canónico de descarga en dos fases:
     scan API (iter_files, since=last_synced)  →  pending_queue
       → cooldown si el scan fue agresivo (politeness)
       → descarga productor/workers (dedup atómico, remove_pending por éxito)
-      → cola diferida (errores temporales)
+      → errores temporales al fondo para la próxima sesión
       → update last_synced + file_count
 
 La interfaz no conoce asyncio: pasa un callback `emit(evento)` y recibe eventos
@@ -20,7 +20,6 @@ propaga CancelledError limpiamente (cancela productor + workers y re-lanza).
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import time
@@ -51,6 +50,7 @@ from .catalog import (
     ScanCatalogBatch,
     add_content_alias,
     add_file,
+    defer_pending_to_next_session,
     defer_until_archived,
     clean_pending_catalog_overlap,
     content_alias_hash,
@@ -59,7 +59,6 @@ from .catalog import (
     hash_exists,
     init_catalog,
     ensure_layout_version,
-    move_pending_to_back,
     next_counter,
     pending_count,
     reactivate_awaiting_archive,
@@ -348,6 +347,21 @@ def source_category(url: str) -> SourceCategory:
     return declared_site_policy(cls).category
 
 
+def _wait_on_site_throttle(
+    source_categories: set[SourceCategory] | None,
+) -> bool:
+    """Espera cuotas normales y las de la pasada final de repositorios.
+
+    Las categorías oficiales todavía pueden diferirse para dejar avanzar el
+    batch. Repositorios es la última pasada global: diferir Pawchive ahí
+    terminaría falsamente el lote y exigiría otra Sync manual.
+    """
+    return (
+        source_categories is None
+        or SourceCategory.REPOSITORY in source_categories
+    )
+
+
 async def _remember_content_alias(
     folder: Path, file_info: FileInfo, file_hash: str,
 ) -> bool:
@@ -522,9 +536,6 @@ async def run_profile_download(
             "que ya estaban en curso terminarán.",
             "warn",
         ))
-
-    # FileInfo, ArtistInfo, carpeta, ritmo, caudal, pausa post-descarga, sitio.
-    deferred: list[tuple] = []
 
     # El engine arranca con el pool más grande que alguna fuente vaya a pedir;
     # `set_workers` lo ajusta al entrar en cada una.
@@ -1099,6 +1110,13 @@ async def run_profile_download(
                 )
                 continue
 
+            # Una fila que ya falló en otra sesión se vuelve a intentar, pero
+            # su anomalía conocida no prueba que el sitio completo esté caído.
+            known_deferred = {
+                item["url_source"] for item in pending_list
+                if int(item.get("deferred_attempts") or 0) > 0
+            }
+
             engine.set_transfer_policy(transfer_policy)
             engine.set_pace(pace)
             engine.set_rate(rate)
@@ -1301,7 +1319,7 @@ async def run_profile_download(
                                     template.name, kind, seconds,
                                 ),
                                 expected_bytes=fi.remote_size,
-                                wait=(source_categories is None),
+                                wait=_wait_on_site_throttle(source_categories),
                             )
                             _emit_quota_status(force=True)
 
@@ -1337,11 +1355,9 @@ async def run_profile_download(
                                 _emit_quota_status(force=True)
                             emit(WorkerDone(slot_id, fi.filename, "⏸"))
                             emit(Log(f"⏸ {fi.filename[:55]}  [timeout — diferido]", "warn"))
-                            await move_pending_to_back(folder, fi.dedup_key)
-                            deferred.append((
-                                fi, artist_info, folder, transfer_policy,
-                                template.name, download_transport, browser_origin,
-                            ))
+                            await defer_pending_to_next_session(
+                                folder, fi.dedup_key,
+                            )
                             summ.deferred += 1
                             _counters()
                             continue
@@ -1370,20 +1386,33 @@ async def run_profile_download(
                                 template.name, fi.filename, result.error_kind,
                                 failure_detail,
                             )
+                            was_deferred = fi.dedup_key in known_deferred
                             if result.error_kind != ErrorKind.NOT_FOUND:
-                                await move_pending_to_back(folder, fi.dedup_key)
+                                await defer_pending_to_next_session(
+                                    folder, fi.dedup_key,
+                                )
                             is_rejection = result.error_kind in _REJECTIONS
-                            reject["recent"].append(is_rejection)
-                            if is_rejection:
-                                reject["detail"] = result.error or ""
-                                rejection_count = sum(reject["recent"])
-                                hard_stop = any(
-                                    marker in reject["detail"].casefold()
+                            raw_failure = result.error or ""
+                            hard_stop = (
+                                is_rejection
+                                and any(
+                                    marker in raw_failure.casefold()
                                     for marker in _HARD_STOP_MARKERS
                                 )
+                            )
+                            # Un problema persistente de ESTE archivo no entra
+                            # en el guardrail del sitio. Una orden humana de
+                            # detenerse sí manda, aunque venga de un diferido.
+                            if not was_deferred:
+                                reject["recent"].append(is_rejection)
+                            if is_rejection:
+                                if hard_stop or not was_deferred:
+                                    reject["detail"] = raw_failure
+                                rejection_count = sum(reject["recent"])
                                 if (template.name not in blocked_sites
                                         and (hard_stop
-                                             or rejection_count >= _BLOCK_STREAK)):
+                                             or (not was_deferred and
+                                                 rejection_count >= _BLOCK_STREAK))):
                                     reason = (
                                         f"{template.name} pidió detener las peticiones"
                                         if hard_stop else
@@ -1402,11 +1431,15 @@ async def run_profile_download(
                                     if reject["detail"]:
                                         emit(Log(f"   {reject['detail']}", "warn"))
 
-                            if result.error_kind in ErrorKind.DEFERRABLE:
-                                deferred.append((
-                                    fi, artist_info, folder, transfer_policy,
-                                    template.name, download_transport, browser_origin,
+                            if was_deferred and not hard_stop:
+                                emit(Log(
+                                    f"↻ {fi.filename[:50]}  [atascado conocido; "
+                                    "no cuenta para el freno del sitio]",
+                                    "dim",
                                 ))
+
+                            if result.error_kind in ErrorKind.DEFERRABLE:
+                                summ.deferred += 1
                                 emit(WorkerDone(slot_id, fi.filename, "⏸"))
                                 emit(Log(
                                     f"⏸ {fi.filename[:55]}  [{result.error_kind}] "
@@ -1425,7 +1458,9 @@ async def run_profile_download(
                                         "archivó el original]", "warn",
                                     ))
                                 elif state == "unknown":
-                                    await move_pending_to_back(folder, fi.dedup_key)
+                                    await defer_pending_to_next_session(
+                                        folder, fi.dedup_key,
+                                    )
                                     summ.deferred += 1
                                     emit(WorkerDone(slot_id, fi.filename, "⏸"))
                                     emit(Log(
@@ -1475,7 +1510,9 @@ async def run_profile_download(
 
                         if result.file_hash is None:
                             summ.errors += 1
-                            await move_pending_to_back(folder, fi.dedup_key)
+                            await defer_pending_to_next_session(
+                                folder, fi.dedup_key,
+                            )
                             emit(Log(f"✗ {fi.filename[:50]}: bug interno — hash nulo", "error"))
                             if result.dest and result.dest.exists():
                                 result.dest.unlink()
@@ -1567,7 +1604,9 @@ async def run_profile_download(
                     except Exception as exc:
                         import traceback
                         summ.errors += 1
-                        await move_pending_to_back(folder, fi.dedup_key)
+                        await defer_pending_to_next_session(
+                            folder, fi.dedup_key,
+                        )
                         emit(WorkerDone(slot_id, fi.filename, "✗"))
                         emit(Log(
                             f"✗ {fi.filename[:45]}  [{type(exc).__name__}: {exc}]",
@@ -1597,179 +1636,6 @@ async def run_profile_download(
             _publish_site_metrics(source_metrics, emit)
             if global_state["reached"]:
                 break
-
-        # ── Cola diferida ───────────────────────────────────────────────────
-        if deferred and not global_state["reached"]:
-            emit(Log(f"⏭ Cola diferida: {len(deferred)} archivo(s)…", "warn"))
-            for (file_info, a_info, dest_folder, src_policy, src_site,
-                 src_transport, src_browser_origin) in deferred:
-                # Un sitio que cerró la puerta no se reintenta aquí: la cola
-                # diferida es el otro camino por el que se le volvía a pedir.
-                if src_site in blocked_sites:
-                    continue
-                # El ritmo se re-fija por archivo: los diferidos vienen de
-                # fuentes distintas y el pacer que quedó activo es el de la
-                # última, que puede ser más permisivo que el que este archivo
-                # debe respetar. Con el caudal, igual.
-                engine.set_transfer_policy(src_policy)
-                engine.set_workers(src_policy.workers)
-                engine.set_pace(src_policy.min_request_interval)
-                engine.set_rate(src_policy.max_bytes_per_sec)
-                engine.set_completion_gap(src_policy.post_download_delay)
-                if await url_exists(
-                        dest_folder, file_info.dedup_key,
-                        include_previews=False):
-                    summ.skipped += 1
-                    continue
-                emit(WorkerStart(0, file_info.filename))
-                ext = Path(file_info.filename).suffix
-                tmp_name = "_dl_" + hashlib.md5(file_info.url.encode()).hexdigest()[:12] + ext
-                try:
-                    throttle_permit = None
-                    src_throttle = throttles.get(src_site)
-                    if src_throttle is not None:
-                        throttle_permit = await src_throttle.acquire(
-                            lambda kind, seconds: _throttle_wait(
-                                src_site, kind, seconds,
-                            ),
-                            expected_bytes=file_info.remote_size,
-                            wait=(source_categories is None),
-                        )
-
-                    async def _download_deferred_file():
-                        return await asyncio.wait_for(
-                            engine.download(
-                            url=file_info.url, dest_dir=dest_folder, filename=tmp_name,
-                            extra_headers=file_info.extra_headers or None,
-                            total_timeout=300.0,
-                            transport=src_transport,
-                            browser_origin=src_browser_origin,
-                        ),
-                        timeout=7200.0,
-                    )
-
-                    result = await _download_deferred_file()
-                    result = await _confirm_failed_probe_once(
-                        throttle_permit, result,
-                        _download_deferred_file, emit,
-                    )
-                except ThrottleDeferred as exc:
-                    _defer_throttled_batch(src_site, exc)
-                    emit(WorkerDone(0, file_info.filename, "⏭"))
-                    continue
-                except asyncio.TimeoutError:
-                    if src_throttle is not None:
-                        await src_throttle.finish(
-                            throttle_permit, success=False,
-                            throttle_failure=False,
-                        )
-                    emit(WorkerDone(0, file_info.filename, "⏭"))
-                    summ.deferred += 1
-                    await move_pending_to_back(
-                        dest_folder, file_info.dedup_key,
-                    )
-                    emit(Log(f"⏭ {file_info.filename[:55]}  [timeout — próx. sync]", "warn"))
-                    _counters()
-                    continue
-                if src_throttle is not None:
-                    src_codes = throttle_meta[src_site]["codes"]
-                    trip = await src_throttle.finish(
-                        throttle_permit,
-                        success=result.ok,
-                        throttle_failure=(
-                            not result.ok
-                            and getattr(result, "failure_code", None) in src_codes
-                        ),
-                        transferred_bytes=result.file_size,
-                    )
-                    if trip is not None:
-                        _report_throttle_trip(src_site, trip.seconds)
-                if result.ok and result.file_hash:
-                    _record_global_download(result.file_size)
-                    file_route = route(file_info.filename)
-                    counter = await next_counter(dest_folder, file_route.key)
-                    final_name = routed_name(
-                        a_info.name, counter, file_info.filename,
-                    )
-                    catalog_name = relative_filename(final_name)
-                    if result.dest and result.dest.exists():
-                        try:
-                            target = dest_folder / catalog_name
-                            target.parent.mkdir(parents=True, exist_ok=True)
-                            result.dest.replace(target)
-                        except OSError:
-                            catalog_name = result.dest.relative_to(dest_folder).as_posix()
-                    await add_file(
-                        artist_dir=dest_folder, file_hash=result.file_hash,
-                        filename=catalog_name, url_source=file_info.dedup_key,
-                        file_size=result.file_size, counter=counter,
-                        is_preview=file_info.is_preview,
-                        content_service=file_info.content_service,
-                        post_id=file_info.post_id,
-                        content_role=file_info.content_role,
-                        content_position=file_info.content_position,
-                    )
-                    await _remember_content_alias(
-                        dest_folder, file_info, result.file_hash,
-                    )
-                    await remove_pending(dest_folder, file_info.dedup_key)
-                    summ.downloaded += 1
-                    emit(WorkerDone(0, catalog_name, "✓"))
-                    emit(Log(f"✓ {catalog_name} (reintento)", "ok"))
-                    if global_state["reached"]:
-                        _counters()
-                        break
-                else:
-                    if result.dest and result.dest.exists():
-                        result.dest.unlink(missing_ok=True)
-                    failure_detail = _failure_detail(result.error)
-                    if result.error_kind == ErrorKind.NOT_FOUND:
-                        src_template = get_template(a_info.url, engine)
-                        state = (
-                            await _not_found_action(src_template, a_info, file_info)
-                            if src_template is not None else "permanent"
-                        )
-                        if state == "awaiting":
-                            await defer_until_archived(
-                                dest_folder, file_info.dedup_key,
-                            )
-                            summ.awaiting_archive += 1
-                            outcome_icon = "◷"
-                            outcome_note = "Pawchive aún no archivó el original"
-                        elif state == "unknown":
-                            await move_pending_to_back(
-                                dest_folder, file_info.dedup_key,
-                            )
-                            summ.deferred += 1
-                            outcome_icon = "⏸"
-                            outcome_note = "404 sin poder comprobar la publicación"
-                        else:
-                            await remove_pending(dest_folder, file_info.dedup_key)
-                            summ.dropped += 1
-                            outcome_icon = "⊘"
-                            outcome_note = "404 definitivo — fuera de la cola"
-                    else:
-                        await move_pending_to_back(
-                            dest_folder, file_info.dedup_key,
-                        )
-                        summ.deferred += 1
-                        outcome_icon = "⏭"
-                        outcome_note = (
-                            f"{result.error_kind} {failure_detail} — pendiente próx. sync"
-                        )
-                    log.warning(
-                        "cherry: reintento fallido | sitio=%s | archivo=%r "
-                        "| tipo=%s | detalle=%s",
-                        src_site, file_info.filename, result.error_kind,
-                        failure_detail,
-                    )
-                    emit(WorkerDone(0, file_info.filename, outcome_icon))
-                    emit(Log(
-                        f"{outcome_icon} {file_info.filename[:55]}  "
-                        f"[{outcome_note}]", "warn",
-                    ))
-                _counters()
-            emit(WorkerIdle(0))
 
     # ── Resumen final ───────────────────────────────────────────────────────
     if finalize_profile:

@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "third_party"))
 from cherry_dl.catalog import (  # noqa: E402
     CATALOG_NAME,
     add_pending,
+    defer_pending_to_next_session,
     get_pending_files,
     init_catalog,
     move_pending_to_back,
@@ -41,17 +42,21 @@ async def main() -> None:
         check([row["url_source"] for row in rows] == [
             "source-a", "source-b", "source-c",
         ], "la inserción debe conservar FIFO")
+        check(all(row["deferred_attempts"] == 0 for row in rows),
+              "los pendientes nuevos no nacen marcados")
 
         check(
-            await move_pending_to_back(artist, "source-a"),
-            "debe encontrar la fila fallida",
+            await defer_pending_to_next_session(artist, "source-a"),
+            "debe marcar la fila fallida para otra sesión",
         )
         rows = await get_pending_files(artist, 7)
         check([row["url_source"] for row in rows] == [
             "source-b", "source-c", "source-a",
         ], "un fallo debe mover el archivo al fondo")
+        check(rows[-1]["deferred_attempts"] == 1,
+              "el primer fallo queda persistido")
 
-        await move_pending_to_back(artist, "source-b")
+        await defer_pending_to_next_session(artist, "source-b")
         rows = await get_pending_files(artist, 7)
         check([row["url_source"] for row in rows] == [
             "source-c", "source-a", "source-b",
@@ -67,6 +72,8 @@ async def main() -> None:
         ], "refrescar una URL firmada no debe alterar el orden")
         check(rows[1]["download_url"] == "download-a-refreshed",
               "el refresco debe conservarse")
+        check(rows[1]["deferred_attempts"] == 0,
+              "una URL nueva deja de ser un atasco conocido")
         check(not await move_pending_to_back(artist, "missing"),
               "una fila inexistente debe reportarse sin error")
 
@@ -100,12 +107,16 @@ async def main() -> None:
         rows = await get_pending_files(artist, 4)
         check([row["url_source"] for row in rows] == ["old-a", "old-b"],
               "la migración debe conservar el FIFO anterior")
-        await move_pending_to_back(artist, "old-a")
+        check(all(row["deferred_attempts"] == 0 for row in rows),
+              "la migración añade la marca con cero intentos")
+        await defer_pending_to_next_session(artist, "old-a")
         rows = await get_pending_files(artist, 4)
         check([row["url_source"] for row in rows] == ["old-b", "old-a"],
               "un catálogo migrado debe permitir diferir")
+        check(rows[-1]["deferred_attempts"] == 1,
+              "un catálogo migrado persiste el primer fallo")
 
-    print(f"OK: {checks}/9 comprobaciones")
+    print(f"OK: {checks} comprobaciones")
 
 
 if __name__ == "__main__":

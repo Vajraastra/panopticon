@@ -36,10 +36,12 @@ que los dos workers crucen juntos el presupuesto con ZIP/RAR grandes; los
 archivos sin tamaño conocido registran sus bytes reales al terminar.
 
 El estado persistente conserva compatibilidad con ejecuciones anteriores. En
-una descarga individual la cuota continúa esperando de forma cancelable; en
-batch se difiere Pawchive y se continúa con el siguiente trabajo sin congelar
-toda la cola. Los archivos fallidos mantienen su comportamiento FIFO: pasan al
-fondo mediante `queue_position`, mientras una cuota no altera sus posiciones.
+una descarga individual y en la pasada final de repositorios la cuota espera de
+forma cancelable; al vencer reanuda el mismo proyecto y continúa automáticamente
+con los demás. Las categorías anteriores del batch todavía pueden diferirse para
+no congelar el trabajo restante. Los archivos fallidos mantienen su
+comportamiento FIFO: pasan al fondo mediante `queue_position`, mientras una
+cuota no altera sus posiciones.
 
 Valor actual: 500 archivos o 25 GB cada 3 horas, lo que ocurra primero. Ambos
 límites y las horas se editan desde Ajustes.
@@ -125,10 +127,10 @@ ritmo y enfriamiento de API; `TransferPolicy` contiene workers/tope, delay, rein
 ritmo, caudal, pausa post-descarga, presupuesto, ventana/circuito y transporte.
 
 `download_service` activa primero la política de scan y sólo al encontrar cola activa cambia a la
-de transferencia. Los diferidos conservan y restauran el contrato completo de su sitio. Patreon y
+de transferencia. Los pendientes de sesiones anteriores usan el contrato completo de su sitio. Patreon y
 Pixiv mantienen jitter API propio; desde O5 sus archivos reutilizan ese mismo rango. El override TOML de workers,
 antes inerte, ya manda por sitio sin superar `max_workers`. Pawchive conserva exactamente 2 workers,
-1 petición/s en ambas fases, 2 MiB/s, 5 s post-descarga, 300/3 h, circuito y navegador CDP. Banco:
+1 petición/s en ambas fases, 2 MiB/s, 5 s post-descarga, 500/3 h, circuito y navegador CDP. Banco:
 `scripts/cherry_site_policy_selftest.py` 29/29; regresiones amplias sin fallos.
 
 ### Integración cerrada — autenticación de Pixiv (2026-09-07)
@@ -178,14 +180,20 @@ viva autorizó correctamente y consultó el perfil 104099575: primera página de
 `next_url` presente. Pruebas: `cherry_pixiv_oauth_selftest.py` 18/18,
 `cherry_auth_selftest.py` 21/21 y puente 99/99.
 
-### `catalog.py` + `download_service.py` — los fallos rotan al fondo (2026-09-07)
+### `catalog.py` + `download_service.py` — diferidos entre sesiones (2026-09-07; 2026-09-24)
 
-La cola diferida anterior sólo vivía durante una ejecución: al reiniciar, el orden volvía a
-`discovered_at` y un archivo anómalo podía reaparecer al frente. `pending_queue` guarda ahora una
-`queue_position` mutable. Todo fallo de archivo la mueve atómicamente después del máximo actual,
-sin importar extensión ni clase de error; un 404 confirmado conserva su tratamiento especial y
-sale de la cola. La migración asigna posiciones por `ROWID` para no alterar el FIFO existente.
-Validación sin red: `cherry_queue_selftest.py` 9/9 y `cherry_block_toytest.py` 33/33.
+`pending_queue` guarda una `queue_position` mutable. Todo fallo de archivo la mueve atómicamente
+después del máximo actual, sin importar extensión ni clase de error; un 404 confirmado conserva su
+tratamiento especial y sale de la cola. La migración asigna posiciones por `ROWID` para no alterar
+el FIFO existente.
+
+La lista temporal que reintentaba todos los fallos al final de la misma ejecución se retiró: cada
+pendiente tiene como máximo una vuelta por Sync. `deferred_attempts` persiste que una fila ya falló
+en una sesión anterior. Se vuelve a intentar y, si falla, rota otra vez, pero no alimenta la ventana
+de cinco rechazos que interpreta una caída del sitio. Una petición explícita del operador para
+detenerse conserva prioridad y sí corta la ejecución. Si el scan entrega una URL o hash nuevos, el
+marcador se limpia para evaluar el recurso renovado normalmente. Validación: cola 14/14, catálogo
+521/521 y `cherry_block_toytest.py` 39/39.
 
 ### `browser_transport.py` — contexto según tipo y cierre acotado (2026-09-07)
 
@@ -253,7 +261,7 @@ una redirección, un fallo del servidor y un problema real de CDP.
 
 El transporte registra ahora archivo y target sin query, estado/texto HTTP, MIME, longitud,
 `Content-Range`, servidor, redirección, error de red e id de Network. El servicio conserva el
-detalle en `panopticon.log` y lo muestra tanto en el intento inicial como en el diferido, en lugar
+detalle en `panopticon.log` y lo muestra en cada intento, incluida la siguiente Sync, en lugar
 de enseñar solo `[network]`. Los cuerpos textuales se compactan y limitan; la query —que contiene
 el nombre original— no se escribe. Un 206 sigue rechazándose: aceptar una respuesta parcial como
 archivo completo corrompería el vídeo. Banco Chromium: 26/26.
@@ -329,10 +337,9 @@ menos una página HTML); el 403 del origen retorna al instante como `AUTH`.
 `_signed_url_expiry()` lee el `token-time` que Patreon pone en la URL firmada; si ya pasó, se
 falla sin gastar el request ni el delay previo, con el nuevo `ErrorKind.URL_EXPIRED`.
 
-**No es `DEFERRABLE` a propósito:** la cola diferida reusa la misma `file_info.url`, así que
-reintentarla en la misma corrida es otro fallo seguro. Al no ser éxito tampoco se llama
-`remove_pending`, de modo que el archivo se queda en `pending` y la **próxima sync** lo resuelve
-con una firma nueva — que es lo único que lo arregla.
+Al no ser éxito no se llama `remove_pending`: el archivo permanece en `pending` y la **próxima
+Sync** lo resuelve con una firma nueva, que es lo único que puede arreglarlo. Ningún error temporal
+tiene ya un segundo intento al final de la misma corrida.
 
 ### `catalog.py` — un re-scan refresca la URL guardada en `pending_queue` (2026-09-05)
 
@@ -368,8 +375,8 @@ worker se cancele: en Windows un handle abierto impide borrarlo después.
 ### `engine.py` — el presupuesto de tiempo crece con lo ya bajado (2026-09-05)
 
 El worker pasa `total_timeout=300.0`. Como tope fijo condena a los archivos grandes: un `.zip` de
-3 GB no cabe en 300 s, así que al primer tropiezo se aborta por TIMEOUT, pasa a la cola diferida
-y allí se le dan otros 300 s — nunca termina, y cada intento cuesta el ancho de banda gastado.
+3 GB no cabe en 300 s, así que al primer tropiezo se abortaba por TIMEOUT y cada nueva ejecución
+volvía a pagar el ancho de banda sin posibilidad real de terminar.
 Ahora el presupuesto es `total_timeout + written / _MIN_RATE` (256 KiB/s): segundos de gracia más
 lo que costaría bajar a una tasa mínima decente lo ya confirmado. Lo que no progresa se sigue
 cortando en seco, porque sin bytes confirmados el presupuesto no crece.
@@ -432,7 +439,7 @@ y lo recorta con `max_workers`. Se saca a nivel de módulo a propósito: el self
 cálculo copiado y se quedó desfasado sin que ningún test fallara.
 
 El pool y el ritmo se fijan **por fuente**, no una vez por engine (`set_workers`/`set_pace` al
-entrar en cada una, y de nuevo por archivo en la cola diferida). Hace falta porque un perfil puede
+entrar en cada una). Hace falta porque un perfil puede
 tener a la vez una fuente de Pawchive (5 simultáneas) y una de Kemono (2), y aplicar el mínimo de
 las dos a todo el perfil castigaría a la que sí puede correr. Es seguro exactamente ahí: el bucle
 de fuentes es secuencial, así que al reemplazar el semáforo no hay ninguna descarga esperándolo.
@@ -595,20 +602,22 @@ Un ZIP de 216 MB alcanzó cabeceras válidas (`HTTP 200`) y después perdió el 
 El primer worker se difería correctamente, pero otro que esperaba cabeceras en la misma sesión
 consumía los 60 s completos porque esa espera sólo observaba su cola de respuestas. Ahora espera
 a la vez la respuesta y la tarea receptora: si CDP termina, todos los workers afectados despiertan
-de inmediato y conservan sus archivos en la cola diferida.
+de inmediato y conservan sus archivos en la cola persistente.
 
 La invalidación también queda ligada a la instancia concreta que falló. Un worker atrasado ya no
 puede cerrar el navegador de reemplazo que otro worker haya creado mientras procesaba el fallo.
 Regresiones: `scripts/cherry_lifecycle_selftest.py` (13/13) y navegador real
 `scripts/cherry_browser_toytest.py` (51/51).
 
-### Confirmación de sonda y batch no bloqueante (2026-09-10)
+### Confirmación de sonda y espera selectiva del batch (2026-09-10; 2026-09-24)
 
 Un `no_http_failed` durante la sonda del cortacircuitos se repite una sola vez después de que el
 engine descarte la sesión Chromium afectada. Sólo el resultado de esa sesión limpia decide si el
-cooldown aumenta. Las descargas ordinarias no se duplican. En ejecución batch, tanto la cola
-principal como la diferida adquieren la cuota/circuito con `wait=False`; si no hay permiso,
-conservan la fila y terminan la pasada del sitio en vez de dormir todo el trabajo.
+cooldown aumenta. Las descargas ordinarias no se duplican. En ejecución batch, las categorías
+oficiales adquieren la cuota/circuito con `wait=False`; si no hay permiso, conservan la fila y
+continúan el trabajo prioritario. La pasada de repositorios usa `wait=True`: como es la última
+pasada global, Pawchive conserva el proyecto activo, muestra el contador, espera de forma
+cancelable y reanuda la cola al vencer la ventana en vez de declarar terminado el lote.
 
 ### Pawchive vuelve a HTTP identificable (2026-09-16)
 
@@ -631,7 +640,7 @@ borrar las transferencias que alimentan la ventana de archivos/GB.
 Las filas que ya estaban en `pending_queue` conservaban el JSON de encabezados capturado al
 descubrirlas y, por tanto, sólo enviaban `Referer`. El servicio aplica ahora el hook
 `transfer_headers()` al reconstruir cada `FileInfo`: Pawchive inyecta el `User-Agent` vigente justo
-antes de descargar, también para colas antiguas y para sus reintentos diferidos. No se reescriben
+antes de descargar, también para colas antiguas y reintentos de sesiones posteriores. No se reescriben
 manualmente las bases ni se depende de que el scan vuelva a insertar la fila.
 
 ### `site_throttle.py` + UI nativa — medidor visual de cuota Pawchive (2026-09-16)

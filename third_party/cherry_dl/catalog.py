@@ -100,7 +100,8 @@ CREATE TABLE IF NOT EXISTS pending_queue (
     extra_headers   TEXT,
     profile_url_id  INTEGER,
     discovered_at   INTEGER NOT NULL,
-    queue_position  INTEGER
+    queue_position  INTEGER,
+    deferred_attempts INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -253,6 +254,19 @@ async def init_catalog(artist_dir: Path) -> None:
             "WHERE queue_position IS NULL"
         )
         await db.execute(_CREATE_IDX_PENDING_ORDER)
+
+        # Un fallo que debe esperar a otra sesión queda marcado. Así puede
+        # volver a intentarse sin que cinco archivos problemáticos conocidos
+        # se confundan con un bloqueo nuevo de todo el sitio.
+        async with db.execute(
+            "SELECT name FROM pragma_table_info('pending_queue') "
+            "WHERE name='deferred_attempts'"
+        ) as cur:
+            if not await cur.fetchone():
+                await db.execute(
+                    "ALTER TABLE pending_queue ADD COLUMN "
+                    "deferred_attempts INTEGER NOT NULL DEFAULT 0"
+                )
 
         # Metadatos semánticos añadidos en O4. También viajan con los
         # originales de Pawchive que esperan ser archivados.
@@ -839,7 +853,13 @@ class ScanCatalogBatch:
                     content_position = excluded.content_position,
                     remote_size = excluded.remote_size,
                     extra_headers = excluded.extra_headers,
-                    is_preview = excluded.is_preview
+                    is_preview = excluded.is_preview,
+                    deferred_attempts = CASE
+                        WHEN pending_queue.download_url IS NOT excluded.download_url
+                          OR pending_queue.remote_hash IS NOT excluded.remote_hash
+                        THEN 0
+                        ELSE pending_queue.deferred_attempts
+                    END
                 """,
                 list(self._buffer.values()),
             )
@@ -1220,7 +1240,13 @@ async def add_pending(
                 content_position = excluded.content_position,
                 remote_size = excluded.remote_size,
                 extra_headers = excluded.extra_headers,
-                is_preview = excluded.is_preview
+                is_preview = excluded.is_preview,
+                deferred_attempts = CASE
+                    WHEN pending_queue.download_url IS NOT excluded.download_url
+                      OR pending_queue.remote_hash IS NOT excluded.remote_hash
+                    THEN 0
+                    ELSE pending_queue.deferred_attempts
+                END
             """,
             (
                 url_source, download_url, filename_hint,
@@ -1567,7 +1593,8 @@ async def get_pending_files(
                 SELECT url_source, download_url, filename_hint,
                        post_id, post_published, remote_hash, content_service,
                        original_filename, content_role, content_position,
-                       remote_size, extra_headers, is_preview
+                       remote_size, extra_headers, is_preview,
+                       deferred_attempts
                 FROM pending_queue
                 WHERE profile_url_id = ? AND is_preview = 0
                 ORDER BY queue_position, discovered_at, rowid
@@ -1581,7 +1608,8 @@ async def get_pending_files(
                 SELECT url_source, download_url, filename_hint,
                        post_id, post_published, remote_hash, content_service,
                        original_filename, content_role, content_position,
-                       remote_size, extra_headers, is_preview
+                       remote_size, extra_headers, is_preview,
+                       deferred_attempts
                 FROM pending_queue
                 WHERE is_preview = 0
                 ORDER BY queue_position, discovered_at, rowid
@@ -1609,6 +1637,31 @@ async def move_pending_to_back(artist_dir: Path, url_source: str) -> bool:
                 SELECT COALESCE(MAX(queue_position), 0) + 1
                 FROM pending_queue
             )
+            WHERE url_source = ?
+            """,
+            (url_source,),
+        ) as cur:
+            moved = cur.rowcount > 0
+        await db.commit()
+        return moved
+
+
+async def defer_pending_to_next_session(
+    artist_dir: Path, url_source: str,
+) -> bool:
+    """Rota un fallo y lo marca como problema conocido para futuras sesiones."""
+    db_path = artist_dir / CATALOG_NAME
+    if not db_path.exists():
+        return False
+    async with _db(db_path) as db:
+        async with db.execute(
+            """
+            UPDATE pending_queue
+            SET queue_position = (
+                    SELECT COALESCE(MAX(queue_position), 0) + 1
+                    FROM pending_queue
+                ),
+                deferred_attempts = deferred_attempts + 1
             WHERE url_source = ?
             """,
             (url_source,),

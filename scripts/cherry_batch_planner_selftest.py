@@ -136,6 +136,17 @@ def test_global_order_and_aggregation() -> None:
           f"el perfil visualmente activo no siguió el batch: {active}")
 
 
+def test_repository_pass_waits_for_throttle() -> None:
+    wait = download_service._wait_on_site_throttle
+    check(wait(None), "una Sync normal debe esperar la cuota")
+    check(wait({SourceCategory.REPOSITORY}),
+          "la pasada Pawchive debe esperar y reanudar el mismo proyecto")
+    check(not wait({SourceCategory.PAID_OFFICIAL}),
+          "una pausa de pago no debe bloquear las pasadas restantes")
+    check(not wait({SourceCategory.FREE_OFFICIAL}),
+          "una pausa gratuita no debe bloquear las pasadas restantes")
+
+
 def test_failure_isolation() -> None:
     bridge = FakeBridge()
     queue = DownloadQueue(bridge)
@@ -378,9 +389,10 @@ def test_automatic_source_availability() -> None:
 
 if __name__ == "__main__":
     test_global_order_and_aggregation()
+    test_repository_pass_waits_for_throttle()
     test_failure_isolation()
     test_cancellation_announces_touched_profiles()
     test_auth_single_flight()
     test_source_failure_stays_inside_profile()
     test_automatic_source_availability()
-    print("O3 planner: 36/36 comprobaciones")
+    print("O3 planner: 40/40 comprobaciones")

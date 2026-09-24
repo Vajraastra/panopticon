@@ -134,6 +134,15 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
 
+        if self.path.startswith("/server/"):
+            payload = b"temporary server error"
+            self.send_response(500)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
         # 403 genérico: permite probar la ventana y la pausa sin activar el
         # corte inmediato reservado al mensaje explícito del administrador.
         if self.path.startswith("/generic/"):
@@ -293,6 +302,62 @@ class ToyWindowTemplate(ToyTemplate):
             )
 
 
+class ToyKnownDeferredTemplate(ToyTemplate):
+    """Seis 403 de archivos ya marcados como problemáticos."""
+
+    name = "toyknown"
+    base_url = "toyknown://"
+    workers = 1
+    max_workers = 1
+    N = 6
+
+    @classmethod
+    def can_handle(cls, url: str) -> bool:
+        return url.startswith("toyknown://")
+
+    async def get_artist_info(self, url: str) -> ArtistInfo:
+        return ArtistInfo(artist_id="k", name="known", service="toy",
+                          site=self.name, url=url)
+
+    async def iter_files(self, artist: ArtistInfo, since=None):
+        for i in range(self.N):
+            yield FileInfo(
+                url=f"{BASE}/generic/known-{i}",
+                filename=f"known_{i}.bin",
+                artist_id=artist.artist_id,
+                artist_name=artist.name,
+                post_id=str(i),
+            )
+
+
+class ToyFutureSessionTemplate(ToyTemplate):
+    """Tres 500: se difieren, pero no se repiten al final de la misma run."""
+
+    name = "toyfuture"
+    base_url = "toyfuture://"
+    workers = 1
+    max_workers = 1
+    N = 3
+
+    @classmethod
+    def can_handle(cls, url: str) -> bool:
+        return url.startswith("toyfuture://")
+
+    async def get_artist_info(self, url: str) -> ArtistInfo:
+        return ArtistInfo(artist_id="f", name="future", service="toy",
+                          site=self.name, url=url)
+
+    async def iter_files(self, artist: ArtistInfo, since=None):
+        for i in range(self.N):
+            yield FileInfo(
+                url=f"{BASE}/server/{i}",
+                filename=f"future_{i}.bin",
+                artist_id=artist.artist_id,
+                artist_name=artist.name,
+                post_id=str(i),
+            )
+
+
 class ToyRateTemplate(ToyTemplate):
     """Seis archivos de 128 KiB con un techo de 256 KiB/s.
 
@@ -406,6 +471,7 @@ async def run() -> None:
     # El índice va al temporal: ninguna prueba toca ~/.cherry-dl.
     ds.INDEX_DB = tmp / "index.db"
     for t in (ToyTemplate, ToyMixTemplate, ToyGapTemplate, ToyWindowTemplate,
+              ToyKnownDeferredTemplate, ToyFutureSessionTemplate,
               ToyRateTemplate, ToyBudgetTemplate):
         _registry._TEMPLATES.insert(0, t)
     # El presupuesto va a un sidecar del temporal: ninguna prueba toca el real.
@@ -511,6 +577,59 @@ async def run() -> None:
               "la ventana activa un único SiteBlocked", f"({len(bloqueos)})")
         check(bool(bloqueos) and bloqueos[0].streak == ds._BLOCK_STREAK,
               "el corte conserva el conteo de cinco rechazos")
+
+        # ── [6b] Los atascos conocidos no simulan una caída del sitio ─────
+        print("\n[6b] Seis archivos ya diferidos vuelven a fallar")
+        from cherry_dl.catalog import (
+            add_pending, defer_pending_to_next_session, init_catalog,
+        )
+        known_folder = tmp / "caso6b_known"
+        await init_catalog(known_folder)
+        for i in range(ToyKnownDeferredTemplate.N):
+            url = f"{BASE}/generic/known-{i}"
+            await add_pending(
+                known_folder, url, url, f"known_{i}.bin", profile_url_id=-1,
+            )
+            await defer_pending_to_next_session(known_folder, url)
+        summ, ev = await correr(
+            tmp, [{"id": -1, "url": "toyknown://x", "site": "toy",
+                   "enabled": 1, "last_synced": None, "file_count": 0}],
+            "caso6b_known",
+        )
+        known_hits = [h for h in Handler.hits if h.startswith("/generic/known-")]
+        bloqueos = [e for e in ev if isinstance(e, ds.SiteBlocked)]
+        check(len(known_hits) == ToyKnownDeferredTemplate.N,
+              "intenta una vez cada atasco conocido y sigue con el siguiente",
+              f"({len(known_hits)})")
+        check(not bloqueos,
+              "los atascos conocidos no disparan el guardrail del sitio")
+        rows = await get_pending_files(known_folder, -1)
+        check(all(row["deferred_attempts"] == 2 for row in rows),
+              "cada fallo queda pendiente para una sesión posterior")
+
+        # ── [6c] Un temporal no tiene segunda pasada en esta sesión ────────
+        print("\n[6c] Tres errores temporales quedan para la próxima Sync")
+        future_cfg = toy_config(tmp).model_copy(update={
+            "network": toy_config(tmp).network.model_copy(update={
+                "retries_file": 1,
+            }),
+        })
+        summ, ev = await correr(
+            tmp, [{"id": -1, "url": "toyfuture://x", "site": "toy",
+                   "enabled": 1, "last_synced": None, "file_count": 0}],
+            "caso6c_future",
+            future_cfg,
+        )
+        future_hits = [h for h in Handler.hits if h.startswith("/server/")]
+        check(len(future_hits) == ToyFutureSessionTemplate.N,
+              "no repite los diferidos al final de la misma sesión",
+              f"({len(future_hits)})")
+        check(summ.deferred == ToyFutureSessionTemplate.N,
+              "los tres quedan contabilizados como diferidos")
+        rows = await get_pending_files(tmp / "caso6c_future", -1)
+        check(len(rows) == ToyFutureSessionTemplate.N
+              and all(row["deferred_attempts"] == 1 for row in rows),
+              "los temporales persisten para la siguiente Sync")
 
         # ── [7] El techo de caudal, cronometrado ─────────────────────────
         print("\n[7] 6 archivos de 128 KiB con techo de 256 KiB/s")
