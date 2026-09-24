@@ -43,6 +43,10 @@ def load() -> dict:
         "daily_limit_gb": float(cfg.daily_limit_gb),
         "pawchive_downloads_per_window": int(
             cfg.pawchive.downloads_per_window),
+        "pawchive_resume_headroom": min(
+            int(cfg.pawchive.resume_headroom),
+            max(0, int(cfg.pawchive.downloads_per_window) - 1),
+        ),
         "pawchive_gigabytes_per_window": float(
             cfg.pawchive.gigabytes_per_window),
         "pawchive_window_hours": float(cfg.pawchive.window_hours),
@@ -56,6 +60,7 @@ def save(
     daily_limit_enabled: bool = False,
     daily_limit_gb: float = 100.0,
     pawchive_downloads_per_window: int = 500,
+    pawchive_resume_headroom: int = 50,
     pawchive_gigabytes_per_window: float = 25.0,
     pawchive_window_hours: float = 3.0,
 ) -> dict:
@@ -71,6 +76,11 @@ def save(
         raise ValueError("El límite diario debe ser mayor que cero")
     if int(pawchive_downloads_per_window) <= 0:
         raise ValueError("La cuota de Pawchive debe ser mayor que cero")
+    if not 0 <= int(pawchive_resume_headroom) < int(
+            pawchive_downloads_per_window):
+        raise ValueError(
+            "Los slots de reanudación deben ser menores que la cuota de Pawchive"
+        )
     if float(pawchive_gigabytes_per_window) <= 0:
         raise ValueError("La cuota en GB de Pawchive debe ser mayor que cero")
     if float(pawchive_window_hours) <= 0:
@@ -85,6 +95,7 @@ def save(
         "daily_limit_gb": float(daily_limit_gb),
         "pawchive": PawchiveConfig(
             downloads_per_window=int(pawchive_downloads_per_window),
+            resume_headroom=int(pawchive_resume_headroom),
             gigabytes_per_window=float(pawchive_gigabytes_per_window),
             window_hours=float(pawchive_window_hours),
         ),

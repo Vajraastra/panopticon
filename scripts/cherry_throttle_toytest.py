@@ -56,9 +56,11 @@ class FakeTime:
 
 def make(
     path: Path, fake: FakeTime, *, limit: int = 300, byte_limit: int = 0,
+    resume_headroom: int = 0,
 ) -> SiteThrottle:
     return SiteThrottle(
         "pawchive", limit=limit, byte_limit=byte_limit,
+        resume_headroom=resume_headroom,
         window_seconds=10_800,
         failure_threshold=5, failure_window_seconds=120,
         cooldowns=(900, 1800, 3600, 10_800), path=path,
@@ -86,6 +88,37 @@ async def main() -> int:
         persisted = json.loads(state.read_text(encoding="utf-8"))
         check(len(persisted["pawchive"]["successes"]) == 0,
               "al vencer la ventana se podan los éxitos antiguos")
+
+        print("\n[1b] La recuperación acumula slots reales y persiste")
+        recovery_state = tmp / "recovery.json"
+        recovery_gate = make(
+            recovery_state, fake, limit=5, resume_headroom=2,
+        )
+        permits = [await recovery_gate.acquire() for _ in range(5)]
+        completed_at = []
+        for permit in permits:
+            await recovery_gate.finish(permit, success=True)
+            completed_at.append(fake.now)
+            fake.now += 10
+        snapshot = recovery_gate.snapshot()
+        check(snapshot.recovery_active and snapshot.resume_at_files == 3,
+              "al tocar cinco queda latched hasta bajar a tres")
+        persisted = json.loads(recovery_state.read_text(encoding="utf-8"))
+        check(persisted["pawchive"]["count_recovery"],
+              "la recuperación queda persistida")
+
+        reloaded_gate = make(
+            recovery_state, fake, limit=5, resume_headroom=2,
+        )
+        before = fake.now
+        resumed = await reloaded_gate.acquire()
+        expected_resume = completed_at[1] + 10_800
+        check(fake.sleeps[-1] == expected_resume - before,
+              "la instancia nueva espera hasta que venzan dos slots")
+        resumed_snapshot = reloaded_gate.snapshot()
+        check(not resumed_snapshot.recovery_active,
+              "la marca se limpia sólo después de recuperar el margen")
+        await reloaded_gate.abandon(resumed)
 
         reserve_state = tmp / "reservations.json"
         reserve_gate = make(reserve_state, fake, limit=1)

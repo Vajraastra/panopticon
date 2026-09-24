@@ -535,11 +535,12 @@ def test_a5() -> None:
 
     # ── ajustes ────────────────────────────────────────────────────────────
     cfg = settings.load()
-    check("los ajustes traen las ocho claves",
+    check("los ajustes traen las nueve claves",
           set(cfg) == {
               "download_dir", "workers", "timeout",
               "daily_limit_enabled", "daily_limit_gb",
               "pawchive_downloads_per_window",
+              "pawchive_resume_headroom",
               "pawchive_gigabytes_per_window", "pawchive_window_hours",
           }, f"({sorted(cfg)})")
     check("workers es un entero >= 1",
@@ -554,6 +555,9 @@ def test_a5() -> None:
     check("Pawchive conserva la recomendación 500/3 como valores válidos",
           isinstance(cfg["pawchive_downloads_per_window"], int)
           and cfg["pawchive_downloads_per_window"] > 0
+          and isinstance(cfg["pawchive_resume_headroom"], int)
+          and 0 <= cfg["pawchive_resume_headroom"]
+          < cfg["pawchive_downloads_per_window"]
           and isinstance(cfg["pawchive_gigabytes_per_window"], float)
           and cfg["pawchive_gigabytes_per_window"] > 0
           and isinstance(cfg["pawchive_window_hours"], float)

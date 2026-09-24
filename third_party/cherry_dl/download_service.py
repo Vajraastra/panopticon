@@ -586,6 +586,12 @@ async def run_profile_download(
                 f"{meta['window'] / 3600:g} h alcanzada; reanuda "
                 f"automáticamente en {seconds / 60:.0f} min"
             )
+        elif kind == "quota_count_recovery":
+            msg = (
+                f"⏸ {site}: cuota de {meta['limit']} descargas alcanzada; "
+                f"acumula {meta['headroom']} slots y reanuda en "
+                f"{seconds / 60:.0f} min"
+            )
         else:
             msg = (
                 f"⏸ {site}: servidor de archivos aún sin respuesta; "
@@ -608,7 +614,7 @@ async def run_profile_download(
         meta = throttle_meta[site]
         if exc.kind == "quota_bytes":
             reason = f"alcanzó {meta['gigabytes']:g} GB en su ventana móvil"
-        elif exc.kind == "quota_count":
+        elif exc.kind in {"quota_count", "quota_count_recovery"}:
             reason = f"alcanzó {meta['limit']} descargas en su ventana móvil"
         else:
             reason = "su sonda de archivos sigue en enfriamiento"
@@ -798,6 +804,10 @@ async def run_profile_download(
                         config.pawchive.gigabytes_per_window
                         if template.name == "pawchive" else 0
                     ),
+                    "headroom": (
+                        config.pawchive.resume_headroom
+                        if template.name == "pawchive" else 0
+                    ),
                     "streak": transfer_policy.throttle_failure_streak,
                     "codes": failure_codes,
                 }
@@ -807,6 +817,10 @@ async def run_profile_download(
                         template.name,
                         limit=window_limit,
                         byte_limit=byte_window_limit,
+                        resume_headroom=(
+                            config.pawchive.resume_headroom
+                            if template.name == "pawchive" else 0
+                        ),
                         window_seconds=window_seconds,
                         failure_threshold=transfer_policy.throttle_failure_streak,
                         failure_window_seconds=transfer_policy.throttle_failure_window,

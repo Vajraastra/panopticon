@@ -103,6 +103,18 @@ class SettingsDialog(QDialog):
         ))
         self._pawchive_downloads.setValue(
             current["pawchive_downloads_per_window"])
+        self._pawchive_headroom = QSpinBox()
+        self._pawchive_headroom.setRange(
+            0, max(0, self._pawchive_downloads.value() - 1),
+        )
+        self._pawchive_headroom.setSingleStep(10)
+        self._pawchive_headroom.setSuffix(self.tr(
+            "cherry.settings_pawchive_slots_suffix", " slots",
+        ))
+        self._pawchive_headroom.setValue(current["pawchive_resume_headroom"])
+        self._pawchive_downloads.valueChanged.connect(
+            lambda value: self._pawchive_headroom.setMaximum(max(0, value - 1))
+        )
         self._pawchive_gigabytes = QDoubleSpinBox()
         self._pawchive_gigabytes.setRange(0.1, 10000.0)
         self._pawchive_gigabytes.setDecimals(1)
@@ -143,10 +155,21 @@ class SettingsDialog(QDialog):
             "cherry.settings_pawchive_limit", "Pawchive safety window",
         ), pawchive_holder)
 
+        headroom_tip = self.tr(
+            "cherry.settings_pawchive_headroom_tip",
+            "After the file limit is reached, Pawchive waits until this many "
+            "real slots have expired before resuming. Set zero to resume one "
+            "file at a time as before.",
+        )
+        self._pawchive_headroom.setToolTip(headroom_tip)
+        form.addRow(self.tr(
+            "cherry.settings_pawchive_headroom", "Slots before resuming",
+        ), self._pawchive_headroom)
+
         recommended = QLabel(self.tr(
             "cherry.settings_pawchive_recommended",
             "Recommended default: 500 downloads or 25 GB / 3 hours · fixed "
-            "2 MB/s shared by Pawchive workers.",
+            "2 MB/s shared by Pawchive workers · resumes after 50 slots.",
         ))
         recommended.setWordWrap(True)
         recommended.setStyleSheet(
@@ -213,6 +236,7 @@ class SettingsDialog(QDialog):
                 self._daily_limit_enabled.isChecked(),
                 self._daily_limit_gb.value(),
                 self._pawchive_downloads.value(),
+                self._pawchive_headroom.value(),
                 self._pawchive_gigabytes.value(),
                 self._pawchive_hours.value(),
             )

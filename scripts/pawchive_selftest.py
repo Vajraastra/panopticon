@@ -199,6 +199,7 @@ async def main() -> int:
     custom_ua = _download_user_agent(SimpleNamespace(config=SimpleNamespace(
         pawchive=SimpleNamespace(
             downloads_per_window=500,
+            resume_headroom=50,
             gigabytes_per_window=25.0,
             window_hours=3.0,
         )

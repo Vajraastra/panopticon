@@ -50,6 +50,7 @@ class PawchiveConfig(BaseModel):
     """
 
     downloads_per_window: int = Field(500, ge=1, le=100_000)
+    resume_headroom: int = Field(50, ge=0, le=99_999)
     gigabytes_per_window: float = Field(25.0, gt=0, le=10_000)
     window_hours: float = Field(3.0, gt=0, le=168)
 
@@ -137,6 +138,7 @@ def save_config(config: UserConfig) -> None:
         f"stall_timeout = {config.network.stall_timeout}\n",
         "\n[pawchive]\n",
         f"downloads_per_window = {config.pawchive.downloads_per_window}\n",
+        f"resume_headroom = {config.pawchive.resume_headroom}\n",
         f"gigabytes_per_window = {config.pawchive.gigabytes_per_window}\n",
         f"window_hours = {config.pawchive.window_hours}\n",
     ]
@@ -178,6 +180,9 @@ def set_config_value(key: str, value: str) -> UserConfig:
             config = config.model_copy(update={
                 "pawchive": config.pawchive.model_copy(update={
                     "downloads_per_window": limit,
+                    "resume_headroom": min(
+                        config.pawchive.resume_headroom, max(0, limit - 1),
+                    ),
                 }),
             })
         case "pawchive_window_hours":
@@ -187,6 +192,18 @@ def set_config_value(key: str, value: str) -> UserConfig:
             config = config.model_copy(update={
                 "pawchive": config.pawchive.model_copy(update={
                     "window_hours": hours,
+                }),
+            })
+        case "pawchive_resume_headroom":
+            headroom = int(value)
+            if not 0 <= headroom < config.pawchive.downloads_per_window:
+                raise ValueError(
+                    "pawchive_resume_headroom debe estar entre cero y "
+                    "pawchive_downloads_per_window - 1"
+                )
+            config = config.model_copy(update={
+                "pawchive": config.pawchive.model_copy(update={
+                    "resume_headroom": headroom,
                 }),
             })
         case "pawchive_gigabytes_per_window":
@@ -205,7 +222,8 @@ def set_config_value(key: str, value: str) -> UserConfig:
                 f"Clave desconocida: '{key}'. Válidas: download_dir, workers, "
                 "timeout, daily_limit_enabled, daily_limit_gb, "
                 "pawchive_downloads_per_window, "
-                "pawchive_gigabytes_per_window, pawchive_window_hours"
+                "pawchive_resume_headroom, pawchive_gigabytes_per_window, "
+                "pawchive_window_hours"
             )
 
     save_config(config)

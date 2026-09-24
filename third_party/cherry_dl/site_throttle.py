@@ -47,6 +47,8 @@ class QuotaSnapshot:
     active_files: int
     window_seconds: float
     next_release_seconds: float
+    recovery_active: bool = False
+    resume_at_files: int = 0
 
 
 class ThrottleDeferred(Exception):
@@ -90,6 +92,7 @@ class SiteThrottle:
         *,
         limit: int,
         byte_limit: int = 0,
+        resume_headroom: int = 0,
         window_seconds: float,
         failure_threshold: int,
         failure_window_seconds: float,
@@ -101,6 +104,9 @@ class SiteThrottle:
         self.site = site
         self.limit = max(0, int(limit))
         self.byte_limit = max(0, int(byte_limit))
+        self.resume_headroom = min(
+            max(0, int(resume_headroom)), max(0, self.limit - 1),
+        )
         self.window_seconds = max(0.0, float(window_seconds))
         self.failure_threshold = max(1, int(failure_threshold))
         self.failure_window_seconds = max(0.0, float(failure_window_seconds))
@@ -127,6 +133,7 @@ class SiteThrottle:
         state.setdefault("circuit_open", False)
         state.setdefault("cooldown_until", 0.0)
         state.setdefault("cooldown_level", 0)
+        state.setdefault("count_recovery", False)
         return data, state
 
     def _prune(self, state: dict, now: float) -> None:
@@ -144,6 +151,47 @@ class SiteThrottle:
             and float(v["at"]) > floor
         ]
 
+    def _count_quota_wait(
+        self, state: dict, now: float,
+    ) -> tuple[str, float | None] | None:
+        """Aplica histéresis al límite de archivos.
+
+        Una vez alcanzado el techo no basta con que venza el primer archivo:
+        la marca persistente se conserva hasta recuperar ``resume_headroom``
+        slots reales. Con cero se mantiene el comportamiento anterior.
+        """
+        if not self.limit:
+            state["count_recovery"] = False
+            return None
+
+        used = len(state["successes"]) + self._reservations
+        if not self.resume_headroom:
+            state["count_recovery"] = False
+            if used < self.limit:
+                return None
+            until = (
+                min(state["successes"]) + self.window_seconds
+                if state["successes"] else None
+            )
+            return "quota_count", until
+
+        if used >= self.limit:
+            state["count_recovery"] = True
+        if not state.get("count_recovery"):
+            return None
+
+        resume_at = self.limit - self.resume_headroom
+        releases_needed = used - resume_at
+        if releases_needed <= 0:
+            state["count_recovery"] = False
+            return None
+
+        successes = sorted(float(value) for value in state["successes"])
+        if releases_needed > len(successes):
+            return "quota_count_recovery", None
+        until = successes[releases_needed - 1] + self.window_seconds
+        return "quota_count_recovery", until
+
     def _quota_wait(
         self, state: dict, now: float, expected_bytes: int,
     ) -> tuple[str, float | None] | None:
@@ -153,12 +201,9 @@ class SiteThrottle:
         caso ``None`` obliga a esperar la condición en vez de dormir a ciegas.
         """
         waits: list[tuple[str, float | None]] = []
-        if self.limit and len(state["successes"]) + self._reservations >= self.limit:
-            until = (
-                min(state["successes"]) + self.window_seconds
-                if state["successes"] else None
-            )
-            waits.append(("quota_count", until))
+        count_wait = self._count_quota_wait(state, now)
+        if count_wait is not None:
+            waits.append(count_wait)
 
         if self.byte_limit:
             transfers = sorted(state["transfers"], key=lambda item: item["at"])
@@ -206,6 +251,7 @@ class SiteThrottle:
         _data, state = self._read()
         now = self._clock()
         self._prune(state, now)
+        count_wait = self._count_quota_wait(state, now)
         expirations = [
             float(value) + self.window_seconds
             for value in state["successes"]
@@ -219,8 +265,12 @@ class SiteThrottle:
             active_files=self._reservations,
             window_seconds=self.window_seconds,
             next_release_seconds=(
-                max(0.0, min(expirations) - now) if expirations else 0.0
+                max(0.0, float(count_wait[1]) - now)
+                if count_wait is not None and count_wait[1] is not None
+                else (max(0.0, min(expirations) - now) if expirations else 0.0)
             ),
+            recovery_active=bool(state.get("count_recovery")),
+            resume_at_files=max(0, self.limit - self.resume_headroom),
         )
 
     async def clear_circuit(self) -> None:
@@ -328,6 +378,10 @@ class SiteThrottle:
                     "at": now,
                     "bytes": max(0, int(transferred_bytes or 0)),
                 })
+                if (self.resume_headroom and self.limit
+                        and len(state["successes"]) + self._reservations
+                        >= self.limit):
+                    state["count_recovery"] = True
                 state["failure_streak"] = 0
                 state["last_failure"] = 0.0
                 # Un intento normal pudo empezar antes de que otros workers

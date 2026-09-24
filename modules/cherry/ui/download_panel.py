@@ -288,6 +288,7 @@ class DownloadPanel(QWidget):
                 "pawchive",
                 limit=cfg.downloads_per_window,
                 byte_limit=int(cfg.gigabytes_per_window * 1024**3),
+                resume_headroom=cfg.resume_headroom,
                 window_seconds=cfg.window_hours * 60 * 60,
                 failure_threshold=1,
                 failure_window_seconds=0,
@@ -329,6 +330,15 @@ class DownloadPanel(QWidget):
             if self._quota_next_release > 0
             else self.tr("cherry.dl_quota_no_release", "no usage yet")
         )
+        recovery = ""
+        if state.recovery_active:
+            recovery = self.tr(
+                "cherry.dl_quota_recovery",
+                " · recovery: resumes at {resume_at}/{file_limit}",
+            ).format(
+                resume_at=state.resume_at_files,
+                file_limit=state.file_limit,
+            )
         active = ""
         if self._quota_in_flight:
             active = self.tr(
@@ -338,7 +348,7 @@ class DownloadPanel(QWidget):
             "cherry.dl_pawchive_quota",
             "Pawchive · {remaining:.3f} GB remaining of {limit:g} · "
             "{files} files remaining of {file_limit} · {hours:g} h rolling "
-            "window · next release: {release}{active}",
+            "window · next release: {release}{recovery}{active}",
         ).format(
             remaining=remaining / 2**30,
             limit=state.byte_limit / 2**30,
@@ -346,6 +356,7 @@ class DownloadPanel(QWidget):
             file_limit=state.file_limit,
             hours=state.window_seconds / 3600,
             release=release,
+            recovery=recovery,
             active=active,
         ))
 

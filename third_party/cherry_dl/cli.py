@@ -392,6 +392,10 @@ def config_show():
         str(config.pawchive.downloads_per_window),
     )
     table.add_row(
+        "pawchive_resume_headroom",
+        str(config.pawchive.resume_headroom),
+    )
+    table.add_row(
         "pawchive_gigabytes_per_window",
         f"{config.pawchive.gigabytes_per_window:g} GB",
     )
@@ -412,8 +416,8 @@ def config_set(
         help=(
             "Clave a modificar (download_dir, workers, timeout, "
             "daily_limit_enabled, daily_limit_gb, "
-            "pawchive_downloads_per_window, pawchive_gigabytes_per_window, "
-            "pawchive_window_hours)"
+            "pawchive_downloads_per_window, pawchive_resume_headroom, "
+            "pawchive_gigabytes_per_window, pawchive_window_hours)"
         ),
     ),
     value: str = typer.Argument(..., help="Nuevo valor"),

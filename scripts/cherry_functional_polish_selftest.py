@@ -60,6 +60,8 @@ async def main() -> None:
             defaults = config.UserConfig(download_dir=str(work))
             check(defaults.pawchive.downloads_per_window == 500,
                   "la cuota recomendada debe ser 500")
+            check(defaults.pawchive.resume_headroom == 50,
+                  "la recuperación recomendada debe acumular 50 slots")
             check(defaults.pawchive.gigabytes_per_window == 25.0,
                   "la cuota recomendada debe ser 25 GB")
             check(defaults.pawchive.window_hours == 3.0,
@@ -67,19 +69,30 @@ async def main() -> None:
             custom = defaults.model_copy(update={
                 "pawchive": config.PawchiveConfig(
                     downloads_per_window=425, gigabytes_per_window=18.5,
-                    window_hours=4.5,
+                    window_hours=4.5, resume_headroom=40,
                 ),
             })
             config.save_config(custom)
             loaded = config.load_config()
             check(loaded.pawchive.downloads_per_window == 425,
                   "la cuota debe sobrevivir al TOML")
+            check(loaded.pawchive.resume_headroom == 40,
+                  "el margen de reanudación debe sobrevivir al TOML")
             check(loaded.pawchive.gigabytes_per_window == 18.5,
                   "la cuota en GB debe sobrevivir al TOML")
             check(loaded.pawchive.window_hours == 4.5,
                   "la ventana debe sobrevivir al TOML")
             text = config.CONFIG_FILE.read_text(encoding="utf-8")
             check("[pawchive]" in text, "Pawchive debe tener sección propia")
+            config.set_config_value("pawchive_resume_headroom", "30")
+            check(config.load_config().pawchive.resume_headroom == 30,
+                  "el margen se puede cambiar por la API de configuración")
+            config.set_config_value("pawchive_downloads_per_window", "20")
+            adjusted = config.load_config().pawchive
+            check(adjusted.downloads_per_window == 20
+                  and adjusted.resume_headroom == 19,
+                  "bajar la cuota ajusta el margen para mantenerlo válido")
+            config.save_config(custom)
 
             folder = work / "artist"
             folder.mkdir()
@@ -146,6 +159,8 @@ async def main() -> None:
             dialog = SettingsDialog()
             check(dialog._pawchive_downloads.value() == 425,
                   "Ajustes debe mostrar la cuota persistida")
+            check(dialog._pawchive_headroom.value() == 40,
+                  "Ajustes debe mostrar el margen persistido")
             check(dialog._pawchive_gigabytes.value() == 18.5,
                   "Ajustes debe mostrar la cuota persistida en GB")
             check(dialog._pawchive_hours.value() == 4.5,

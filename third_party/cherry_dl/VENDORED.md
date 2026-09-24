@@ -652,6 +652,15 @@ los bytes en vuelo se señalan como provisionales y sólo pasan al total persist
 archivo. La lectura y el evento existen únicamente para la cuota configurada de Pawchive: ningún
 límite ni contador se comparte con otros sitios.
 
+### `site_throttle.py` — margen configurable antes de reanudar Pawchive (2026-09-24)
+
+Al alcanzar el límite de archivos, la ventana ya no reanuda con cada slot individual. Persiste
+un estado de recuperación y espera hasta que hayan vencido `resume_headroom` transferencias
+reales; el valor se ajusta en la sección Pawchive de la interfaz y vale 50 por defecto. Cero
+conserva el comportamiento anterior. El techo de archivos y la ventana móvil de GB no cambian:
+el margen sólo decide cuánta capacidad libre debe acumularse antes de volver a conceder permisos.
+El medidor muestra el umbral efectivo y el tiempo hasta la transferencia que completa el margen.
+
 ## Organización manual ZIP/RAR por proyecto (2026-09-10)
 
 archives.py reutiliza next_counter, build_filename y add_file para incorporar los miembros
