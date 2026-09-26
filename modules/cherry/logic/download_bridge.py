@@ -61,7 +61,8 @@ class DownloadBridge(QObject):
     scan_progress    = Signal(int, int)        # vistos, encolados
     scan_complete    = Signal(int)             # pendientes (solo scan_only)
     worker_start     = Signal(int, str)        # slot, filename
-    worker_progress  = Signal(int, int, int)   # slot, done, total
+    # Qt int es de 32 bits: los bytes de archivos >2 GiB viajan como Python int.
+    worker_progress  = Signal(int, object, object)  # slot, done, total
     worker_done      = Signal(int, str, str)   # slot, filename, icono
     worker_idle      = Signal(int)             # slot
     counters         = Signal(int, int, int, int)  # bajados, saltados, err, difer.

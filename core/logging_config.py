@@ -51,6 +51,11 @@ def setup_logging(console_level=logging.INFO):
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)  # el filtrado real lo hacen los handlers
 
+    # El detalle por consulta/chunk agota los logs rotativos durante descargas.
+    # Conservar avisos y errores sin perder el DEBUG de nuestros módulos.
+    for name in ("aiosqlite", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
     # --- Consola ---
     console = logging.StreamHandler()
     console.setLevel(console_level)

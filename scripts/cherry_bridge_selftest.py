@@ -229,6 +229,31 @@ def test_progress_throttle(app, runtime, bridge, rec) -> None:
     check("el 100 % siempre pasa", ultimo == (1, 400, 400), f"(último {ultimo})")
 
 
+def test_large_progress(app, runtime, bridge, rec) -> None:
+    """Los bytes conservan precisión al cruzar Qt, incluso por encima de 2 GiB."""
+    from third_party.cherry_dl.download_service import WorkerProgress
+
+    samples = [
+        (20, 1, 2_379_725_966),
+        (21, 2**31, 2**32 + 1),
+        (22, 2**32 + 1, 2**32 + 1),
+        (23, 2**31 + 1, 0),
+    ]
+    rec.events.clear()
+    rec.threads.clear()
+
+    async def fire():
+        for sample in samples:
+            bridge._on_event(WorkerProgress(*sample))
+
+    runtime.run_sync(fire(), timeout=5)
+    pump(app, lambda: rec.count("worker_progress") == len(samples), timeout=3)
+    received = [args for name, args in rec.events if name == "worker_progress"]
+    check("bytes >2 GiB llegan intactos, incluido 100 % y total desconocido",
+          received == samples, f"({received})")
+    check("progreso grande se recibe en el hilo GUI", rec.threads == {MAIN_THREAD})
+
+
 def test_cancel_mechanics(app, runtime) -> None:
     print("\n[5] Cancelación de una task desde el hilo GUI")
     import asyncio
@@ -743,6 +768,7 @@ def main() -> int:
         else:
             test_event_bridge(app, runtime, bridge, rec)
             test_progress_throttle(app, runtime, bridge, rec)
+            test_large_progress(app, runtime, bridge, rec)
             test_cancel_mechanics(app, runtime)
             test_auth_roundtrip(app, runtime, bridge, rec)
             test_pixiv_guided_login(app, runtime, bridge, rec)
