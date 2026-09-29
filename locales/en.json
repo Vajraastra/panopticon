@@ -1,4 +1,5 @@
 {
+  "tool.format_converter.verifying": "Verifying metadata: {current}/{total}",
   "dashboard.open_module_tip": "Open this tool in its own window. Click again to return to the same session.",
   "dashboard.module_open_error": "Could not open this tool. See the log for details.",
   "dashboard.module_session_tip": "Closing this window keeps its session and jobs running. Reopen it from the dashboard.",

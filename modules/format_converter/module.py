@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, QThread, QObject
 from pathlib import Path
+from time import monotonic
 
 from core.base_module import BaseModule
 from core.theme import Theme
@@ -93,15 +94,27 @@ class DropZoneWidget(QFrame):
 class ConversionWorker(QObject):
     """Worker thread para conversión batch."""
     progress = Signal(int, int, str)  # current, total, filename
-    finished_signal = Signal(object)   # BatchConversionReport
+    verification_progress = Signal(int, int)
+    finished_signal = Signal(object, object, str)
+    done = Signal()
     error = Signal(str)
 
-    def __init__(self, files, output_dir, target_format, preserve_metadata):
+    def __init__(self, files, output_dir, target_format, preserve_metadata, verify=True):
         super().__init__()
         self.files = files
         self.output_dir = output_dir
         self.target_format = target_format
         self.preserve_metadata = preserve_metadata
+        self.verify = verify
+        self._last_verification_progress = 0.0
+
+    def _verification_progress(self, current, total):
+        if QThread.currentThread().isInterruptionRequested():
+            raise InterruptedError('Application closing')
+        now = monotonic()
+        if current in (0, total) or now - self._last_verification_progress >= 0.05:
+            self._last_verification_progress = now
+            self.verification_progress.emit(current, total)
 
     def run(self):
         try:
@@ -112,9 +125,19 @@ class ConversionWorker(QObject):
                 preserve_metadata=self.preserve_metadata,
                 progress_callback=lambda c, t, f: self.progress.emit(c, t, f)
             )
-            self.finished_signal.emit(report)
+            verification, verification_error = None, ''
+            if self.verify and report.results:
+                try:
+                    self._verification_progress(0, report.converted_count)
+                    verification = verify_batch_conversion(
+                        report, progress_callback=self._verification_progress)
+                except Exception as e:
+                    verification_error = str(e)
+            self.finished_signal.emit(report, verification, verification_error)
         except Exception as e:
             self.error.emit(str(e))
+        finally:
+            self.done.emit()
 
 
 class FormatConverterModule(BaseModule):
@@ -130,6 +153,24 @@ class FormatConverterModule(BaseModule):
         self.manual_files = set()   # individually added/dropped files
         self.files_to_convert = []
         self.worker_thread = None
+        self._busy = False
+        self._unloading = False
+
+    def on_unload(self):
+        self._unloading = True
+        if self.worker_thread and self.worker_thread.isRunning():
+            self.worker_thread.requestInterruption()
+            # La conversión en curso acaba; la verificación se detiene entre pares.
+            # done -> quit es directo y no necesita eventos de la GUI para terminar.
+            self.worker_thread.wait()
+
+    def _set_busy(self, busy):
+        self._busy = busy
+        for control in (self.btn_select_folder, self.btn_add_files, self.btn_clear,
+                        self.chk_recursive, self.combo_format, self.chk_preserve_meta,
+                        self.chk_verify, self.drop_zone):
+            control.setEnabled(not busy)
+        self.btn_convert.setEnabled(not busy and bool(self.files_to_convert))
 
     def get_view(self) -> QWidget:
         if self.view:
@@ -483,7 +524,7 @@ class FormatConverterModule(BaseModule):
         self.files_to_convert = sorted(set(folder_files) | filtered_manual)
         count = len(self.files_to_convert)
         self.lbl_file_count.setText(str(count))
-        self.btn_convert.setEnabled(count > 0)
+        self.btn_convert.setEnabled(count > 0 and not self._busy)
 
         has_manual = bool(filtered_manual)
         self.btn_clear.setVisible(has_manual)
@@ -511,7 +552,8 @@ class FormatConverterModule(BaseModule):
     # ------------------------------------------------------------------ #
 
     def start_conversion(self):
-        if not self.files_to_convert:
+        if (self._unloading or self._busy or not self.files_to_convert
+                or (self.worker_thread and self.worker_thread.isRunning())):
             return
 
         output_dir = QFileDialog.getExistingDirectory(
@@ -524,9 +566,7 @@ class FormatConverterModule(BaseModule):
 
         target_format = FORMAT_MAP.get(self.combo_format.currentIndex(), "PNG")
 
-        self.btn_convert.setEnabled(False)
-        self.btn_select_folder.setEnabled(False)
-        self.btn_add_files.setEnabled(False)
+        self._set_busy(True)
         self.progress_bar.setVisible(True)
         self.progress_bar.setMaximum(len(self.files_to_convert))
         self.progress_bar.setValue(0)
@@ -540,28 +580,48 @@ class FormatConverterModule(BaseModule):
         self.log(f"{sep}\n")
 
         self.worker = ConversionWorker(
-            self.files_to_convert,
+            list(self.files_to_convert),
             output_dir,
             target_format,
-            self.chk_preserve_meta.isChecked()
+            self.chk_preserve_meta.isChecked(),
+            self.chk_verify.isChecked()
         )
-        self.worker_thread = QThread()
+        if self.worker_thread:
+            self.worker_thread.deleteLater()
+        self.worker_thread = QThread(self)
         self.worker.moveToThread(self.worker_thread)
 
         self.worker_thread.started.connect(self.worker.run)
         self.worker.progress.connect(self.on_progress)
+        self.worker.verification_progress.connect(self.on_verification_progress)
         self.worker.finished_signal.connect(self.on_conversion_finished)
         self.worker.error.connect(self.on_conversion_error)
+        self.worker.done.connect(self.worker_thread.quit, Qt.DirectConnection)
+        self.worker_thread.finished.connect(self.worker.deleteLater)
 
         self.worker_thread.start()
 
     def on_progress(self, current, total, filename):
+        if self._unloading:
+            return
         self.progress_bar.setValue(current)
         self.lbl_current_file.setText(
             self.tr("fc.converting", "Converting: {filename}").format(filename=filename)
         )
 
-    def on_conversion_finished(self, report: BatchConversionReport):
+    def on_verification_progress(self, current, total):
+        if self._unloading:
+            return
+        self.progress_bar.setMaximum(max(1, total))
+        self.progress_bar.setValue(current)
+        self.lbl_current_file.setText(self.tr(
+            "tool.format_converter.verifying", "Verifying metadata: {current}/{total}"
+        ).format(current=current, total=total))
+
+    def on_conversion_finished(self, report: BatchConversionReport,
+                               verify_report=None, verification_error=''):
+        if self._unloading:
+            return
         self.worker_thread.quit()
         self.worker_thread.wait()
 
@@ -584,23 +644,19 @@ class FormatConverterModule(BaseModule):
                     count=len(report.failed_files) - 10
                 ))
 
-        if self.chk_verify.isChecked() and report.results:
-            self.log(self.tr("fc.log.verifying", "Verifying metadata integrity..."))
-            try:
-                verify_report = verify_batch_conversion(report)
-                verified_count = verify_report.ok_count + verify_report.repaired_count
-                self.log(self.tr("fc.log.verified", "  Verified: {ok}/{total}").format(
-                    ok=verified_count, total=verify_report.total_files
-                ))
-                self.log(self.tr("fc.log.integrity", "  Integrity: {pct}%").format(
-                    pct=f"{verify_report.avg_integrity:.1f}"
-                ))
-            except Exception as e:
-                self.log(self.tr("fc.log.verify_error", "  Verification error: {error}").format(error=e))
+        if verify_report is not None:
+            verified_count = verify_report.ok_count + verify_report.repaired_count
+            self.log(self.tr("fc.log.verified", "  Verified: {ok}/{total}").format(
+                ok=verified_count, total=verify_report.total_files
+            ))
+            self.log(self.tr("fc.log.integrity", "  Integrity: {pct}%").format(
+                pct=f"{verify_report.avg_integrity:.1f}"
+            ))
+        if verification_error:
+            self.log(self.tr("fc.log.verify_error", "  Verification error: {error}").format(
+                error=verification_error))
 
-        self.btn_convert.setEnabled(True)
-        self.btn_select_folder.setEnabled(True)
-        self.btn_add_files.setEnabled(True)
+        self._set_busy(False)
         self.progress_bar.setVisible(False)
         self.lbl_current_file.setText("")
 
@@ -615,14 +671,14 @@ class FormatConverterModule(BaseModule):
         )
 
     def on_conversion_error(self, error):
+        if self._unloading:
+            return
         self.worker_thread.quit()
         self.worker_thread.wait()
 
         self.log(f"\n❌ ERROR: {error}")
 
-        self.btn_convert.setEnabled(True)
-        self.btn_select_folder.setEnabled(True)
-        self.btn_add_files.setEnabled(True)
+        self._set_busy(False)
         self.progress_bar.setVisible(False)
 
         QMessageBox.critical(
