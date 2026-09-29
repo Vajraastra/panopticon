@@ -4,6 +4,8 @@ Parámetros optimizados para datasets de entrenamiento: lossless o mínima pérd
 máxima compresión, preservación completa de color (4:4:4).
 """
 import os
+import hashlib
+import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Optional, Literal
@@ -88,7 +90,8 @@ def convert_single(source_path: str | Path,
                    output_path: str | Path = None,
                    target_format: Literal["WEBP", "PNG", "JPEG"] = "WEBP",
                    quality: int = 90,
-                   preserve_metadata: bool = True) -> ConversionResult:
+                   preserve_metadata: bool = True,
+                   overwrite: bool = False) -> ConversionResult:
     """
     Convierte una imagen a otro formato preservando metadata.
     
@@ -98,6 +101,7 @@ def convert_single(source_path: str | Path,
         target_format: Formato destino (WEBP, PNG, JPEG)
         quality: Calidad para formatos lossy (1-100)
         preserve_metadata: Si True, transfiere metadata
+        overwrite: Reemplazar una salida existente; nunca el archivo original
     
     Returns:
         ConversionResult con estadísticas
@@ -120,29 +124,36 @@ def convert_single(source_path: str | Path,
     
     if output_path is None:
         output_dir = CachePaths.get_tool_cache("format_converter")
-        output_path = output_dir / (source_path.stem + target_ext)
+        output_path = output_dir / _output_name(source_path, target_ext)
     else:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
     
     result.output_path = str(output_path)
     
+    temporary = None
+    img = None
     try:
+        if (source_path.resolve() == output_path.resolve()
+                or (output_path.exists() and os.path.samefile(source_path, output_path))):
+            raise ValueError("Output must not replace the source image")
+        if source_path.suffix.lower() == target_ext.lower():
+            result.error = "Already in target format"
+            return result
+        if output_path.exists() and not overwrite:
+            raise FileExistsError(f"Output already exists: {output_path}")
+        fd, name = tempfile.mkstemp(prefix=".convert-", suffix=target_ext, dir=output_path.parent)
+        os.close(fd)
+        temporary = Path(name)
         # Extract metadata from source
         source_bundle = None
         if preserve_metadata:
             source_bundle = MetadataExtractor.extract(source_path)
         
         # Load and convert image
-        img = Image.open(source_path)
-        original_format = img.format
-        
-        # Skip if already in target format and no conversion needed
-        if source_path.suffix.lower() == target_ext.lower():
-            result.error = "Already in target format"
-            result.success = False
-            return result
-        
+        with Image.open(source_path) as original:
+            img = original.copy()
+
         # Prepare save arguments — all formats optimized for dataset training:
         # lossless or minimum perceptible loss, full color fidelity (4:4:4).
         save_kwargs = {}
@@ -157,13 +168,17 @@ def convert_single(source_path: str | Path,
             save_kwargs["method"] = 6
             save_kwargs["exact"] = True
             if img.mode == "P":
-                img = img.convert("RGBA")
+                converted = img.convert("RGBA")
+                img.close()
+                img = converted
 
         elif target_format.upper() == "PNG":
             save_kwargs["optimize"] = True
             save_kwargs["compress_level"] = 9
             if img.mode == "P" and "transparency" in img.info:
-                img = img.convert("RGBA")
+                converted = img.convert("RGBA")
+                img.close()
+                img = converted
 
         elif target_format.upper() == "JPEG":
             # Fixed high quality + 4:4:4 subsampling: no chroma loss.
@@ -176,6 +191,7 @@ def convert_single(source_path: str | Path,
                     rgb_img.paste(img, mask=img.split()[3])
                 else:
                     rgb_img.paste(img)
+                img.close()
                 img = rgb_img
 
         elif target_format.upper() == "AVIF":
@@ -185,26 +201,37 @@ def convert_single(source_path: str | Path,
             save_kwargs["subsampling"] = "4:4:4"
             save_kwargs["speed"] = 4
             if img.mode == "P":
-                img = img.convert("RGBA")
+                converted = img.convert("RGBA")
+                img.close()
+                img = converted
 
         # Save converted image
-        img.save(str(output_path), **save_kwargs)
+        img.save(str(temporary), **save_kwargs)
 
         # PNG post-processing: pyoxipng lossless optimizer (10-30% smaller).
         if target_format.upper() == "PNG" and _PYOXIPNG_AVAILABLE:
-            pyoxipng.optimize(str(output_path), level=4)
+            pyoxipng.optimize(str(temporary), level=4)
         img.close()
         
         # Transfer metadata
         if preserve_metadata and source_bundle and source_bundle.is_valid():
-            MetadataStamper.stamp(output_path, source_bundle)
-            result.metadata_preserved = True
+            result.metadata_preserved = MetadataStamper.stamp(temporary, source_bundle)
+            if not result.metadata_preserved:
+                raise RuntimeError("Metadata could not be preserved; output was not published")
         
         # Calculate stats
         result.original_size = source_path.stat().st_size
-        result.new_size = output_path.stat().st_size
+        result.new_size = temporary.stat().st_size
         result.saved_bytes = result.original_size - result.new_size
         result.saved_percent = (result.saved_bytes / result.original_size) * 100 if result.original_size > 0 else 0
+        if overwrite:
+            os.replace(temporary, output_path)
+        elif os.name == "nt":
+            # Windows rename fails if the destination appeared meanwhile.
+            os.rename(temporary, output_path)
+        else:
+            os.link(temporary, output_path)
+            temporary.unlink()
         result.success = True
         
         return result
@@ -212,16 +239,28 @@ def convert_single(source_path: str | Path,
     except Exception as e:
         result.error = str(e)
         return result
+    finally:
+        if img is not None:
+            img.close()
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _output_name(source: Path, extension: str) -> str:
+    # Stable even when retrying a subset or selecting files in another order.
+    identity = os.path.normcase(str(source.resolve())).encode("utf-8")
+    digest = hashlib.sha256(identity).hexdigest()[:16]
+    return f"{source.stem[:160]}--{digest}{extension}"
 
 
 def _worker(args: tuple) -> ConversionResult:
     """Worker top-level para ProcessPoolExecutor (debe ser serializable).
     Cada proceso tiene su propio GIL — sin contención entre workers."""
-    source, output_path, target_format, preserve_metadata = args
+    source, output_path, target_format, preserve_metadata, overwrite = args
     return convert_single(
         source, output_path,
         target_format=target_format,
-        preserve_metadata=preserve_metadata
+        preserve_metadata=preserve_metadata, overwrite=overwrite
     )
 
 
@@ -264,18 +303,30 @@ def convert_batch(files: list[str | Path],
 
     # Separar archivos que se deben procesar de los que se saltan
     pending = []
+    reserved = set()
+    sources = {os.path.normcase(str(Path(p).resolve())) for p in files}
     for source in files:
         source = Path(source)
-        output_path = output_dir / (source.stem + target_ext)
+        output_path = output_dir / _output_name(source, target_ext)
+        key = os.path.normcase(str(output_path.resolve()))
+        if key in sources:
+            report.failed_count += 1
+            report.failed_files.append((str(source), "Output collides with a source image"))
+            continue
+        if key in reserved:
+            report.failed_count += 1
+            report.failed_files.append((str(source), "Duplicate output in batch"))
+            continue
+        reserved.add(key)
         if skip_existing and output_path.exists():
             report.skipped_count += 1
         elif source.suffix.lower() == target_ext.lower():
             report.skipped_count += 1
         else:
-            pending.append((str(source), str(output_path), target_format, preserve_metadata))
+            pending.append((str(source), str(output_path), target_format, preserve_metadata, not skip_existing))
 
     total = len(files)
-    completed = report.skipped_count
+    completed = report.skipped_count + report.failed_count
 
     workers = min(os.cpu_count() or 4, 8)
     with ProcessPoolExecutor(max_workers=workers) as executor:
