@@ -31,7 +31,7 @@ class CherryModule(BaseModule):
         """Construcción perezosa de la interfaz (Regla de Oro #5).
 
         Crear la vista NO arranca el runtime: eso pasa en su primer `showEvent`,
-        porque el dashboard llama a `get_view()` de todos los módulos al iniciar.
+        cuando el dashboard abre por primera vez su ventana independiente.
         """
         if self.view:
             return self.view

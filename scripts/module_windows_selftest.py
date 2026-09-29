@@ -1,0 +1,113 @@
+"""Offscreen Qt lifecycle, real Cherry view with local-only runtime work."""
+import asyncio
+import os
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QWidget, QLineEdit, QVBoxLayout
+from PySide6.QtTest import QTest
+from core.base_module import BaseModule
+from modules.cherry.module import CherryModule
+from main import MainWindow
+
+
+class Tool(BaseModule):
+    def __init__(self, name):
+        super().__init__()
+        self._name = name
+        self.view = None
+        self.unloads = 0
+        self.received = None
+
+    def get_view(self):
+        if self.view is None:
+            self.view = QWidget()
+            self.edit = QLineEdit()
+            QVBoxLayout(self.view).addWidget(self.edit)
+        return self.view
+
+    def load_image_set(self, paths):
+        self.received = paths
+
+    def on_unload(self):
+        self.unloads += 1
+
+
+class ModuleWindows(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        cls.app.setStyle('Fusion')
+        cls.app.setQuitOnLastWindowClosed(False)
+
+    def setUp(self):
+        with patch.object(MainWindow, 'load_available_modules'):
+            self.main = MainWindow()
+        self.a, self.b = Tool('A'), Tool('B')
+        for module in (self.a, self.b):
+            module.on_load(self.main.context)
+            self.main.loaded_modules[module.name] = module
+            self.main.add_module_card(module)
+        self.main.show()
+
+    def tearDown(self):
+        self.main.close()
+        self.main.deleteLater()
+        self.app.processEvents()
+
+    def test_two_windows_keep_dashboard_and_sessions_available(self):
+        self.assertIsNone(self.a.view)
+        self.main.switch_to_module(self.a)
+        self.main.switch_to_module(self.b, ['input.png'])
+        wa, wb = self.main.module_windows['A'], self.main.module_windows['B']
+        self.assertTrue(self.main.isVisible() and self.main.dashboard_page.isVisible())
+        self.assertTrue(wa.isVisible() and wb.isVisible())
+        self.assertTrue(wa.isWindow() and wb.isWindow())
+        self.assertEqual(wa.windowModality(), Qt.NonModal)
+        self.assertEqual(self.b.received, ['input.png'])
+        self.a.edit.setText('preserved')
+        wa.close()
+        self.assertFalse(wa.isVisible())
+        self.assertTrue(wb.isVisible())
+        self.assertEqual(self.a.unloads, 0)
+        self.main.switch_to_module(self.a)
+        self.assertIs(self.main.module_windows['A'], wa)
+        self.assertEqual(self.a.edit.text(), 'preserved')
+        self.main.on_navigate('dashboard')
+        self.assertTrue(wa.isVisible() and wb.isVisible())
+        self.assertEqual(self.main.root_stack.count(), 2)
+
+    def test_real_cherry_runtime_keeps_working_with_another_window(self):
+        cherry = CherryModule()
+        cherry.on_load(self.main.context)
+        self.main.loaded_modules[cherry.name] = cherry
+        # Do not read the user's index or contact any service.
+        with patch('modules.cherry.ui.view.CherryView.refresh'):
+            self.main.switch_to_module(cherry)
+        self.assertTrue(cherry.runtime.start())
+        async def local_job():
+            await asyncio.sleep(0.15)
+            return 'completed'
+        future = cherry.runtime.submit(local_job())
+        self.main.switch_to_module(self.a)
+        cw = self.main.module_windows[cherry.name]
+        self.assertTrue(cw.isVisible() and self.main.isVisible())
+        cw.close()
+        QTest.qWait(220)
+        self.assertEqual(future.result(timeout=2), 'completed')
+        self.main.switch_to_module(cherry)
+        self.assertIs(self.main.module_windows[cherry.name], cw)
+        self.assertTrue(cw.isVisible())
+        self.main.close()
+        self.assertFalse(cw.isVisible())
+        self.assertFalse(cherry.runtime.is_running)
+        self.assertEqual(self.a.unloads, 1)
+
+
+if __name__ == '__main__':
+    unittest.main()

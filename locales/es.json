@@ -1,4 +1,7 @@
 {
+  "dashboard.open_module_tip": "Abre esta herramienta en su propia ventana. Otro clic recupera la misma sesión.",
+  "dashboard.module_open_error": "No se pudo abrir la herramienta. Consulta el registro para más detalles.",
+  "dashboard.module_session_tip": "Cerrar esta ventana conserva la sesión y sus trabajos. Vuelve a abrirla desde el panel principal.",
   "app.title": "PANOPTICON",
   "app.subtitle": "Organizador de Imágenes Modular",
   "tool.dataset_tagger.name": "Etiquetador de Datasets",

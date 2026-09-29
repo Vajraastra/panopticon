@@ -12,6 +12,7 @@ from PySide6.QtGui import QIcon, QFont
 
 # Core Imports
 from core.mod_loader import ModuleLoader
+from core.module_window import ModuleWindow
 from core.theme_manager import ThemeManager
 from core.locale_manager import LocaleManager
 from core.event_bus import EventBus
@@ -59,6 +60,8 @@ class MainWindow(QMainWindow):
         }
 
         # 4. UI Initialization
+        self.module_windows = {}
+        self._shutting_down = False
         self.module_grid_count = 0
         self.loaded_modules = {}
         self.root_stack = None
@@ -70,7 +73,7 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         """Initialize the main application layout."""
-        # Root Container (Stacked Widget for Dashboard vs Settings vs Modules)
+        # Root Container (Stacked Widget for Dashboard vs Settings)
         self.root_stack = QStackedWidget()
         self.setCentralWidget(self.root_stack)
         
@@ -403,16 +406,6 @@ class MainWindow(QMainWindow):
 
     def add_module_card(self, module):
         """Create and add a module card to the grid."""
-        # Initialize view mostly to ensure it's ready, but we don't show it yet
-        try:
-            view = module.get_view()
-            if not view:
-                log.warning("[WARN] Module %s returned empty view.", module.name)
-                return
-        except Exception as e:
-            log.error("[ERROR] Failed to get view for %s: %s\n%s", module.name, e, traceback.format_exc())
-            return
-
         # 1. Create Card Widget
         card = QFrame()
         card.setFixedSize(220, 220)
@@ -469,11 +462,11 @@ class MainWindow(QMainWindow):
         lbl_desc.setStyleSheet(f"font-size: 11px; color: {self.theme_manager.get_color('text_dim')}; background: transparent; border: none;")
         layout.addWidget(lbl_desc, 1) # Stretch
         
-        # Events
-        # We start the module view and switch stack
-        self.root_stack.addWidget(view)
-        module.stack_index = self.root_stack.indexOf(view)
-        
+        card.setToolTip(self.tr(
+            "dashboard.open_module_tip",
+            "Open this tool in its own window. Click again to return to the same session."
+        ))
+
         # Monkey-patch click
         def on_click(e):
             self.switch_to_module(module)
@@ -487,7 +480,21 @@ class MainWindow(QMainWindow):
         self.module_grid_count += 1
 
     def switch_to_module(self, module, *args):
-        self.root_stack.setCurrentIndex(module.stack_index)
+        window = self.module_windows.get(module.name)
+        if window is None:
+            try:
+                view = module.get_view()
+                if view is None:
+                    raise RuntimeError("Module returned no view")
+                window = ModuleWindow(self, module, view)
+                self.module_windows[module.name] = window
+            except Exception:
+                log.exception("Failed to open module %s", module.name)
+                QMessageBox.warning(self, module.name, self.tr(
+                    "dashboard.module_open_error", "Could not open this tool. See the log for details."
+                ))
+                return
+        window.show_session()
         # Pass args if supported
         if args:
             if hasattr(module, "load_image_set"):
@@ -538,17 +545,28 @@ class MainWindow(QMainWindow):
     def on_navigate(self, target):
         if target == "dashboard":
             self.root_stack.setCurrentIndex(0)
+            if self.isMinimized():
+                self.showNormal()
+            self.show()
+            self.raise_()
+            self.activateWindow()
 
     def closeEvent(self, event):
         """Cierre ordenado: cada módulo suelta lo suyo antes de que Qt destruya
         la ventana. Sin esto, un módulo con hilos propios (p.ej. el event loop
         asyncio de Cherry-DL) muere por terminación del proceso, no por parada
         limpia."""
+        if self._shutting_down:
+            event.accept()
+            return
+        self._shutting_down = True
         for name, module in self.loaded_modules.items():
             try:
                 module.on_unload()
             except Exception as e:
                 log.error("Error unloading module %s: %s", name, e)
+        for window in self.module_windows.values():
+            window.hide()
         super().closeEvent(event)
 
 if __name__ == "__main__":
