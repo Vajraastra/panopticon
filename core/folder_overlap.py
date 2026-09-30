@@ -1,5 +1,5 @@
 """Solapamiento nativo por conjuntos de hashes; jamás autorización de fusión."""
-from pathlib import PureWindowsPath
+from core.library_scopes import folder_paths
 
 from core.duplicate_candidates import DIGEST, VALID
 from core.duplicate_snapshot import encode
@@ -9,16 +9,11 @@ MAX_ACTIVE_COPIES = 250_000
 
 
 def _scopes(folders, normalize):
-    if (not isinstance(folders,(list,tuple)) or not 2<=len(folders)<=MAX_FOLDERS or
-            any(not isinstance(value,str) or not value or len(value)>4096 or '\x00' in value
-                or not PureWindowsPath(value).is_absolute() for value in folders)):
-        raise ValueError('invalid_folder_overlap_scope')
-    paths=[normalize(value).rstrip('/')+'/' for value in folders]
-    for index,path in enumerate(paths):
-        for other in paths[:index]:
-            if path.casefold().startswith(other.casefold()) or other.casefold().startswith(path.casefold()):
-                raise ValueError('folder_overlap_nested_scope')
-    return paths
+    try:
+        return folder_paths(folders,normalize,minimum=2,maximum=MAX_FOLDERS)
+    except ValueError as error:
+        raise ValueError('folder_overlap_nested_scope' if str(error)=='nested_library_folder_scope'
+            else 'invalid_folder_overlap_scope') from error
 
 
 def compare(conn, folders, *, threshold=51, normalize):

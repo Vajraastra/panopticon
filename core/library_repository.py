@@ -835,6 +835,22 @@ class LibraryRepository:
         from core.folder_overlap import compare
         return compare(self.conn, folders, normalize=self._normalize_path, **kwargs)
 
+    def get_phash_registry_status(self):
+        from core.perceptual_hash import status
+        return status(self.conn)
+
+    def get_phash_page(self, folders, algorithm, **kwargs):
+        from core.perceptual_hash import page
+        return page(self.conn, folders, algorithm, normalize=self._normalize_path, **kwargs)
+
+    def prepare_phash_registry(self):
+        from core.perceptual_hash import prepare
+        return prepare(self.conn)
+
+    def store_phash_batch(self, records, algorithm):
+        from core.perceptual_hash import store
+        return store(self.conn, records, algorithm, normalize=self._normalize_path)
+
     def prepare_duplicate_search(self):
         from core.duplicate_index import prepare
         return prepare(self.conn)
