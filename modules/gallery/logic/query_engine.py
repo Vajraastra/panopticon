@@ -23,14 +23,14 @@ class QueryEngine:
         """
         offset = state._page * page_size
         
-        # [NEW] Handle Custom Mode (no DB)
+        # Consultar sólo la página visible, nunca todo el conjunto externo.
         if state.mode == state.VIEW_CUSTOM:
             total = len(state._custom_paths)
             start = offset
             end = min(total, start + page_size)
-            # Return list of (path, rating=0)
-            # Maybe fetch ratings from DB if paths exist there? For now, just 0.
-            return total, [(p, 0) for p in state._custom_paths[start:end]]
+            paths = state._custom_paths[start:end]
+            snapshot = self.db.get_curation_snapshot(paths)
+            return total, [(path, row['rating'] or 0) for path, row in zip(paths, snapshot)]
             
         count, results = self.db.search_files_paginated(**self.image_query(state, page_size))
         

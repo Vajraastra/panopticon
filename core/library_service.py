@@ -25,7 +25,7 @@ READS = frozenset({
     'get_folder_count', 'get_folder_preview', 'search_by_terms', 'get_file_id',
     'get_tags_for_file', 'search_files_paginated', 'get_folders_paginated',
     'count_files_missing_hash', 'get_files_missing_hash', 'get_all_tags',
-    'get_file_rating', 'count_files',
+    'get_file_rating', 'count_files', 'get_curation_snapshot',
 })
 WRITES = frozenset({
     'register_files_minimal', 'update_file_metadata', 'remove_files',

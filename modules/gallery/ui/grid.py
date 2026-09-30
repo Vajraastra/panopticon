@@ -107,9 +107,14 @@ class GalleryGrid(QWidget):
             name = self.state.current_folder if self.state.current_folder else "All Images"
             self.lbl_title.setText(f"🖼️ {name}")
             if self.state.mode == self.state.VIEW_CUSTOM:
-                # Invalidar una lectura anterior aunque este conjunto no consulte DB.
-                self.reader.invalidate()
-                self.on_query_result(0, self.engine.fetch_images(self.state, self.state._page_size), None)
+                self._custom_total = len(self.state._custom_paths)
+                start = self.state._page * self.state._page_size
+                self._custom_page = tuple(self.state._custom_paths[start:start + self.state._page_size])
+                if self._custom_page:
+                    self.reader.request('get_curation_snapshot', self._custom_page)
+                else:
+                    self.reader.invalidate()
+                    self.on_query_result(0, [], None)
             else:
                 self.reader.request('search_files_paginated',
                                     **self.engine.image_query(self.state, self.state._page_size))
@@ -124,7 +129,12 @@ class GalleryGrid(QWidget):
             self.btn_prev.setEnabled(self.state._page > 0)
             self.btn_next.setEnabled(False)
             return
-        total, rows = value
+        if self.state.mode == self.state.VIEW_CUSTOM:
+            total = self._custom_total
+            rows = [(path, record['rating'] or 0)
+                    for path, record in zip(self._custom_page, value)]
+        else:
+            total, rows = value
         self.state.set_total_items(total)
         if self.state._page >= self.state.total_pages:
             self.state.set_page(self.state.total_pages - 1)
@@ -203,8 +213,7 @@ class GalleryGrid(QWidget):
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, LocaleManager().tr('gallery.db.title', 'Library'),
                                 LocaleManager().tr('gallery.db.write_error', 'Could not save rating.'))
-        if error is not None or self.state.mode != self.state.VIEW_CUSTOM:
-            self.refresh()
+        self.refresh()
 
     def shutdown(self):
         self._closed = True
@@ -233,6 +242,7 @@ class GalleryGrid(QWidget):
                 viewer = AdvancedViewer(current_paths, start_index=idx, parent=self,
                                         service=self.engine.db.service)
                 viewer.exec()
+                self.refresh()
             
     def update_single_widget_selection(self, path):
         # Find widget

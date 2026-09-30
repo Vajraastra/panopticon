@@ -397,6 +397,38 @@ class LibraryRepository:
         row = cursor.fetchone()
         return row[0] if row else None
 
+    def get_curation_snapshot(self, paths):
+        """Hasta 256 rutas, dos SELECT en el snapshot del lector; sin registrar archivos.
+
+        Conserva orden/duplicados. id=None distingue ausencia de curación vacía;
+        cero estrellas y tags vacíos de una fila registrada son autoritativos.
+        """
+        if not isinstance(paths, (list, tuple)) or len(paths) > 256:
+            raise ValueError('Curation snapshot requires at most 256 paths')
+        if any(not isinstance(path, str) or not path for path in paths):
+            raise ValueError('Curation paths must be nonempty strings')
+        normalized = [self._normalize_path(path) for path in paths]
+        unique = tuple(dict.fromkeys(normalized))
+        if not unique:
+            return []
+        placeholders = ','.join('?' for _ in unique)
+        records = {}
+        for file_id, path, rating in self.conn.execute(
+                f'SELECT id, path, rating FROM files WHERE path IN ({placeholders})', unique):
+            records[path] = dict(id=file_id, path=path, rating=rating or 0, tags=[])
+        by_id = {record['id']: record for record in records.values()}
+        if by_id:
+            placeholders = ','.join('?' for _ in by_id)
+            for file_id, tag in self.conn.execute(
+                    f'''SELECT ft.file_id, t.name FROM file_tags ft
+                        JOIN tags t ON t.id=ft.tag_id
+                        WHERE ft.file_id IN ({placeholders}) ORDER BY t.name''', tuple(by_id)):
+                by_id[file_id]['tags'].append(tag)
+        return [dict(id=records[path]['id'], path=path,
+                     rating=records[path]['rating'], tags=tuple(records[path]['tags']))
+                if path in records else dict(id=None, path=path, rating=None, tags=None)
+                for path in normalized]
+
     def get_tags_for_file(self, path):
         """Returns list of tag names for a file path."""
         file_id = self.get_file_id(path)

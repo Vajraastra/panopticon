@@ -4,6 +4,8 @@ from PySide6.QtCore import Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import QPixmap, QKeySequence, QAction, QMouseEvent
 from core.components.tag_widgets import FlowLayout, TagChip
 from core.database_manager import DatabaseManager
+from core.library_async import LibraryReader
+from core.locale_manager import LocaleManager
 from core.metadata.extractor import MetadataExtractor
 from core.metadata.stamper import MetadataStamper
 from core.metadata.bundle import MetadataBundle
@@ -138,9 +140,16 @@ class AdvancedViewer(QDialog):
         self.paths = paths
         self.current_idx = start_index
         self.fs_window = None
-        self.timer = QTimer() # Temporizador para el slideshow
+        self.timer = QTimer(self) # Temporizador para el slideshow
         self.timer.timeout.connect(self.next_image)
         self.db = DatabaseManager(service=service)
+        self._closed = False
+        self._curation_ready = False
+        self._current_rating = 0
+        self.curation_reader = LibraryReader(self.db.service, self)
+        self.tags_reader = LibraryReader(self.db.service, self)
+        self.curation_reader.result.connect(self.on_curation_result)
+        self.tags_reader.result.connect(self.on_tags_result)
         
         # Diseño Principal
         layout = QHBoxLayout(self)
@@ -231,6 +240,7 @@ class AdvancedViewer(QDialog):
         self.input_tag.returnPressed.connect(self.add_tag)
         
         btn_add_tag = QPushButton("+")
+        self.btn_add_tag = btn_add_tag
         btn_add_tag.setFixedSize(30, 30)
         btn_add_tag.setStyleSheet("background-color: #224433; color: #00ffcc; font-weight: bold; border-radius: 4px;")
         btn_add_tag.clicked.connect(self.add_tag)
@@ -315,20 +325,41 @@ class AdvancedViewer(QDialog):
         
         # Setup Autocomplete with dynamic model
         from PySide6.QtCore import QStringListModel
-        all_tags = self.db.get_all_tags()
-        self.completer_model = QStringListModel(all_tags)
-        self.completer = QCompleter(self.completer_model)
+        self.completer_model = QStringListModel([], self)
+        self.completer = QCompleter(self.completer_model, self)
         self.completer.setCaseSensitivity(Qt.CaseInsensitive)
         self.completer.setFilterMode(Qt.MatchContains)
         self.input_tag.setCompleter(self.completer)
+        self.refresh_completer()
         
     def refresh_completer(self):
         """Updates the autocomplete suggestions with the latest tags from DB."""
-        all_tags = self.db.get_all_tags()
-        self.completer_model.setStringList(all_tags)
+        if not self._closed:
+            self.tags_reader.request('get_all_tags')
+
+    def on_tags_result(self, ticket, value, error):
+        if error is None:
+            self.completer_model.setStringList(value)
+            self.input_tag.setToolTip('')
+        else:
+            self.input_tag.setToolTip(LocaleManager().tr(
+                'gallery.db.tags_error', 'Could not load tag suggestions.'))
+
+    def shutdown(self):
+        self._closed = True
+        self.timer.stop()
+        self.curation_reader.close()
+        self.tags_reader.close()
+
+    def done(self, result):
+        # QDialog.reject/accept también cierran sin pasar por closeEvent.
+        self.shutdown()
+        if self.fs_window:
+            self.fs_window.close()
+        super().done(result)
         
     def closeEvent(self, event):
-        self.timer.stop() # Ensure timer stops on exit
+        self.shutdown()
         if self.fs_window: self.fs_window.close()
         super().closeEvent(event)
 
@@ -349,6 +380,7 @@ class AdvancedViewer(QDialog):
             self.close()
 
     def add_tag(self):
+        if not self._curation_ready or not self.paths: return
         text = self.input_tag.text().strip()
         if not text: return
         
@@ -371,6 +403,7 @@ class AdvancedViewer(QDialog):
             self._persist_metadata(path)
 
     def remove_tag(self, tag_name):
+        if not self._curation_ready or not self.paths: return
         path = self.paths[self.current_idx]
         if self.db.remove_tag_from_file(path, tag_name):
             self.load_tags(path)
@@ -400,29 +433,51 @@ class AdvancedViewer(QDialog):
         MetadataStamper.stamp(path, current_bundle)
 
     def load_tags(self, path):
+        # Un snapshot sustituye los getters por imagen; ticket descarta navegación vieja.
+        if self._closed:
+            return
+        self._curation_ready = False
+        self.input_tag.setEnabled(False)
+        self.btn_add_tag.setEnabled(False)
+        self.lbl_rating_stars.setEnabled(False)
+        self.lbl_rating_stars.setText(LocaleManager().tr('gallery.db.loading', 'Loading…'))
+        self.clear_tags()
+        self.curation_reader.request('get_curation_snapshot', (path,))
+
+    def clear_tags(self):
         # clear layout
         while self.tags_layout.count():
             item = self.tags_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
                 
-        tags = self.db.get_tags_for_file(path)
-        for i, t in enumerate(tags):
+    def on_curation_result(self, ticket, value, error):
+        if self._closed:
+            return
+        if error is not None:
+            self.lbl_rating_stars.setText(LocaleManager().tr(
+                'gallery.db.read_error', 'Could not load library.'))
+            return
+        record = value[0]
+        # Sólo una ruta ausente usa metadata del archivo. Vacío/cero son válidos en DB.
+        tags = record['tags'] if record['id'] is not None else self._file_tags
+        rating = record['rating'] if record['id'] is not None else self._file_rating
+        self._current_rating = rating
+        self.lbl_rating_stars.setText('⭐' * rating if rating > 0 else 'None')
+        self.clear_tags()
+        for i, t in enumerate(sorted(tags)):
             chip = TagChip(t, i)
             chip.removed.connect(self.remove_tag)
             self.tags_layout.addWidget(chip)
+        self._curation_ready = True
+        self.input_tag.setEnabled(True)
+        self.btn_add_tag.setEnabled(True)
+        self.lbl_rating_stars.setEnabled(True)
 
     def load_current_image(self):
-        if not self.paths: return
+        if self._closed or not self.paths: return
         
         path = self.paths[self.current_idx]
-        
-        # Load Tags
-        self.load_tags(path)
-        
-        # Load Rating
-        rating = self.db.get_file_rating(path)
-        self.lbl_rating_stars.setText("⭐" * rating if rating > 0 else "None")
         
         # Load Pixmap
         pix = QPixmap(path)
@@ -451,52 +506,33 @@ class AdvancedViewer(QDialog):
         else:
             self.lbl_quality.setText("N/A")
 
-        # 2. Merge DB tags with File Tags (if external, DB might be empty)
-        # Note: self.load_tags() cleared the layout.
-        # If DB had tags, they are already added. If not, add bundle tags.
-        # Ideally we want the union.
-        
-        db_tags = set(self.db.get_tags_for_file(path))
-        file_tags = set(bundle.tags)
-        
-        # If we are in 'external' mode, DB might be empty.
-        # If DB has tags, we prioritize them (assuming user edited them).
-        # But if DB is empty, use file tags.
-        
-        final_tags = db_tags if db_tags else file_tags
-        
-        # If current layout is empty (load_tags found nothing), fill it
-        if self.tags_layout.count() == 0 and final_tags:
-            for i, t in enumerate(sorted(final_tags)):
-                 chip = TagChip(t, i)
-                 chip.removed.connect(self.remove_tag)
-                 self.tags_layout.addWidget(chip)
-        
-        # 3. Rating Fallback
-        # If DB rating is 0, check file rating
-        if rating == 0 and bundle.rating > 0:
-             self.lbl_rating_stars.setText("⭐" * bundle.rating)
+        self._file_tags = tuple(bundle.tags)
+        self._file_rating = bundle.rating
+        self.load_tags(path)
              
         # Update Fullscreen if active
         if self.fs_window and self.fs_window.isVisible():
             self.fs_window.set_image(path)
 
     def next_image(self):
+        if self._closed or not self.paths: return
         self.current_idx = (self.current_idx + 1) % len(self.paths)
         self.load_current_image()
 
     def prev_image(self):
+        if self._closed or not self.paths: return
         self.current_idx = (self.current_idx - 1) % len(self.paths)
         self.load_current_image()
 
     def cycle_current_rating(self):
         """Cycles rating for the current image in the viewer."""
-        if not self.paths: return
+        if not self._curation_ready or not self.paths: return
         path = self.paths[self.current_idx]
-        current = self.db.get_file_rating(path)
+        current = self._current_rating
         new_rating = (current + 1) % 6
         
         if self.db.update_file_rating(path, new_rating):
+            self._current_rating = new_rating
             self.lbl_rating_stars.setText("⭐" * new_rating if new_rating > 0 else "None")
             # [PERSISTENCE] Write to file
             self._persist_metadata(path)
@@ -505,6 +541,7 @@ class AdvancedViewer(QDialog):
             # But for now, the parent (Gallery) will handle its own refresh if needed.
 
     def toggle_fullscreen(self):
+        if self._closed or not self.paths: return
         if not self.fs_window:
             self.fs_window = FullscreenHelper(self)
             self.fs_window.set_image(self.paths[self.current_idx])
