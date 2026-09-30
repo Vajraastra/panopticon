@@ -3,6 +3,8 @@ import os
 import logging
 import re
 
+from core.library_fts import check_fts, repair_fts
+
 
 log = logging.getLogger(__name__)
 
@@ -116,12 +118,9 @@ class LibraryRepository:
             "CREATE INDEX IF NOT EXISTS idx_files_hash_original ON files(hash_original)"
         )
 
-        # Migración FTS: si el índice está vacío pero ya hay archivos (DB previa
-        # a FTS5), reconstruirlo una vez para no dejar la búsqueda sin resultados.
-        n_fts = cursor.execute("SELECT count(*) FROM files_fts").fetchone()[0]
-        n_files = cursor.execute("SELECT count(*) FROM files").fetchone()[0]
-        if n_files > 0 and n_fts == 0 and not self.rebuild_fts():
-            raise sqlite3.DatabaseError('FTS migration failed')
+        # Sólo durante la migración inicial; instalaciones ya marcadas se
+        # revisan/reparan explícitamente, sin full-scan en cada apertura.
+        self.repair_fts()
 
     # --- Sincronización del índice FTS5 ---
 
@@ -139,7 +138,7 @@ class LibraryRepository:
         tags = " ".join(
             r[0] for r in cur.execute(
                 "SELECT t.name FROM tags t JOIN file_tags ft ON t.id=ft.tag_id "
-                "WHERE ft.file_id=?", (file_id,)
+                "WHERE ft.file_id=? ORDER BY ft.tag_id", (file_id,)
             ).fetchall()
         )
         cur.execute("DELETE FROM files_fts WHERE rowid=?", (file_id,))
@@ -149,19 +148,26 @@ class LibraryRepository:
             (file_id, row[0] or '', row[1] or '', row[2] or '', row[3] or '', row[4] or '', tags)
         )
 
+    def check_fts(self):
+        """Diagnóstico RO exacto de filas ausentes/desactualizadas/huérfanas."""
+        return check_fts(self.conn)
+
+    def repair_fts(self):
+        """Reparación selectiva, atómica dentro de la transacción del dueño."""
+        return repair_fts(self.conn)
+
     def rebuild_fts(self):
-        """Reconstruye el índice FTS completo desde cero (migración / reparación).
-        Costoso (recorre todos los files) pero solo se llama una vez."""
+        """Regeneración total explícita, incluida la estructura interna FTS.
+
+        Conserva memoria acotada; los fallos llegan al dueño para rollback.
+        """
         cursor = self.conn.cursor()
-        try:
-            cursor.execute("DELETE FROM files_fts")
-            for (file_id,) in cursor.execute("SELECT id FROM files").fetchall():
+        cursor.execute("DELETE FROM files_fts")
+        ids = self.conn.execute("SELECT id FROM files ORDER BY id")
+        while block := ids.fetchmany(256):
+            for (file_id,) in block:
                 self._fts_sync_file(file_id, cursor)
-            log.info("[DB] Índice FTS reconstruido.")
-            return True
-        except sqlite3.Error as e:
-            log.error("[DB] rebuild_fts falló: %s", e)
-            return False
+        return True
 
     def _normalize_path(self, path):
         return os.path.normpath(path).replace('\\', '/')
