@@ -27,11 +27,12 @@ class NativeDuplicateQueryWorker(QThread):
 
     def __init__(self, service, operation, *, token=1, **arguments):
         super().__init__()
-        if operation not in ('get_duplicate_candidates_page','get_duplicate_search_status','prepare_duplicate_search'):
+        if operation not in ('get_duplicate_candidates_page','get_duplicate_search_status','prepare_duplicate_search','get_folder_overlap'):
             raise ValueError('invalid_duplicate_native_operation')
         if type(token) is not int or not 1 <= token <= 2**63-1:
             raise ValueError('invalid_duplicate_review_token')
-        allowed={'after_hash','limit'} if operation=='get_duplicate_candidates_page' else set()
+        allowed=({'after_hash','limit'} if operation=='get_duplicate_candidates_page' else
+            {'folders','threshold'} if operation=='get_folder_overlap' else set())
         if not set(arguments)<=allowed:
             raise ValueError('invalid_duplicate_native_arguments')
         self.service, self.operation, self.token = service, operation, token

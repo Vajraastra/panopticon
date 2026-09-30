@@ -258,9 +258,33 @@ groups contain at most 256 copies. Watched-folder validation admits at most 256 
 Limits or inventory errors disable retirement instead of publishing a discardable
 partial result. **Visual similarity** admits at most 2,000 images and 10 million pixels
 per image, with four workers and bounded pair comparison. It never authorizes retirement
-and does not persist pHash. Folder overlap reports, mass classification and persistent
-pHash remain pending. Persistent pHash will run as a separate explicit phase on
+and does not persist pHash. Persistent pHash remains pending and will run as a
+separate explicit phase on
 selected folders, independently of SHA-256 backfill.
+
+### Folder overlap and pair classification
+
+Select **Folder overlap (review only)** in Duplicate Finder, then paste absolute
+indexed folder paths, one per line, or use **Add folder**. Compare 2–32 separate
+scopes: repeated or nested folders are rejected. **Compare folder pairs** returns
+every pair in the chosen batch, up to 496 pairs, from one native read snapshot.
+No image decoding, indexing, Cherry catalog access or file changes occur.
+
+The report counts active copies, known and unknown hashes, and unique effective
+SHA-256 values per folder. Duplicate copies within a folder count once in its
+hash set. Jaccard is shared unique hashes divided by their union. Select a pair
+to inspect each folder's coverage and directional containment, which can differ
+from Jaccard. Empty or unknown sets show insufficient evidence. The adjustable
+percentage threshold, initially 51%, classifies high or partial overlap for review.
+It never authorizes automatic merges or retirement; use exact group verification
+for that decision, preserving curated copies and all Cherry download receipts.
+
+Comparison admits at most 250,000 active copies across the selected scopes,
+256 KiB of report data and a 10-second native read budget. A limit, cancellation
+or error invalidates the entire report; no partial prefix is published. Choose
+a smaller complete batch when needed. Changing folders or threshold consumes
+the captured report. Scopes follow stored native paths; this classification does
+not prove current physical bytes, aliases or complete curation.
 
 ## License
 

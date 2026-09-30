@@ -16,6 +16,7 @@ from core.components.standard_layout import StandardToolLayout
 from .logic.review_worker import ExactReviewWorker, VisualReviewWorker
 from .logic.retirement_worker import DuplicateRetirementWorker
 from .logic.database_worker import DatabaseGroupReviewWorker, NativeDuplicateQueryWorker
+from .ui.overlap_panel import OverlapPanel
 
 # Un QThread sin parent sigue vivo aunque se destruya la vista durante I/O.
 _LIVE_WORKERS = set()
@@ -65,6 +66,7 @@ class DuplicateFinderModule(BaseModule):
         self.combo_mode = QComboBox()
         self.combo_mode.addItems([self.text('mode_hash', 'Exact content (SHA-256)'), self.text('mode_visual', 'Visual similarity (review only)')])
         self.combo_mode.addItem(self.text('mode_database', 'Native library (exact groups)'))
+        self.combo_mode.addItem(self.text('mode_overlap', 'Folder overlap (review only)'))
         self.combo_mode.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.combo_mode.setMinimumContentsLength(16)
         self.combo_mode.setToolTip(self.text('mode_tip', 'Exact content verifies current bytes and curation. Visual similarity only proposes groups for review.'))
@@ -108,7 +110,8 @@ class DuplicateFinderModule(BaseModule):
         self.lbl_folder.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.lbl_folder.setTextFormat(Qt.PlainText)
         layout.addWidget(self.lbl_folder)
-        layout.addWidget(QLabel(self.text('recovery_label', 'Recovery folder:')))
+        self.recovery_label=QLabel(self.text('recovery_label', 'Recovery folder:'))
+        layout.addWidget(self.recovery_label)
         self.recovery = QLineEdit(str(ProjectPaths.root()/'data'/'retired_duplicates'))
         self.recovery.setStyleSheet(Theme.get_input_style())
         self.recovery.setToolTip(self.text('recovery_tip', 'Persistent destination outside the collection and Cherry projects, on the same volume. Retired files and their recovery journal are kept here.'))
@@ -117,6 +120,7 @@ class DuplicateFinderModule(BaseModule):
         layout.addWidget(self.btn_recovery)
         note = QLabel(self.text('policy_note', 'Documented copies take priority. Conflicts, unknown identities and external captions or sidecars require review. Visual similarity does not authorize retirement.'))
         note.setWordWrap(True)
+        self.policy_note=note
         note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         layout.addWidget(note)
         layout.addStretch()
@@ -143,6 +147,9 @@ class DuplicateFinderModule(BaseModule):
         self.tree.itemChanged.connect(self._checked)
         self.tree.currentItemChanged.connect(self._details)
         layout.addWidget(self._database_controls())
+        self.overlap_panel=OverlapPanel(self.text,self.accent_color,color)
+        self.overlap_panel.changed.connect(self._configuration_changed)
+        layout.addWidget(self.overlap_panel,1)
         layout.addWidget(self.tree, 3)
         navigation = QHBoxLayout()
         self.btn_previous = self._button('previous', 'Previous', lambda: self._navigate(-1))
@@ -230,16 +237,28 @@ class DuplicateFinderModule(BaseModule):
     def _controls(self):
         idle = not self._closed and not self._busy and not self._acting and not self._native_busy
         database = self.combo_mode.currentIndex()==2
+        overlap = self.combo_mode.currentIndex()==3
         for control in (self.btn_run, self.btn_select, self.combo_mode, self.slider_thr, self.recovery, self.btn_recovery, *self.weights.values()):
             control.setEnabled(idle)
         self.threshold_container.setVisible(self.combo_mode.currentIndex() == 1)
-        self.weight_box.setVisible(self.combo_mode.currentIndex() != 1)
+        self.weight_box.setVisible(self.combo_mode.currentIndex() in (0,2))
         self.db_box.setVisible(database)
         self.lbl_folder.setText(self.text('db_scope','Scope: all active indexed copies') if database else
             (self.folder_path or self.text('no_folder','No folder selected')))
-        self.btn_select.setEnabled(idle and not database)
-        self.btn_run.setText(self.text('db_search', 'Find native candidates') if database else self.text('run_scan','Start scan'))
-        self.btn_run.setToolTip(self.text('db_search_tip', 'Read a page of stored-hash candidates. Physical bytes and curation still require group verification.') if database else self.text('run_scan_tip','Read current files and documented states. No database records or file bytes are changed by scanning.'))
+        self.btn_select.setEnabled(idle and not database and not overlap)
+        self.btn_select.setVisible(not overlap)
+        self.lbl_folder.setVisible(not overlap)
+        self.overlap_panel.setVisible(overlap)
+        self.overlap_panel.set_idle(idle)
+        for widget in (self.tree,self.details,self.action_status,self.btn_previous,self.btn_next,self.btn_open_group,self.page_status):
+            widget.setVisible(not overlap)
+        for widget in (self.recovery_label,self.recovery,self.btn_recovery,self.policy_note,self.btn_auto_select,self.btn_delete):
+            widget.setVisible(not overlap)
+        self.btn_run.setText(self.text('overlap_run','Compare folder pairs') if overlap else
+            self.text('db_search', 'Find native candidates') if database else self.text('run_scan','Start scan'))
+        self.btn_run.setToolTip(self.text('overlap_run_tip','Compare all pairs of selected folders by stored unique hashes and show coverage. No image reads, merges or retirement occur.') if overlap else
+            self.text('db_search_tip', 'Read a page of stored-hash candidates. Physical bytes and curation still require group verification.') if database else self.text('run_scan_tip','Read current files and documented states. No database records or file bytes are changed by scanning.'))
+        if overlap:self.btn_run.setEnabled(idle and 2<=len(self.overlap_panel.paths())<=32)
         self.lbl_thr_val.setText(self.text('value', 'Value: {value}').format(value=self.slider_thr.value()))
         self.btn_cancel.setEnabled(not self._closed and (self._busy or self._acting or self._native_busy))
         valid = idle and self._valid_review()
@@ -259,6 +278,7 @@ class DuplicateFinderModule(BaseModule):
         if self.view is None or self._closed:
             return
         self._token += 1
+        self.overlap_panel.invalidate()
         self._checked_paths.clear()
         if self.review:
             self.status.setText(self.text('rescan_required', 'Options changed. Scan again before retiring files.'))
@@ -285,6 +305,9 @@ class DuplicateFinderModule(BaseModule):
 
     def run_scan(self):
         if self._closed or self._busy or self._acting or self._native_busy or (self.worker is not None and self.worker.isRunning()):
+            return
+        if self.combo_mode.currentIndex()==3:
+            self._native_request('get_folder_overlap',folders=self.overlap_panel.paths(),threshold=self.overlap_panel.threshold.value())
             return
         if self.combo_mode.currentIndex()==2:
             self._db_cursors=[None]
@@ -550,6 +573,7 @@ class DuplicateFinderModule(BaseModule):
                 or (self.native_worker is not None and self.native_worker.isRunning())):
             return
         self._token+=1
+        self.overlap_panel.invalidate()
         self.review,self._rows,self._checked_paths,self._page=None,[],set(),0
         self._render_page()
         self._native_busy=True
@@ -561,6 +585,8 @@ class DuplicateFinderModule(BaseModule):
         worker.finished.connect(self._native_query_finished)
         worker.finished_signal.connect(self._native_received)
         self.db_status.setText(self.text('db_working','Reading the native catalog or finishing index preparation…'))
+        if operation=='get_folder_overlap':
+            self.status.setText(self.text('overlap_working','Comparing stored hash sets and classifying folder pairs…'))
         self._controls()
         worker.start()
 
@@ -574,6 +600,13 @@ class DuplicateFinderModule(BaseModule):
             if result['operation']=='get_duplicate_candidates_page':
                 self.db_tree.clear()
                 self._db_has_more=False
+            if result['operation']=='get_folder_overlap':
+                self.status.setText(self.text('overlap_failed','Folder comparison incomplete: {reason}').format(reason=self.reason(result['error'] or 'cancelled')))
+            return
+        if result['operation']=='get_folder_overlap':
+            value=result['value']
+            self.overlap_panel.show_result(value)
+            self.status.setText(self.text('overlap_summary','{folders} folders, {pairs} classified pairs. Stored hashes only; inspect coverage before acting.').format(folders=len(value['folders']),pairs=len(value['pairs'])))
             return
         if result['operation'] in ('get_duplicate_search_status','prepare_duplicate_search'):
             self._db_prepared=result['value'] is True if result['operation']=='prepare_duplicate_search' else result['value']['prepared']
