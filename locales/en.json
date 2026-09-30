@@ -1099,5 +1099,8 @@
   "gallery.viewer.saved": "Curation saved in the library: {path}",
   "gallery.viewer.write_error": "Could not save curation: {path} ({reason}).",
   "gallery.viewer.unregistered": "This image is not registered in the library; curation is read only.",
-    "tool.image_optimizer.data_error": "Library data could not be read: {reason}\nProcessed: {processed}. The remaining images stay in the queue."
+    "tool.image_optimizer.data_error": "Library data could not be read: {reason}\nProcessed: {processed}. The remaining images stay in the queue.",
+    "tool.cropper.saving": "Saving…",
+    "tool.cropper.save_error": "Crop was not saved: {reason}",
+    "tool.cropper.source_destination": "Choose a different destination: the source image must be preserved."
 }

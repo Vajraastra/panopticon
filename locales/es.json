@@ -1099,5 +1099,8 @@
   "gallery.viewer.saved": "Curación guardada en la biblioteca: {path}",
   "gallery.viewer.write_error": "No se pudo guardar la curación: {path} ({reason}).",
   "gallery.viewer.unregistered": "Esta imagen no está registrada en la biblioteca; su curación es de solo lectura.",
-    "tool.image_optimizer.data_error": "No se pudieron leer los datos de la biblioteca: {reason}\nProcesadas: {processed}. Las imágenes pendientes permanecen en la cola."
+    "tool.image_optimizer.data_error": "No se pudieron leer los datos de la biblioteca: {reason}\nProcesadas: {processed}. Las imágenes pendientes permanecen en la cola.",
+    "tool.cropper.saving": "Guardando…",
+    "tool.cropper.save_error": "No se guardó el recorte: {reason}",
+    "tool.cropper.source_destination": "Elige otro destino: se debe conservar la imagen original."
 }

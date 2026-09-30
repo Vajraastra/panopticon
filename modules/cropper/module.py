@@ -1,23 +1,68 @@
 import os
 import re
 import logging
+import threading
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox,
     QFrame, QSizePolicy, QScrollArea, QComboBox, QSpinBox, QStackedWidget
 )
-from PySide6.QtCore import Qt, Signal, QMimeData
+from PySide6.QtCore import Qt, Signal, QMimeData, QThread, QRectF
 from PySide6.QtGui import QIcon, QAction, QColor, QStandardItem
 
 from core.base_module import BaseModule
 from core.theme import Theme
+from core.paths import CachePaths
 from core.components.standard_layout import StandardToolLayout
 from modules.cropper.logic.cropper_widget import ImageCropperWidget
-from modules.cropper.logic.cropper_logic import crop_image
+from modules.cropper.logic.cropper_logic import crop_image, CropCancelled, SourceDestinationError
 
 # Combo indices (fixed positions)
 AR_FREE   = 0
 AR_CUSTOM = 1
 # indices 2+ are ratio presets; separators are disabled items (no signal fired)
+
+
+class CropWorker(QThread):
+    finished_signal = Signal(dict)
+
+    def __init__(self, source, selection, destination, service):
+        super().__init__()
+        self.source = str(source)
+        self.selection = QRectF(selection)
+        self.destination = str(destination)
+        self.service = service
+        self.cancel_event = threading.Event()
+
+    def stop(self):
+        self.cancel_event.set()
+
+    def run(self):
+        result = dict(path=None, error=None, source_destination=False, cancelled=False)
+        try:
+            if self.cancel_event.is_set():
+                raise CropCancelled()
+            rows = self.service.read('get_curation_snapshot', [self.source],
+                                     cancel_event=self.cancel_event)
+            if len(rows) != 1:
+                raise ValueError('Incomplete curation snapshot')
+            row = rows[0]
+            if self.cancel_event.is_set():
+                raise CropCancelled()
+            result['path'] = crop_image(
+                self.source, self.selection, self.destination,
+                tags=list(row['tags']) if row['id'] is not None else [],
+                rating=row['rating'] if row['id'] is not None else 0,
+                cancel_event=self.cancel_event)
+        except CropCancelled:
+            result['cancelled'] = True
+        except Exception as error:
+            if self.cancel_event.is_set():
+                result['cancelled'] = True
+            else:
+                logging.warning('[Cropper] Save failed: %s', error)
+                result['error'] = str(error)
+                result['source_destination'] = isinstance(error, SourceDestinationError)
+        self.finished_signal.emit(result)
 
 
 class CropperModule(BaseModule):
@@ -28,6 +73,15 @@ class CropperModule(BaseModule):
         self._icon = "✂️"
         self.accent_color = "#ff79c6"
         self.view = None
+        self.worker = None
+        self._closed = False
+        self._saving = False
+        self._save_dialog = False
+
+    def on_unload(self):
+        self._closed = True
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.stop()
 
     def get_view(self) -> QWidget:
         if self.view:
@@ -151,7 +205,7 @@ class CropperModule(BaseModule):
             """Disabled separator item."""
             item = QStandardItem(label)
             item.setEnabled(False)
-            item.setForeground(QColor("#555"))
+            item.setForeground(QColor(text_dim))
             return item
 
         model = self.combo_ar.model()
@@ -243,15 +297,18 @@ class CropperModule(BaseModule):
         self.btn_save.setCursor(Qt.PointingHandCursor)
         self.btn_save.clicked.connect(self.save_crop)
         self.btn_save.setFixedWidth(120)
+        theme = self.context.get('theme_manager')
+        action_text = theme.get_color('bg_main') if theme else Theme.BG_MAIN
+        accent_hover = theme.get_color('accent_hover') if theme else Theme._c('accent_hover')
         self.btn_save.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.accent_color};
-                color: black;
+                color: {action_text};
                 border-radius: 4px;
                 font-weight: bold;
                 padding: 6px;
             }}
-            QPushButton:hover {{ background-color: white; }}
+            QPushButton:hover {{ background-color: {accent_hover}; }}
         """)
         layout.addWidget(self.btn_save)
 
@@ -300,6 +357,8 @@ class CropperModule(BaseModule):
             self.cropper_widget.set_fixed_aspect_ratio(w / h)
 
     def open_image_dialog(self):
+        if self._closed:
+            return
         path, _ = QFileDialog.getOpenFileName(
             self.view,
             self.tr("common.load_image", "Open Image"),
@@ -310,55 +369,72 @@ class CropperModule(BaseModule):
             self.load_image(path)
 
     def load_image(self, path: str):
+        if self._closed:
+            return
         self.cropper_widget.load_image(path)
         self.stack.setCurrentIndex(1)
 
+    def _save_busy(self):
+        return (self._closed or self._saving or self._save_dialog or
+                (self.worker is not None and self.worker.isRunning()))
+
     def save_crop(self):
-        if not self.cropper_widget.image_path:
+        if self._save_busy() or not self.cropper_widget.image_path:
             return
-
-        rect = self.cropper_widget.get_crop_rect_normalized()
-        if not rect:
-            QMessageBox.warning(
-                self.view,
-                self.tr("common.error", "Warning"),
-                self.tr("common.no_selection", "No selection made.")
-            )
+        # Capture before the native dialog's nested event loop can change the image.
+        source = str(self.cropper_widget.image_path)
+        selection = self.cropper_widget.get_crop_rect_normalized()
+        if not selection:
+            QMessageBox.warning(self.view, self.tr("common.error", "Warning"),
+                                self.tr("common.no_selection", "No selection made."))
             return
-
-        save_path, selected_filter = QFileDialog.getSaveFileName(
-            self.view,
-            self.tr("common.save_copy", "Save Crop"),
-            "",
-            "PNG (*.png);;JPG (*.jpg)"
-        )
-        if not save_path:
+        selection = QRectF(selection)
+        self._save_dialog = True
+        try:
+            save_path, selected_filter = QFileDialog.getSaveFileName(
+                self.view, self.tr("common.save_copy", "Save Crop"), "",
+                "PNG (*.png);;JPG (*.jpg)")
+        finally:
+            self._save_dialog = False
+        if not save_path or self._save_busy():
             return
-
-        # Auto-append extension if the user didn't type one
         if not os.path.splitext(save_path)[1]:
-            m = re.search(r'\*(\.\w+)', selected_filter)
-            if m:
-                save_path += m.group(1)
-
+            match = re.search(r'\*(\.\w+)', selected_filter)
+            if match:
+                save_path += match.group(1)
         try:
             from core.database_manager import DatabaseManager
-            db = DatabaseManager(service=self.context.get('data_service'))
-            tags   = db.get_tags_for_file(self.cropper_widget.image_path)
-            rating = db.get_file_rating(self.cropper_widget.image_path)
-            crop_image(self.cropper_widget.image_path, rect, save_path, tags=tags, rating=rating)
-            QMessageBox.information(
-                self.view,
-                self.tr("opt.done", "Done"),
-                self.tr("crop.saved", "Saved to {path}").format(path=save_path)
-            )
-        except Exception as e:
-            logging.warning(f"[Cropper] Save failed: {e}")
-            QMessageBox.warning(
-                self.view,
-                self.tr("common.error", "Error"),
-                str(e)
-            )
+            service = DatabaseManager(service=self.context.get('data_service')).service
+            self.worker = CropWorker(source, selection, save_path, service)
+            self.worker.finished_signal.connect(self._on_crop_finished)
+            self._saving = True
+            self.btn_save.setEnabled(False)
+            self.btn_save.setText(self.tr("tool.cropper.saving", "Saving…"))
+            self.worker.start()
+        except Exception as error:
+            self._on_crop_finished(dict(error=str(error), source_destination=False,
+                                       cancelled=False, path=None))
+
+    def _on_crop_finished(self, result):
+        if self._closed:
+            return
+        self._saving = False
+        self.btn_save.setEnabled(True)
+        self.btn_save.setText(self.tr("crop.save", "💾 Save Crop"))
+        if result['cancelled']:
+            return
+        if result['error'] is not None:
+            reason = result['error'] or self.tr("common.error", "Error")
+            message = (self.tr("tool.cropper.source_destination",
+                               "Choose a different destination: the source image must be preserved.")
+                       if result['source_destination'] else
+                       self.tr("tool.cropper.save_error", "Crop was not saved: {reason}").format(reason=reason))
+            QMessageBox.warning(self.view, self.tr("common.error", "Error"), message)
+        else:
+            QMessageBox.information(self.view, self.tr("opt.done", "Done"),
+                                    self.tr("crop.saved", "Saved to {path}").format(path=result['path']))
+            if not self._closed:
+                CachePaths.open_folder(os.path.dirname(os.path.abspath(result['path'])))
 
     def load_image_set(self, paths: list):
         if paths:
