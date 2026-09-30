@@ -810,6 +810,10 @@ class LibraryRepository:
         from core.library_versions import state
         return state(self.conn, copy_id)
 
+    def get_duplicate_snapshot(self, paths):
+        from core.duplicate_snapshot import snapshot
+        return snapshot(self.conn, paths, self._normalize_path)
+
     def archive_copy(self, copy_id, **kwargs):
         from core.library_versions import archive
         return archive(self.conn, copy_id, **kwargs)

@@ -32,6 +32,7 @@ READS = frozenset({
     'get_library_overview', 'get_library_selection', 'get_library_page',
     'resolve_library_selection', 'check_fts',
     'get_copy_versions_page', 'get_copy_version_state',
+    'get_duplicate_snapshot',
 })
 WRITES = frozenset({
     'register_files_minimal', 'update_file_metadata', 'remove_files',
