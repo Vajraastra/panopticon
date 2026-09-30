@@ -118,6 +118,22 @@ venv\Scripts\python.exe scripts\curation_sidecar.py export --db panopticon.db --
 venv\Scripts\python.exe scripts\curation_sidecar.py compare --db panopticon.db --folder "G:\Collections\Artist"
 ```
 
+Review both states in the comparison output. Each copy includes `copy_id`, `relative_path`,
+`export_id` and the fingerprint of the displayed central state. To explicitly choose its
+exported curation, close the application owner and pass those reviewed values:
+
+```bat
+venv\Scripts\python.exe scripts\curation_sidecar.py apply --db panopticon.db --folder "G:\Collections\Artist" --mode restore --copy-id 1 --relative-path "image.png" --export-id "<reviewed export_id>" --expected-fingerprint "<reviewed fingerprint>"
+```
+
+Use `--mode register` only for a reviewed absent path, omitting the fingerprint. Use
+`--mode adopt` only for a reviewed record with both central hashes unknown, including
+its fingerprint. The mode is explicit; changes since review, unknown identity and shared
+category conflicts remain unresolved. Each command verifies current bytes and applies
+one copy through the central writer. `apply` requires an existing initialized library
+already using WAL; it does not create, migrate or convert a database. Initialize or review
+the library separately first. Comparison and recovery commands do not apply curation.
+
 The export creates `panopticon.curation.db` alongside the folder's files, using relative
 paths and cataloged hashes. Copies retain separate curation even when their hashes match.
 Cherry's `catalog.db` and image files are preserved. The compare command reports both values

@@ -47,6 +47,14 @@ class LibraryError(RuntimeError):
         super().__init__(f'{operation}: {reason}')
 
 
+def require_ready_schema(conn):
+    """Apertura estricta: no crear/migrar ni aceptar un marker desconocido."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='panopticon_schema'").fetchone():
+        raise ValueError('library_not_ready')
+    if conn.execute("SELECT value FROM panopticon_schema WHERE name='integrity_v1'").fetchone() != ('1',):
+        raise ValueError('library_not_ready')
+
+
 def _migrate(conn, db_path):
     # Marca propia: no reutilizar user_version de una instalación previa.
     marker = conn.execute("SELECT 1 FROM sqlite_master WHERE name='panopticon_schema'").fetchone()
@@ -93,9 +101,12 @@ def _migrate(conn, db_path):
 
 
 class LibraryService:
-    def __init__(self, db_path, capacity=64):
+    def __init__(self, db_path, capacity=64, *, require_ready=False):
         if type(capacity) is not int or capacity < 1:
             raise ValueError('invalid_queue_capacity')
+        if type(require_ready) is not bool:
+            raise ValueError('invalid_ready_policy')
+        self._require_ready = require_ready
         self.db_path = str(Path(db_path).resolve())
         self._queue = Queue(maxsize=capacity)
         self._metrics = LibraryMetrics(capacity)
@@ -117,13 +128,22 @@ class LibraryService:
         ownership = ExitStack()
         try:
             ownership.enter_context(writer_guard(self.db_path))
-            conn = sqlite3.connect(self.db_path, timeout=5, isolation_level=None)
+            if self._require_ready:
+                conn = sqlite3.connect(Path(self.db_path).as_uri() + '?mode=rw',
+                    uri=True, timeout=5, isolation_level=None)
+            else:
+                conn = sqlite3.connect(self.db_path, timeout=5, isolation_level=None)
             conn.execute('PRAGMA foreign_keys=ON')
             if conn.execute('PRAGMA foreign_keys').fetchone() != (1,):
                 raise sqlite3.DatabaseError('foreign_keys unavailable')
-            _migrate(conn, self.db_path)
-            if conn.execute('PRAGMA journal_mode=WAL').fetchone()[0].lower() != 'wal':
-                raise sqlite3.DatabaseError('WAL unavailable')
+            if self._require_ready:
+                require_ready_schema(conn)
+                if conn.execute('PRAGMA journal_mode').fetchone()[0].lower() != 'wal':
+                    raise ValueError('library_not_ready')
+            else:
+                _migrate(conn, self.db_path)
+                if conn.execute('PRAGMA journal_mode=WAL').fetchone()[0].lower() != 'wal':
+                    raise sqlite3.DatabaseError('WAL unavailable')
             conn.execute('PRAGMA synchronous=FULL')
             repo = LibraryRepository(conn)
             self._ready.set_result(True)
