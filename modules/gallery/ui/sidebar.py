@@ -2,6 +2,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QLineEdit, QPushBut
                                QFrame, QComboBox, QHBoxLayout, QCompleter)
 from PySide6.QtCore import Qt, Signal
 from core.locale_manager import LocaleManager
+from core.library_async import LibraryReader
+import logging
 from core.components.tag_widgets import FlowLayout, TagChip # widget compartido en core (Regla #3)
 
 class GallerySidebar(QWidget):
@@ -14,6 +16,8 @@ class GallerySidebar(QWidget):
         super().__init__(parent)
         self.state = state
         self.engine = query_engine
+        self.reader = LibraryReader(self.engine.db.service, self)
+        self.reader.result.connect(self.on_tags_loaded)
         
         self.init_ui()
         self.setup_completer()
@@ -76,7 +80,7 @@ class GallerySidebar(QWidget):
         self.txt_search.setToolTip(LocaleManager().tr(
             "gallery.search_tip",
             "Filters by tags or metadata text. Type several tags to keep only the images "
-            "that have them all."))
+            "that have them all. Put metadata text in double quotes; separate entries with commas."))
         self.txt_search.setPlaceholderText("Search tags or text...")
         self.txt_search.returnPressed.connect(self.on_search_submit)
         layout.addWidget(self.txt_search)
@@ -123,12 +127,22 @@ class GallerySidebar(QWidget):
         self.state.filter_changed.connect(self.refresh_chips)
         
     def setup_completer(self):
-        tags = self.engine.get_all_tags()
+        self.reader.request('get_all_tags')
+
+    def on_tags_loaded(self, ticket, tags, error):
+        if error is not None:
+            logging.getLogger(__name__).warning('Gallery tags failed: %s', error)
+            self.txt_search.setToolTip(LocaleManager().tr(
+                'gallery.db.tags_error', 'Tag suggestions could not be loaded; search is still available.'))
+            return
         if tags:
-            comp = QCompleter(tags)
+            comp = QCompleter(tags, self.txt_search)
             comp.setCaseSensitivity(Qt.CaseInsensitive)
             comp.setFilterMode(Qt.MatchContains)
             self.txt_search.setCompleter(comp)
+
+    def shutdown(self):
+        self.reader.close()
             
     def on_search_submit(self):
         text = self.txt_search.text().strip()
@@ -137,7 +151,11 @@ class GallerySidebar(QWidget):
         # Split by comma
         tokens = [t.strip() for t in text.split(',') if t.strip()]
         for t in tokens:
-            self.state.add_tag(t) # Assuming tag search for now
+            if len(t) >= 2 and t.startswith('"') and t.endswith('"'):
+                if t[1:-1].strip():
+                    self.state.add_term(t[1:-1])
+            else:
+                self.state.add_tag(t)
         self.txt_search.clear()
         
     def refresh_chips(self):

@@ -46,6 +46,10 @@ class GalleryState(QObject):
     
     @property
     def current_folder(self): return self._current_folder
+
+    @property
+    def total_pages(self):
+        return max(1, (self._total_items + self._page_size - 1) // self._page_size)
     
     def set_mode(self, mode, folder=None, custom_paths=None, title=None):
         self._mode = mode

@@ -1061,7 +1061,7 @@
   "fc.convert_tip": "Convierte todo lo que hay en la cola y abre la carpeta del resultado al terminar.",
   "gallery.open_folder_tip": "Abre una carpeta de imágenes para verlas aquí.",
   "gallery.back_albums_tip": "Vuelve a la vista de álbumes, dejando de mirar dentro de esta carpeta.",
-  "gallery.search_tip": "Filtra por etiquetas o por texto de la metadata. Escribe varias etiquetas para quedarte solo con las imágenes que las tengan todas.",
+  "gallery.search_tip": "Filtra por etiquetas o por texto de la metadata. Escribe varias etiquetas para quedarte solo con las imágenes que las tengan todas. Pon el texto de metadata entre comillas dobles y separa las entradas con comas.",
   "gallery.rating_tip": "Deja a la vista solo las imágenes con esa puntuación o más.",
   "gallery.clear_filters_tip": "Quita la búsqueda y la puntuación de golpe, y vuelve a enseñar todo.",
   "gallery.picker_tip": "Activa la selección múltiple para mandar varias imágenes a otra herramienta. OJO: al apagarlo se pierde lo que llevaras seleccionado.",
@@ -1081,5 +1081,10 @@
   "cherry.archives_start": "Organizando proyecto: {folder}",
   "cherry.archives_cancelled": "Cancelado. Vuelve a ejecutar la acción para continuar.",
   "cherry.archives_working": "Procesando: {name}",
-  "cherry.archives_done": "Comprimidos: {p} procesados, {a} archivos incorporados, {d} duplicados internos; mantenimiento: {r} copias exactas retiradas, {c} renumeradas, {u} recuperadas; {o} organizados, {e} errores."
+  "cherry.archives_done": "Comprimidos: {p} procesados, {a} archivos incorporados, {d} duplicados internos; mantenimiento: {r} copias exactas retiradas, {c} renumeradas, {u} recuperadas; {o} organizados, {e} errores.",
+  "gallery.db.loading": "Cargando…",
+  "gallery.db.read_error": "No se pudo cargar la biblioteca. Cambia la vista o los filtros para reintentar.",
+  "gallery.db.title": "Biblioteca",
+  "gallery.db.write_error": "No se pudo guardar la calificación. Se recargarán los datos confirmados.",
+  "gallery.db.tags_error": "No se pudieron cargar las sugerencias de etiquetas; la búsqueda sigue disponible."
 }

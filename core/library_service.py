@@ -172,7 +172,7 @@ class LibraryService:
                     future.set_exception(LibraryError(operation, 'queue_full'))
         return future
 
-    def read(self, operation, *args, **kwargs):
+    def read(self, operation, *args, cancel_event=None, **kwargs):
         if operation not in READS:
             raise ValueError(f'Unknown read: {operation}')
         with self._admission:
@@ -180,10 +180,16 @@ class LibraryService:
                 raise LibraryError(operation, 'service_closed')
         try:
             with closing(open_reader(self.db_path)) as conn:
+                if cancel_event is not None:
+                    if cancel_event.is_set():
+                        raise LibraryError(operation, 'cancelled')
+                    conn.set_progress_handler(lambda: int(cancel_event.is_set()), 1000)
                 # Count + página y consultas relacionadas ven la misma revisión.
                 conn.execute('BEGIN')
                 return getattr(LibraryRepository(conn), operation)(*args, **kwargs)
         except sqlite3.Error as exc:
+            if cancel_event is not None and cancel_event.is_set():
+                raise LibraryError(operation, 'cancelled') from exc
             raise LibraryError(operation, str(exc)) from exc
 
     def close(self):

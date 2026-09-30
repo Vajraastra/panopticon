@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import logging
+import re
 
 
 log = logging.getLogger(__name__)
@@ -468,9 +469,8 @@ class LibraryRepository:
             return False
 
 
-    def search_files_paginated(self, query=None, tags=None, search_terms=None, limit=50, offset=0):
-        # ... (Identical to previous implementation to preserve Gallery logic) ...
-        # For brevity in rewrite, reusing the robust query logic
+    def search_files_paginated(self, query=None, tags=None, search_terms=None, limit=50,
+                               offset=0, *, folder=None, min_rating=0):
         cursor = self.conn.cursor()
         conditions, params = [], []
 
@@ -478,9 +478,29 @@ class LibraryRepository:
         if search_terms:
             for term in search_terms:
                 t = f"%{term}%"
-                conditions.append("""(
-                    meta_positive LIKE ? OR meta_model LIKE ? OR meta_tool LIKE ? OR filename LIKE ?
-                )""")
+                columns = ('meta_positive', 'meta_model', 'meta_tool', 'filename')
+                # LIKE conserva substrings, comodines y mayúsculas originales.
+                # Trigram sólo ayuda con un tramo literal de al menos 3 caracteres.
+                candidates = None
+                if any(len(part) >= 3 for part in re.split(r'[%_]', term)):
+                    candidates = set()
+                    for column in columns:
+                        # No materializar decenas de miles de hits de términos comunes.
+                        # Si el sondeo alcanza su tope, usar el LIKE de files.
+                        probe_limit = 513 - len(candidates)
+                        hits = cursor.execute(
+                            f'SELECT rowid FROM files_fts WHERE {column} LIKE ? LIMIT ?',
+                            (t, probe_limit)).fetchall()
+                        if len(hits) == probe_limit:
+                            candidates = None
+                            break
+                        candidates.update(row[0] for row in hits)
+                if candidates is not None:
+                    conditions.append('files.id IN (' + ','.join('?' for _ in candidates) + ')')
+                    params.extend(sorted(candidates))
+                # Verificar siempre contra files: un FTS viejo no debe añadir hits falsos.
+                conditions.append('(' + ' OR '.join(
+                    f'{column} LIKE ?' for column in columns) + ')')
                 params.extend([t]*4)
 
         # 2. Tags
@@ -490,6 +510,12 @@ class LibraryRepository:
                 params.append(tag)
 
         # 3. Path/Rating
+        if folder:
+            conditions.append("(path LIKE ? ESCAPE '\\' OR path = ?)")
+            params.extend([self._folder_like(folder), self._normalize_path(folder)])
+        if min_rating > 0:
+            conditions.append('rating >= ?')
+            params.append(min_rating)
         if query:
             if "path:" in query:
                 # crude parse
@@ -587,8 +613,8 @@ class LibraryRepository:
 
     def update_file_rating(self, path, rating):
         try:
-            self.conn.execute("UPDATE files SET rating=? WHERE path=?", (rating, self._normalize_path(path)))
-            return True
+            cursor = self.conn.execute("UPDATE files SET rating=? WHERE path=?", (rating, self._normalize_path(path)))
+            return cursor.rowcount > 0
         except Exception as e:
             log.warning("[DB] update_file_rating error: %s", e)
             return False

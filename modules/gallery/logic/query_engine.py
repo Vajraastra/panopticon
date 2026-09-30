@@ -32,30 +32,17 @@ class QueryEngine:
             # Maybe fetch ratings from DB if paths exist there? For now, just 0.
             return total, [(p, 0) for p in state._custom_paths[start:end]]
             
-        # Build Query from State
-        folder_filter = state.current_folder
-        
-        # Construct query string compatible with DB Manager
-        query_parts = []
-        if folder_filter:
-            query_parts.append(f"path:{folder_filter}")
-        
-        if state.min_rating > 0:
-            query_parts.append(f"rating:{state.min_rating}")
-            
-        full_query = " ".join(query_parts)
-        
-        count, results = self.db.search_files_paginated(
-            query=full_query,
-            tags=state.tags,
-            search_terms=state.search_terms,
-            limit=page_size,
-            offset=offset
-        )
+        count, results = self.db.search_files_paginated(**self.image_query(state, page_size))
         
         # Results is list of (path, rating)
         # We assume the UI primarily needs paths, but might cache ratings
         return count, results
+
+    def image_query(self, state, page_size):
+        # Capturar sólo datos en GUI; ningún worker lee un QObject mutable.
+        return dict(folder=state.current_folder, min_rating=state.min_rating,
+                    tags=tuple(state.tags), search_terms=tuple(state.search_terms),
+                    limit=page_size, offset=state._page * page_size)
         
     def update_rating(self, path, rating):
         """Updates the rating of a single file."""

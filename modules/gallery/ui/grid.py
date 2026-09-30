@@ -2,6 +2,8 @@ from PySide6.QtWidgets import (QWidget, QGridLayout, QScrollArea, QVBoxLayout, Q
                                QPushButton, QHBoxLayout)
 from PySide6.QtCore import Qt, Slot, QSize
 from core.locale_manager import LocaleManager
+from core.library_async import LibraryReader, LibraryWriter
+import logging
 from PySide6.QtGui import QImage, QPixmap
 
 from modules.gallery.logic.loader import get_loader
@@ -16,6 +18,12 @@ class GalleryGrid(QWidget):
         self.state = state
         self.engine = query_engine
         self.loader = get_loader()
+        self._closed = False
+        self._loading = False
+        self.reader = LibraryReader(self.engine.db.service, self)
+        self.writer = LibraryWriter(self.engine.db.service, self)
+        self.reader.result.connect(self.on_query_result)
+        self.writer.result.connect(self.on_rating_result)
         
         self.init_ui()
         
@@ -81,17 +89,52 @@ class GalleryGrid(QWidget):
         layout.addWidget(footer)
         
     def refresh(self):
+        if self._closed:
+            return
         # 1. Clear Grid
         self.clear_grid()
         
         # 2. Fetch Data
+        self._loading = True
+        self.btn_prev.setEnabled(False)
+        self.btn_next.setEnabled(False)
+        self.lbl_page.setText(LocaleManager().tr('gallery.db.loading', 'Loading…'))
         if self.state.mode == self.state.VIEW_ALBUMS:
             self.lbl_title.setText("📂 Albums")
-            self.load_albums()
+            self.reader.request('get_folders_paginated', limit=self.state._page_size,
+                                offset=self.state._page * self.state._page_size)
         else:
             name = self.state.current_folder if self.state.current_folder else "All Images"
             self.lbl_title.setText(f"🖼️ {name}")
-            self.load_images()
+            if self.state.mode == self.state.VIEW_CUSTOM:
+                # Invalidar una lectura anterior aunque este conjunto no consulte DB.
+                self.reader.invalidate()
+                self.on_query_result(0, self.engine.fetch_images(self.state, self.state._page_size), None)
+            else:
+                self.reader.request('search_files_paginated',
+                                    **self.engine.image_query(self.state, self.state._page_size))
+
+    def on_query_result(self, ticket, value, error):
+        if self._closed:
+            return
+        self._loading = False
+        if error is not None:
+            logging.getLogger(__name__).warning('Gallery query failed: %s', error)
+            self.lbl_page.setText(LocaleManager().tr('gallery.db.read_error', 'Could not load library.'))
+            self.btn_prev.setEnabled(self.state._page > 0)
+            self.btn_next.setEnabled(False)
+            return
+        total, rows = value
+        self.state.set_total_items(total)
+        if self.state._page >= self.state.total_pages:
+            self.state.set_page(self.state.total_pages - 1)
+            return
+        self.clear_grid()
+        self.update_pagination_ui()
+        if self.state.mode == self.state.VIEW_ALBUMS:
+            self.load_albums(rows)
+        else:
+            self.load_images(rows)
             
     def clear_grid(self):
         while self.grid_layout.count():
@@ -99,11 +142,7 @@ class GalleryGrid(QWidget):
             widget = item.widget()
             if widget: widget.deleteLater()
             
-    def load_albums(self):
-        total, albums = self.engine.fetch_albums(page=self.state._page, page_size=self.state._page_size)
-        self.state.set_total_items(total)
-        self.update_pagination_ui()
-        
+    def load_albums(self, albums):
         cols = 5
         for i, album in enumerate(albums):
             card = FolderCard(album['path'], album['name'], album['cover'], album['count'])
@@ -116,18 +155,14 @@ class GalleryGrid(QWidget):
                 
             self.grid_layout.addWidget(card, i // cols, i % cols)
             
-    def load_images(self):
-        total, results = self.engine.fetch_images(self.state, page_size=self.state._page_size)
-        self.state.set_total_items(total)
-        self.update_pagination_ui()
-        
+    def load_images(self, results):
         cols = 6 # Slightly denser for images
         for i, (path, rating) in enumerate(results):
             thumb = ClickableThumbnail(path, rating=rating, auto_load=False)
             
             # Connect signals
             thumb.clicked.connect(self.on_image_clicked)
-            thumb.rating_changed.connect(lambda p, r: self.engine.update_rating(p, r))
+            thumb.rating_changed.connect(self.update_rating)
             
             # Selection state
             if path in self.state.selected_paths:
@@ -141,21 +176,40 @@ class GalleryGrid(QWidget):
             
     def update_pagination_ui(self):
         current = self.state._page + 1
-        total_pages = (self.state._total_items // self.state._page_size) + 1
-        if self.state._total_items == 0: total_pages = 1
+        total_pages = self.state.total_pages
         
         self.lbl_page.setText(f"Page {current} / {total_pages}")
         self.btn_prev.setEnabled(current > 1)
         self.btn_next.setEnabled(current < total_pages)
         
     def prev_page(self):
+        if self._loading:
+            return
         if self.state._page > 0:
             self.state.set_page(self.state._page - 1)
             
     def next_page(self):
-        total_pages = (self.state._total_items // self.state._page_size) + 1
+        if self._loading:
+            return
+        total_pages = self.state.total_pages
         if self.state._page < total_pages - 1:
             self.state.set_page(self.state._page + 1)
+
+    def update_rating(self, path, rating):
+        self.writer.submit('update_file_rating', path, rating)
+
+    def on_rating_result(self, ticket, value, error):
+        if error is not None:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, LocaleManager().tr('gallery.db.title', 'Library'),
+                                LocaleManager().tr('gallery.db.write_error', 'Could not save rating.'))
+        if error is not None or self.state.mode != self.state.VIEW_CUSTOM:
+            self.refresh()
+
+    def shutdown(self):
+        self._closed = True
+        self.reader.close()
+        self.writer.close()
             
     def on_image_clicked(self, path):
         if self.state.picker_active:

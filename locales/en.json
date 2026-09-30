@@ -1061,7 +1061,7 @@
   "fc.convert_tip": "Converts everything in the queue and opens the result folder when it finishes.",
   "gallery.open_folder_tip": "Opens a folder of images to browse here.",
   "gallery.back_albums_tip": "Back to the album view, leaving this folder's contents.",
-  "gallery.search_tip": "Filters by tags or metadata text. Type several tags to keep only the images that have them all.",
+  "gallery.search_tip": "Filters by tags or metadata text. Type several tags to keep only the images that have them all. Put metadata text in double quotes; separate entries with commas.",
   "gallery.rating_tip": "Leaves only the images with that rating or better.",
   "gallery.clear_filters_tip": "Clears the search and the rating at once, showing everything again.",
   "gallery.picker_tip": "Turns on multi-select so you can send several images to another tool. NOTE: turning it off clears whatever you had selected.",
@@ -1081,5 +1081,10 @@
   "cherry.archives_start": "Organizing project: {folder}",
   "cherry.archives_cancelled": "Cancelled. Run the action again to resume.",
   "cherry.archives_working": "Processing: {name}",
-  "cherry.archives_done": "Archives: {p} processed, {a} files added, {d} archive duplicates; maintenance: {r} exact copies removed, {c} renumbered, {u} recovered; {o} organized, {e} errors."
+  "cherry.archives_done": "Archives: {p} processed, {a} files added, {d} archive duplicates; maintenance: {r} exact copies removed, {c} renumbered, {u} recovered; {o} organized, {e} errors.",
+  "gallery.db.loading": "Loading…",
+  "gallery.db.read_error": "Could not load library. Change the view or filters to retry.",
+  "gallery.db.title": "Library",
+  "gallery.db.write_error": "Could not save rating. Reloading confirmed data.",
+  "gallery.db.tags_error": "Tag suggestions could not be loaded; search is still available."
 }

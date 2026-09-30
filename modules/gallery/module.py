@@ -100,3 +100,8 @@ class GalleryModule(BaseModule):
 
     def run_headless(self, params: dict, input_data) -> None:
         pass
+
+    def on_unload(self):
+        if self.view_widget is not None:
+            self.view_widget.grid.shutdown()
+            self.view_widget.sidebar.shutdown()
