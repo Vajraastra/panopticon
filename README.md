@@ -94,7 +94,11 @@ In Librarian, select a folder, clear tag filters and click **Export folder curat
 The export includes all indexed copies and subfolders, regardless of the visible page.
 Progress and errors appear beside the button. **Review folder curation** opens a
 read-only comparison in pages of up to 100 copies. Select a row to see both states;
-large text previews are marked incomplete. No changes are applied. Restart the
+large text previews are marked incomplete. **Use exported curation** explicitly
+replaces only the selected registered copy's tags, sources and rating. It requires
+known identity and complete previews, verifies the current file SHA in a worker,
+and rejects changes made since the displayed review. Unknown/unregistered copies
+and incompatible shared tag categories remain unresolved. Restart the
 review if the export changes. Each page reflects the central database when read.
 To export or compare from the command line:
 

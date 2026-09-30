@@ -623,11 +623,17 @@ class LibrarianModule(BaseModule):
             return
         if self._review_dialog is None:
             self._review_dialog = CurationReviewDialog(self.db.db_path, self.current_folder_path,
-                self.tr, self.context.get('theme_manager'), self.view)
+                self.tr, self.context.get('theme_manager'), self.view, service=self.db.service)
             self._review_dialog.finished.connect(lambda _: self._review_closed())
+            self._review_dialog.curation_restored.connect(self._on_curation_restored)
         self._review_dialog.show()
         self._review_dialog.raise_()
         self._review_dialog.activateWindow()
+
+    def _on_curation_restored(self, path):
+        self.update_global_stats()
+        if self._external_paths is None:
+            self.refresh_current_view()
 
     def _review_closed(self):
         self._review_dialog = None

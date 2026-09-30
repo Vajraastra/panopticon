@@ -226,10 +226,10 @@ class ReviewQt(helpers.Fixture):
         root = Path(__file__).resolve().parents[1]
         for language in ('en', 'es'):
             values = json.loads((root / 'locales' / (language + '.json')).read_text(encoding='utf-8'))
-            self.assertEqual(len([key for key in values if key.startswith('lib.review.')]), 28)
+            self.assertEqual(len([key for key in values if key.startswith('lib.review.')]), 42)
             for key, value in values.items():
                 if key.startswith('lib.review.'):
-                    self.assertTrue(value.format(count=1, seen=1, total=2, reason='fixture'))
+                    self.assertTrue(value.format(count=1, seen=1, total=2, reason='fixture', path='fixture'))
 
 
 class WorkerContract(unittest.TestCase):

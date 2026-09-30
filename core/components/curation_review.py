@@ -1,25 +1,40 @@
-"""Revisión secuencial no modal; nunca aplica curación ni comparte conexiones."""
-from PySide6.QtCore import Qt
+"""Revisión paginada y elección explícita; sin conexiones SQLite en Qt."""
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QAbstractItemView, QPlainTextEdit, QHeaderView)
 from core.library_async import LibraryReader
 from core.curation_review import CurationReviewTasks
+from core.curation_apply import CurationApplyTasks
 
 _ERROR_DEFAULTS = {
     'sidecar_changed': 'The export changed during this review',
     'sidecar_count_mismatch': 'The declared copy count does not match the available records',
     'sidecar_payload_too_large': 'One copy contains more tag data than the comparison can read',
+    'curation_changed_since_review': 'The current curation changed since this page was read',
+    'tag_category_conflict': 'An existing shared tag has a different category',
+    'curation_hash_mismatch': 'The file bytes do not match the exported identity',
+    'curation_file_changed': 'The file changed during verification',
+    'curation_file_symlink': 'This file is a symbolic link and requires separate review',
+    'identity_changed': 'The registered identity differs from the export',
+    'identity_missing': 'This copy has no known identity',
+    'restore_payload_too_large': 'This copy has too many tags to restore',
+    'invalid_restore_tag': 'A tag cannot be restored without changing its format',
 }
 
 
 class CurationReviewDialog(QDialog):
-    def __init__(self, db_path, folder, translate, theme, parent=None):
+    curation_restored = Signal(str)
+
+    def __init__(self, db_path, folder, translate, theme, parent=None, service=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.tr_text = translate
         self.folder = str(folder)
         self._closed = False
         self._busy = False
+        self._valid_page = False
+        self._complete = False
+        self._restoring = None
         self._token = None
         self._total = None
         self._after = 0
@@ -27,6 +42,9 @@ class CurationReviewDialog(QDialog):
         self._reports = []
         self.reader = LibraryReader(CurationReviewTasks(db_path), self)
         self.reader.result.connect(self._received)
+        self.apply_reader = LibraryReader(CurationApplyTasks(service), self) if service is not None else None
+        if self.apply_reader is not None:
+            self.apply_reader.result.connect(self._restored)
         self.setWindowTitle(translate('lib.review.title', 'Review folder curation'))
         self.resize(950, 650)
         layout = QVBoxLayout(self)
@@ -35,7 +53,7 @@ class CurationReviewDialog(QDialog):
         heading.setWordWrap(True)
         layout.addWidget(heading)
         note = QLabel(translate('lib.review.note',
-            'Read-only comparison. Conflicts keep both values. No curation is applied. '
+            'Comparison does not apply curation. Select a copy and explicitly choose the export to replace its current curation. '
             'Each page reflects the central database when it is read.'))
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -69,6 +87,10 @@ class CurationReviewDialog(QDialog):
         self.status.setTextFormat(Qt.PlainText)
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self.restore_status = QLabel()
+        self.restore_status.setTextFormat(Qt.PlainText)
+        self.restore_status.setWordWrap(True)
+        layout.addWidget(self.restore_status)
         controls = QHBoxLayout()
         self.restart_button = QPushButton(translate('lib.review.restart', 'Restart review'))
         self.restart_button.setToolTip(translate('lib.review.restart_tip',
@@ -78,17 +100,23 @@ class CurationReviewDialog(QDialog):
         self.next_button.setToolTip(translate('lib.review.next_tip',
             'Compare up to 100 more copies without keeping earlier pages in memory.'))
         self.next_button.clicked.connect(self._request)
+        self.apply_button = QPushButton(translate('lib.review.apply', 'Use exported curation'))
+        self.apply_button.setToolTip(translate('lib.review.apply_tip',
+            'Replace only this registered copy’s tags, sources and rating with its exported values. '
+            'Requires known identity and complete previews; verifies file bytes in a worker and rejects changes since review.'))
+        self.apply_button.setEnabled(False)
+        self.apply_button.clicked.connect(self.apply_selected)
         self.close_button = QPushButton(translate('lib.review.close', 'Close'))
         self.close_button.setToolTip(translate('lib.review.close_tip',
-            'Close this comparison without changing tags, ratings or the export.'))
+            'Close this review. An explicitly accepted restoration continues in the database service.'))
         self.close_button.clicked.connect(self.close)
-        for button in (self.restart_button, self.next_button, self.close_button):
+        for button in (self.restart_button, self.next_button, self.apply_button, self.close_button):
             controls.addWidget(button)
         layout.addLayout(controls)
         if theme is not None:
             self.setStyleSheet(theme.get_stylesheet())
             c = theme.get_color
-            for button in (self.restart_button, self.next_button, self.close_button):
+            for button in (self.restart_button, self.next_button, self.apply_button, self.close_button):
                 button.setStyleSheet(f"background-color: {c('bg_input')}; color: {c('text_primary')}; "
                                     f"border: 1px solid {c('border_strong')}; padding: 6px;")
             for editor in (self.sidecar_text, self.central_text):
@@ -97,9 +125,10 @@ class CurationReviewDialog(QDialog):
         self.restart()
 
     def restart(self):
-        if self._closed or self._busy:
+        if self._closed or self._busy or self._restoring is not None:
             return
         self._token = self._total = None
+        self._complete = False
         self._after = self._seen = 0
         self._reports = []
         self.table.setRowCount(0)
@@ -107,11 +136,13 @@ class CurationReviewDialog(QDialog):
         self._request()
 
     def _request(self):
-        if self._closed or self._busy:
+        if self._closed or self._busy or self._restoring is not None:
             return
         self._busy = True
+        self._valid_page = False
         self.restart_button.setEnabled(False)
         self.next_button.setEnabled(False)
+        self.apply_button.setEnabled(False)
         self.status.setText(self.tr_text('lib.review.loading', 'Reading comparison page…'))
         self.reader.request('compare_curation', folder=self.folder, after=self._after, export_id=self._token)
 
@@ -132,13 +163,17 @@ class CurationReviewDialog(QDialog):
             reason = self.tr_text('lib.review.error.' + str(error), _ERROR_DEFAULTS.get(str(error), str(error)))
             self.status.setText(self.tr_text('lib.review.error',
                 'Comparison stopped: {reason}. Restart to read the current export.').format(reason=reason))
+            self.apply_button.setEnabled(False)
             return
         self._token, self._total = value['export_id'], value['total']
+        self._valid_page = True
         self._after = value['after']
         if not value['reports']:
+            self._complete = True
             self.next_button.setEnabled(False)
             self.status.setText(self.tr_text('lib.review.complete',
-                'Traversal complete: {count} copies compared; no changes applied.').format(count=self._seen))
+                'Traversal complete: {count} copies compared.').format(count=self._seen))
+            self._update_apply()
             return
         self._seen += len(value['reports'])
         self._reports = value['reports']
@@ -152,6 +187,7 @@ class CurationReviewDialog(QDialog):
         self.status.setText(self.tr_text('lib.review.page',
             'Compared {seen} of {total} copies. Earlier pages are not retained.').format(
                 seen=self._seen, total=self._total))
+        self._update_apply()
 
     def _details(self):
         row = self.table.currentRow()
@@ -165,8 +201,51 @@ class CurationReviewDialog(QDialog):
                         'Incomplete preview; total tags: {count}. Use compare for the full record.').format(
                             count=preview['tags'])
             editor.setPlainText(text)
+        self._update_apply()
+
+    def _update_apply(self):
+        if not hasattr(self, 'apply_button'):
+            return
+        row = self.table.currentRow()
+        report = self._reports[row] if 0 <= row < len(self._reports) else None
+        self.apply_button.setEnabled(not self._closed and not self._busy and self._valid_page and self._restoring is None and
+            self.apply_reader is not None and report is not None and report['status'] in ('same', 'conflict') and
+            not report['sidecar']['truncated'] and not report['central']['truncated'])
+
+    def apply_selected(self):
+        if not self.apply_button.isEnabled():
+            return
+        report = self._reports[self.table.currentRow()]
+        self._restoring = report['relative_path']
+        self.restart_button.setEnabled(False)
+        self.next_button.setEnabled(False)
+        self.apply_button.setEnabled(False)
+        self.restore_status.setText(self.tr_text('lib.review.restoring',
+            'Verifying and restoring {path}…').format(path=self._restoring))
+        self.apply_reader.request('apply_curation', folder=self.folder, copy_id=report['copy_id'],
+            relative_path=report['relative_path'], export_id=self._token, expected_fingerprint=report['fingerprint'])
+
+    def _restored(self, ticket, value, error):
+        if self._closed or self._restoring is None:
+            return
+        path, self._restoring = self._restoring, None
+        self.restart_button.setEnabled(True)
+        if error is not None or value is not True:
+            reason = getattr(error, 'reason', str(error)) if error is not None else 'restore_not_confirmed'
+            reason = self.tr_text('lib.review.error.' + reason, _ERROR_DEFAULTS.get(reason, reason))
+            self.restore_status.setText(self.tr_text('lib.review.restore_error',
+                'Could not restore {path}: {reason}. Restart the review if the state changed.').format(path=path, reason=reason))
+            self.next_button.setEnabled(self._valid_page and not self._complete)
+            self._update_apply()
+        else:
+            self.restore_status.setText(self.tr_text('lib.review.restored',
+                'Restored exported curation for {path}. Review restarted.').format(path=path))
+            self.curation_restored.emit(path)
+            self.restart()
 
     def closeEvent(self, event):
         self._closed = True
         self.reader.close()
+        if self.apply_reader is not None:
+            self.apply_reader.close()
         super().closeEvent(event)

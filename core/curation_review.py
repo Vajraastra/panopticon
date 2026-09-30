@@ -1,6 +1,7 @@
 """Páginas de comparación y vistas de texto acotadas para la revisión Qt."""
 import json
 from core.curation_sidecar import compare_curation_page
+from core.curation_restore import fingerprint
 
 TEXT_LIMIT = 16384
 
@@ -48,5 +49,7 @@ class CurationReviewTasks:
         reports = []
         for report in value['reports']:
             reports.append(dict(relative_path=report['relative_path'], status=report['status'],
+                copy_id=report['sidecar']['id'],
+                fingerprint=fingerprint(report['central']) if report['central'] is not None else None,
                 sidecar=_preview(report['sidecar']), central=_preview(report['central'])))
         return dict(export_id=value['export_id'], total=value['total'], after=value['after'], reports=reports)
