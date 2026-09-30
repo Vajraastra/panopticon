@@ -441,6 +441,19 @@ class LibraryRepository:
                 if path in records else dict(id=None, path=path, rating=None, tags=None)
                 for path in normalized]
 
+    def get_curation_restore_state(self, path):
+        from core.curation_restore import read_state
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError('invalid_path')
+        return read_state(self.conn, self._normalize_path(path))
+
+    def restore_curation(self, path, *, expected_fingerprint, incoming):
+        from core.curation_restore import restore
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError('invalid_path')
+        return restore(self.conn, self._normalize_path(path), expected_fingerprint=expected_fingerprint,
+                       incoming=incoming, update_fts=self._fts_sync_file)
+
     def get_tags_for_file(self, path):
         """Returns list of tag names for a file path."""
         file_id = self.get_file_id(path)
