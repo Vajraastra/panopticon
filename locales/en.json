@@ -1098,5 +1098,6 @@
   "gallery.viewer.saving": "Saving curation: {path}",
   "gallery.viewer.saved": "Curation saved in the library: {path}",
   "gallery.viewer.write_error": "Could not save curation: {path} ({reason}).",
-  "gallery.viewer.unregistered": "This image is not registered in the library; curation is read only."
+  "gallery.viewer.unregistered": "This image is not registered in the library; curation is read only.",
+    "tool.image_optimizer.data_error": "Library data could not be read: {reason}\nProcessed: {processed}. The remaining images stay in the queue."
 }

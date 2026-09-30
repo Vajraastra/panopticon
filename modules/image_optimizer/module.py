@@ -1,5 +1,7 @@
 import os
 import logging
+import copy
+import threading
 from pathlib import Path
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
                                QCheckBox, QSpinBox, QFileDialog, QProgressBar, QMessageBox,
@@ -80,40 +82,59 @@ class OptimizerWorker(QThread):
     progress = Signal(int)
     finished_signal = Signal(dict)
 
-    def __init__(self, queue, settings):
+    def __init__(self, queue, settings, service):
         super().__init__()
-        self.queue = queue
-        self.settings = settings
-        self.running = True
+        self.queue = list(queue)
+        self.settings = copy.deepcopy(settings)
+        self.service = service
+        self.cancel_event = threading.Event()
+
+    def stop(self):
+        self.cancel_event.set()
 
     def run(self):
-        stats = {"success": 0, "failed": 0, "saved_bytes": 0}
-
-        for i, path in enumerate(self.queue):
-            if not self.running:
+        stats = dict(success=0, failed=0, saved_bytes=0, processed=0,
+                     data_error=None, cancelled=False)
+        # Cada bloque comparte una transacción RO; no retener mapas de todo el lote.
+        for offset in range(0, len(self.queue), 256):
+            if self.cancel_event.is_set():
                 break
+            batch = self.queue[offset:offset + 256]
             try:
-                dest = get_export_path(path, export_dir=self.settings['export_path'])
-                result = optimize_image(
-                    path, dest,
-                    format_override=self.settings['format'],
-                    quality=self.settings['quality'],
-                    max_side=self.settings['max_side'],
-                    preserve_metadata=self.settings['preserve_meta'],
-                    tags=self.settings.get('tags_map', {}).get(path, []),
-                    rating=self.settings.get('rating_map', {}).get(path, 0)
-                )
-                if result['success']:
-                    stats['success'] += 1
-                    stats['saved_bytes'] += result['saved_bytes']
-                else:
+                rows = self.service.read('get_curation_snapshot', batch,
+                                         cancel_event=self.cancel_event)
+                if len(rows) != len(batch):
+                    raise ValueError('Incomplete curation snapshot')
+            except Exception as exc:
+                if not self.cancel_event.is_set():
+                    logging.warning('[ImageOptimizer] Curation read failed: %s', exc)
+                    stats['data_error'] = str(exc)
+                break
+            for path, row in zip(batch, rows):
+                if self.cancel_event.is_set():
+                    break
+                try:
+                    dest = get_export_path(path, export_dir=self.settings['export_path'])
+                    result = optimize_image(
+                        path, dest,
+                        format_override=self.settings['format'],
+                        quality=self.settings['quality'],
+                        max_side=self.settings['max_side'],
+                        preserve_metadata=self.settings['preserve_meta'],
+                        tags=list(row['tags']) if row['id'] is not None else [],
+                        rating=row['rating'] if row['id'] is not None else 0
+                    )
+                    if result['success']:
+                        stats['success'] += 1
+                        stats['saved_bytes'] += result['saved_bytes']
+                    else:
+                        stats['failed'] += 1
+                except Exception as exc:
+                    logging.warning('[ImageOptimizer] Failed to process %s: %s', path, exc)
                     stats['failed'] += 1
-            except Exception as e:
-                logging.warning(f"[ImageOptimizer] Failed to process {path}: {e}")
-                stats['failed'] += 1
-
-            self.progress.emit(i + 1)
-
+                stats['processed'] += 1
+                self.progress.emit(stats['processed'])
+        stats['cancelled'] = self.cancel_event.is_set()
         self.finished_signal.emit(stats)
 
 
@@ -126,6 +147,14 @@ class ImageOptimizerModule(BaseModule):
         self.accent_color = "#66ff66"  # tono de identidad; el loader le pone el croma del tema
         self.view = None
         self.queue = []
+        self.worker = None
+        self._closed = False
+        self._run_queue = None
+
+    def on_unload(self):
+        self._closed = True
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.stop()
 
     def get_view(self) -> QWidget:
         if self.view:
@@ -284,6 +313,7 @@ class ImageOptimizerModule(BaseModule):
         border   = theme.get_color('border')      if theme else Theme.BORDER
         text_dim = theme.get_color('text_dim')    if theme else Theme.TEXT_DIM
         bg_panel = theme.get_color('bg_panel')    if theme else Theme.BG_PANEL
+        text_primary = theme.get_color('text_primary') if theme else Theme.TEXT_PRIMARY
         accent   = theme.get_color('accent_main') if theme else self.accent_color
 
         self.stack = QStackedWidget()
@@ -318,8 +348,8 @@ class ImageOptimizerModule(BaseModule):
         self.list_preview.setSelectionMode(QListWidget.ExtendedSelection)
         self.list_preview.setStyleSheet(f"""
             QListWidget {{ background-color: transparent; border: none; outline: none; }}
-            QListWidget::item {{ background-color: {bg_panel}; color: white; border-radius: 8px; padding: 10px; }}
-            QListWidget::item:selected {{ background-color: {accent}; color: black; }}
+            QListWidget::item {{ background-color: {bg_panel}; color: {text_primary}; border-radius: 8px; padding: 10px; }}
+            QListWidget::item:selected {{ background-color: {accent}; color: {bg_main}; }}
         """)
         preview_layout.addWidget(self.list_preview)
         self.stack.addWidget(self.page_preview)
@@ -338,11 +368,13 @@ class ImageOptimizerModule(BaseModule):
             "",
             "Images (*.png *.jpg *.jpeg *.webp *.avif)"
         )
-        if files:
+        if files and not self._closed:
             self.queue.extend(files)
             self._update_ui()
 
     def _on_files_dropped(self, paths: list):
+        if self._closed:
+            return
         new = [p for p in paths if p not in self.queue]
         self.queue.extend(new)
         self._update_ui()
@@ -385,14 +417,14 @@ class ImageOptimizerModule(BaseModule):
             self.list_preview.addItem(QListWidgetItem(f"+ {len(self.queue) - preview_limit} more..."))
 
     def _run_all(self):
-        if not self.queue:
+        if self._closed or not self.queue or self._run_queue is not None or (self.worker is not None and self.worker.isRunning()):
             return
 
         export_path = QFileDialog.getExistingDirectory(
             self.view,
             self.tr("common.select_folder", "Select Export Directory")
         )
-        if not export_path:
+        if not export_path or self._closed or not self.queue or self._run_queue is not None or (self.worker is not None and self.worker.isRunning()):
             return
 
         # Format: index 0 = no override, 1=PNG, 2=JPEG, 3=WebP
@@ -414,23 +446,44 @@ class ImageOptimizerModule(BaseModule):
         }
 
         from core.database_manager import DatabaseManager
-        db = DatabaseManager(service=self.context.get('data_service'))
-        settings['tags_map']   = {p: db.get_tags_for_file(p) for p in self.queue}
-        settings['rating_map'] = {p: db.get_file_rating(p)   for p in self.queue}
+        service = DatabaseManager(service=self.context.get('data_service')).service
 
         self.progress.setMaximum(len(self.queue))
         self.progress.setValue(0)
         self.progress.setVisible(True)
         self.btn_run.setEnabled(False)
 
-        self.worker = OptimizerWorker(self.queue, settings)
-        self.worker.progress.connect(self.progress.setValue)
+        self._run_queue = self.queue
+        self.worker = OptimizerWorker(self.queue, settings, service)
+        self.worker.progress.connect(self._on_progress)
         self.worker.finished_signal.connect(self._on_finished)
         self.worker.start()
 
+    def _on_progress(self, value):
+        if not self._closed:
+            self.progress.setValue(value)
+
     def _on_finished(self, stats):
+        if self._closed:
+            return
         self.btn_run.setEnabled(True)
         self.progress.setVisible(False)
+        if self.queue is self._run_queue:
+            self.queue = self.queue[stats['processed']:]
+        elif stats['processed'] < len(self.worker.queue):
+            self.queue = self.worker.queue[stats['processed']:] + self.queue
+        self._run_queue = None
+        self._update_ui()
+        if stats['data_error'] is not None:
+            QMessageBox.warning(
+                self.view,
+                self.tr("common.error", "Error"),
+                self.tr("tool.image_optimizer.data_error",
+                        "Library data could not be read: {reason}\n"
+                        "Processed: {processed}. The remaining images stay in the queue.").format(
+                    reason=stats['data_error'] or self.tr('common.error', 'Error'),
+                    processed=stats['processed']))
+            return
         QMessageBox.information(
             self.view,
             self.tr("opt.done", "Done"),
@@ -439,12 +492,10 @@ class ImageOptimizerModule(BaseModule):
                 saved=f"{stats['saved_bytes'] / 1024 / 1024:.2f}"
             )
         )
-        self.queue = []
-        self._update_ui()
 
     def load_image_set(self, paths: list):
         """Standard interface for receiving image sets from Librarian."""
-        if paths:
+        if paths and not self._closed:
             self.queue = list(paths)
             self._update_ui()
 
