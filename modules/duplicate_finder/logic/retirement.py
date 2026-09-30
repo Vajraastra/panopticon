@@ -42,6 +42,12 @@ class DuplicateRetirementTasks:
                 any(not isinstance(path, str) for path in selected) or len(set(selected)) != len(selected)):
             raise ValueError('invalid_duplicate_retirement_review')
         weights = DuplicatePolicy(**review['policy'])
+        kind = review.get('scope', 'folder')
+        if kind not in ('folder', 'database') or (kind=='database' and len(review['reports']) != 1):
+            raise ValueError('invalid_duplicate_archive_scope')
+        database_scope = kind=='database'
+        if database_scope and not self.service.read('get_duplicate_search_status', cancel_event=cancel_event)['prepared']:
+            raise ValueError('duplicate_search_not_prepared')
         root, recovery = Path(review['folder']), Path(recovery_folder)
         if not root.is_absolute() or not recovery.is_absolute():
             raise ValueError('duplicate_retirement_path_not_absolute')
@@ -49,7 +55,7 @@ class DuplicateRetirementTasks:
         _plain_chain(recovery)
         root = root.resolve(strict=True)
         recovery = recovery.resolve()
-        if recovery == root or root in recovery.parents:
+        if not database_scope and (recovery == root or root in recovery.parents):
             raise ValueError('duplicate_recovery_inside_collection')
         selected_set, batches = set(selected), []
         for digest, report in review['reports'].items():
@@ -77,7 +83,7 @@ class DuplicateRetirementTasks:
         for digest, report, chosen in batches:
             try:
                 _check_cancel(cancel_event)
-                result = self._retire(root, recovery, digest, report, chosen, review['proofs'], weights, scope, cancel_event)
+                result = self._retire(root, recovery, digest, report, chosen, review['proofs'], weights, scope, cancel_event, database_scope)
             except Exception as exc:
                 result = dict(digest=digest, archived=False, moved=[], error=getattr(exc, 'reason', str(exc)), journal=None)
             results.append(result)
@@ -86,13 +92,15 @@ class DuplicateRetirementTasks:
         return dict(groups=results, moved=sum(len(result['moved']) for result in results),
                     complete=len(results) == len(batches) and all(result['error'] is None for result in results))
 
-    def _retire(self, root, recovery, digest, report, chosen, proofs, weights, scope, event):
+    def _retire(self, root, recovery, digest, report, chosen, proofs, weights, scope, event, database_scope=False):
         paths = [record['path'] for record in report['copies']]
         identities = set()
         for name in paths:
             path = Path(name)
-            if not path.is_absolute() or path == root or root not in path.parents:
+            if not path.is_absolute() or (not database_scope and (path == root or root not in path.parents)):
                 raise ValueError('duplicate_retirement_source_outside_collection')
+            if database_scope and (recovery == path.parent or path.parent in recovery.parents):
+                raise ValueError('duplicate_recovery_inside_collection')
             _plain_chain(path)
             if _documented(path):
                 raise ValueError('external_documentation_requires_review')
@@ -109,7 +117,7 @@ class DuplicateRetirementTasks:
             if inode in identities:
                 raise ValueError('duplicate_archive_ambiguous_path')
             identities.add(inode)
-            if proof['identity'][0] != recovery.stat().st_dev:
+            if name in chosen and proof['identity'][0] != recovery.stat().st_dev:
                 raise ValueError('duplicate_recovery_requires_same_volume')
         _check_cancel(event)
         current = self.service.read('get_duplicate_snapshot', paths, cancel_event=event)
@@ -129,6 +137,7 @@ class DuplicateRetirementTasks:
         job = recovery/uuid.uuid4().hex
         job.mkdir(exist_ok=False)
         journal = dict(format='panopticon.duplicate-retirement', version=1, phase='prepared',
+            review_scope='database' if database_scope else 'folder',
             digest=digest, folder=root.as_posix(), keep=decision['keep'], approved=approved, scope=scope,
             copies=current, proofs={path: proofs[path] for path in paths}, policy=asdict(weights),
             moves=[dict(source=path, destination=(job/f'{index:06d}{Path(path).suffix}').as_posix(), status='pending')
@@ -143,7 +152,7 @@ class DuplicateRetirementTasks:
                     raise ValueError('duplicate_bytes_changed_since_review')
             _check_cancel(event)
             committed = self.service.submit('archive_duplicate_copies', approved, chosen,
-                digest=digest, policy=asdict(weights), expected_scope=scope).result()
+                digest=digest, policy=asdict(weights), expected_scope=scope, database_scope=database_scope).result()
             if committed is not True:
                 raise ValueError('duplicate_retirement_commit_unconfirmed')
         except Exception as exc:

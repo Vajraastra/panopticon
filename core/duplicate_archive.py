@@ -10,7 +10,7 @@ def roots(conn):
     return [row[0] for row in rows]
 
 
-def archive(conn, approved, selected, *, digest, policy, expected_scope, normalize_path):
+def archive(conn, approved, selected, *, digest, policy, expected_scope, normalize_path, database_scope=False):
     if not conn.in_transaction:
         raise RuntimeError('duplicate_archive_requires_transaction')
     if (not isinstance(approved, (list, tuple)) or not 2 <= len(approved) <= 256 or
@@ -19,6 +19,8 @@ def archive(conn, approved, selected, *, digest, policy, expected_scope, normali
             not isinstance(policy, dict) or set(policy) != set(DuplicatePolicy.__dataclass_fields__)):
         raise ValueError('invalid_duplicate_archive')
     weights = DuplicatePolicy(**policy)
+    if type(database_scope) is not bool:
+        raise ValueError('invalid_duplicate_archive_scope')
     if (not isinstance(expected_scope, (list, tuple)) or len(expected_scope) > 256 or
             any(not isinstance(path, str) or not path or len(path)>4096 for path in expected_scope) or
             list(expected_scope) != roots(conn)):
@@ -39,6 +41,15 @@ def archive(conn, approved, selected, *, digest, policy, expected_scope, normali
     if (any(not isinstance(path, str) for path in selected) or len(set(selected)) != len(selected) or
             not set(selected) <= set(paths)):
         raise ValueError('invalid_duplicate_archive_selection')
+    if database_scope:
+        from core.duplicate_index import status
+        from core.duplicate_candidates import copies as group_copies
+        if not status(conn)['prepared']:
+            raise ValueError('duplicate_search_not_prepared')
+        members = group_copies(conn, digest, expected_count=len(approved))['copies']
+        if {(record['copy_id'], record['path']) for record in members} != {
+                (record['copy_id'], record['path']) for record in approved}:
+            raise ValueError('duplicate_candidate_group_changed')
     # Una sola transacción y consultas por bloque, incluyendo la copia que queda.
     current = snapshot(conn, paths, normalize_path)
     for before, now in zip(approved, current):
