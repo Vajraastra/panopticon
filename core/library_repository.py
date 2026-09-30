@@ -819,6 +819,14 @@ class LibraryRepository:
         from core.duplicate_archive import roots
         return roots(self.conn)
 
+    def get_duplicate_candidates_page(self, **kwargs):
+        from core.duplicate_candidates import page
+        return page(self.conn, **kwargs)
+
+    def get_duplicate_candidate_copies(self, digest, **kwargs):
+        from core.duplicate_candidates import copies
+        return copies(self.conn, digest, **kwargs)
+
     def archive_duplicate_copies(self, approved, selected, **kwargs):
         from core.duplicate_archive import archive
         return archive(self.conn, approved, selected, normalize_path=self._normalize_path, **kwargs)

@@ -34,7 +34,15 @@ READS = frozenset({
     'get_copy_versions_page', 'get_copy_version_state',
     'get_duplicate_snapshot',
     'get_duplicate_retirement_roots',
+    'get_duplicate_candidates_page', 'get_duplicate_candidate_copies',
 })
+
+# Agrupar puede recorrer toda la DB aun con LIMIT. Acotar duración y permitir
+# cancelación sin mantener indefinidamente un lector que retenga el WAL.
+READ_BUDGET_SECONDS = {
+    'get_duplicate_candidates_page': 10,
+    'get_duplicate_candidate_copies': 10,
+}
 WRITES = frozenset({
     'register_files_minimal', 'update_file_metadata', 'remove_files',
     'add_watched_folder', 'remove_watched_folder', 'add_tag_to_file',
@@ -246,12 +254,20 @@ class LibraryService:
                 raise LibraryError(operation, 'service_closed')
         started = self._metrics.start_read()
         outcome = 'failed'
+        timed_out = False
         try:
             with closing(open_reader(self.db_path)) as conn:
                 if cancel_event is not None:
                     if cancel_event.is_set():
                         raise LibraryError(operation, 'cancelled')
-                    conn.set_progress_handler(lambda: int(cancel_event.is_set()), 1000)
+                budget = READ_BUDGET_SECONDS.get(operation)
+                if budget is not None or cancel_event is not None:
+                    deadline = time.monotonic()+budget if budget is not None else None
+                    def interrupt():
+                        nonlocal timed_out
+                        timed_out = deadline is not None and time.monotonic() >= deadline
+                        return int(timed_out or (cancel_event is not None and cancel_event.is_set()))
+                    conn.set_progress_handler(interrupt, 1000)
                 # Count + página y consultas relacionadas ven la misma revisión.
                 conn.execute('BEGIN')
                 value = getattr(LibraryRepository(conn), operation)(*args, **kwargs)
@@ -262,6 +278,8 @@ class LibraryService:
             if cancel_event is not None and cancel_event.is_set():
                 outcome = 'cancelled'
                 raise LibraryError(operation, 'cancelled') from exc
+            if timed_out:
+                raise LibraryError(operation, 'duplicate_discovery_budget_exceeded') from exc
             raise LibraryError(operation, str(exc)) from exc
         except LibraryError as exc:
             outcome = 'failed'
