@@ -831,6 +831,10 @@ class LibraryRepository:
         from core.duplicate_index import status
         return status(self.conn)
 
+    def get_folder_overlap(self, folders, **kwargs):
+        from core.folder_overlap import compare
+        return compare(self.conn, folders, normalize=self._normalize_path, **kwargs)
+
     def prepare_duplicate_search(self):
         from core.duplicate_index import prepare
         return prepare(self.conn)

@@ -36,6 +36,7 @@ READS = frozenset({
     'get_duplicate_retirement_roots',
     'get_duplicate_candidates_page', 'get_duplicate_candidate_copies',
     'get_duplicate_search_status',
+    'get_folder_overlap',
 })
 
 # Agrupar puede recorrer toda la DB aun con LIMIT. Acotar duración y permitir
@@ -43,6 +44,7 @@ READS = frozenset({
 READ_BUDGET_SECONDS = {
     'get_duplicate_candidates_page': 10,
     'get_duplicate_candidate_copies': 10,
+    'get_folder_overlap': 10,
 }
 WRITES = frozenset({
     'register_files_minimal', 'update_file_metadata', 'remove_files',
