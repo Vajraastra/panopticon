@@ -186,45 +186,74 @@ class LibraryRepository:
         if not files_data: return True
 
         cursor = self.conn.cursor()
-        # hash_original es INMUTABLE: si la fila ya lo tiene, se conserva
-        # (identidad "tal como se catalogó por 1ª vez"). El resto de campos
-        # de origen se actualizan solo si llega un valor nuevo no-NULL.
-        sql = """
+        # El servicio mantiene BEGIN IMMEDIATE durante comparación + escritura.
+        # Leer bloques acotados evita una consulta por archivo y el límite de
+        # variables SQLite. No intentar INSERT para filas idénticas: incluso un
+        # UPSERT sin UPDATE puede avanzar sqlite_sequence (AUTOINCREMENT).
+        observations = [(self._normalize_path(f['path']), f) for f in files_data]
+        paths = list(dict.fromkeys(path for path, _ in observations))
+        previous = {}
+        for start in range(0, len(paths), 256):
+            block = paths[start:start + 256]
+            placeholders = ','.join('?' * len(block))
+            rows = cursor.execute(
+                'SELECT path, filename, file_size, created_date, hash_original, '
+                'origin_url, origin_site, artist FROM files '
+                f'WHERE path IN ({placeholders})', block,
+            ).fetchall()
+            previous.update((row[0], row[1:]) for row in rows)
+
+        # Simular observaciones repetidas en orden: primer hash no-NULL y último
+        # origen no-NULL; nunca perder un valor porque la siguiente lo omite.
+        current = dict(previous)
+        inserts = []
+        updates = []
+        for path, f in observations:
+            old = current.get(path)
+            values = (f['filename'], f['size'], f['created'],
+                      f.get('hash_original'), f.get('origin_url'),
+                      f.get('origin_site'), f.get('artist'))
+            if old is not None:
+                values = (*values[:3], old[3] if old[3] is not None else values[3],
+                          *(new if new is not None else saved
+                            for new, saved in zip(values[4:], old[4:])))
+            if old is None:
+                inserts.append((path, *values))
+            elif old != values:
+                updates.append((*values, path))
+            current[path] = values
+
+        if not inserts and not updates:
+            return True
+
+        cursor.executemany("""
             INSERT INTO files (path, filename, file_size, created_date,
                                hash_original, origin_url, origin_site, artist)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(path) DO UPDATE SET
-                file_size=excluded.file_size,
-                created_date=excluded.created_date,
-                hash_original=COALESCE(files.hash_original, excluded.hash_original),
-                origin_url=COALESCE(excluded.origin_url, files.origin_url),
-                origin_site=COALESCE(excluded.origin_site, files.origin_site),
-                artist=COALESCE(excluded.artist, files.artist)
-        """
-
-        params = []
-        norm_paths = []
-        for f in files_data:
-            np = self._normalize_path(f['path'])
-            norm_paths.append(np)
-            params.append((np, f['filename'], f['size'], f['created'],
-                           f.get('hash_original'), f.get('origin_url'),
-                           f.get('origin_site'), f.get('artist')))
-
-        try:
-            cursor.executemany(sql, params)
-            # Sincronizar el índice FTS del lote (filename; metas/tags llegan
-            # luego vía update_file_metadata/add_tag y se re-sincronizan ahí).
-            placeholders = ",".join("?" * len(norm_paths))
+        """, inserts)
+        # UPDATE evita consumir IDs por conflictos; la identidad y los campos
+        # opcionales ya están resueltos bajo el mismo bloqueo de escritura.
+        cursor.executemany("""
+            UPDATE files SET filename=?, file_size=?, created_date=?,
+                             hash_original=?, origin_url=?, origin_site=?, artist=?
+            WHERE path=?
+        """, updates)
+        # Tamaño/fecha/hash/origen no son buscables. Sólo filas nuevas o cambios
+        # de nombre requieren FTS; metas/tags se conservan y se leen al sincronizar.
+        # Reparar un FTS parcialmente corrupto es una operación explícita aparte.
+        fts_paths = [path for path in paths
+                     if path not in previous or previous[path][0] != current[path][0]]
+        for start in range(0, len(fts_paths), 256):
+            block = fts_paths[start:start + 256]
+            placeholders = ','.join('?' * len(block))
             ids = cursor.execute(
-                f"SELECT id FROM files WHERE path IN ({placeholders})", norm_paths
+                f'SELECT id FROM files WHERE path IN ({placeholders}) ORDER BY id', block,
             ).fetchall()
             for (fid,) in ids:
                 self._fts_sync_file(fid, cursor)
-            return True
-        except sqlite3.Error as e:
-            log.warning("[DB] Bulk Insert Error: %s", e)
-            return False
+        # Errores SQL/FTS llegan al servicio con su causa; allí todo el lote
+        # hace rollback y sólo se confirma True después de commit.
+        return True
 
     def update_file_metadata(self, path, meta):
         """
