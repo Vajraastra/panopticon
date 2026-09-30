@@ -31,7 +31,7 @@ WRITES = frozenset({
     'register_files_minimal', 'update_file_metadata', 'remove_files',
     'add_watched_folder', 'remove_watched_folder', 'add_tag_to_file',
     'remove_tag_from_file', 'set_hash_original_bulk', 'update_file_rating',
-    'rebuild_fts', 'vacuum_database',
+    'rebuild_fts', 'vacuum_database', 'edit_curation',
 })
 
 

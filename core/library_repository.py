@@ -443,6 +443,56 @@ class LibraryRepository:
         """, (file_id,))
         return [row[0] for row in cursor.fetchall()]
 
+    def edit_curation(self, path, *, add_tags=(), remove_tags=(), rating=None):
+        """Delta acotado sobre una fila existente; el servicio confirma todo o nada.
+
+        No registra archivos ni modifica bytes, metadata de generación o hashes.
+        """
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError('invalid_path')
+        def normalized(tags):
+            if not isinstance(tags, (list, tuple)) or len(tags) > 256:
+                raise ValueError('invalid_tags')
+            if any(not isinstance(t, str) or not t.strip() or len(t) > 256 for t in tags):
+                raise ValueError('invalid_tags')
+            return tuple(dict.fromkeys(t.strip().lower() for t in tags))
+        added, removed = normalized(add_tags), normalized(remove_tags)
+        if len(add_tags) + len(remove_tags) > 256:
+            raise ValueError('invalid_tags')
+        if set(added).intersection(removed):
+            raise ValueError('conflicting_tags')
+        if rating is not None and (type(rating) is not int or not 0 <= rating <= 5):
+            raise ValueError('invalid_rating')
+        if not added and not removed and rating is None:
+            raise ValueError('empty_edit')
+        row = self.conn.execute('SELECT id FROM files WHERE path=?',
+                                (self._normalize_path(path),)).fetchone()
+        if row is None:
+            raise ValueError('file_not_registered')
+        file_id = row[0]
+        changed_tags = False
+        if added:
+            self.conn.executemany("INSERT OR IGNORE INTO tags(name,category) VALUES(?,'manual')",
+                                  [(tag,) for tag in added])
+            placeholders = ','.join('?' for _ in added)
+            cursor = self.conn.execute(
+                "INSERT OR IGNORE INTO file_tags(file_id,tag_id,source) "
+                f"SELECT ?,id,'manual' FROM tags WHERE name IN ({placeholders})",
+                (file_id, *added))
+            changed_tags = cursor.rowcount > 0
+        if removed:
+            placeholders = ','.join('?' for _ in removed)
+            cursor = self.conn.execute(
+                'DELETE FROM file_tags WHERE file_id=? AND tag_id IN '
+                f'(SELECT id FROM tags WHERE name IN ({placeholders}))', (file_id, *removed))
+            changed_tags = changed_tags or cursor.rowcount > 0
+        if rating is not None:
+            self.conn.execute('UPDATE files SET rating=? WHERE id=? AND rating IS NOT ?',
+                              (rating, file_id, rating))
+        if changed_tags:
+            self._fts_sync_file(file_id, self.conn.cursor())
+        return True
+
     def add_tag_to_file(self, path, tag_name, file_data=None):
         """Adds a tag to a file. Creates file record and tag if not exists."""
 

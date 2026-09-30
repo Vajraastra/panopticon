@@ -1086,5 +1086,10 @@
   "gallery.db.read_error": "No se pudo cargar la biblioteca. Cambia la vista o los filtros para reintentar.",
   "gallery.db.title": "Biblioteca",
   "gallery.db.write_error": "No se pudo guardar la calificación. Se recargarán los datos confirmados.",
-  "gallery.db.tags_error": "No se pudieron cargar las sugerencias de etiquetas; la búsqueda sigue disponible."
+  "gallery.db.tags_error": "No se pudieron cargar las sugerencias de etiquetas; la búsqueda sigue disponible.",
+  "gallery.viewer.curation_tip": "La curación se guarda en la biblioteca; los archivos originales se conservan.",
+  "gallery.viewer.saving": "Guardando curación: {path}",
+  "gallery.viewer.saved": "Curación guardada en la biblioteca: {path}",
+  "gallery.viewer.write_error": "No se pudo guardar la curación: {path} ({reason}).",
+  "gallery.viewer.unregistered": "Esta imagen no está registrada en la biblioteca; su curación es de solo lectura."
 }

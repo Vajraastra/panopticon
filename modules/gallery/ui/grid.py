@@ -241,6 +241,7 @@ class GalleryGrid(QWidget):
                 idx = current_paths.index(path)
                 viewer = AdvancedViewer(current_paths, start_index=idx, parent=self,
                                         service=self.engine.db.service)
+                viewer.curation_saved.connect(self.refresh)
                 viewer.exec()
                 self.refresh()
             

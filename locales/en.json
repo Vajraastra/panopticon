@@ -1086,5 +1086,10 @@
   "gallery.db.read_error": "Could not load library. Change the view or filters to retry.",
   "gallery.db.title": "Library",
   "gallery.db.write_error": "Could not save rating. Reloading confirmed data.",
-  "gallery.db.tags_error": "Tag suggestions could not be loaded; search is still available."
+  "gallery.db.tags_error": "Tag suggestions could not be loaded; search is still available.",
+  "gallery.viewer.curation_tip": "Curation is saved in the library; original files are preserved.",
+  "gallery.viewer.saving": "Saving curation: {path}",
+  "gallery.viewer.saved": "Curation saved in the library: {path}",
+  "gallery.viewer.write_error": "Could not save curation: {path} ({reason}).",
+  "gallery.viewer.unregistered": "This image is not registered in the library; curation is read only."
 }

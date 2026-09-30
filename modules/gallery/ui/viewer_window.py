@@ -4,12 +4,13 @@ from PySide6.QtCore import Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import QPixmap, QKeySequence, QAction, QMouseEvent
 from core.components.tag_widgets import FlowLayout, TagChip
 from core.database_manager import DatabaseManager
-from core.library_async import LibraryReader
+from core.library_async import LibraryReader, LibraryWriter
 from core.locale_manager import LocaleManager
 from core.metadata.extractor import MetadataExtractor
-from core.metadata.stamper import MetadataStamper
-from core.metadata.bundle import MetadataBundle
 import os
+import logging
+
+log = logging.getLogger(__name__)
 
 class ClickableRatingLabel(QLabel):
     """A label that cycles ratings when clicked."""
@@ -130,6 +131,8 @@ class AdvancedViewer(QDialog):
     Permite visualizar metadatos técnicos, editar etiquetas, calificar imágenes
     con estrellas y ejecutar pases de diapositivas (slideshow).
     """
+    curation_saved = Signal()
+
     def __init__(self, paths, start_index=0, parent=None, service=None):
         super().__init__(parent)
         self.setWindowTitle("Panopticon Viewer")
@@ -146,6 +149,11 @@ class AdvancedViewer(QDialog):
         self._closed = False
         self._curation_ready = False
         self._current_rating = 0
+        self._registered = False
+        self._pending_edit = None
+        self._write_error = False
+        self.writer = LibraryWriter(self.db.service, self)
+        self.writer.result.connect(self.on_edit_result)
         self.curation_reader = LibraryReader(self.db.service, self)
         self.tags_reader = LibraryReader(self.db.service, self)
         self.curation_reader.result.connect(self.on_curation_result)
@@ -262,6 +270,15 @@ class AdvancedViewer(QDialog):
         tags_scroll.setWidget(self.tags_container)
         data_layout.addWidget(tags_scroll)
 
+        self.lbl_curation_status = QLabel(LocaleManager().tr(
+            'gallery.viewer.curation_tip', 'Curation is saved in the library; original files are preserved.'))
+        self.lbl_curation_status.setWordWrap(True)
+        data_layout.addWidget(self.lbl_curation_status)
+        tip = self.lbl_curation_status.text()
+        self.input_tag.setToolTip(tip)
+        self.btn_add_tag.setToolTip(tip)
+        self.lbl_rating_stars.setToolTip(tip)
+
         data_layout.addStretch()
 
         # Navigation Buttons (Big)
@@ -321,6 +338,7 @@ class AdvancedViewer(QDialog):
         data_layout.addLayout(timer_layout)
         
         # Initial Display
+        self.update_edit_controls()
         self.load_current_image()
         
         # Setup Autocomplete with dynamic model
@@ -340,7 +358,8 @@ class AdvancedViewer(QDialog):
     def on_tags_result(self, ticket, value, error):
         if error is None:
             self.completer_model.setStringList(value)
-            self.input_tag.setToolTip('')
+            self.input_tag.setToolTip(LocaleManager().tr(
+                'gallery.viewer.curation_tip', 'Curation is saved in the library; original files are preserved.'))
         else:
             self.input_tag.setToolTip(LocaleManager().tr(
                 'gallery.db.tags_error', 'Could not load tag suggestions.'))
@@ -350,6 +369,8 @@ class AdvancedViewer(QDialog):
         self.timer.stop()
         self.curation_reader.close()
         self.tags_reader.close()
+        if self._pending_edit is None:
+            self.writer.close()
 
     def done(self, result):
         # QDialog.reject/accept también cierran sin pasar por closeEvent.
@@ -380,66 +401,69 @@ class AdvancedViewer(QDialog):
             self.close()
 
     def add_tag(self):
-        if not self._curation_ready or not self.paths: return
+        if not self._can_edit(): return
         text = self.input_tag.text().strip()
-        if not text: return
-        
-        # Handle commas
         new_tags = [t.strip() for t in text.split(',') if t.strip()]
-        
-        path = self.paths[self.current_idx]
-        tags_added = False
-        
-        for tag in new_tags:
-            if self.db.add_tag_to_file(path, tag):
-                tags_added = True
-        
-        if tags_added:
-            self.load_tags(path)
-            self.input_tag.clear()
-            self.refresh_completer()  # Update autocomplete suggestions
-            
-            # [PERSISTENCE] Write to file
-            self._persist_metadata(path)
+        if new_tags:
+            self.submit_edit(add_tags=new_tags)
 
     def remove_tag(self, tag_name):
-        if not self._curation_ready or not self.paths: return
+        if self._can_edit():
+            self.submit_edit(remove_tags=(tag_name,))
+
+    def _can_edit(self):
+        return (not self._closed and self._curation_ready and self._registered
+                and self._pending_edit is None and bool(self.paths))
+
+    def update_edit_controls(self):
+        enabled = self._can_edit()
+        for widget in (self.input_tag, self.btn_add_tag, self.lbl_rating_stars, self.tags_container):
+            widget.setEnabled(enabled)
+
+    def submit_edit(self, **delta):
+        if not self._can_edit(): return
         path = self.paths[self.current_idx]
-        if self.db.remove_tag_from_file(path, tag_name):
-            self.load_tags(path)
-            # [PERSISTENCE] Write to file
-            self._persist_metadata(path)
-            
-    def _persist_metadata(self, path):
-        """Helper to write current DB state back to file."""
-        # 1. Fetch current tags/rating from DB (which we just updated)
-        # Note: If external mode, we rely on what we just did, but currently 
-        # the Viewer relies on DB methods. If DB methods fail (no row), we have a problem.
-        # But for now assuming DB handles it (even if temporary).
-        
-        # ACTUALLY: The DB Manager might not have the file if it's strictly external.
-        # We need to construct the bundle from the UI state or specific getter.
-        
-        tags = self.db.get_tags_for_file(path)
-        rating = self.db.get_file_rating(path)
-        
-        # 2. Extract existing to preserve other fields (prompts, etc)
-        # effectively doing a Read -> Modify -> Write
-        current_bundle = MetadataExtractor.extract(path)
-        current_bundle.tags = tags
-        current_bundle.rating = rating
-        
-        # 3. Stamp
-        MetadataStamper.stamp(path, current_bundle)
+        # Navegar no retargetea ni cancela la escritura aceptada; sólo una en vuelo.
+        ticket = self.writer.submit('edit_curation', path, **delta)
+        self._pending_edit = (ticket, path, self.input_tag.text(), bool(delta.get('add_tags')))
+        self._write_error = False
+        self.update_edit_controls()
+        self.lbl_curation_status.setText(LocaleManager().tr(
+            'gallery.viewer.saving', 'Saving curation: {path}').format(path=path))
+
+    def on_edit_result(self, ticket, value, error):
+        if self._pending_edit is None or ticket != self._pending_edit[0]:
+            return
+        _, path, text, added = self._pending_edit
+        self._pending_edit = None
+        self._write_error = error is not None or value is not True
+        if self._write_error:
+            log.warning('No se pudo guardar curación de %s: %s', path, error)
+        if error is None and value is True:
+            self.curation_saved.emit()
+        if self._closed:
+            self.writer.close()
+            return
+        if error is not None or value is not True:
+            reason = getattr(error, 'reason', str(error))
+            self.lbl_curation_status.setText(LocaleManager().tr(
+                'gallery.viewer.write_error', 'Could not save curation: {path} ({reason}).').format(
+                    path=path, reason=reason))
+        else:
+            self.lbl_curation_status.setText(LocaleManager().tr(
+                'gallery.viewer.saved', 'Curation saved in the library: {path}').format(path=path))
+            if self.paths[self.current_idx] == path and added and self.input_tag.text() == text:
+                self.input_tag.clear()
+            self.refresh_completer()
+        # Una lectura pudo terminar antes del commit: pedir confirmación nueva.
+        self.load_tags(self.paths[self.current_idx])
 
     def load_tags(self, path):
         # Un snapshot sustituye los getters por imagen; ticket descarta navegación vieja.
         if self._closed:
             return
         self._curation_ready = False
-        self.input_tag.setEnabled(False)
-        self.btn_add_tag.setEnabled(False)
-        self.lbl_rating_stars.setEnabled(False)
+        self.update_edit_controls()
         self.lbl_rating_stars.setText(LocaleManager().tr('gallery.db.loading', 'Loading…'))
         self.clear_tags()
         self.curation_reader.request('get_curation_snapshot', (path,))
@@ -470,9 +494,15 @@ class AdvancedViewer(QDialog):
             chip.removed.connect(self.remove_tag)
             self.tags_layout.addWidget(chip)
         self._curation_ready = True
-        self.input_tag.setEnabled(True)
-        self.btn_add_tag.setEnabled(True)
-        self.lbl_rating_stars.setEnabled(True)
+        was_registered = self._registered
+        self._registered = record['id'] is not None
+        self.update_edit_controls()
+        if not self._registered and self._pending_edit is None and not self._write_error:
+            self.lbl_curation_status.setText(LocaleManager().tr(
+                'gallery.viewer.unregistered', 'This image is not registered in the library; curation is read only.'))
+        elif self._registered and not was_registered and self._pending_edit is None and not self._write_error:
+            self.lbl_curation_status.setText(LocaleManager().tr(
+                'gallery.viewer.curation_tip', 'Curation is saved in the library; original files are preserved.'))
 
     def load_current_image(self):
         if self._closed or not self.paths: return
@@ -525,20 +555,8 @@ class AdvancedViewer(QDialog):
         self.load_current_image()
 
     def cycle_current_rating(self):
-        """Cycles rating for the current image in the viewer."""
-        if not self._curation_ready or not self.paths: return
-        path = self.paths[self.current_idx]
-        current = self._current_rating
-        new_rating = (current + 1) % 6
-        
-        if self.db.update_file_rating(path, new_rating):
-            self._current_rating = new_rating
-            self.lbl_rating_stars.setText("⭐" * new_rating if new_rating > 0 else "None")
-            # [PERSISTENCE] Write to file
-            self._persist_metadata(path)
-            
-            # If we had a signal to notify the parent, we'd use it here.
-            # But for now, the parent (Gallery) will handle its own refresh if needed.
+        if self._can_edit():
+            self.submit_edit(rating=(self._current_rating + 1) % 6)
 
     def toggle_fullscreen(self):
         if self._closed or not self.paths: return
