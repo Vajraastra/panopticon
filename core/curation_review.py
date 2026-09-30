@@ -50,6 +50,7 @@ class CurationReviewTasks:
         for report in value['reports']:
             reports.append(dict(relative_path=report['relative_path'], status=report['status'],
                 copy_id=report['sidecar']['id'],
+                known_identity=bool(report['sidecar']['hash_original'] or report['sidecar']['hash_mod']),
                 fingerprint=fingerprint(report['central']) if report['central'] is not None else None,
                 sidecar=_preview(report['sidecar']), central=_preview(report['central'])))
         return dict(export_id=value['export_id'], total=value['total'], after=value['after'], reports=reports)

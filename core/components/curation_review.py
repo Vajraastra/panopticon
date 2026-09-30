@@ -19,6 +19,9 @@ _ERROR_DEFAULTS = {
     'identity_missing': 'This copy has no known identity',
     'restore_payload_too_large': 'This copy has too many tags to restore',
     'invalid_restore_tag': 'A tag cannot be restored without changing its format',
+    'file_now_registered': 'This path was registered after the review; restart to compare its curation',
+    'identity_already_known': 'The copy already has a known identity; restart the review',
+    'invalid_curation_observation': 'The current file observations cannot be registered',
 }
 
 
@@ -53,7 +56,8 @@ class CurationReviewDialog(QDialog):
         heading.setWordWrap(True)
         layout.addWidget(heading)
         note = QLabel(translate('lib.review.note',
-            'Comparison does not apply curation. Select a copy and explicitly choose the export to replace its current curation. '
+            'Comparison does not apply curation. Explicitly choose the export to replace curation, '
+            'register an absent copy or complete its unknown central identity. '
             'Each page reflects the central database when it is read.'))
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -106,17 +110,23 @@ class CurationReviewDialog(QDialog):
             'Requires known identity and complete previews; verifies file bytes in a worker and rejects changes since review.'))
         self.apply_button.setEnabled(False)
         self.apply_button.clicked.connect(self.apply_selected)
+        self.register_button = QPushButton(translate('lib.review.register', 'Register and restore copy'))
+        self.register_button.setToolTip(translate('lib.review.register_tip',
+            'Explicitly register only this absent path or complete both missing hashes and restore its exported curation. '
+            'Verifies current bytes first; keeps other copies and rejects concurrent changes.'))
+        self.register_button.setEnabled(False)
+        self.register_button.clicked.connect(self.register_selected)
         self.close_button = QPushButton(translate('lib.review.close', 'Close'))
         self.close_button.setToolTip(translate('lib.review.close_tip',
             'Close this review. An explicitly accepted restoration continues in the database service.'))
         self.close_button.clicked.connect(self.close)
-        for button in (self.restart_button, self.next_button, self.apply_button, self.close_button):
+        for button in (self.restart_button, self.next_button, self.apply_button, self.register_button, self.close_button):
             controls.addWidget(button)
         layout.addLayout(controls)
         if theme is not None:
             self.setStyleSheet(theme.get_stylesheet())
             c = theme.get_color
-            for button in (self.restart_button, self.next_button, self.apply_button, self.close_button):
+            for button in (self.restart_button, self.next_button, self.apply_button, self.register_button, self.close_button):
                 button.setStyleSheet(f"background-color: {c('bg_input')}; color: {c('text_primary')}; "
                                     f"border: 1px solid {c('border_strong')}; padding: 6px;")
             for editor in (self.sidecar_text, self.central_text):
@@ -143,6 +153,7 @@ class CurationReviewDialog(QDialog):
         self.restart_button.setEnabled(False)
         self.next_button.setEnabled(False)
         self.apply_button.setEnabled(False)
+        self.register_button.setEnabled(False)
         self.status.setText(self.tr_text('lib.review.loading', 'Reading comparison page…'))
         self.reader.request('compare_curation', folder=self.folder, after=self._after, export_id=self._token)
 
@@ -164,6 +175,7 @@ class CurationReviewDialog(QDialog):
             self.status.setText(self.tr_text('lib.review.error',
                 'Comparison stopped: {reason}. Restart to read the current export.').format(reason=reason))
             self.apply_button.setEnabled(False)
+            self.register_button.setEnabled(False)
             return
         self._token, self._total = value['export_id'], value['total']
         self._valid_page = True
@@ -208,22 +220,39 @@ class CurationReviewDialog(QDialog):
             return
         row = self.table.currentRow()
         report = self._reports[row] if 0 <= row < len(self._reports) else None
-        self.apply_button.setEnabled(not self._closed and not self._busy and self._valid_page and self._restoring is None and
-            self.apply_reader is not None and report is not None and report['status'] in ('same', 'conflict') and
+        eligible = (not self._closed and not self._busy and self._valid_page and self._restoring is None and
+            self.apply_reader is not None and report is not None and
             not report['sidecar']['truncated'] and not report['central']['truncated'])
+        self.apply_button.setEnabled(bool(eligible and report['status'] in ('same', 'conflict')))
+        self.register_button.setEnabled(bool(eligible and report.get('known_identity') and
+            (report['status'] == 'unregistered' and report['fingerprint'] is None or
+             report['status'] == 'central_identity_missing' and report['fingerprint'] is not None)))
+        adopting = report is not None and report['status'] == 'central_identity_missing'
+        self.register_button.setText(self.tr_text('lib.review.adopt' if adopting else 'lib.review.register',
+            'Complete identity and restore' if adopting else 'Register and restore copy'))
 
     def apply_selected(self):
         if not self.apply_button.isEnabled():
             return
+        self._start_restore('restore')
+
+    def register_selected(self):
+        if not self.register_button.isEnabled():
+            return
+        report = self._reports[self.table.currentRow()]
+        self._start_restore('register' if report['status'] == 'unregistered' else 'adopt')
+
+    def _start_restore(self, mode):
         report = self._reports[self.table.currentRow()]
         self._restoring = report['relative_path']
         self.restart_button.setEnabled(False)
         self.next_button.setEnabled(False)
         self.apply_button.setEnabled(False)
+        self.register_button.setEnabled(False)
         self.restore_status.setText(self.tr_text('lib.review.restoring',
             'Verifying and restoring {path}…').format(path=self._restoring))
         self.apply_reader.request('apply_curation', folder=self.folder, copy_id=report['copy_id'],
-            relative_path=report['relative_path'], export_id=self._token, expected_fingerprint=report['fingerprint'])
+            relative_path=report['relative_path'], export_id=self._token, expected_fingerprint=report['fingerprint'], mode=mode)
 
     def _restored(self, ticket, value, error):
         if self._closed or self._restoring is None:

@@ -219,17 +219,22 @@ class ReviewQt(helpers.Fixture):
     def test_tooltips_plain_text_bilingual_strings_and_semantic_colors(self):
         _, dialog, _ = self.open_review(2)
         for control in (dialog.table, dialog.sidecar_text, dialog.central_text,
-                        dialog.restart_button, dialog.next_button, dialog.close_button):
+                        dialog.restart_button, dialog.next_button, dialog.apply_button,
+                        dialog.register_button, dialog.close_button):
             self.assertTrue(control.toolTip())
         for control in (dialog.restart_button, dialog.sidecar_text):
             self.assertIn(ThemeManager().get_color('bg_input'), control.styleSheet())
         root = Path(__file__).resolve().parents[1]
+        keysets = []
         for language in ('en', 'es'):
             values = json.loads((root / 'locales' / (language + '.json')).read_text(encoding='utf-8'))
-            self.assertEqual(len([key for key in values if key.startswith('lib.review.')]), 42)
+            keysets.append({key for key in values if key.startswith('lib.review.')})
+            self.assertTrue({'lib.review.register', 'lib.review.adopt', 'lib.review.register_tip',
+                             'lib.review.state.central_identity_missing'} <= keysets[-1])
             for key, value in values.items():
                 if key.startswith('lib.review.'):
                     self.assertTrue(value.format(count=1, seen=1, total=2, reason='fixture', path='fixture'))
+        self.assertEqual(keysets[0], keysets[1])
 
 
 class WorkerContract(unittest.TestCase):

@@ -270,6 +270,8 @@ def compare_curation_page(db_path, folder, **page):
         local = current.get(path)
         if local is None:
             status = 'unregistered'
+        elif (local['hash_original'], local['hash_mod']) == (None, None) and (record['hash_original'] or record['hash_mod']):
+            status = 'central_identity_missing'
         elif (record['hash_original'], record['hash_mod']) != (local['hash_original'], local['hash_mod']):
             status = 'identity_changed'
         elif not (record['hash_original'] or record['hash_mod']):

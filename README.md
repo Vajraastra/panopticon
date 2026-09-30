@@ -97,8 +97,12 @@ read-only comparison in pages of up to 100 copies. Select a row to see both stat
 large text previews are marked incomplete. **Use exported curation** explicitly
 replaces only the selected registered copy's tags, sources and rating. It requires
 known identity and complete previews, verifies the current file SHA in a worker,
-and rejects changes made since the displayed review. Unknown/unregistered copies
-and incompatible shared tag categories remain unresolved. Restart the
+and rejects changes made since the displayed review. **Register and restore copy**
+explicitly registers an absent path after verifying its current bytes. **Complete
+identity and restore** is available only when both central hashes are unknown;
+it preserves the reviewed record and rejects concurrent changes. Old paths and
+other copies are retained. Unknown exported identity and incompatible shared tag
+categories remain unresolved. Restart the
 review if the export changes. Each page reflects the central database when read.
 To export or compare from the command line:
 

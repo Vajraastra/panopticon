@@ -43,10 +43,15 @@ class CurationApplyTasks:
         self.service = service
 
     def read(self, operation, *, folder, copy_id, relative_path, export_id,
-             expected_fingerprint, cancel_event=None):
+             expected_fingerprint, mode='restore', cancel_event=None):
         if operation != 'apply_curation' or type(copy_id) is not int or copy_id < 1:
             raise ValueError('invalid_curation_apply')
-        if not isinstance(expected_fingerprint, str) or not re.fullmatch('[0-9a-f]{64}', expected_fingerprint):
+        if mode not in ('restore', 'register', 'adopt'):
+            raise ValueError('invalid_curation_apply')
+        if mode == 'register':
+            if expected_fingerprint is not None:
+                raise ValueError('invalid_restore_fingerprint')
+        elif not isinstance(expected_fingerprint, str) or not re.fullmatch('[0-9a-f]{64}', expected_fingerprint):
             raise ValueError('invalid_restore_fingerprint')
         _check_cancel(cancel_event)
         page = read_curation_page(folder, after=copy_id-1, limit=1, export_id=export_id)
@@ -65,9 +70,17 @@ class CurationApplyTasks:
         check = read_curation_page(folder, after=copy_id-1, limit=1, export_id=export_id)
         if check['copies'] != [record]:
             raise ValueError('sidecar_changed')
-        if _identity(source.stat()) != before:
+        observation = source.stat()
+        if _identity(observation) != before:
             raise ValueError('curation_file_changed')
         _check_cancel(cancel_event)
         # Una vez admitida, la escritura sigue a cargo del dueño aunque cierre Qt.
+        if mode == 'register':
+            return self.service.submit('register_curation_copy', source.as_posix(), incoming=incoming,
+                observation=dict(filename=source.name, size=observation.st_size,
+                    created=getattr(observation, 'st_birthtime', observation.st_ctime))).result()
+        if mode == 'adopt':
+            return self.service.submit('adopt_curation_identity', source.as_posix(),
+                expected_fingerprint=expected_fingerprint, incoming=incoming).result()
         return self.service.submit('restore_curation', source.as_posix(),
             expected_fingerprint=expected_fingerprint, incoming=incoming).result()
