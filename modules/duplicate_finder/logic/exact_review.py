@@ -9,6 +9,7 @@ from core.copy_version_tasks import observe
 from core.curation_apply import _check_cancel, _identity
 from core.duplicate_policy import DuplicatePolicy, recommend
 from core.duplicate_snapshot import encode
+from .file_guards import documented, linked as _linked
 
 EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.avif', '.zip', '.rar')
 
@@ -24,10 +25,6 @@ class ReviewLimits:
         if any(type(value) is not int or not 1 <= value <= cap for value, cap in
                zip(vars(self).values(), (100000, 1000, 2000, 4 * 1024 * 1024))):
             raise ValueError('invalid_duplicate_review_limits')
-
-
-def _linked(path):
-    return path.is_symlink() or getattr(path, 'is_junction', lambda: False)()
 
 
 def _probe(path, cancel_event):
@@ -141,20 +138,6 @@ class ExactDuplicateReview:
                 raise ValueError('duplicate_review_payload_limit')
             records.update((record['path'], record) for record in snapshot)
         sidecars = {}
-        def documented_externally(path):
-            path = Path(path)
-            for candidate in (path.with_suffix('.txt'), Path(str(path) + '.txt'), path.with_suffix('.xmp'), path.with_suffix('.json')):
-                if os.path.lexists(candidate):
-                    return True
-            parent = path.parent
-            while True:
-                if parent not in sidecars:
-                    sidecars[parent] = os.path.lexists(parent / 'panopticon.curation.db')
-                if sidecars[parent]:
-                    return True
-                if parent == root:
-                    return False
-                parent = parent.parent
         reports = {}
         for digest, paths in groups.items():
             _check_cancel(event)
@@ -175,7 +158,7 @@ class ExactDuplicateReview:
                 ambiguous |= inode in identities
                 identities.add(inode)
                 current[path] = proof['digest']
-                record['external_documentation'] = documented_externally(path)
+                record['external_documentation'] = documented(Path(path), sidecars)
             if len(paths) > 256:
                 result = dict(status='review', reason='duplicate_group_limit', preferred=None, keep=tuple(paths), remove=())
             else:

@@ -33,6 +33,7 @@ READS = frozenset({
     'resolve_library_selection', 'check_fts',
     'get_copy_versions_page', 'get_copy_version_state',
     'get_duplicate_snapshot',
+    'get_duplicate_retirement_roots',
 })
 WRITES = frozenset({
     'register_files_minimal', 'update_file_metadata', 'remove_files',
@@ -40,6 +41,7 @@ WRITES = frozenset({
     'remove_tag_from_file', 'set_hash_original_bulk', 'update_file_rating',
     'rebuild_fts', 'repair_fts', 'vacuum_database', 'edit_curation', 'restore_curation', 'register_curation_copy', 'adopt_curation_identity',
     'archive_copy', 'make_copy_online',
+    'archive_duplicate_copies',
 })
 
 

@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QStackedWidget,
                              QFrame, QGridLayout, QComboBox, QMessageBox, QScrollArea,
                              QSizePolicy)
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QIcon, QFont
 
 # Core Imports
@@ -65,6 +65,8 @@ class MainWindow(QMainWindow):
         # 4. UI Initialization
         self.module_windows = {}
         self._shutting_down = False
+        self._shutdown_finished = False
+        self._shutdown_retry_scheduled = False
         self.module_grid_count = 0
         self.loaded_modules = {}
         self.root_stack = None
@@ -514,6 +516,12 @@ class MainWindow(QMainWindow):
         optimizer = self.get_module("Image Optimizer")
         cropper = self.get_module("Smart Cropper")
         pickler = self.get_module("Pickler")
+        duplicate_finder = self.get_module("Duplicate Finder")
+
+        if duplicate_finder and gallery:
+            duplicate_finder.request_open_gallery.connect(
+                lambda paths, title: self.switch_to_module(gallery, paths)
+            )
 
         if librarian:
             if gallery:
@@ -559,19 +567,35 @@ class MainWindow(QMainWindow):
         la ventana. Sin esto, un módulo con hilos propios (p.ej. el event loop
         asyncio de Cherry-DL) muere por terminación del proceso, no por parada
         limpia."""
-        if self._shutting_down:
+        if self._shutdown_finished:
             event.accept()
             return
-        self._shutting_down = True
-        for name, module in self.loaded_modules.items():
-            try:
-                module.on_unload()
-            except Exception as e:
-                log.error("Error unloading module %s: %s", name, e)
-        for window in self.module_windows.values():
-            window.hide()
+        if not self._shutting_down:
+            self._shutting_down = True
+            for name, module in self.loaded_modules.items():
+                try:
+                    module.on_unload()
+                except Exception as e:
+                    log.error("Error unloading module %s: %s", name, e)
+            for window in self.module_windows.values():
+                window.hide()
+        for module in self.loaded_modules.values():
+            ready = getattr(module, 'shutdown_ready', None)
+            if ready is not None and not ready():
+                event.ignore()
+                self.statusBar().showMessage(self.tr('app.shutdown_wait', 'Finishing accepted work before closing…'))
+                if not self._shutdown_retry_scheduled:
+                    self._shutdown_retry_scheduled = True
+                    QTimer.singleShot(50, self._retry_close)
+                return
         close_library_services(permanent=True)
+        self._shutdown_finished = True
         super().closeEvent(event)
+
+    def _retry_close(self):
+        self._shutdown_retry_scheduled = False
+        if not self._shutdown_finished:
+            self.close()
 
 if __name__ == "__main__":
     # Diálogos nativos del OS (selector de archivos, etc.): enrutar al portal del

@@ -195,7 +195,8 @@ class ReviewQt(helpers.Fixture):
         self.service.submit('remove_files', paths).result(3)
         module.load_folder_paths(self.folder.as_posix())
         self.assertTrue(helpers.pump(lambda: module._browse_ready))
-        self.assertFalse(module.btn_export_curation.isEnabled())
+        # CF9 conserva historial exportable aunque ya no haya copias operativas.
+        self.assertTrue(module.btn_export_curation.isEnabled())
         self.assertTrue(module.btn_review_curation.isEnabled())
         module.review_folder_curation()
         dialog = module._review_dialog

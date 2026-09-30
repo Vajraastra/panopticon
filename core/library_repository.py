@@ -814,6 +814,15 @@ class LibraryRepository:
         from core.duplicate_snapshot import snapshot
         return snapshot(self.conn, paths, self._normalize_path)
 
+    def get_duplicate_retirement_roots(self):
+        # No cargar una lista ilimitada para validar un destino de recuperación.
+        from core.duplicate_archive import roots
+        return roots(self.conn)
+
+    def archive_duplicate_copies(self, approved, selected, **kwargs):
+        from core.duplicate_archive import archive
+        return archive(self.conn, approved, selected, normalize_path=self._normalize_path, **kwargs)
+
     def archive_copy(self, copy_id, **kwargs):
         from core.library_versions import archive
         return archive(self.conn, copy_id, **kwargs)

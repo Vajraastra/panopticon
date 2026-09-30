@@ -78,10 +78,13 @@ carpeta sola: no hay que registrar nada en el core.
    usan su fachada o `context["data_service"]`; nunca reciben conexiones SQLite.
 2. **Nunca modificar el archivo original.** La salida va a `CachePaths.get_tool_cache("mi_tool")`
    o a una carpeta nueva. Al terminar un proceso, abrir la carpeta con `CachePaths.open_folder()`.
-   Dos excepciones, ambas deliberadas y ninguna imitable sin pensarlo: **Metadata Hub**, que para
+   Tres excepciones, deliberadas y ninguna imitable sin pensarlo: **Metadata Hub**, que para
    eso existe, y **la fusión de proyectos de Cherry-DL**, que mueve archivos entre carpetas y
    puede borrar los repetidos — por eso pide confirmación enseñando los números antes de tocar
-   nada, y por eso se prueba con carpetas de juguete (`scripts/cherry_merge_toytest.py`).
+   nada, y por eso se prueba con carpetas de juguete (`scripts/cherry_merge_toytest.py`);
+   **Duplicate Finder**, autorizado por David para retirar copias exactas redundantes:
+   conserva la curada/documentada, revalida el grupo completo y mueve a recuperación
+   persistente con diario, sin eliminar recibos Cherry. Nunca borrar por posición o pHash.
 3. **Lo pesado va en un `QThread`.** Inferencia, hashing, recorrido de disco: nunca en el hilo
    de la GUI. La señal de fin se llama `finished_signal`, **no** `finished` (sombrearía la señal
    nativa de `QThread`). Poner siempre un guard `isRunning()` contra doble inicio.

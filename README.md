@@ -15,7 +15,7 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 | **Gallery** | Visual browser for your collection. Paginates and displays images with filtering and sorting. |
 | **Character Recognizer** | Identifies and tags characters within a set using face recognition (ArcFace + YuNet) with landmark alignment. Supports real photos, 3D renders, and illustration/anime. |
 | **Smart Cropper** | Batch-crops images to target aspect ratios. Supports standard dataset ratios, monitor formats, and mobile sizes. |
-| **Duplicate Finder** | Detects duplicate and near-duplicate images using perceptual hashing. |
+| **Duplicate Finder** | Reviews exact SHA-256 duplicates with curation priority and recoverable retirement; visual similarity stays review-only. |
 | **Format Scanner** | Analyzes the distribution of image formats across a collection for statistical review. |
 | **Image Optimizer** | Compresses and re-encodes images in batch. Supports AVIF, PNG (via oxipng), and standard formats. |
 | **Format Converter** | Converts between image formats in batch, including PSD and AVIF support. |
@@ -206,7 +206,45 @@ and require separate review. Closing the catalog cancels pre-admission verificat
 an accepted database action continues, and the catalog can be reopened to see its result.
 File verification and the SQLite commit are separate operations, without an atomic
 snapshot spanning external file changes. These actions preserve Cherry catalogs and
-their download receipts. Global preference for the curated duplicate remains under development.
+their download receipts. Duplicate Finder applies curation priority to folder scans;
+database-wide candidate discovery remains under development.
+
+### Duplicate review and recovery
+
+Select a folder in **Duplicate Finder**, choose **Exact content (SHA-256)** and scan.
+Current file bytes and complete native copy states determine the recommendation. A
+documented copy takes priority over a raw Cherry download even when all weights are
+zero. Configurable weights compare tags, rating, generation data and provenance.
+Conflicting or complementary information retains every copy for review. Unknown or
+offline identities, links, physical aliases, captions and curation sidecars also block
+retirement. The tree displays 100 copies per page; **View group in Gallery** sends the
+complete image group, up to 1,000 images, for inspection.
+
+**Select recommended copies** only marks safe exact candidates. **Retire selected
+copies** shows the count, destination and full reviewed states for confirmation,
+then rechecks every member, including the retained copy, before archiving the chosen
+IDs. Their curation and history remain offline in the native database. Physical files
+move to a persistent recovery folder on the same volume, outside all watched folders
+and Cherry catalog ancestors. This action supports native Windows and never changes
+Cherry catalog tables or download receipts. Known source URLs remain downloaded even
+without their physical copy; previously unknown URLs may need one transfer to prove
+that their content matches an existing hash.
+
+Each retirement group has a durable recovery journal. A partial failure is shown with
+its journal and moved paths; it requires review before retrying. SQLite and file moves
+do not share an atomic transaction. Recovery moves do not free disk space. Automatic
+restore or permanent purge is not provided; retained bytes and complete native states
+remain available for deliberate recovery. Dashboard closure keeps the event loop and
+catalog alive until Duplicate Finder's accepted group finishes.
+
+Folder scans admit at most 100,000 files, 1,000 groups, 2,000 candidate copies and a
+4 MiB review. Exact hashing admits batches of 256 jobs; native snapshots and retirement
+groups contain at most 256 copies. Watched-folder validation admits at most 256 roots.
+Limits or inventory errors disable retirement instead of publishing a discardable
+partial result. **Visual similarity** admits at most 2,000 images and 10 million pixels
+per image, with four workers and bounded pair comparison. It never authorizes retirement
+and does not persist pHash. Cross-folder database discovery and persistent pHash remain
+separate pending work.
 
 ## License
 

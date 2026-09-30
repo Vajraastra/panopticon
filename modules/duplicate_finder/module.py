@@ -1,419 +1,486 @@
-import os
-import logging
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton,
-                               QHBoxLayout, QFileDialog, QMessageBox, QProgressBar,
-                               QFrame, QScrollArea, QSlider, QComboBox, QCheckBox)
-from PySide6.QtCore import Qt, Signal, QThread
-from PySide6.QtGui import QPixmap
+"""Revisión de duplicados; preferencias por curación y retiro recuperable explícito."""
+from dataclasses import asdict
+import json
+from pathlib import Path
+
+from PySide6.QtCore import Qt, Slot, Signal
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
+    QFileDialog, QMessageBox, QProgressBar, QSlider, QComboBox, QSpinBox, QFormLayout,
+    QTreeWidget, QTreeWidgetItem, QPlainTextEdit, QLineEdit, QHeaderView, QSizePolicy)
 
 from core.base_module import BaseModule
 from core.theme import Theme
+from core.paths import ProjectPaths
+from core.duplicate_policy import DuplicatePolicy
 from core.components.standard_layout import StandardToolLayout
-from .logic.deduplicator import Deduplicator
+from .logic.review_worker import ExactReviewWorker, VisualReviewWorker
+from .logic.retirement_worker import DuplicateRetirementWorker
 
-
-class DeduplicationWorker(QThread):
-    progress = Signal(int, int, str)
-    finished_signal = Signal(dict)
-
-    def __init__(self, folder, mode, threshold=5):
-        super().__init__()
-        self.folder = folder
-        self.mode = mode
-        self.threshold = threshold
-        self.engine = Deduplicator()
-
-    def run(self):
-        if self.mode == "hash":
-            res = self.engine.find_duplicates_by_hash(self.folder, self.progress.emit)
-        else:
-            res = self.engine.find_duplicates_visual(self.folder, self.threshold, self.progress.emit)
-        self.finished_signal.emit(res)
-
-    def stop(self):
-        self.engine.stop()
-
-
-class DuplicateItem(QFrame):
-    """Miniatura con checkbox y metadatos."""
-    def __init__(self, path, bg_color="#111", border_color="#333", parent=None):
-        super().__init__(parent)
-        self.path = path
-        self.setFixedSize(140, 180)
-        self.setStyleSheet(f"background: {bg_color}; border: 1px solid {border_color}; border-radius: 8px;")
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
-
-        self.lbl_img = QLabel()
-        self.lbl_img.setFixedSize(130, 100)
-        self.lbl_img.setAlignment(Qt.AlignCenter)
-
-        if path.lower().endswith(('.zip', '.rar')):
-            self.lbl_img.setText("📦\nARCHIVE")
-            self.lbl_img.setStyleSheet("font-size: 24px; color: #ffcc00;")
-        else:
-            pix = QPixmap(path)
-            if not pix.isNull():
-                self.lbl_img.setPixmap(pix.scaled(130, 100, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            else:
-                self.lbl_img.setText("❌")
-
-        layout.addWidget(self.lbl_img)
-
-        self.check = QCheckBox()
-        self.check.setCursor(Qt.PointingHandCursor)
-        self.check.setStyleSheet("QCheckBox::indicator { width: 18px; height: 18px; }")
-
-        name_lbl = QLabel(os.path.basename(path))
-        name_lbl.setStyleSheet("font-size: 10px; color: #aaa;")
-        name_lbl.setWordWrap(True)
-        name_lbl.setMaximumHeight(30)
-
-        chk_layout = QHBoxLayout()
-        chk_layout.addWidget(self.check)
-        chk_layout.addWidget(name_lbl)
-        layout.addLayout(chk_layout)
-
-        size_mb = os.path.getsize(path) / (1024 * 1024)
-        info_lbl = QLabel(f"{size_mb:.2f} MB")
-        info_lbl.setStyleSheet("font-size: 9px; color: #666;")
-        layout.addWidget(info_lbl)
-
-    def is_checked(self): return self.check.isChecked()
-    def set_checked(self, val): self.check.setChecked(val)
+# Un QThread sin parent sigue vivo aunque se destruya la vista durante I/O.
+_LIVE_WORKERS = set()
 
 
 class DuplicateFinderModule(BaseModule):
+    request_open_gallery = Signal(list, str)
+
     def __init__(self):
         super().__init__()
-        self._name = "Duplicate Finder"
-        self._description = "Find and remove duplicate images by hash or visual similarity."
-        self._icon = "👯"
-        self.accent_color = "#00ffcc"  # tono de identidad; el loader le pone el croma del tema
-        self.view = None
-        self.worker = None
-        self.duplicate_groups = {}
+        self._name = 'Duplicate Finder'
+        self._description = 'Review exact or visually similar files and preserve documented copies.'
+        self._icon = '👯'
+        self.accent_color = Theme.ACCENT_MAIN
+        self.context = {}
+        self.view = self.worker = self.retirement_worker = None
+        self.review = None
+        self.folder_path = ''
+        self._closed = self._busy = self._acting = False
+        self._token = 0
+        self._rows, self._checked_paths, self._page = [], set(), 0
 
-    def get_view(self) -> QWidget:
-        if self.view:
-            return self.view
+    def text(self, key, default):
+        return self.tr('dup.'+key, default)
 
-        sidebar = self._create_sidebar()
-        content = self._create_content()
-        bottom  = self._create_bottom_bar()
-
-        self.view = StandardToolLayout(
-            content,
-            sidebar_widget=sidebar,
-            bottom_widget=bottom,
-            theme_manager=self.context.get('theme_manager'),
-            event_bus=self.context.get('event_bus')
-        )
+    def get_view(self):
+        if self.view is None:
+            content, sidebar, bottom = self._content(), self._sidebar(), self._bottom()
+            self.view = StandardToolLayout(content, sidebar_widget=sidebar, bottom_widget=bottom,
+                theme_manager=self.context.get('theme_manager'), event_bus=self.context.get('event_bus'))
+            self.view.destroyed.connect(self.on_unload)
+            self._controls()
         return self.view
 
-    def _create_sidebar(self):
-        theme    = self.context.get('theme_manager') if hasattr(self, 'context') else None
-        text_dim = theme.get_color('text_dim')       if theme else Theme.TEXT_DIM
-        text_sec = theme.get_color('text_secondary') if theme else Theme.TEXT_SECONDARY
-
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(20)
-
-        lbl_title = QLabel(self.tr("dup.title", "⚙ SCAN OPTIONS"))
-        lbl_title.setStyleSheet(f"font-weight: bold; color: {self.accent_color};")
-        layout.addWidget(lbl_title)
-
-        layout.addWidget(QLabel(self.tr("dup.mode_label", "Comparison Mode:")))
+    def _sidebar(self):
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        title = QLabel(self.text('title', 'Scan options'))
+        title.setStyleSheet(f'font-weight:bold;color:{self.accent_color};')
+        layout.addWidget(title)
+        layout.addWidget(QLabel(self.text('mode_label', 'Comparison mode:')))
         self.combo_mode = QComboBox()
-        self.combo_mode.setToolTip(self.tr(
-            "dup.mode_tip",
-            "How images are compared. Exact content only groups identical files; visual "
-            "similarity also catches crops and recompressions, but it can get it wrong."))
-        self.combo_mode.addItems([
-            self.tr("dup.mode_hash",   "Hash (Exact Match)"),
-            self.tr("dup.mode_visual", "Visual (Similarity)")
-        ])
-        self.combo_mode.setStyleSheet("""
-            QComboBox { color: #ffffff; background-color: #000000; }
-            QComboBox QAbstractItemView {
-                background-color: #1a1a1a; color: #ffffff;
-                selection-background-color: #00ffcc; selection-color: #000000;
-                border: 1px solid #333; outline: 0px;
-            }
-        """)
+        self.combo_mode.addItems([self.text('mode_hash', 'Exact content (SHA-256)'), self.text('mode_visual', 'Visual similarity (review only)')])
+        self.combo_mode.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.combo_mode.setMinimumContentsLength(16)
+        self.combo_mode.setToolTip(self.text('mode_tip', 'Exact content verifies current bytes and curation. Visual similarity only proposes groups for review.'))
+        self.combo_mode.setStyleSheet(Theme.get_input_style())
+        self.combo_mode.currentIndexChanged.connect(self._configuration_changed)
         layout.addWidget(self.combo_mode)
-
         self.threshold_container = QWidget()
-        thr_layout = QVBoxLayout(self.threshold_container)
-        thr_layout.setContentsMargins(0, 0, 0, 0)
-        thr_layout.addWidget(QLabel(self.tr("dup.threshold", "Visual Tolerance (lower = more exact):")))
-
+        threshold = QVBoxLayout(self.threshold_container)
+        threshold.setContentsMargins(0, 0, 0, 0)
+        self.lbl_thr_val = QLabel()
         self.slider_thr = QSlider(Qt.Horizontal)
-        self.slider_thr.setToolTip(self.tr(
-            "dup.threshold_tip",
-            "How alike two images must be to be grouped. Lowering it finds more matches "
-            "and also more false positives."))
         self.slider_thr.setRange(1, 20)
         self.slider_thr.setValue(5)
-        thr_layout.addWidget(self.slider_thr)
-
-        thr_tpl = self.tr("dup.value", "Value: {value}")
-        self.lbl_thr_val = QLabel(thr_tpl.format(value=5))
-        self.lbl_thr_val.setStyleSheet(f"color: {text_dim};")
-        self.slider_thr.valueChanged.connect(
-            lambda v: self.lbl_thr_val.setText(thr_tpl.format(value=v))
-        )
-        thr_layout.addWidget(self.lbl_thr_val)
+        self.slider_thr.setToolTip(self.text('threshold_tip', 'Maximum pHash distance; smaller values require closer similarity. Similarity never authorizes retirement.'))
+        self.slider_thr.valueChanged.connect(self._configuration_changed)
+        threshold.addWidget(self.lbl_thr_val)
+        threshold.addWidget(self.slider_thr)
         layout.addWidget(self.threshold_container)
-
-        self.btn_select = QPushButton(self.tr("dup.select_folder", "📁 Select Folder"))
-        self.btn_select.setToolTip(self.tr(
-            "dup.select_folder_tip", "Folder to search for duplicates in."))
-        self.btn_select.setCursor(Qt.PointingHandCursor)
-        self.btn_select.clicked.connect(self.select_folder)
-        self.btn_select.setStyleSheet("background: #222; border: 1px solid #444; padding: 10px;")
+        self.weight_box = QWidget()
+        form = QFormLayout(self.weight_box)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        self.weights = {}
+        defaults = DuplicatePolicy()
+        for name, label in (('manual_tag_weight', 'Manual tags'), ('other_tag_weight', 'Other tags'),
+                ('rating_weight', 'Rating'), ('generation_weight', 'Generation data'), ('provenance_weight', 'Source information')):
+            control = QSpinBox()
+            control.setRange(0, 1000)
+            control.setValue(getattr(defaults, name))
+            control.setStyleSheet(Theme.get_input_style())
+            control.setToolTip(self.text('weight_tip', 'Weight for comparing documented copies. Curation always comes first; conflicting or complementary information prevents retirement.'))
+            control.lineEdit().setToolTip(control.toolTip())
+            control.valueChanged.connect(self._configuration_changed)
+            self.weights[name] = control
+            form.addRow(self.text(name, label), control)
+        layout.addWidget(self.weight_box)
+        self.btn_select = self._button('select_folder', 'Select folder', self.select_folder)
         layout.addWidget(self.btn_select)
-
-        self.lbl_folder = QLabel(self.tr("dup.no_folder", "No folder selected"))
+        self.lbl_folder = QLabel(self.text('no_folder', 'No folder selected'))
         self.lbl_folder.setWordWrap(True)
-        self.lbl_folder.setStyleSheet(f"color: {text_dim}; font-size: 11px;")
+        self.lbl_folder.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.lbl_folder.setTextFormat(Qt.PlainText)
         layout.addWidget(self.lbl_folder)
-
+        layout.addWidget(QLabel(self.text('recovery_label', 'Recovery folder:')))
+        self.recovery = QLineEdit(str(ProjectPaths.root()/'data'/'retired_duplicates'))
+        self.recovery.setStyleSheet(Theme.get_input_style())
+        self.recovery.setToolTip(self.text('recovery_tip', 'Persistent destination outside the collection and Cherry projects, on the same volume. Retired files and their recovery journal are kept here.'))
+        layout.addWidget(self.recovery)
+        self.btn_recovery = self._button('choose_recovery', 'Choose recovery folder', self.select_recovery)
+        layout.addWidget(self.btn_recovery)
+        note = QLabel(self.text('policy_note', 'Documented copies take priority. Conflicts, unknown identities and external captions or sidecars require review. Visual similarity does not authorize retirement.'))
+        note.setWordWrap(True)
+        note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        layout.addWidget(note)
         layout.addStretch()
-
-        self.btn_run = QPushButton(self.tr("dup.run_scan", "🚀 START SCAN"))
-        self.btn_run.setToolTip(self.tr(
-            "dup.run_scan_tip",
-            "Analyses the folder and groups the repeated images. It deletes nothing: it "
-            "just shows the groups for you to decide."))
-        self.btn_run.setCursor(Qt.PointingHandCursor)
-        self.btn_run.clicked.connect(self.run_scan)
-        self.btn_run.setStyleSheet(
-            f"background: {self.accent_color}; color: black; font-weight: bold; padding: 12px;"
-        )
+        self.btn_run = self._button('run_scan', 'Start scan', self.run_scan)
         layout.addWidget(self.btn_run)
+        return box
 
-        return container
+    def _content(self):
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        self.status = QLabel(self.text('placeholder', 'Select a folder and start the scan to find duplicates.'))
+        self.status.setTextFormat(Qt.PlainText)
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        self.tree = QTreeWidget()
+        theme = self.context.get('theme_manager')
+        color = theme.get_color if theme else Theme._c
+        self.tree.setStyleSheet(f'QTreeView::item:selected {{ background-color:{color("accent_main")}; color:{color("bg_main")}; }}')
+        self.tree.setHeaderLabels([self.text(key, label) for key, label in
+            (('copy_path', 'Copy path'), ('decision', 'Decision'), ('rating', 'Rating'), ('tags', 'Tags'))])
+        self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        for column in (1, 2, 3):
+            self.tree.header().setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        self.tree.itemChanged.connect(self._checked)
+        self.tree.currentItemChanged.connect(self._details)
+        layout.addWidget(self.tree, 3)
+        navigation = QHBoxLayout()
+        self.btn_previous = self._button('previous', 'Previous', lambda: self._navigate(-1))
+        self.btn_next = self._button('next', 'Next', lambda: self._navigate(1))
+        self.btn_open_group = self._button('open_group', 'View group in Gallery', self.open_group)
+        self.page_status = QLabel()
+        navigation.addWidget(self.btn_previous)
+        navigation.addWidget(self.page_status, 1)
+        navigation.addWidget(self.btn_open_group)
+        navigation.addWidget(self.btn_next)
+        layout.addLayout(navigation)
+        self.details = QPlainTextEdit()
+        self.details.setReadOnly(True)
+        self.details.setToolTip(self.text('details_tip', 'Complete captured copy state: tags, sources, categories, rating and metadata. Select a group to review all its copies.'))
+        layout.addWidget(self.details, 2)
+        self.action_status = QPlainTextEdit()
+        self.action_status.setReadOnly(True)
+        self.action_status.setMaximumHeight(120)
+        layout.addWidget(self.action_status)
+        return box
 
-    def _create_content(self):
-        theme    = self.context.get('theme_manager') if hasattr(self, 'context') else None
-        text_dim = theme.get_color('text_dim') if theme else Theme.TEXT_DIM
-
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("background: transparent; border: none;")
-
-        self.grid_container = QWidget()
-        self.grid_layout = QVBoxLayout(self.grid_container)
-        self.grid_layout.setAlignment(Qt.AlignTop)
-        self.grid_layout.setSpacing(20)
-
-        self.scroll.setWidget(self.grid_container)
-
-        self.lbl_empty = QLabel(
-            self.tr("dup.placeholder", "Select a folder and start the scan to find duplicates.")
-        )
-        self.lbl_empty.setAlignment(Qt.AlignCenter)
-        self.lbl_empty.setStyleSheet(f"color: {text_dim}; font-size: 16px;")
-        self.grid_layout.addWidget(self.lbl_empty)
-
-        return self.scroll
-
-    def _create_bottom_bar(self):
-        container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(10, 5, 10, 5)
-
+    def _bottom(self):
+        box = QWidget()
+        layout = QHBoxLayout(box)
         self.progress = QProgressBar()
-        self.progress.setStyleSheet("QProgressBar { height: 10px; }")
         self.progress.hide()
         layout.addWidget(self.progress, 1)
+        self.btn_cancel = self._button('cancel', 'Cancel', self.cancel)
+        self.btn_cancel.setToolTip(self.text('cancel_tip', 'Stop preparation without blocking the interface. An accepted retirement group is not cancelled; its recovery journal preserves the plan if interrupted.'))
+        self.btn_auto_select = self._button('auto_select', 'Select recommended copies', self.auto_select_duplicates)
+        self.btn_auto_select.setToolTip(self.text('auto_select_tip', 'Only marks exact copies whose complete information is preserved in the retained copy. Never selects the first file by position.'))
+        self.btn_delete = self._button('delete', 'Retire selected copies', self.delete_files)
+        self.btn_delete.setToolTip(self.text('delete_tip', 'Rechecks the entire exact group, archives selected IDs and moves files to the persistent recovery folder. Cherry receipts are retained.'))
+        for button in (self.btn_cancel, self.btn_auto_select, self.btn_delete):
+            layout.addWidget(button)
+        return box
 
-        self.btn_auto_select = QPushButton(self.tr("dup.auto_select", "🧹 Delete all but first"))
-        self.btn_auto_select.setToolTip(self.tr(
-            "dup.auto_select_tip",
-            "It only TICKS the boxes: leaves the first of each group unticked and ticks "
-            "the rest. It deletes nothing — the red button below is the one that does."))
-        self.btn_auto_select.setCursor(Qt.PointingHandCursor)
-        self.btn_auto_select.clicked.connect(self.auto_select_duplicates)
-        self.btn_auto_select.setStyleSheet(
-            "background: #333; color: white; padding: 10px 20px; border-radius: 4px;"
-        )
-        self.btn_auto_select.setEnabled(False)
-        layout.addWidget(self.btn_auto_select)
+    def _button(self, key, label, callback):
+        button = QPushButton(self.text(key, label))
+        button.setCursor(Qt.PointingHandCursor)
+        button.setToolTip(self.text(key+'_tip', label))
+        button.setStyleSheet(Theme.get_button_style(self.accent_color))
+        button.clicked.connect(callback)
+        return button
 
-        self.btn_delete = QPushButton(self.tr("dup.delete", "🔥 DELETE SELECTED"))
-        self.btn_delete.setToolTip(self.tr(
-            "dup.delete_tip",
-            "Deletes the ticked files from disk PERMANENTLY: they do not go to the "
-            "recycle bin. It warns first if you ticked every copy in some group."))
-        self.btn_delete.setCursor(Qt.PointingHandCursor)
-        self.btn_delete.clicked.connect(self.delete_files)
-        self.btn_delete.setStyleSheet(
-            "background: #ff5555; color: white; font-weight: bold; padding: 10px 20px; border-radius: 4px;"
-        )
-        self.btn_delete.setEnabled(False)
-        layout.addWidget(self.btn_delete)
+    def _policy(self):
+        return DuplicatePolicy(**{name: control.value() for name, control in self.weights.items()})
 
-        return container
+    def _valid_review(self):
+        return bool(self.review and self.review.get('token') == self._token and self.review['folder'] == self.folder_path and
+            self.review['mode'] == 'hash' and self.combo_mode.currentIndex() == 0 and self.review['complete'] and
+            not self.review['cancelled'] and not self.review['error'] and self.review['policy'] == asdict(self._policy()))
 
-    # ------------------------------------------------------------------ #
+    def _controls(self):
+        idle = not self._closed and not self._busy and not self._acting
+        for control in (self.btn_run, self.btn_select, self.combo_mode, self.slider_thr, self.recovery, self.btn_recovery, *self.weights.values()):
+            control.setEnabled(idle)
+        self.threshold_container.setVisible(self.combo_mode.currentIndex() == 1)
+        self.weight_box.setVisible(self.combo_mode.currentIndex() == 0)
+        self.lbl_thr_val.setText(self.text('value', 'Value: {value}').format(value=self.slider_thr.value()))
+        self.btn_cancel.setEnabled(not self._closed and (self._busy or self._acting))
+        valid = idle and self._valid_review()
+        self.btn_auto_select.setEnabled(bool(valid and any(report['remove'] for report in self.review['reports'].values())))
+        self.btn_delete.setEnabled(bool(valid and self._checked_paths))
+        self.btn_previous.setEnabled(idle and self._page > 0)
+        self.btn_next.setEnabled(idle and (self._page+1)*100 < len(self._rows))
+        self.btn_open_group.setEnabled(bool(idle and self.review and self.tree.currentItem() is not None and self.context.get('main_window')))
+
+    def _configuration_changed(self, *unused):
+        if self.view is None or self._closed:
+            return
+        self._token += 1
+        self._checked_paths.clear()
+        if self.review:
+            self.status.setText(self.text('rescan_required', 'Options changed. Scan again before retiring files.'))
+        self._render_page()
+        self._controls()
 
     def select_folder(self):
-        folder = QFileDialog.getExistingDirectory(
-            self.view, self.tr("dup.select_folder", "Select Folder")
-        )
+        if self._closed or self._busy or self._acting:
+            return
+        folder = QFileDialog.getExistingDirectory(self.view, self.text('select_folder', 'Select folder'))
         if folder:
             self.folder_path = folder
             self.lbl_folder.setText(folder)
+            self._configuration_changed()
+
+    def select_recovery(self):
+        if self._closed or self._busy or self._acting:
+            return
+        folder = QFileDialog.getExistingDirectory(self.view, self.text('choose_recovery', 'Choose recovery folder'))
+        if folder:
+            self.recovery.setText(folder)
 
     def run_scan(self):
-        if not hasattr(self, 'folder_path'):
-            QMessageBox.warning(
-                self.view,
-                self.tr("common.error", "Error"),
-                self.tr("dup.no_folder_warn", "Please select a folder first.")
-            )
+        if self._closed or self._busy or self._acting or (self.worker is not None and self.worker.isRunning()):
             return
-
-        self.btn_run.setEnabled(False)
+        if not self.folder_path:
+            self.status.setText(self.text('no_folder_warn', 'Select a folder first.'))
+            return
+        self._token += 1
+        self._busy = True
+        self.review, self._rows, self._checked_paths, self._page = None, [], set(), 0
+        self.details.clear()
+        self._render_page()
+        self.progress.setRange(0, 0)
         self.progress.show()
-        self.progress.setValue(0)
+        self.status.setText(self.text('phase_inventory', 'Reading the folder inventory…'))
+        if self.combo_mode.currentIndex() == 0:
+            worker = ExactReviewWorker(self.folder_path, self.context.get('data_service'), policy=self._policy(), token=self._token)
+        else:
+            worker = VisualReviewWorker(self.folder_path, self.slider_thr.value(), token=self._token)
+        self.worker = worker
+        _LIVE_WORKERS.add(worker)
+        worker.finished.connect(lambda worker=worker: _LIVE_WORKERS.discard(worker))
+        worker.finished.connect(self._native_finished)
+        worker.progress.connect(self.update_progress)
+        worker.phase.connect(self._phase)
+        worker.finished_signal.connect(self.on_scan_finished)
+        self._controls()
+        worker.start()
 
-        mode = "hash" if self.combo_mode.currentIndex() == 0 else "visual"
-        self.worker = DeduplicationWorker(self.folder_path, mode, self.slider_thr.value())
-        self.worker.progress.connect(self.update_progress)
-        self.worker.finished_signal.connect(self.on_scan_finished)
-        self.worker.start()
+    @Slot(str)
+    def _phase(self, phase):
+        if not self._closed and self.sender() is self.worker:
+            self.status.setText(self.text('phase_'+phase, 'Preparing the duplicate review…'))
 
-    def update_progress(self, curr, total, msg):
-        self.progress.setMaximum(total)
-        self.progress.setValue(curr)
+    @Slot(int, int, str)
+    def update_progress(self, current, total, message):
+        if not self._closed and self.sender() is self.worker:
+            self.progress.setRange(0, max(total, 1))
+            self.progress.setValue(current)
 
-    def on_scan_finished(self, results):
-        theme    = self.context.get('theme_manager') if hasattr(self, 'context') else None
-        bg_main  = theme.get_color('bg_main')  if theme else Theme.BG_MAIN
-        bg_panel = theme.get_color('bg_panel') if theme else Theme.BG_PANEL
-        border   = theme.get_color('border')   if theme else Theme.BORDER
-        text_dim = theme.get_color('text_dim') if theme else Theme.TEXT_DIM
-
-        self.btn_run.setEnabled(True)
-        self.progress.hide()
-
-        while self.grid_layout.count():
-            item = self.grid_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        self.duplicate_groups = {}
-
-        if not results:
-            lbl = QLabel(self.tr("dup.no_results", "No duplicates found."))
-            lbl.setAlignment(Qt.AlignCenter)
-            lbl.setStyleSheet(f"color: {text_dim}; font-size: 16px;")
-            self.grid_layout.addWidget(lbl)
-            self.btn_auto_select.setEnabled(False)
-            self.btn_delete.setEnabled(False)
+    @Slot(dict)
+    def on_scan_finished(self, result):
+        if self._closed or self.sender() is not self.worker or result.get('token') != self._token:
             return
+        self.review = result
+        self._rows = [(digest, record) for digest, report in result['reports'].items() for record in report['copies']]
+        if result['cancelled']:
+            message = self.text('cancelled', 'Scan cancelled. No files were changed.')
+        elif result['error']:
+            message = self.text('scan_failed', 'The scan could not complete: {reason}').format(reason=self.reason(result['error']))
+        elif result['issue_count']:
+            message = self.text('incomplete', 'Review incomplete: {count} issues. Retirement is disabled.').format(count=result['issue_count'])
+        elif result['mode'] == 'visual':
+            message = self.text('visual_review_only', 'Visual groups are for review only. Use exact content to retire copies.')
+        else:
+            message = self.text('scan_summary', '{groups} groups, {copies} copies. Documented copies take priority.').format(groups=len(result['groups']), copies=len(self._rows))
+        self.status.setText(message)
+        if result['issues']:
+            self.action_status.setPlainText(json.dumps(result['issues'], ensure_ascii=False, indent=2))
+        self._render_page()
 
-        group_tpl = self.tr("dup.group_header", "Group: {id}... ({count} files)")
-        for g_id, paths in results.items():
-            row_frame = QFrame()
-            row_frame.setStyleSheet(
-                f"background: {bg_main}; border-radius: 10px; border: 1px solid {border};"
-            )
-            row_layout = QVBoxLayout(row_frame)
+    @Slot()
+    def _native_finished(self):
+        worker = self.sender()
+        if worker is self.worker:
+            self.worker = None
+            self._busy = False
+            if not self._closed:
+                self.progress.hide()
+                self._render_page()
+                self._controls()
+        worker.deleteLater()
 
-            header = QLabel(group_tpl.format(id=g_id[:8], count=len(paths)))
-            header.setStyleSheet(f"color: {text_dim}; font-size: 10px; font-weight: bold; padding: 5px;")
-            row_layout.addWidget(header)
+    def _navigate(self, offset):
+        if self._closed or self._busy or self._acting:
+            return
+        page = self._page+offset
+        if 0 <= page <= max(0, (len(self._rows)-1)//100):
+            self._page = page
+            self._render_page()
+            self._controls()
 
-            items_container = QWidget()
-            items_layout = QHBoxLayout(items_container)
-            items_layout.setAlignment(Qt.AlignLeft)
+    def _render_page(self):
+        self.tree.blockSignals(True)
+        self.tree.clear()
+        headers = {}
+        valid = not self._busy and not self._acting and self._valid_review()
+        for digest, record in self._rows[self._page*100:(self._page+1)*100]:
+            report, path = self.review['reports'][digest], record['path']
+            if digest not in headers:
+                header = QTreeWidgetItem([self.text('group_header', 'Group {id} ({count} copies)').format(id=digest[:12], count=len(report['copies']))])
+                header.setData(0, Qt.UserRole, (digest, None))
+                header.setToolTip(0, self.reason(report['reason']))
+                self.tree.addTopLevelItem(header)
+                header.setExpanded(True)
+                headers[digest] = header
+            role = 'candidate' if path in report['remove'] else ('keep' if report['status']=='recommended' else 'review')
+            state = record.get('state')
+            try:
+                label = Path(path).relative_to(Path(self.review['folder'])).as_posix()
+            except ValueError:
+                label = path
+            item = QTreeWidgetItem([label, self.text('role_'+role, role), str(state['file']['rating']) if state else '', str(len(state['tags'])) if state else ''])
+            item.setData(0, Qt.UserRole, (digest, path))
+            item.setToolTip(0, path)
+            item.setToolTip(1, self.reason(report['reason']))
+            headers[digest].addChild(item)
+            if valid and path in report['remove']:
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(0, Qt.Checked if path in self._checked_paths else Qt.Unchecked)
+            else:
+                item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+        self.tree.blockSignals(False)
+        self.page_status.setText(self.text('page', 'Page {page}/{pages} · {count} copies').format(page=self._page+1,
+            pages=max(1, (len(self._rows)+99)//100), count=len(self._rows)))
+        self.details.clear()
 
-            group_items = []
-            for p in paths:
-                item = DuplicateItem(p, bg_color=bg_panel, border_color=border)
-                items_layout.addWidget(item)
-                group_items.append(item)
+    def _checked(self, item, column):
+        if column != 0 or self._closed or self._busy or self._acting or not self._valid_review():
+            return
+        value = item.data(0, Qt.UserRole)
+        if not value or value[1] not in self.review['reports'][value[0]]['remove']:
+            return
+        if item.checkState(0) == Qt.Checked:
+            self._checked_paths.add(value[1])
+        else:
+            self._checked_paths.discard(value[1])
+        self._controls()
 
-            row_layout.addWidget(items_container)
-            self.grid_layout.addWidget(row_frame)
-            self.duplicate_groups[g_id] = group_items
+    def _details(self, item, previous):
+        if self._closed or item is None or self.review is None:
+            return
+        digest, path = item.data(0, Qt.UserRole)
+        report = self.review['reports'][digest]
+        value = report if path is None else dict(decision={key: value for key, value in report.items() if key!='copies'},
+            copy=next(record for record in report['copies'] if record['path']==path))
+        self.details.setPlainText(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+        self._controls()
 
-        self.btn_auto_select.setEnabled(True)
-        self.btn_delete.setEnabled(True)
+    def open_group(self):
+        if self._closed or self._busy or self._acting or self.review is None or self.tree.currentItem() is None:
+            return
+        digest, _ = self.tree.currentItem().data(0, Qt.UserRole)
+        paths = [record['path'] for record in self.review['reports'][digest]['copies']
+                 if record['path'].lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.avif'))]
+        if not paths or len(paths) > 1000:
+            self.action_status.setPlainText(self.text('gallery_group_limit', 'Gallery handoff requires 1 to 1,000 images in the complete group. No images were sent.'))
+            return
+        self.request_open_gallery.emit(paths, self.text('gallery_group_title', 'Duplicate review'))
 
     def auto_select_duplicates(self):
-        for items in self.duplicate_groups.values():
-            for i, item in enumerate(items):
-                item.set_checked(i > 0)
+        if self._closed or self._busy or self._acting or not self._valid_review():
+            return
+        self._checked_paths = {path for report in self.review['reports'].values() for path in report['remove']}
+        self._render_page()
+        self._controls()
+
+    def _confirm_retirement(self, selected, recovery):
+        box = QMessageBox(self.view)
+        box.setWindowTitle(self.text('confirm_title', 'Review retirement'))
+        box.setText(self.text('confirm_retirement', 'Retire {count} exact copies to:\n{folder}\n\nThe retained copies and Cherry download history are preserved.').format(count=len(selected), folder=recovery))
+        box.setDetailedText(json.dumps(dict(selected=selected, policy=self.review['policy'],
+            groups=[report for report in self.review['reports'].values() if set(selected).intersection(report['remove'])]), ensure_ascii=False, indent=2))
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+        return box.exec() == QMessageBox.Yes
 
     def delete_files(self):
-        to_delete = []
-        full_groups_deleted = 0
-
-        for g_id, items in self.duplicate_groups.items():
-            all_marked = True
-            group_to_del = []
-            for item in items:
-                if item.is_checked():
-                    group_to_del.append(item.path)
-                else:
-                    all_marked = False
-            if all_marked:
-                full_groups_deleted += 1
-            to_delete.extend(group_to_del)
-
-        if not to_delete:
-            QMessageBox.information(
-                self.view,
-                self.tr("common.info", "Information"),
-                self.tr("dup.no_selection", "No files selected.")
-            )
+        if (self._closed or self._busy or self._acting or not self._valid_review()
+                or (self.retirement_worker is not None and self.retirement_worker.isRunning())):
             return
+        selected = sorted(self._checked_paths)
+        allowed = {path for report in self.review['reports'].values() for path in report['remove']}
+        recovery = self.recovery.text().strip()
+        if not recovery or not Path(recovery).is_absolute():
+            self.action_status.setPlainText(self.text('recovery_required', 'Choose an absolute persistent recovery folder before retirement.'))
+            return
+        if not selected or not set(selected) <= allowed or not self._confirm_retirement(selected, recovery):
+            return
+        # Una señal del event loop modal puede invalidar la aprobación.
+        if self._closed or self._busy or self._acting or not self._valid_review():
+            return
+        self._acting = True
+        self._controls()
+        self._render_page()
+        self.action_status.setPlainText(self.text('retiring', 'Rechecking exact copies and preparing recoverable retirement…'))
+        worker = DuplicateRetirementWorker(self.context.get('data_service'), review=self.review,
+            selected=selected, recovery_folder=recovery, token=self._token)
+        self.retirement_worker = worker
+        _LIVE_WORKERS.add(worker)
+        worker.finished.connect(lambda worker=worker: _LIVE_WORKERS.discard(worker))
+        worker.finished.connect(self._retirement_finished)
+        worker.finished_signal.connect(self._retired)
+        worker.start()
 
-        confirm_msg = self.tr(
-            "dup.confirm_delete", "Are you sure you want to permanently delete {count} files?\n\n"
-        ).format(count=len(to_delete))
+    @Slot(int, object, object)
+    def _retired(self, ticket, result, error):
+        if self._closed or self.sender() is not self.retirement_worker or ticket != self._token:
+            return
+        self._token += 1  # La aprobación se consume también si falló.
+        self._checked_paths.clear()
+        if error is not None:
+            message = self.text('retirement_failed', 'Retirement was not confirmed: {reason}. Scan again before retrying.').format(reason=self.reason(error))
+        else:
+            if result['complete']:
+                message = self.text('retirement_summary', 'Recovered {count} copies. Read the results and journals before retrying.').format(count=result['moved'])
+            else:
+                reason = next((group['error'] for group in result['groups'] if group['error']), 'unconfirmed')
+                message = self.text('retirement_partial', 'Retirement incomplete: {count} copies moved. {reason} Review the catalog and recovery journals before retrying.').format(count=result['moved'], reason=self.reason(reason))
+            message += '\n'+json.dumps(result, ensure_ascii=False, indent=2)
+            if any(group['archived'] for group in result['groups']):
+                bus = self.context.get('event_bus')
+                if bus:
+                    bus.publish('library_changed', self.review['folder'])
+        self.action_status.setPlainText(message)
+        self.status.setText(self.text('rescan_required', 'Scan again before retiring files.'))
+        self._render_page()
+        self._controls()
 
-        if full_groups_deleted > 0:
-            confirm_msg += self.tr(
-                "dup.confirm_all_warn",
-                "⚠ WARNING: You are deleting ALL copies of {count} groups. "
-                "You will have no originals left in those cases."
-            ).format(count=full_groups_deleted)
+    @Slot()
+    def _retirement_finished(self):
+        worker = self.sender()
+        if worker is self.retirement_worker:
+            self.retirement_worker = None
+            self._acting = False
+            if not self._closed:
+                self._render_page()
+                self._controls()
+        worker.deleteLater()
 
-        res = QMessageBox.warning(
-            self.view,
-            self.tr("dup.confirm_title", "DELETION CONFIRMATION"),
-            confirm_msg,
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
+    def shutdown_ready(self):
+        return all(worker is None or not worker.isRunning()
+                   for worker in (self.worker, self.retirement_worker))
 
-        if res == QMessageBox.Yes:
-            deleted_count = 0
-            for path in to_delete:
-                try:
-                    os.remove(path)
-                    deleted_count += 1
-                except Exception as e:
-                    logging.warning(f"[DuplicateFinder] Error deleting {path}: {e}")
+    def reason(self, error):
+        code = str(getattr(error, 'reason', error)).rsplit(': ', 1)[-1]
+        return self.text('reason_'+code, code)
 
-            QMessageBox.information(
-                self.view,
-                self.tr("dup.done_title", "Process Complete"),
-                self.tr("dup.done_msg", "Deleted {count} files successfully.").format(
-                    count=deleted_count
-                )
-            )
-            self.run_scan()
+    def cancel(self):
+        if self._closed:
+            return
+        if self.worker is not None:
+            self.worker.stop()
+        if self.retirement_worker is not None:
+            self.retirement_worker.stop()
 
-    def run_headless(self, params: dict, input_data) -> None:
-        pass
+    def on_unload(self, *unused):
+        self._closed = True
+        self._token += 1
+        if self.worker is not None:
+            self.worker.stop()
+        if self.retirement_worker is not None:
+            self.retirement_worker.stop()
+
+    def run_headless(self, params, input_data):
+        raise NotImplementedError('duplicate_review_requires_explicit_approval')
