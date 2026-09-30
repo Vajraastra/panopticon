@@ -1,4 +1,13 @@
 {
+  "lib.scan.start": "Iniciando el indexador...",
+  "lib.scan.warning": "Recorrido incompleto",
+  "lib.scan.folder": "Revisando: {folder}",
+  "lib.scan.catalog": "Leyendo el catálogo de Cherry...",
+  "lib.scan.cleanup": "Retirando del índice {count} entradas cuya ausencia se confirmó...",
+  "lib.scan.incomplete_folder": "Recorrido incompleto; se omitió la limpieza del índice: {folder}",
+  "lib.scan.complete": "Indexado completo: {count} archivos registrados.",
+  "lib.scan.cancelled": "Indexado cancelado; no se limpiaron inventarios parciales.",
+  "lib.scan.incomplete": "Indexado incompleto; no se limpiaron inventarios inaccesibles o con errores.",
   "tool.format_converter.verifying": "Verificando metadatos: {current}/{total}",
   "dashboard.open_module_tip": "Abre esta herramienta en su propia ventana. Otro clic recupera la misma sesión.",
   "dashboard.module_open_error": "No se pudo abrir la herramienta. Consulta el registro para más detalles.",

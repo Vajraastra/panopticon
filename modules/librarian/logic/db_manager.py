@@ -307,7 +307,7 @@ class DatabaseManager(QObject):
         return [row[0] for row in cursor.fetchall()]
 
     def remove_files(self, paths_list):
-        if not paths_list: return
+        if not paths_list: return True
         cursor = self.conn.cursor()
         try:
             for p in paths_list:
@@ -317,9 +317,11 @@ class DatabaseManager(QObject):
                 if row:
                     cursor.execute("DELETE FROM files_fts WHERE rowid=?", (row[0],))
             self.conn.commit()
+            return True
         except Exception as e:
             log.warning("[DB] remove_files error: %s", e)
             self.conn.rollback()
+            return False
             
     # --- Standard Queries (Gallery/Search) ---
     

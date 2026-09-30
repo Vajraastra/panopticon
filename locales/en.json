@@ -1,4 +1,13 @@
 {
+  "lib.scan.start": "Starting indexer...",
+  "lib.scan.warning": "Incomplete scan",
+  "lib.scan.folder": "Scanning: {folder}",
+  "lib.scan.catalog": "Reading Cherry catalog...",
+  "lib.scan.cleanup": "Removing {count} confirmed missing entries from the index...",
+  "lib.scan.incomplete_folder": "Incomplete scan; index cleanup skipped: {folder}",
+  "lib.scan.complete": "Indexing complete: {count} files registered.",
+  "lib.scan.cancelled": "Indexing cancelled; partial inventories were not cleaned up.",
+  "lib.scan.incomplete": "Indexing incomplete; unavailable or failed inventories were not cleaned up.",
   "tool.format_converter.verifying": "Verifying metadata: {current}/{total}",
   "dashboard.open_module_tip": "Open this tool in its own window. Click again to return to the same session.",
   "dashboard.module_open_error": "Could not open this tool. See the log for details.",

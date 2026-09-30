@@ -1,170 +1,190 @@
 import os
 import logging
 from PySide6.QtCore import QThread, Signal
-from core.catalog_reader import is_cherry_catalog, get_image_files, get_artist_info
+from core.catalog_reader import is_cherry_catalog, read_image_files, get_artist_info
+from core.inventory import InventoryResult, InventoryStatus, directory_identity
 
 log = logging.getLogger(__name__)
 
 
 class IndexerWorker(QThread):
-    """
-    Hilo de trabajo para el indexado robusto de archivos.
+    """Ingesta observaciones válidas; sólo reconcilia inventarios completos."""
 
-    Fase 1: Descubrimiento — los archivos aparecen en la DB lo antes posible.
-    Fase 2: Limpieza de huérfanos — elimina registros de archivos borrados.
-
-    Modo cherry-dl aware:
-      Si la carpeta contiene un catalog.db de cherry-dl, se usa CatalogReader
-      para obtener la lista de archivos. Esto garantiza que:
-        - Solo se indexan imágenes (se ignoran .psd, .zip, .mp4, etc.)
-        - Solo se indexan archivos que realmente existen en disco
-          (las entradas de archivos borrados en catalog.db se saltan)
-      Si no hay catalog.db, el comportamiento es el habitual (os.walk).
-    """
-
-    progress_signal = Signal(str)    # Mensaje de estado para la UI
-    count_signal    = Signal(int, int)  # (actual, total)
+    progress_signal = Signal(str)
+    count_signal = Signal(int, int)
     finished_signal = Signal()
 
-    def __init__(self, db_manager, folders, deep_clean=False):
+    def __init__(self, db_manager, folders, deep_clean=False, translate=None):
         super().__init__()
-        self.db         = db_manager
-        self.folders    = folders
+        self.db = db_manager
+        self.folders = folders
         self.deep_clean = deep_clean
         self.is_running = True
         self.batch_size = 100
+        self.tr = translate or (lambda key, default: default)
+        self.outcome = InventoryStatus.COMPLETE
+        self.folder_statuses = {}
 
-    # ------------------------------------------------------------------
-    # Punto de entrada del hilo
-    # ------------------------------------------------------------------
+    def _progress(self, key, default, **values):
+        self.progress_signal.emit(self.tr(key, default).format(**values))
 
     def run(self):
-        self.progress_signal.emit("🚀 Iniciando el indexador...")
-
-        extensions  = ('.png', '.jpg', '.jpeg', '.webp', '.avif')
         total_found = 0
-
-        for folder in self.folders:
+        try:
+            self._progress("lib.scan.start", "Starting indexer...")
+            extensions = ('.png', '.jpg', '.jpeg', '.webp', '.avif')
+            for folder in self.folders:
+                if not self.is_running:
+                    self.outcome = InventoryStatus.CANCELLED
+                    break
+                self._progress("lib.scan.folder", "Scanning: {folder}", folder=folder)
+                result = self._discover_tree(folder, extensions)
+                try:
+                    for i in range(0, len(result.files), self.batch_size):
+                        if not self.is_running:
+                            result.fail(InventoryStatus.CANCELLED)
+                            break
+                        batch = result.files[i:i + self.batch_size]
+                        if not self.db.register_files_minimal(batch):
+                            result.fail(InventoryStatus.ERROR, "No se pudo confirmar el lote")
+                            break
+                        total_found += len(batch)
+                        self.count_signal.emit(i + len(batch), len(result.files))
+                    if not self.is_running:
+                        result.fail(InventoryStatus.CANCELLED)
+                    if self.deep_clean and result.complete:
+                        self._reconcile_missing(folder, result)
+                except Exception as exc:
+                    log.exception("[Indexer] No se pudo indexar %s", folder)
+                    result.fail(InventoryStatus.ERROR, exc)
+                self.folder_statuses[str(folder)] = result.status
+                if not result.complete:
+                    if self.outcome == InventoryStatus.COMPLETE:
+                        self.outcome = result.status
+                    log.warning("[Indexer] Inventario %s: %s; %s", folder, result.status.value, result.issues)
+                    self._progress("lib.scan.incomplete_folder",
+                                   "Incomplete scan; index cleanup skipped: {folder}", folder=folder)
+        except Exception:
+            self.outcome = InventoryStatus.ERROR
+            log.exception("[Indexer] Fallo inesperado")
+        finally:
             if not self.is_running:
-                break
-
-            folder_name = os.path.basename(folder)
-            self.progress_signal.emit(f"🔍 Scanning: {folder_name}")
-
-            # --- FASE 1: DESCUBRIMIENTO ---
-            disk_files, disk_paths = self._discover_tree(folder, extensions)
-
-            total_found += len(disk_files)
-
-            if disk_files:
-                total = len(disk_files)
-                self.progress_signal.emit(
-                    f"💾 Registrando {total} archivos en {folder_name}..."
-                )
-                for i in range(0, total, self.batch_size):
-                    self.db.register_files_minimal(disk_files[i : i + self.batch_size])
-                    # Alimenta la barra de progreso de la UI (current, total).
-                    self.count_signal.emit(min(i + self.batch_size, total), total)
-
-            # --- FASE 2: LIMPIEZA DE HUÉRFANOS ---
-            if self.deep_clean:
-                known_paths = self.db.get_known_files_in_folder(folder)
-                orphans = list(known_paths - disk_paths)
-                if orphans:
-                    self.progress_signal.emit(
-                        f"🧹 Eliminando {len(orphans)} archivos inexistentes..."
-                    )
-                    self.db.remove_files(orphans)
-
-        self.progress_signal.emit(f"✅ Indexado completo. {total_found} archivos activos.")
-        self.finished_signal.emit()
+                self.outcome = InventoryStatus.CANCELLED
+            try:
+                if self.outcome == InventoryStatus.COMPLETE:
+                    self._progress("lib.scan.complete", "Indexing complete: {count} files registered.", count=total_found)
+                elif self.outcome == InventoryStatus.CANCELLED:
+                    self._progress("lib.scan.cancelled", "Indexing cancelled; partial inventories were not cleaned up.")
+                else:
+                    self._progress("lib.scan.incomplete", "Indexing incomplete; unavailable or failed inventories were not cleaned up.")
+            finally:
+                self.finished_signal.emit()
 
     def stop(self):
         self.is_running = False
 
-    # ------------------------------------------------------------------
-    # Estrategias de descubrimiento
-    # ------------------------------------------------------------------
-
-    def _discover_tree(self, folder: str, extensions: tuple) -> tuple[list[dict], set[str]]:
-        """
-        Descubrimiento unificado: detecta catálogos cherry-dl a CUALQUIER
-        profundidad (caso real: carpeta madre vigilada con una subcarpeta por
-        artista). Cada subcarpeta con catalog.db se ingesta en modo cherry
-        (hash/url/artista gratis) y se PODA del walk para no re-descubrirla
-        plana; el resto se escanea con os.walk normal.
-        """
-        if is_cherry_catalog(folder):
-            return self._discover_cherry(folder)
-
-        disk_files = []
-        disk_paths = set()
-
-        for root, dirs, files in os.walk(folder):
-            if not self.is_running:
-                break
-
-            # Subcarpetas con catálogo cherry → modo cherry + poda del walk.
-            for d in [d for d in dirs if is_cherry_catalog(os.path.join(root, d))]:
-                f2, p2 = self._discover_cherry(os.path.join(root, d))
-                disk_files.extend(f2)
-                disk_paths.update(p2)
-                dirs.remove(d)
-
-            for f in files:
+    def _reconcile_missing(self, folder, result):
+        # Un catálogo puede ir detrás del disco: una omisión no demuestra un borrado.
+        try:
+            identity = directory_identity(folder)
+            if identity != result.root_identity:
+                result.fail(InventoryStatus.UNAVAILABLE, "La raíz cambió antes de limpiar")
+                return
+            candidates = set(self.db.get_known_files_in_folder(folder)) - result.paths
+            missing = []
+            for path in candidates:
                 if not self.is_running:
-                    return disk_files, disk_paths
-                if f.lower().endswith(extensions):
-                    full_path = os.path.join(root, f)
-                    try:
-                        stat = os.stat(full_path)
-                        norm = os.path.normpath(full_path).replace('\\', '/')
-                        disk_files.append({
-                            'path':     norm,
-                            'filename': f,
-                            'size':     stat.st_size,
-                            'created':  stat.st_ctime,
-                        })
-                        disk_paths.add(norm)
-                    except OSError:
-                        pass
-
-        return disk_files, disk_paths
-
-    def _discover_cherry(self, folder: str) -> tuple[list[dict], set[str]]:
-        """
-        Modo cherry-dl: usa CatalogReader para obtener la lista de imágenes.
-        Devuelve (disk_files, disk_paths).
-        """
-        log.info("[Indexer] Modo cherry-dl detectado en: %s", folder)
-        self.progress_signal.emit(f"🍒 Modo cherry-dl: leyendo catalog.db...")
-
-        entries = get_image_files(folder)
-
-        # Perfil del artista (index.db central de cherry-dl) — uno por carpeta.
-        info = get_artist_info(folder) or {}
-        artist = info.get('display_name')
-        site = info.get('primary_site')
-
-        disk_files = []
-        disk_paths = set()
-
-        for entry in entries:
+                    result.fail(InventoryStatus.CANCELLED)
+                    return
+                try:
+                    os.lstat(path)
+                except FileNotFoundError:
+                    missing.append(path)
+                except OSError as exc:
+                    result.fail(InventoryStatus.ERROR, exc)
+                    return
+            if directory_identity(folder) != identity:
+                result.fail(InventoryStatus.UNAVAILABLE, "La raíz cambió antes de limpiar")
+                return
             if not self.is_running:
+                result.fail(InventoryStatus.CANCELLED)
+                return
+            if missing:
+                self._progress("lib.scan.cleanup", "Removing {count} confirmed missing entries from the index...", count=len(missing))
+                if not self.is_running:
+                    result.fail(InventoryStatus.CANCELLED)
+                    return
+                if not self.db.remove_files(missing):
+                    result.fail(InventoryStatus.ERROR, "No se pudo confirmar la limpieza")
+        except OSError as exc:
+            result.fail(InventoryStatus.UNAVAILABLE, exc)
+
+    def _discover_tree(self, folder, extensions):
+        result = InventoryResult()
+        if not self.is_running:
+            result.fail(InventoryStatus.CANCELLED)
+            return result
+        try:
+            result.root_identity = directory_identity(folder)
+        except OSError as exc:
+            result.fail(InventoryStatus.UNAVAILABLE, exc)
+            return result
+        try:
+            if is_cherry_catalog(folder):
+                return self._discover_cherry(folder)
+
+            def walk_error(exc):
+                result.fail(InventoryStatus.ERROR, exc)
+
+            for root, dirs, files in os.walk(folder, onerror=walk_error):
+                if not self.is_running:
+                    result.fail(InventoryStatus.CANCELLED)
+                    break
+                for d in list(dirs):
+                    if not self.is_running:
+                        result.fail(InventoryStatus.CANCELLED)
+                        break
+                    if is_cherry_catalog(os.path.join(root, d)):
+                        result.merge(self._discover_cherry(os.path.join(root, d)))
+                        dirs.remove(d)
+                for filename in files:
+                    if not self.is_running:
+                        result.fail(InventoryStatus.CANCELLED)
+                        break
+                    if filename.lower().endswith(extensions):
+                        path = os.path.join(root, filename)
+                        try:
+                            info = os.stat(path)
+                            result.files.append({
+                                'path': os.path.normpath(path).replace('\\', '/'),
+                                'filename': filename, 'size': info.st_size,
+                                'created': info.st_ctime,
+                            })
+                        except OSError as exc:
+                            result.fail(InventoryStatus.ERROR, exc)
+            if not self.is_running:
+                result.fail(InventoryStatus.CANCELLED)
+            elif result.complete and directory_identity(folder) != result.root_identity:
+                result.fail(InventoryStatus.UNAVAILABLE, "La raíz cambió durante el recorrido")
+        except OSError as exc:
+            result.fail(InventoryStatus.ERROR, exc)
+        return result
+
+    def _discover_cherry(self, folder):
+        self._progress("lib.scan.catalog", "Reading Cherry catalog...")
+        inventory = read_image_files(folder, cancelled=lambda: not self.is_running)
+        info = (get_artist_info(folder) or {}) if self.is_running else {}
+        result = InventoryResult(status=inventory.status, issues=list(inventory.issues),
+                                 root_identity=inventory.root_identity)
+        for entry in inventory.files:
+            if not self.is_running:
+                result.fail(InventoryStatus.CANCELLED)
                 break
-            norm = os.path.normpath(entry['path']).replace('\\', '/')
-            disk_files.append({
-                'path':     norm,
-                'filename': entry['filename'],
-                'size':     entry['size'],
-                'created':  entry['created'],
-                # Ingesta M2: identidad y origen ya calculados por cherry-dl.
-                'hash_original': entry['cherry_hash'],
-                'origin_url':    entry['cherry_url'],
-                'origin_site':   site,
-                'artist':        artist,
+            result.files.append({
+                'path': os.path.normpath(entry['path']).replace('\\', '/'),
+                'filename': entry['filename'], 'size': entry['size'],
+                'created': entry['created'], 'hash_original': entry['cherry_hash'],
+                'origin_url': entry['cherry_url'], 'origin_site': info.get('primary_site'),
+                'artist': info.get('display_name'),
             })
-            disk_paths.add(norm)
-
-        return disk_files, disk_paths
-
+        return result

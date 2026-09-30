@@ -6,14 +6,17 @@ por cherry-dl, devolver la lista de imágenes que realmente existen en disco.
 
 Reglas de oro:
   - NUNCA escribe en catalog.db ni en ningún archivo de cherry-dl.
-  - NUNCA lanza excepciones hacia afuera: todos los errores son silenciosos
-    y devuelven valores vacíos/None para no interrumpir el indexador.
+  - El indexador usa read_image_files: errores y cancelación tienen estado
+    explícito y jamás se confunden con un catálogo vacío válido.
   - La fuente de verdad es el filesystem, no la DB.
 """
 
 import sqlite3
 import logging
+import stat
+from contextlib import closing
 from pathlib import Path
+from core.inventory import InventoryResult, InventoryStatus, directory_identity
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +33,10 @@ _INDEX_PATH = Path.home() / '.cherry-dl' / 'index.db'
 
 def is_cherry_catalog(folder: str | Path) -> bool:
     """Devuelve True si la carpeta contiene un catalog.db de cherry-dl."""
-    return (Path(folder) / _CATALOG_FILENAME).is_file()
+    try:
+        return stat.S_ISREG((Path(folder) / _CATALOG_FILENAME).stat().st_mode)
+    except FileNotFoundError:
+        return False
 
 
 def get_image_files(folder: str | Path) -> list[dict]:
@@ -52,63 +58,69 @@ def get_image_files(folder: str | Path) -> list[dict]:
     CHERRY_FUSION_DESIGN): cherry_hash → files.hash_original y
     cherry_url → files.origin_url en panopticon.db.
     """
-    folder = Path(folder)
+    # Compatibilidad para consumidores de listas. Nunca usar para decidir purgas.
+    return read_image_files(folder).files
+
+
+def read_image_files(folder: str | Path, cancelled=None) -> InventoryResult:
+    """Lee sólo en modo ro; conserva archivos válidos y marca inventarios parciales."""
+    folder = Path(folder).absolute()
     catalog_path = folder / _CATALOG_FILENAME
-
-    if not catalog_path.is_file():
-        return []
-
-    results = []
+    result = InventoryResult()
+    cancelled = cancelled or (lambda: False)
     try:
-        # URI read-only: nunca abre en modo escritura aunque haya un lock.
+        result.root_identity = directory_identity(folder)
+    except OSError as exc:
+        result.fail(InventoryStatus.UNAVAILABLE, exc)
+        return result
+
+    try:
         uri = catalog_path.as_uri() + '?mode=ro'
-        conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=5)
-        conn.row_factory = sqlite3.Row
+        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.set_progress_handler(lambda: int(cancelled()), 1000)
+            rows = conn.execute(
+                "SELECT hash, filename, url_source, date_added, file_size FROM files"
+            )
+            for row in rows:
+                if cancelled():
+                    result.fail(InventoryStatus.CANCELLED)
+                    break
+                filename = row['filename']
+                if not filename or Path(filename).suffix.lower() not in _IMAGE_EXTENSIONS:
+                    continue
+                relative = Path(filename)
+                if relative.is_absolute() or relative.drive or '..' in relative.parts:
+                    result.fail(InventoryStatus.ERROR, f"Ruta fuera del catálogo: {filename}")
+                    continue
+                full_path = folder / filename
+                try:
+                    info = full_path.stat()
+                    if not stat.S_ISREG(info.st_mode):
+                        continue
+                    result.files.append({
+                        'path': str(full_path), 'filename': filename,
+                        'size': row['file_size'] or info.st_size,
+                        'created': float(row['date_added'] or 0),
+                        'cherry_url': row['url_source'], 'cherry_hash': row['hash'],
+                    })
+                except FileNotFoundError:
+                    continue
+                except (OSError, ValueError, TypeError) as exc:
+                    result.fail(InventoryStatus.ERROR, exc)
+    except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
+        result.fail(InventoryStatus.ERROR, exc)
+        log.warning("[CatalogReader] No se pudo leer %s: %s", catalog_path, exc)
 
-        rows = conn.execute(
-            "SELECT hash, filename, url_source, date_added, file_size FROM files"
-        ).fetchall()
-        conn.close()
-
-    except sqlite3.OperationalError as e:
-        log.warning("[CatalogReader] No se pudo leer %s: %s", catalog_path, e)
-        return []
-
-    for row in rows:
-        filename = row['filename']
-        if not filename:
-            continue
-
-        # Filtrar por extensión de imagen antes de tocar el disco.
-        ext = Path(filename).suffix.lower()
-        if ext not in _IMAGE_EXTENSIONS:
-            continue
-
-        full_path = folder / filename
-
-        # El filesystem es la fuente de verdad.
-        # Entradas de archivos borrados intencionalmente → se ignoran.
-        if not full_path.is_file():
-            continue
-
-        # Usar file_size de catalog.db si está disponible; fallback a os.stat.
-        size = row['file_size'] or 0
-        if not size:
-            try:
-                size = full_path.stat().st_size
-            except OSError:
-                size = 0
-
-        results.append({
-            'path':        str(full_path),
-            'filename':    filename,
-            'size':        size,
-            'created':     float(row['date_added'] or 0),
-            'cherry_url':  row['url_source'],
-            'cherry_hash': row['hash'],
-        })
-
-    return results
+    if cancelled():
+        result.fail(InventoryStatus.CANCELLED)
+    elif result.complete:
+        try:
+            if directory_identity(folder) != result.root_identity:
+                result.fail(InventoryStatus.UNAVAILABLE, "La raíz cambió durante el recorrido")
+        except OSError as exc:
+            result.fail(InventoryStatus.UNAVAILABLE, exc)
+    return result
 
 
 def get_artist_info(folder: str | Path) -> dict | None:
@@ -131,16 +143,13 @@ def get_artist_info(folder: str | Path) -> dict | None:
 
     try:
         uri = _INDEX_PATH.as_uri() + '?mode=ro'
-        conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=5)
-        conn.row_factory = sqlite3.Row
-
-        # Fase 2+ de cherry-dl usa la tabla 'profiles'.
-        row = conn.execute(
-            "SELECT display_name, primary_site, last_checked "
-            "FROM profiles WHERE folder_path = ?",
-            (folder_norm,)
-        ).fetchone()
-        conn.close()
+        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT display_name, primary_site, last_checked "
+                "FROM profiles WHERE folder_path = ?",
+                (folder_norm,)
+            ).fetchone()
 
         if row:
             return {
@@ -149,7 +158,7 @@ def get_artist_info(folder: str | Path) -> dict | None:
                 'last_checked': row['last_checked'],
             }
 
-    except sqlite3.OperationalError as e:
+    except (sqlite3.Error, OSError) as e:
         log.debug("[CatalogReader] index.db no accesible: %s", e)
 
     return None

@@ -9,6 +9,7 @@ from core.components.tag_widgets import FlowLayout, TagChip
 from .logic.db_manager import DatabaseManager
 from .logic.indexer import IndexerWorker
 from .logic.hash_backfill import HashBackfillWorker
+from core.inventory import InventoryStatus
 import os
 import logging
 
@@ -724,7 +725,7 @@ class LibrarianModule(BaseModule):
                 self.lbl_status.setText(self.tr("lib.indexing", "🔍 Running Background Sync..."))
             
             # Pass sync_only as deep_clean to trigger Full Audit + Vacuum
-            self.indexer_thread = IndexerWorker(self.db, folders, deep_clean=sync_only)
+            self.indexer_thread = IndexerWorker(self.db, folders, deep_clean=sync_only, translate=self.tr)
             self.indexer_thread.progress_signal.connect(self.update_progress_text)
             self.indexer_thread.count_signal.connect(self.update_progress_bar)
             self.indexer_thread.finished_signal.connect(self.scan_finished)
@@ -789,7 +790,12 @@ class LibrarianModule(BaseModule):
         self.progress_bar.setVisible(False)
         self.refresh_ui()
         self.populate_tag_sidebar() # Ensure new tags appear
-        QMessageBox.information(self.view, self.tr("common.success", "Done"), self.tr("lib.msg.done", "Library Scan Complete!"))
+        outcome = self.indexer_thread.outcome
+        if outcome == InventoryStatus.COMPLETE:
+            QMessageBox.information(self.view, self.tr("common.success", "Done"), self.tr("lib.msg.done", "Library Scan Complete!"))
+        else:
+            key = "lib.scan.cancelled" if outcome == InventoryStatus.CANCELLED else "lib.scan.incomplete"
+            QMessageBox.warning(self.view, self.tr("lib.scan.warning", "Incomplete scan"), self.tr(key, "Indexing incomplete; index cleanup skipped for partial inventories."))
 
     def _get_active_paths(self, limit=1000):
         """Helper to get currently filtered or selected paths."""
@@ -855,13 +861,15 @@ class LibrarianModule(BaseModule):
         if not folders:
             return
         # deep_clean=True para reconciliar huérfanos (originales movidos) en esas carpetas.
-        self._reindex_thread = IndexerWorker(self.db, folders, deep_clean=True)
+        self._reindex_thread = IndexerWorker(self.db, folders, deep_clean=True, translate=self.tr)
         self._reindex_thread.finished_signal.connect(self._quiet_reindex_finished)
         self._reindex_thread.start()
 
     def _quiet_reindex_finished(self):
         """Refresca la vista tras el re-index dirigido, sin diálogos."""
         try:
+            if self._reindex_thread.outcome != InventoryStatus.COMPLETE:
+                self.lbl_status.setText(self.tr("lib.scan.incomplete", "Indexing incomplete; index cleanup skipped for partial inventories."))
             self.refresh_ui()
             self.populate_tag_sidebar()
         except Exception as e:
