@@ -454,6 +454,20 @@ class LibraryRepository:
         return restore(self.conn, self._normalize_path(path), expected_fingerprint=expected_fingerprint,
                        incoming=incoming, update_fts=self._fts_sync_file)
 
+    def register_curation_copy(self, path, *, incoming, observation):
+        from core.curation_restore import register_copy
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError('invalid_path')
+        return register_copy(self.conn, self._normalize_path(path), incoming=incoming,
+                             observation=observation, update_fts=self._fts_sync_file)
+
+    def adopt_curation_identity(self, path, *, expected_fingerprint, incoming):
+        from core.curation_restore import adopt_identity
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError('invalid_path')
+        return adopt_identity(self.conn, self._normalize_path(path), expected_fingerprint=expected_fingerprint,
+                              incoming=incoming, update_fts=self._fts_sync_file)
+
     def get_tags_for_file(self, path):
         """Returns list of tag names for a file path."""
         file_id = self.get_file_id(path)

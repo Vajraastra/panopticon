@@ -1,7 +1,9 @@
 """Restauración explícita por copia, con estado esperado y categoría global protegida."""
 import hashlib
 import json
+import math
 import re
+from pathlib import PurePosixPath
 
 MAX_TAGS = 256
 MAX_FIELD = 256
@@ -59,7 +61,7 @@ def read_state(conn, path):
     return dict(state=value, fingerprint=fingerprint(value))
 
 
-def restore(conn, path, *, expected_fingerprint, incoming, update_fts):
+def restore(conn, path, *, expected_fingerprint, incoming, update_fts, force_fts=False):
     if not conn.in_transaction:
         raise RuntimeError('restore_requires_transaction')
     if not isinstance(expected_fingerprint, str) or not re.fullmatch('[0-9a-f]{64}', expected_fingerprint):
@@ -75,6 +77,8 @@ def restore(conn, path, *, expected_fingerprint, incoming, update_fts):
     if identity != (state['hash_original'], state['hash_mod']):
         raise ValueError('identity_changed')
     if all(state[key] == value[key] for key in FIELDS):
+        if force_fts:
+            update_fts(state['id'])
         return True
     new = {tag['name']: tag for tag in value['tags']}
     old = {tag['name']: tag for tag in state['tags']}
@@ -104,6 +108,49 @@ def restore(conn, path, *, expected_fingerprint, incoming, update_fts):
                          (tag['source'], state['id'], known[name]))
     if state['rating'] != value['rating']:
         conn.execute('UPDATE files SET rating=? WHERE id=?', (value['rating'], state['id']))
-    if set(old) != set(new):
+    if force_fts or set(old) != set(new):
         update_fts(state['id'])
     return True
+
+
+def register_copy(conn, path, *, incoming, observation, update_fts):
+    """Alta explícita sólo si sigue ausente; la verificación de bytes vive en worker."""
+    if not conn.in_transaction:
+        raise RuntimeError('restore_requires_transaction')
+    value = _payload(incoming)
+    if not (value['hash_original'] or value['hash_mod']):
+        raise ValueError('identity_missing')
+    if not isinstance(observation, dict) or set(observation) != {'filename', 'size', 'created'}:
+        raise ValueError('invalid_curation_observation')
+    name, size, created = (observation[key] for key in ('filename', 'size', 'created'))
+    if (not isinstance(name, str) or not name or len(name) > 1024 or name != PurePosixPath(path).name or
+            type(size) is not int or not 0 <= size <= 2**63-1 or type(created) not in (int, float) or
+            not 0 <= created <= 253402300799 or not math.isfinite(created)):
+        raise ValueError('invalid_curation_observation')
+    if conn.execute('SELECT 1 FROM files WHERE path=?', (path,)).fetchone() is not None:
+        raise ValueError('file_now_registered')
+    conn.execute('INSERT INTO files(path,filename,file_size,created_date,hash_original,hash_mod) '
+                 'VALUES(?,?,?,?,?,?)', (path, name, size, created, value['hash_original'], value['hash_mod']))
+    expected = read_state(conn, path)['fingerprint']
+    return restore(conn, path, expected_fingerprint=expected, incoming=value,
+                   update_fts=update_fts, force_fts=True)
+
+
+def adopt_identity(conn, path, *, expected_fingerprint, incoming, update_fts):
+    """Completa identidad sólo si ambos hashes siguen NULL y la copia no cambió."""
+    if not conn.in_transaction:
+        raise RuntimeError('restore_requires_transaction')
+    if not isinstance(expected_fingerprint, str) or not re.fullmatch('[0-9a-f]{64}', expected_fingerprint):
+        raise ValueError('invalid_restore_fingerprint')
+    value = _payload(incoming)
+    if not (value['hash_original'] or value['hash_mod']):
+        raise ValueError('identity_missing')
+    current = read_state(conn, path)
+    if current['fingerprint'] != expected_fingerprint:
+        raise ValueError('curation_changed_since_review')
+    if (current['state']['hash_original'], current['state']['hash_mod']) != (None, None):
+        raise ValueError('identity_already_known')
+    conn.execute('UPDATE files SET hash_original=?,hash_mod=? WHERE id=?',
+                 (value['hash_original'], value['hash_mod'], current['state']['id']))
+    expected = read_state(conn, path)['fingerprint']
+    return restore(conn, path, expected_fingerprint=expected, incoming=value, update_fts=update_fts)
