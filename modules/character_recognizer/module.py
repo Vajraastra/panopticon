@@ -28,6 +28,10 @@ class CharacterRecognizerModule(BaseModule):
     def get_output_folder(self):
         """Retorna la subcarpeta de cache para este módulo."""
         return CachePaths.get_tool_cache("character_recognizer")
+
+    def on_unload(self):
+        if self.view:
+            self.content_view.shutdown()
     
     def get_default_input_folder(self):
         return CachePaths.get_cache_root()

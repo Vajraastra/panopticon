@@ -10,6 +10,7 @@ from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont
 from ..logic.profile_db import ProfileDB
 from ..logic.thread_worker import RecognitionWorker, AutoScanWorker
 from core.database_manager import DatabaseManager
+from core.library_async import LibraryReader, LibraryWriter
 from core.components.standard_layout import StandardToolLayout
 from core.theme import Theme
 import cv2
@@ -25,6 +26,23 @@ class CharacterRecognitionView(QWidget):
         self.worker = None
         self.auto_worker = None
         self._auto_suggestion_name = None
+        self._auto_paths = ()
+        self._bulk_remaining = ()
+        self._bulk_done = 0
+        self._bulk_cancelled = False
+        self._pending_edit = None
+        self._closed = False
+        self._curation_ready = False
+        self._generation = 0
+        self._queued_paths = None
+        self._retiring = False
+        self.current_path = None
+        self.db = DatabaseManager(service=context.get('data_service'))
+        self._reader = LibraryReader(self.db.service, self)
+        self._writer = LibraryWriter(self.db.service, self)
+        self._reader.result.connect(self._on_curation)
+        self._writer.result.connect(self._on_edit)
+        self.destroyed.connect(lambda: self.shutdown())
 
         content = self._create_content()
         sidebar = self._create_sidebar()
@@ -41,6 +59,9 @@ class CharacterRecognitionView(QWidget):
         main_layout.addWidget(self.layout_manager)
 
         self.refresh_profiles()
+        self._set_data_controls()
+        self.lbl_status.setTextFormat(Qt.PlainText)
+        self.lbl_auto_status.setTextFormat(Qt.PlainText)
 
     def _tr(self, key, default=None):
         """Traduce usando el LocaleManager del contexto."""
@@ -66,7 +87,7 @@ class CharacterRecognitionView(QWidget):
         self.action_bar_container.setObjectName("OverlayMenu")
         self.action_bar_container.setStyleSheet(f"""
             #OverlayMenu {{
-                background-color: rgba(20, 20, 20, 230);
+                background-color: {Theme.BG_PANEL};
                 border-radius: 8px;
                 border: 1px solid {Theme.BORDER};
             }}
@@ -76,7 +97,9 @@ class CharacterRecognitionView(QWidget):
         try:
             shadow = QGraphicsDropShadowEffect()
             shadow.setBlurRadius(15)
-            shadow.setColor(QColor(0, 0, 0, 180))
+            shadow_color = QColor(Theme.BORDER)
+            shadow_color.setAlpha(180)
+            shadow.setColor(shadow_color)
             shadow.setOffset(0, 4)
             self.action_bar_container.setGraphicsEffect(shadow)
         except Exception as e:
@@ -99,13 +122,13 @@ class CharacterRecognitionView(QWidget):
 
         _btn_style = (
             "QPushButton {"
-            "  color: white; padding: 4px 12px;"
+            f"  color: {Theme.BG_MAIN}; padding: 4px 12px;"
             "  border-radius: 4px; font-size: 12px; font-weight: bold;"
             "}"
         )
         _btn_style_sm = (
             "QPushButton {"
-            "  color: white; padding: 3px 8px;"
+            f"  color: {Theme.TEXT_PRIMARY}; padding: 3px 8px;"
             "  border-radius: 4px; font-size: 11px;"
             "}"
         )
@@ -132,7 +155,7 @@ class CharacterRecognitionView(QWidget):
         self.btn_skip = QPushButton(self._tr("cr.btn.skip", "⏭ Skip"))
         self.btn_skip.setToolTip(self._tr(
             "cr.btn_skip_tip", "Moves to the next face without tagging this one."))
-        _nav_color = "#3a3a3a"
+        _nav_color = Theme.BG_INPUT
         self.btn_return.setStyleSheet(f"background-color: {_nav_color};" + _btn_style_sm)
         self.btn_skip.setStyleSheet(f"background-color: {_nav_color};" + _btn_style_sm)
         nav_layout.addWidget(self.btn_return)
@@ -159,14 +182,15 @@ class CharacterRecognitionView(QWidget):
 
         btn_manual_layout = QHBoxLayout()
         btn_manual_layout.setSpacing(5)
-        btn_save = QPushButton(self._tr("cr.btn.save", "Save"))
+        btn_save = self.btn_manual_save = QPushButton(self._tr("cr.btn.save", "Save"))
         btn_save.setToolTip(self._tr(
             "cr.btn_save_tip", "Saves the typed name and links it to this face."))
         btn_save.setStyleSheet(f"background-color: {Theme.ACCENT_INFO};" + _btn_style)
-        btn_cancel = QPushButton(self._tr("cr.btn.back", "Back"))
+        btn_cancel = self.btn_manual_cancel = QPushButton(self._tr("cr.btn.back", "Back"))
         btn_cancel.setToolTip(self._tr(
             "cr.btn_back_tip", "Goes back without saving the typed name."))
-        btn_cancel.setStyleSheet(f"background-color: #555555; color: white;" + _btn_style)
+        btn_cancel.setStyleSheet(f"background-color: {Theme.BG_PANEL}; color: {Theme.TEXT_PRIMARY};"
+                                "padding: 4px 12px; border-radius: 4px; font-size: 12px;")
 
         btn_manual_layout.addWidget(btn_cancel)
         btn_manual_layout.addWidget(btn_save)
@@ -246,6 +270,8 @@ class CharacterRecognitionView(QWidget):
         layout.addWidget(lbl_tags)
 
         self.list_tags = QListWidget()
+        self.list_tags.setToolTip(self._tr('tool.character_recognizer.tags_tip',
+            'Tags confirmed by the library. Select one to remove it without changing the image.'))
         self.list_tags.setStyleSheet(f"""
             QListWidget {{
                 background-color: {Theme.BG_INPUT};
@@ -258,6 +284,12 @@ class CharacterRecognitionView(QWidget):
         """)
         self.list_tags.setFixedHeight(100)
         layout.addWidget(self.list_tags)
+
+        self.btn_retry_tags = QPushButton(self._tr('tool.character_recognizer.retry_tags', 'Reload tags'))
+        self.btn_retry_tags.setToolTip(self._tr('tool.character_recognizer.retry_tags_tip',
+            'Retries the library read for this image after an error.'))
+        self.btn_retry_tags.clicked.connect(self._request_curation)
+        layout.addWidget(self.btn_retry_tags)
 
         self.btn_remove_tag = QPushButton(self._tr("cr.btn.remove_tag", "🗑 Remove Tag"))
         self.btn_remove_tag.setToolTip(self._tr(
@@ -272,7 +304,7 @@ class CharacterRecognitionView(QWidget):
                 font-size: 11px;
                 padding: 3px 6px;
             }}
-            QPushButton:hover {{ background-color: #3a3a3a; color: {Theme.TEXT_PRIMARY}; }}
+            QPushButton:hover {{ background-color: {Theme.BG_PANEL}; color: {Theme.TEXT_PRIMARY}; }}
         """)
         self.btn_remove_tag.clicked.connect(self.on_remove_tag)
         layout.addWidget(self.btn_remove_tag)
@@ -289,7 +321,7 @@ class CharacterRecognitionView(QWidget):
         _btn_active = f"""
             QPushButton {{
                 background-color: {Theme.ACCENT_MAIN};
-                color: #000000;
+                color: {Theme.BG_MAIN};
                 border-radius: 0px;
                 font-size: 11px;
                 font-weight: bold;
@@ -357,13 +389,13 @@ class CharacterRecognitionView(QWidget):
         btn_load.setStyleSheet(f"""
             QPushButton {{
                 background-color: {Theme.ACCENT_INFO};
-                color: white;
+                color: {Theme.BG_MAIN};
                 border-radius: 6px;
                 font-size: 12px;
                 font-weight: bold;
                 padding: 6px 4px;
             }}
-            QPushButton:hover {{ background-color: #a070e0; }}
+            QPushButton:hover {{ background-color: {Theme._c('accent_hover')}; }}
         """)
         layout.addWidget(btn_load)
 
@@ -409,7 +441,7 @@ class CharacterRecognitionView(QWidget):
                 font-weight: bold;
                 padding: 6px 4px;
             }}
-            QPushButton:hover {{ background-color: #2a2a2a; color: {Theme.ACCENT_MAIN}; }}
+            QPushButton:hover {{ background-color: {Theme.BG_PANEL}; color: {Theme.ACCENT_MAIN}; }}
         """)
         self.btn_auto_scan.clicked.connect(self.on_auto_scan)
         layout.addWidget(self.btn_auto_scan)
@@ -446,10 +478,10 @@ class CharacterRecognitionView(QWidget):
         self.btn_tag_all = QPushButton(self._tr("cr.auto.tag_all", "Tag All"))
         self.btn_tag_all.setToolTip(self._tr(
             "cr.tag_all_tip",
-            "Applies the suggested name to ALL the faces the scan grouped as the same "
-            "person, in one go."))
+            "Applies the suggested name to every indexed image in the scanned batch, "
+            "including images without a match. Stops on error; retry keeps confirmed tags."))
         self.btn_tag_all.setStyleSheet(
-            f"background-color: {Theme.ACCENT_SUCCESS}; color: black;"
+            f"background-color: {Theme.ACCENT_SUCCESS}; color: {Theme.BG_MAIN};"
             " border-radius: 4px; font-size: 11px; font-weight: bold; padding: 4px 6px;"
         )
         self.btn_auto_cancel = QPushButton(self._tr("cr.auto.cancel", "Cancel"))
@@ -457,7 +489,7 @@ class CharacterRecognitionView(QWidget):
             "cr.auto_cancel_tip",
             "Stops the automatic scan. Whatever was tagged so far is kept."))
         self.btn_auto_cancel.setStyleSheet(
-            "background-color: #555555; color: white;"
+            f"background-color: {Theme.BG_PANEL}; color: {Theme.TEXT_PRIMARY};"
             " border-radius: 4px; font-size: 11px; padding: 4px 6px;"
         )
         sug_btn_layout.addWidget(self.btn_tag_all)
@@ -486,8 +518,130 @@ class CharacterRecognitionView(QWidget):
         profiles = self.profile_db.get_all_profiles()
         self.combo_names.addItems(sorted(p[0] for p in profiles))
 
+    def _set_data_controls(self):
+        idle = not self._closed and self._pending_edit is None
+        ready = idle and self._curation_ready
+        for control in (self.btn_confirm, self.btn_manual_save, self.btn_remove_tag):
+            control.setEnabled(ready)
+        for control in (self.btn_skip, self.btn_return, self.btn_reject,
+                        self.btn_manual_cancel, self.combo_names, self.btn_auto_scan):
+            control.setEnabled(idle)
+        self.btn_auto_cancel.setEnabled(not self._closed and
+            (idle or self._pending_edit['kind'] == 'bulk'))
+        self.btn_tag_all.setEnabled(idle and bool(self._auto_paths or self._bulk_remaining))
+        self.btn_retry_tags.setEnabled(idle and bool(self.current_path))
+
+    def _request_curation(self):
+        if self._closed or self._pending_edit is not None or not self.current_path:
+            return
+        self._curation_ready = False
+        self.list_tags.clear()
+        self.list_tags.addItem(self._tr('tool.character_recognizer.data_loading', 'Loading tags...'))
+        self._set_data_controls()
+        ticket = self._reader.request('get_curation_snapshot', (self.current_path,))
+        self._read_request = (ticket, self.current_path, self._generation)
+
+    @Slot(int, object, object)
+    def _on_curation(self, ticket, rows, error):
+        if self._closed or getattr(self, '_read_request', None) != (
+                ticket, self.current_path, self._generation):
+            return
+        self.list_tags.clear()
+        if error is None and (not isinstance(rows, list) or len(rows) != 1):
+            error = RuntimeError('Incomplete curation snapshot')
+        if error is not None:
+            self.list_tags.addItem(self._tr('tool.character_recognizer.data_error',
+                'Cannot read tags: {reason}').format(reason=str(error) or type(error).__name__))
+        elif rows[0]['id'] is None:
+            self.list_tags.addItem(self._tr('tool.character_recognizer.unregistered',
+                'Index this image in Librarian before editing its tags.'))
+        else:
+            self._curation_ready = True
+            tags = rows[0]['tags']
+            self.list_tags.addItems(sorted(tags) if tags else [self._tr('cr.no_tags', '(No tags)')])
+        self._set_data_controls()
+
+    def _submit_edit(self, kind, path, name, embedding=None):
+        if self._closed or self._pending_edit is not None:
+            return
+        job = dict(kind=kind, path=str(path), name=name, embedding=embedding,
+                   generation=self._generation, worker=self.worker)
+        self._pending_edit = job
+        if path == self.current_path:
+            self._reader.invalidate()
+        self._set_data_controls()
+        label = self.lbl_auto_status if kind == 'bulk' else self.lbl_status
+        label.setText(self._tr('tool.character_recognizer.bulk_saving',
+            'Saving tags: {done}/{total} confirmed.').format(
+                done=self._bulk_done, total=self._bulk_done + len(self._bulk_remaining))
+            if kind == 'bulk' else self._tr('tool.character_recognizer.saving', 'Saving tags...'))
+        try:
+            payload = {'remove_tags' if kind == 'remove' else 'add_tags': (name,)}
+            job['ticket'] = self._writer.submit('edit_curation', path, **payload)
+        except Exception as exc:
+            self._on_edit(job.get('ticket'), None, exc)
+
+    @Slot(int, object, object)
+    def _on_edit(self, ticket, committed, error):
+        job = self._pending_edit
+        if self._closed or job is None or ticket != job.get('ticket'):
+            return
+        self._pending_edit = None
+        current = job['generation'] == self._generation
+        if error is not None or committed is not True:
+            reason = (str(error) or type(error).__name__) if error is not None else 'not_committed'
+            if current:
+                key = 'bulk_error' if job['kind'] == 'bulk' else 'write_error'
+                label = self.lbl_auto_status if job['kind'] == 'bulk' else self.lbl_status
+                label.setText(self._tr('tool.character_recognizer.' + key,
+                    'Stopped after {done} confirmed images: {reason}.' if key == 'bulk_error'
+                    else 'Cannot save tags: {reason}').format(
+                        done=self._bulk_done, reason=reason))
+        elif current:
+            if job['kind'] == 'bulk':
+                self._bulk_done += 1
+                self._bulk_remaining = self._bulk_remaining[1:]
+                if self._bulk_remaining:
+                    self._submit_edit('bulk', self._bulk_remaining[0], job['name'])
+                    return
+                self.lbl_auto_status.setText(self._tr('tool.character_recognizer.bulk_cancelled',
+                    'Stopped after {done} confirmed images.').format(done=self._bulk_done)
+                    if self._bulk_cancelled else self._tr('cr.auto.done',
+                    'All tagged as {name}.').format(name=job['name']))
+                self.frame_suggestion.hide()
+                self._auto_paths = ()
+            else:
+                self.lbl_status.setText(self._tr('cr.tag_removed', 'Tag removed.')
+                    if job['kind'] == 'remove' else self._tr('cr.tagged',
+                    'Tagged: {name}').format(name=job['name']))
+                if job['kind'] == 'manual' and job['embedding'] is not None:
+                    # DB especializada: sólo aprender tras confirmar la curación central.
+                    try:
+                        self.profile_db.add_reference(job['name'], job['embedding'])
+                        self.refresh_profiles()
+                    except Exception:
+                        log.exception('Cannot update character profile after curation commit')
+                if job['kind'] != 'remove' and self.current_path == job['path'] and self.worker is job['worker']:
+                    if self.worker:
+                        self.worker.request_next()
+        if self.current_path:
+            self._request_curation()
+        self._set_data_controls()
+
+    def shutdown(self):
+        self._closed = True
+        self._reader.close()
+        self._writer.close()
+        self._queued_paths = None
+        self._bulk_remaining = ()
+        for worker in (self.worker, self.auto_worker):
+            if worker:
+                worker.is_running = False
+
     @Slot(str, object, object, str, object, float)
     def on_image_processed(self, path, cv_img, embedding, suggestion, bbox, confidence):
+        if self._closed or self._retiring or (self.sender() is not None and self.sender() is not self.worker):
+            return
         log.debug(f"UI received processed image: {path}")
         try:
             self.current_path = path
@@ -506,12 +660,10 @@ class CharacterRecognitionView(QWidget):
             orig_h, orig_w = cv_img.shape[:2]
             self.lbl_dimensions.setText(f"{orig_w} x {orig_h} px")
 
-            tags = DatabaseManager(service=self.context.get('data_service')).get_tags_for_file(path)
-            self.list_tags.clear()
-            if tags:
-                self.list_tags.addItems(sorted(tags))
-            else:
-                self.list_tags.addItem(self._tr("cr.no_tags", "(No tags)"))
+            self._generation += 1
+            self._curation_ready = False
+            self._reader.invalidate()
+            self._request_curation()
 
             self.action_bar_layout.setCurrentIndex(0)
 
@@ -547,11 +699,11 @@ class CharacterRecognitionView(QWidget):
                 bh = min(height - y, bh + 2 * pad_h)
 
                 if confidence > 0.6:
-                    color = QColor("#50fa7b")
+                    color = QColor(Theme.ACCENT_SUCCESS)
                 elif confidence > 0.4:
-                    color = QColor("#f1fa8c")
+                    color = QColor(Theme.ACCENT_WARNING)
                 else:
-                    color = QColor("#ff5555")
+                    color = QColor(Theme.ACCENT_DANGER)
 
                 pen = QPen(color)
                 pen.setWidth(3)
@@ -569,7 +721,7 @@ class CharacterRecognitionView(QWidget):
                 text_h = fm.height() + 5
 
                 painter.drawRect(x, max(0, y - text_h), text_w, text_h)
-                painter.setPen(QColor("black"))
+                painter.setPen(QColor(Theme.BG_MAIN))
                 painter.drawText(x + 5, max(0, y - 5), target_name)
 
             painter.end()
@@ -590,19 +742,19 @@ class CharacterRecognitionView(QWidget):
                 self.btn_confirm.setText(self._tr("cr.btn.yes_short", "Yes"))
                 self.btn_confirm.setVisible(True)
                 self.btn_confirm.setStyleSheet(
-                    f"background-color: {Theme.ACCENT_SUCCESS}; color: black; {_btn_style_inline}"
+                    f"background-color: {Theme.ACCENT_SUCCESS}; color: {Theme.BG_MAIN}; {_btn_style_inline}"
                 )
                 self.btn_reject.setText(self._tr("cr.btn.edit", "Edit"))
                 self.btn_reject.setVisible(True)
                 self.btn_reject.setStyleSheet(
-                    f"background-color: {Theme.ACCENT_WARNING}; color: white; {_btn_style_inline}"
+                    f"background-color: {Theme.ACCENT_WARNING}; color: {Theme.BG_MAIN}; {_btn_style_inline}"
                 )
             else:
                 self.lbl_prediction.setText(self._tr("cr.unknown", "Unknown"))
                 self.btn_confirm.setText(self._tr("cr.btn.identify", "Identify"))
                 self.btn_confirm.setVisible(True)
                 self.btn_confirm.setStyleSheet(
-                    f"background-color: {Theme.ACCENT_INFO}; color: white; {_btn_style_inline}"
+                    f"background-color: {Theme.ACCENT_INFO}; color: {Theme.BG_MAIN}; {_btn_style_inline}"
                 )
                 self.btn_reject.setVisible(False)
 
@@ -660,40 +812,37 @@ class CharacterRecognitionView(QWidget):
                 self.worker.pause()
 
     def on_reject_clicked(self):
+        if self._closed or self._pending_edit is not None:
+            return
         self.action_bar_layout.setCurrentIndex(1)
         self.combo_names.setFocus()
 
     def on_manual_save(self):
+        if self._closed or self._pending_edit is not None or not self._curation_ready:
+            return
         name = self.combo_names.currentText().strip()
         if not name:
             return
         self.current_suggestion = name
-        if self.current_embedding is not None:
-            log.debug(f"Learning new face for: {name}")
-            self.profile_db.add_reference(name, self.current_embedding)
-            self.refresh_profiles()
-        self.on_confirm()
+        embedding = self.current_embedding.copy() if self.current_embedding is not None else None
+        self._submit_edit('manual', self.current_path, name, embedding)
 
     def on_confirm(self):
         log.debug(f"on_confirm called. Suggestion: '{getattr(self, 'current_suggestion', None)}'")
-        if not hasattr(self, 'current_path'):
+        if self._closed or self._pending_edit is not None or not self._curation_ready or not self.current_path:
             return
         if not self.current_suggestion:
             self.on_reject_clicked()
             return
-        success = DatabaseManager(service=self.context.get('data_service')).add_tag_to_file(self.current_path, self.current_suggestion)
-        if success:
-            self.lbl_status.setText(
-                self._tr("cr.tagged", "Tagged: {name}").format(name=self.current_suggestion)
-            )
-        if self.worker:
-            self.worker.request_next()
+        self._submit_edit('confirm', self.current_path, self.current_suggestion)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
 
     def dropEvent(self, event):
+        if self._closed:
+            return
         urls = event.mimeData().urls()
         if not urls:
             return
@@ -714,10 +863,12 @@ class CharacterRecognitionView(QWidget):
             log.debug("Drop: no valid images found.")
 
     def on_load_folder_clicked(self):
+        if self._closed:
+            return
         folder = QFileDialog.getExistingDirectory(
             self, self._tr("cr.select_folder", "Select Folder to Process")
         )
-        if not folder:
+        if not folder or self._closed:
             return
         expanded_paths = []
         for root, _, files in os.walk(folder):
@@ -730,47 +881,94 @@ class CharacterRecognitionView(QWidget):
             self.lbl_status.setText(self._tr("qs.msg.no_images", "No images found."))
 
     def load_images(self, paths):
+        if self._closed:
+            return
+        self._queued_paths = list(paths)
+        self._generation += 1
+        self.current_path = None
+        self._curation_ready = False
+        self._reader.invalidate()
+        self._auto_paths = ()
+        self._bulk_remaining = ()
+        self._bulk_done = 0
+        self._auto_suggestion_name = None
+        self._auto_cancelled = True
+        self.frame_suggestion.hide()
+        self.action_bar_container.hide()
+        if self.auto_worker:
+            self.auto_worker.is_running = False
+        self._set_data_controls()
         self.lbl_status.setText(self._tr("cr.status.init", "Initializing AI Engine..."))
 
-        if self.worker and self.worker.isRunning():
-            self.worker.is_running = False
-            self.worker.wait()
+        if self.worker:
+            if self.worker.isRunning():
+                self.worker.is_running = False
+            self._retiring = True
+            return  # Reemplazar sólo tras finished nativo; nunca esperar desde Qt.
+
+        self._start_recognition()
+
+    def _start_recognition(self):
+        if self._closed or self._queued_paths is None:
+            return
+        paths, self._queued_paths = self._queued_paths, None
+        self._retiring = False
 
         self.worker = RecognitionWorker(paths, mode=self._detection_mode)
         self.worker.image_processed.connect(self.on_image_processed)
         self.worker.finished_signal.connect(self.on_finished)
         self.worker.progress.connect(self.update_progress)
         self.worker.error.connect(self.on_engine_error)
+        self.worker.finished.connect(self._on_worker_stopped)
         self.worker.paused = True
         self.worker.request_next()
         self.worker.start()
+
+    @Slot()
+    def _on_worker_stopped(self):
+        worker = self.sender()
+        if worker is not self.worker:
+            return
+        self.worker = None
+        worker.deleteLater()
+        self._start_recognition()
 
     def update_progress(self, current, total):
         pass
 
     @Slot(str)
     def on_engine_error(self, msg):
+        if self._closed or self._retiring or (self.sender() is not None and self.sender() is not self.worker):
+            return
         self.lbl_status.setText(
             self._tr("cr.error.engine", "AI Engine error: {msg}").format(msg=msg)
         )
 
     @Slot(str)
     def on_auto_error(self, msg):
+        if not self._accept_auto_result():
+            return
         self.lbl_auto_status.setText(
             self._tr("cr.error.engine", "AI Engine error: {msg}").format(msg=msg)
         )
         self.lbl_auto_status.show()
 
     def on_skip(self):
+        if self._closed or self._pending_edit is not None:
+            return
         self.lbl_status.setText(self._tr("cr.skip.done", "Skipped."))
         if self.worker:
             self.worker.request_next()
 
     def on_return(self):
+        if self._closed or self._pending_edit is not None:
+            return
         if self.worker:
             self.worker.go_back()
 
     def on_remove_tag(self):
+        if self._closed or self._pending_edit is not None or not self._curation_ready:
+            return
         selected = self.list_tags.currentItem()
         if not selected:
             self.lbl_status.setText(self._tr("cr.no_tag_selected", "No tag selected."))
@@ -778,18 +976,13 @@ class CharacterRecognitionView(QWidget):
         tag = selected.text()
         if tag == self._tr("cr.no_tags", "(No tags)"):
             return
-        if not hasattr(self, 'current_path'):
+        if not self.current_path:
             return
-        DatabaseManager(service=self.context.get('data_service')).remove_tag_from_file(self.current_path, tag)
-        tags = DatabaseManager(service=self.context.get('data_service')).get_tags_for_file(self.current_path)
-        self.list_tags.clear()
-        if tags:
-            self.list_tags.addItems(sorted(tags))
-        else:
-            self.list_tags.addItem(self._tr("cr.no_tags", "(No tags)"))
-        self.lbl_status.setText(self._tr("cr.tag_removed", "Tag removed."))
+        self._submit_edit('remove', self.current_path, tag)
 
     def on_auto_scan(self):
+        if self._closed or self._pending_edit is not None:
+            return
         if not self.worker or not getattr(self.worker, 'paths', None):
             self.lbl_auto_status.setText(
                 self._tr("cr.status.idle", "Load images first.")
@@ -803,23 +996,40 @@ class CharacterRecognitionView(QWidget):
         self.lbl_auto_status.setText(self._tr("cr.auto.scanning", "Scanning..."))
         self.lbl_auto_status.show()
         self.frame_suggestion.hide()
+        self._auto_paths = ()
+        self._bulk_remaining = ()
+        self._bulk_done = 0
 
-        self.auto_worker = AutoScanWorker(self.worker.paths, mode=self._detection_mode)
+        self.auto_worker = AutoScanWorker(list(self.worker.paths), mode=self._detection_mode)
+        self._auto_input = tuple(self.worker.paths)
+        self._auto_cancelled = False
         self.auto_worker.progress.connect(self.on_auto_progress)
         self.auto_worker.suggestion.connect(self.on_auto_suggestion)
         self.auto_worker.no_match.connect(self.on_auto_no_match)
         self.auto_worker.error.connect(self.on_auto_error)
         self.auto_worker.start()
 
+    def _accept_auto_result(self):
+        return (not self._closed and not getattr(self, '_auto_cancelled', True)
+                and (self.sender() is None or self.sender() is self.auto_worker))
+
     @Slot(int, int)
     def on_auto_progress(self, current, total):
+        if not self._accept_auto_result():
+            return
         self.lbl_auto_status.setText(
             self._tr("cr.auto.scanning", "Scanning...") + f" {current}/{total}"
         )
 
     @Slot(str, float, int)
     def on_auto_suggestion(self, name, pct, count):
+        if not self._accept_auto_result():
+            return
         self._auto_suggestion_name = name
+        self._auto_paths = tuple(dict.fromkeys(self._auto_input))
+        self._bulk_remaining = ()
+        self._bulk_done = 0
+        self._set_data_controls()
         pct_str = f"{pct * 100:.0f}%"
         self.lbl_auto_status.setText(
             self._tr("cr.auto.suggestion", "Dominant: {name} ({pct})").format(
@@ -833,6 +1043,8 @@ class CharacterRecognitionView(QWidget):
 
     @Slot()
     def on_auto_no_match(self):
+        if not self._accept_auto_result():
+            return
         self.lbl_auto_status.setText(
             self._tr("cr.auto.no_match", "No dominant character found.")
         )
@@ -840,33 +1052,43 @@ class CharacterRecognitionView(QWidget):
 
     def on_tag_all(self):
         name = self._auto_suggestion_name
-        if not name or not self.worker:
+        if self._closed or self._pending_edit is not None or not name:
             return
-        db = DatabaseManager(service=self.context.get('data_service'))
-        for path in self.worker.paths:
-            db.add_tag_to_file(path, name)
-        self.lbl_auto_status.setText(
-            self._tr("cr.auto.done", "All tagged as {name}.").format(name=name)
-        )
-        self.frame_suggestion.hide()
+        if not self._bulk_remaining:
+            self._bulk_remaining = self._auto_paths
+            self._bulk_done = 0
+            self._bulk_cancelled = False
+        if self._bulk_remaining:
+            self._submit_edit('bulk', self._bulk_remaining[0], name)
 
     def on_auto_cancel(self):
+        if self._closed or (self._pending_edit is not None and self._pending_edit['kind'] != 'bulk'):
+            return
+        self._bulk_cancelled = True
+        self._auto_cancelled = True
+        self._auto_paths = ()
+        self._bulk_remaining = ()
         if self.auto_worker and self.auto_worker.isRunning():
             self.auto_worker.is_running = False
         self.frame_suggestion.hide()
-        self.lbl_auto_status.hide()
+        if self._pending_edit is None:
+            self.lbl_auto_status.hide()
+        self._set_data_controls()
 
     def on_finished(self):
+        if self._closed or self._retiring or (self.sender() is not None and self.sender() is not self.worker):
+            return
+        self.current_path = None
+        self._curation_ready = False
+        self._reader.invalidate()
+        self._set_data_controls()
         self.lbl_status.setText(self._tr("cr.status.done", "Done."))
         self.image_label.clear()
         self.image_label.setText(self._tr("cr.batch_done",
             "<h2>✨ Batch Completed! ✨</h2><p>All images processed.</p>"
-            "<p style='color: #888;'>Drop more images to continue.</p>"
+            "<p>Drop more images to continue.</p>"
         ))
         self.image_label.setStyleSheet(
             f"QLabel {{ background-color: {Theme.BG_MAIN}; color: {Theme.TEXT_PRIMARY}; }}"
         )
         self.action_bar_container.hide()
-        if self.worker:
-            self.worker.deleteLater()
-            self.worker = None
