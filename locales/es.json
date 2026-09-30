@@ -1,4 +1,7 @@
 {
+    "lib.hash.start": "Calculando SHA-256 de {count} archivos...",
+    "lib.hash.complete": "Hashing completo: {hashed} confirmados, {failed} saltados.",
+    "lib.hash.incomplete": "Hashing incompleto: {hashed} confirmados, {failed} saltados. Los hashes no confirmados quedan pendientes.",
   "lib.scan.start": "Iniciando el indexador...",
   "lib.scan.warning": "Recorrido incompleto",
   "lib.scan.folder": "Revisando: {folder}",

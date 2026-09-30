@@ -32,7 +32,8 @@ Todas están explicadas en `BITACORA.md`; el resumen operativo:
 
 ```
 core/            base_module · mod_loader · event_bus · paths · theme(_manager) ·
-                 locale_manager · logging_config · catalog_reader
+                 locale_manager · logging_config · catalog_reader · database_manager ·
+                 library_service · library_repository · library_connections
   components/    widgets compartidos: standard_layout · thumbnail · tag_widgets
   metadata/      extractor · stamper · verifier · batch_verifier · bundle
   ai/            helpers de descarga de modelos
@@ -73,7 +74,8 @@ carpeta sola: no hay que registrar nada en el core.
 
 1. **Los módulos nunca se importan entre sí.** Se comunican por `EventBus` o por
    `load_image_set`. Si un widget se necesita en dos módulos, se mueve a `core/components/` — no
-   se importa del vecino. (Único incumplimiento pendiente: `DatabaseManager`, ver `TASKS.md`.)
+   se importa del vecino. El servicio central de datos vive en `core/`: los módulos
+   usan su fachada o `context["data_service"]`; nunca reciben conexiones SQLite.
 2. **Nunca modificar el archivo original.** La salida va a `CachePaths.get_tool_cache("mi_tool")`
    o a una carpeta nueva. Al terminar un proceso, abrir la carpeta con `CachePaths.open_folder()`.
    Dos excepciones, ambas deliberadas y ninguna imitable sin pensarlo: **Metadata Hub**, que para

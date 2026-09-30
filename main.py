@@ -17,6 +17,7 @@ from core.theme_manager import ThemeManager
 from core.locale_manager import LocaleManager
 from core.event_bus import EventBus
 from core.logging_config import setup_logging
+from core.library_service import get_library_service, close_library_services
 
 # Configuración central de logging (consola + logs/panopticon.log rotativo).
 setup_logging()
@@ -56,6 +57,7 @@ class MainWindow(QMainWindow):
             "theme_manager": self.theme_manager,
             "locale_manager": self.locale_manager,
             "event_bus": self.event_bus,
+            "data_service": get_library_service(),
             "main_window": self
         }
 
@@ -567,6 +569,7 @@ class MainWindow(QMainWindow):
                 log.error("Error unloading module %s: %s", name, e)
         for window in self.module_windows.values():
             window.hide()
+        close_library_services(permanent=True)
         super().closeEvent(event)
 
 if __name__ == "__main__":
@@ -577,6 +580,7 @@ if __name__ == "__main__":
     if sys.platform.startswith("linux"):
         os.environ.setdefault("QT_QPA_PLATFORMTHEME", "xdgdesktopportal")
     app = QApplication(sys.argv)
+    app.aboutToQuit.connect(lambda: close_library_services(permanent=True))
     # Estilo Fusion en TODAS las plataformas: apariencia idéntica Linux/Windows y,
     # en Windows, evita el motor de QSS del estilo nativo, que provoca un access
     # violation al construir la página de ajustes (reproducido en PySide6 6.8/6.9/6.11).

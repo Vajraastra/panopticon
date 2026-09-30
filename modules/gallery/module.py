@@ -32,7 +32,7 @@ class GalleryModule(BaseModule):
             return self.view_widget
 
         self.state  = GalleryState()
-        self.engine = QueryEngine()
+        self.engine = QueryEngine(service=self.context.get('data_service'))
         self.view_widget = GalleryView(self.state, self.engine, self.context)
 
         self.view_widget.btn_send.clicked.connect(self.show_send_menu)

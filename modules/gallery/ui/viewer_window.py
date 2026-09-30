@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxL
 from PySide6.QtCore import Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import QPixmap, QKeySequence, QAction, QMouseEvent
 from core.components.tag_widgets import FlowLayout, TagChip
-from modules.librarian.logic.db_manager import DatabaseManager
+from core.database_manager import DatabaseManager
 from core.metadata.extractor import MetadataExtractor
 from core.metadata.stamper import MetadataStamper
 from core.metadata.bundle import MetadataBundle
@@ -128,7 +128,7 @@ class AdvancedViewer(QDialog):
     Permite visualizar metadatos técnicos, editar etiquetas, calificar imágenes
     con estrellas y ejecutar pases de diapositivas (slideshow).
     """
-    def __init__(self, paths, start_index=0, parent=None):
+    def __init__(self, paths, start_index=0, parent=None, service=None):
         super().__init__(parent)
         self.setWindowTitle("Panopticon Viewer")
         self.resize(1100, 800)
@@ -140,7 +140,7 @@ class AdvancedViewer(QDialog):
         self.fs_window = None
         self.timer = QTimer() # Temporizador para el slideshow
         self.timer.timeout.connect(self.next_image)
-        self.db = DatabaseManager()
+        self.db = DatabaseManager(service=service)
         
         # Diseño Principal
         layout = QHBoxLayout(self)

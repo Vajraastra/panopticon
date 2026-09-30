@@ -13,6 +13,7 @@ intento o para la limpieza de huérfanos del indexer.
 import hashlib
 import logging
 from PySide6.QtCore import QThread, Signal
+from core.inventory import InventoryStatus
 
 log = logging.getLogger(__name__)
 
@@ -33,48 +34,55 @@ class HashBackfillWorker(QThread):
     count_signal    = Signal(int, int)  # (procesados, total)
     finished_signal = Signal(int, int)  # (hasheados, fallidos)
 
-    def __init__(self, db_manager, batch_size=200):
+    def __init__(self, db_manager, batch_size=200, translate=None):
         super().__init__()
         self.db         = db_manager
         self.batch_size = batch_size
         self.is_running = True
+        self.tr = translate or (lambda key, default: default)
+        self.outcome = InventoryStatus.COMPLETE
 
     def run(self):
-        total = self.db.count_files_missing_hash()
-        if not total:
-            self.progress_signal.emit("✅ Nada que hashear.")
-            self.finished_signal.emit(0, 0)
-            return
-
-        self.progress_signal.emit(f"🧬 Calculando SHA-256 de {total} archivos...")
         done = failed = 0
-        last_id = 0  # paginación por keyset: los fallidos no re-entran en esta corrida
-
-        while self.is_running:
-            batch = self.db.get_files_missing_hash(after_id=last_id, limit=self.batch_size)
-            if not batch:
-                break
-
-            pairs = []
-            for file_id, path in batch:
-                if not self.is_running:
+        pending = []
+        try:
+            total = self.db.count_files_missing_hash()
+            self.progress_signal.emit(self.tr(
+                "lib.hash.start", "Computing SHA-256 for {count} files...").format(count=total))
+            last_id = 0
+            while self.is_running:
+                batch = self.db.get_files_missing_hash(after_id=last_id, limit=self.batch_size)
+                if not batch:
                     break
-                last_id = file_id
-                try:
-                    pairs.append((sha256_file(path), file_id))
-                    done += 1
-                except OSError as e:
-                    failed += 1
-                    log.warning("[Backfill] Ilegible, se salta: %s (%s)", path, e)
-
-            if pairs:
-                self.db.set_hash_original_bulk(pairs)
-            self.count_signal.emit(done + failed, total)
-
-        self.progress_signal.emit(
-            f"✅ Backfill: {done} hasheados, {failed} saltados."
-        )
-        self.finished_signal.emit(done, failed)
+                pending = []
+                for file_id, path in batch:
+                    if not self.is_running:
+                        break
+                    last_id = file_id
+                    try:
+                        pending.append((sha256_file(path), file_id))
+                    except OSError as exc:
+                        failed += 1
+                        log.warning("[Backfill] Ilegible: %s (%s)", path, exc)
+                if pending:
+                    if not self.db.set_hash_original_bulk(pending):
+                        raise RuntimeError('Hash batch was not committed')
+                    done += len(pending)
+                    pending = []
+                self.count_signal.emit(done + failed, total)
+        except Exception:
+            failed += len(pending)
+            self.outcome = InventoryStatus.ERROR
+            log.exception('[Backfill] Fallo de base de datos')
+        finally:
+            if not self.is_running and self.outcome != InventoryStatus.ERROR:
+                self.outcome = InventoryStatus.CANCELLED
+            try:
+                key = 'lib.hash.complete' if self.outcome == InventoryStatus.COMPLETE else 'lib.hash.incomplete'
+                self.progress_signal.emit(self.tr(key,
+                    "Hashing: {hashed} confirmed, {failed} skipped.").format(hashed=done, failed=failed))
+            finally:
+                self.finished_signal.emit(done, failed)
 
     def stop(self):
         self.is_running = False

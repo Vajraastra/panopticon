@@ -1,13 +1,13 @@
 import os
-from modules.librarian.logic.db_manager import DatabaseManager
+from core.database_manager import DatabaseManager
 
 class QueryEngine:
     """
     Decoupled logic for fetching data from the DatabaseManager.
     Translates GalleryState to DB queries.
     """
-    def __init__(self):
-        self.db = DatabaseManager()
+    def __init__(self, service=None):
+        self.db = DatabaseManager(service=service)
         
     def fetch_albums(self, page=0, page_size=50):
         """

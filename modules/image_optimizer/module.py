@@ -413,8 +413,8 @@ class ImageOptimizerModule(BaseModule):
             "export_path": export_path
         }
 
-        from modules.librarian.logic.db_manager import DatabaseManager
-        db = DatabaseManager()
+        from core.database_manager import DatabaseManager
+        db = DatabaseManager(service=self.context.get('data_service'))
         settings['tags_map']   = {p: db.get_tags_for_file(p) for p in self.queue}
         settings['rating_map'] = {p: db.get_file_rating(p)   for p in self.queue}
 

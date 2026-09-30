@@ -6,13 +6,7 @@ tengo?* La primera en necesitarla es la alta de proyectos de Cherry-DL, que
 antes de bajar 9.000 archivos de un artista debería poder decir que ya hay
 9.000 en la biblioteca.
 
-**Por qué no se usa `DatabaseManager` directamente:** vive en
-`modules/librarian/`, y la regla 1 del proyecto prohíbe que un módulo importe a
-otro (`CLAUDE.md`). Ya hay cinco incumplimientos anotados en `TASKS.md` y este
-habría sido el sexto. Lo que la regla manda hacer es exactamente esto: lo que
-dos módulos necesitan se sube a `core/`. El día que `DatabaseManager` se mueva
-a `core/` con inyección, este archivo se puede reemplazar por él sin tocar
-ningún módulo.
+Fachada informativa estrecha: comparte la fábrica de lectores del servicio central.
 
 **Contrato, estrecho a propósito:**
   - NUNCA escribe. La conexión se abre en modo `ro` de SQLite, así que ni un
@@ -34,13 +28,14 @@ import sqlite3
 from pathlib import Path
 
 from core.paths import ProjectPaths
+from core.library_connections import open_reader
 
 log = logging.getLogger(__name__)
 
 # Se abre y se cierra en cada consulta: son llamadas sueltas desde diálogos,
 # no un bucle. Mantener una conexión viva solo añadiría un handle más sobre un
 # archivo que ya tienen abierto media docena de módulos.
-_TIMEOUT = 5.0
+
 
 
 def db_path() -> Path:
@@ -58,9 +53,7 @@ def _connect() -> sqlite3.Connection | None:
     if not path.is_file():
         return None
     try:
-        # `mode=ro` exige que el archivo exista y prohíbe toda escritura.
-        return sqlite3.connect(
-            f"file:{path.as_posix()}?mode=ro", uri=True, timeout=_TIMEOUT)
+        return open_reader(path)
     except sqlite3.Error as exc:
         log.warning("library_probe: no se pudo abrir la biblioteca: %s", exc)
         return None

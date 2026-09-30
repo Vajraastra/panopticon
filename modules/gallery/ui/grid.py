@@ -176,7 +176,8 @@ class GalleryGrid(QWidget):
             
             if path in current_paths:
                 idx = current_paths.index(path)
-                viewer = AdvancedViewer(current_paths, start_index=idx, parent=self)
+                viewer = AdvancedViewer(current_paths, start_index=idx, parent=self,
+                                        service=self.engine.db.service)
                 viewer.exec()
             
     def update_single_widget_selection(self, path):

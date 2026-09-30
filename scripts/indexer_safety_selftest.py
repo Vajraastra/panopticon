@@ -16,7 +16,8 @@ from core import catalog_reader
 from core.inventory import InventoryStatus as Status
 from core.paths import ProjectPaths
 from modules.librarian.logic import indexer
-from modules.librarian.logic.db_manager import DatabaseManager
+from core.database_manager import DatabaseManager
+from core.library_service import close_library_services
 from modules.librarian.module import LibrarianModule
 
 
@@ -32,7 +33,9 @@ class IndexerSafety(unittest.TestCase):
         self.folder = self.root / 'collection'
         self.folder.mkdir()
         self.db = DatabaseManager(self.root / 'central.db')
-        self.addCleanup(self.db.conn.close)
+        self.addCleanup(close_library_services)
+        self.inspect_conn = sqlite3.connect(self.db.db_path)
+        self.addCleanup(self.inspect_conn.close)
         self.artist = patch.object(catalog_reader, '_INDEX_PATH', self.root / 'absent-index.db')
         self.artist.start()
         self.addCleanup(self.artist.stop)
@@ -53,12 +56,12 @@ class IndexerSafety(unittest.TestCase):
         return self.row(path)
 
     def row(self, path):
-        return self.db.conn.execute('SELECT id,rating FROM files WHERE path=?',
+        return self.inspect_conn.execute('SELECT id,rating FROM files WHERE path=?',
                                     (path.as_posix(),)).fetchone()
 
     def assert_preserved(self, path, before):
         self.assertEqual(self.row(path), before)
-        tags = self.db.conn.execute('SELECT t.name FROM tags t JOIN file_tags ft '
+        tags = self.inspect_conn.execute('SELECT t.name FROM tags t JOIN file_tags ft '
                                     'ON ft.tag_id=t.id WHERE ft.file_id=?', (before[0],)).fetchall()
         self.assertEqual(tags, [('keep-curation',)])
 
@@ -139,7 +142,7 @@ class IndexerSafety(unittest.TestCase):
         worker = self.run_worker()
         self.assertEqual(worker.outcome, Status.COMPLETE)
         self.assertIsNone(self.row(path))
-        self.assertEqual(self.db.conn.execute('SELECT count(*) FROM files_fts').fetchone()[0], 0)
+        self.assertEqual(self.inspect_conn.execute('SELECT count(*) FROM files_fts').fetchone()[0], 0)
 
     def test_valid_walk_ingests_and_removes_only_missing(self):
         live = self.image('live.png')
@@ -190,7 +193,7 @@ class IndexerSafety(unittest.TestCase):
         worker = self.run_worker()
         self.assertEqual(worker.outcome, Status.COMPLETE)
         self.assertEqual((self.folder / 'catalog.db').read_bytes(), raw_before)
-        self.assertEqual(self.db.conn.execute('SELECT hash_original FROM files').fetchall(), [('sha-live',)])
+        self.assertEqual(self.inspect_conn.execute('SELECT hash_original FROM files').fetchall(), [('sha-live',)])
         with closing(sqlite3.connect(self.folder / 'catalog.db')) as conn:
             self.assertEqual(conn.execute('SELECT count(*) FROM files').fetchone()[0], 2)
 
@@ -236,7 +239,7 @@ class IndexerSafety(unittest.TestCase):
         worker.count_signal.connect(lambda current, total: worker.stop())
         worker.run()
         self.assertEqual(worker.outcome, Status.CANCELLED)
-        self.assertEqual(self.db.conn.execute('SELECT count(*) FROM files').fetchone()[0], 101)
+        self.assertEqual(self.inspect_conn.execute('SELECT count(*) FROM files').fetchone()[0], 101)
         self.assert_preserved(missing, before)
 
     def test_disconnect_while_checking_candidates_blocks_sweep(self):
@@ -273,8 +276,8 @@ class IndexerSafety(unittest.TestCase):
     def test_failed_cleanup_rolls_back_and_reports_error(self):
         missing = self.folder / 'gone.png'
         before = self.seed(missing)
-        self.db.conn.execute('DROP TABLE files_fts')
-        self.db.conn.commit()
+        self.inspect_conn.execute('DROP TABLE files_fts')
+        self.inspect_conn.commit()
         worker = self.run_worker()
         self.assertEqual(worker.outcome, Status.ERROR)
         self.assert_preserved(missing, before)
@@ -348,7 +351,7 @@ class IndexerSafety(unittest.TestCase):
                     warning.assert_not_called()
             finally:
                 module._dirty_timer.stop()
-                module.db.conn.close()
+                close_library_services()
                 view.close()
                 view.deleteLater()
                 self.app.processEvents()

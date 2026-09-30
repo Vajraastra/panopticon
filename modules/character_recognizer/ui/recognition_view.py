@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, Slot, QFileInfo
 from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont
 from ..logic.profile_db import ProfileDB
 from ..logic.thread_worker import RecognitionWorker, AutoScanWorker
-from modules.librarian.logic.db_manager import DatabaseManager
+from core.database_manager import DatabaseManager
 from core.components.standard_layout import StandardToolLayout
 from core.theme import Theme
 import cv2
@@ -506,7 +506,7 @@ class CharacterRecognitionView(QWidget):
             orig_h, orig_w = cv_img.shape[:2]
             self.lbl_dimensions.setText(f"{orig_w} x {orig_h} px")
 
-            tags = DatabaseManager().get_tags_for_file(path)
+            tags = DatabaseManager(service=self.context.get('data_service')).get_tags_for_file(path)
             self.list_tags.clear()
             if tags:
                 self.list_tags.addItems(sorted(tags))
@@ -681,7 +681,7 @@ class CharacterRecognitionView(QWidget):
         if not self.current_suggestion:
             self.on_reject_clicked()
             return
-        success = DatabaseManager().add_tag_to_file(self.current_path, self.current_suggestion)
+        success = DatabaseManager(service=self.context.get('data_service')).add_tag_to_file(self.current_path, self.current_suggestion)
         if success:
             self.lbl_status.setText(
                 self._tr("cr.tagged", "Tagged: {name}").format(name=self.current_suggestion)
@@ -780,8 +780,8 @@ class CharacterRecognitionView(QWidget):
             return
         if not hasattr(self, 'current_path'):
             return
-        DatabaseManager().remove_tag_from_file(self.current_path, tag)
-        tags = DatabaseManager().get_tags_for_file(self.current_path)
+        DatabaseManager(service=self.context.get('data_service')).remove_tag_from_file(self.current_path, tag)
+        tags = DatabaseManager(service=self.context.get('data_service')).get_tags_for_file(self.current_path)
         self.list_tags.clear()
         if tags:
             self.list_tags.addItems(sorted(tags))
@@ -842,7 +842,7 @@ class CharacterRecognitionView(QWidget):
         name = self._auto_suggestion_name
         if not name or not self.worker:
             return
-        db = DatabaseManager()
+        db = DatabaseManager(service=self.context.get('data_service'))
         for path in self.worker.paths:
             db.add_tag_to_file(path, name)
         self.lbl_auto_status.setText(

@@ -342,8 +342,8 @@ class CropperModule(BaseModule):
                 save_path += m.group(1)
 
         try:
-            from modules.librarian.logic.db_manager import DatabaseManager
-            db = DatabaseManager()
+            from core.database_manager import DatabaseManager
+            db = DatabaseManager(service=self.context.get('data_service'))
             tags   = db.get_tags_for_file(self.cropper_widget.image_path)
             rating = db.get_file_rating(self.cropper_widget.image_path)
             crop_image(self.cropper_widget.image_path, rect, save_path, tags=tags, rating=rating)

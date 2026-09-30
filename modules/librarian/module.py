@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, QSize, Signal, QTimer, QStringListModel
 from core.base_module import BaseModule
 from core.components.thumbnail import ClickableThumbnail
 from core.components.tag_widgets import FlowLayout, TagChip
-from .logic.db_manager import DatabaseManager
+from core.database_manager import DatabaseManager
 from .logic.indexer import IndexerWorker
 from .logic.hash_backfill import HashBackfillWorker
 from core.inventory import InventoryStatus
@@ -37,7 +37,7 @@ class LibrarianModule(BaseModule):
         
         self.view = None
         # Gestor de base de datos SQLite persistente
-        self.db = DatabaseManager()
+        self.db = None
         self.indexer_thread = None
         self.backfill_thread = None
 
@@ -55,6 +55,10 @@ class LibrarianModule(BaseModule):
         self.page_size = 100
         self.total_paths = []
         self.current_folder_path = None
+
+    def on_load(self, context=None):
+        super().on_load(context)
+        self.db = DatabaseManager(service=(context or {}).get('data_service'))
 
     def get_view(self) -> QWidget:
         """Inicializa y retorna la vista principal del bibliotecario."""
@@ -634,13 +638,10 @@ class LibrarianModule(BaseModule):
 
 
     def update_global_stats(self):
-        if self.db.conn:
-            cursor = self.db.conn.cursor()
-            cursor.execute("SELECT count(*) FROM files")
-            count = cursor.fetchone()[0]
-            folders = self.db.get_watched_folders()
-            self.lbl_stats.setText(self.tr("lib.stats.global", "📊 Global Status | Indexed Files: {count} | Watched Folders: {total}")
-                                   .format(count=count, total=len(folders)))
+        count = self.db.count_files()
+        folders = self.db.get_watched_folders()
+        self.lbl_stats.setText(self.tr("lib.stats.global", "📊 Global Status | Indexed Files: {count} | Watched Folders: {total}")
+                               .format(count=count, total=len(folders)))
 
     def refresh_ui(self):
         # specific reload logic
@@ -688,8 +689,6 @@ class LibrarianModule(BaseModule):
         
         if confirm == QMessageBox.Yes:
             if self.db.remove_watched_folder(path):
-                # Trigger VACUUM to reclaim disk space immediately
-                self.db.vacuum_database()
                 if hasattr(self, 'current_folder_path') and self.current_folder_path == path:
                     self.current_folder_path = None
                 self.refresh_ui()
@@ -750,7 +749,7 @@ class LibrarianModule(BaseModule):
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
 
-            self.backfill_thread = HashBackfillWorker(self.db)
+            self.backfill_thread = HashBackfillWorker(self.db, translate=self.tr)
             self.backfill_thread.progress_signal.connect(self.update_progress_text)
             self.backfill_thread.count_signal.connect(self.update_progress_bar)
             self.backfill_thread.finished_signal.connect(self.backfill_finished)
@@ -765,11 +764,16 @@ class LibrarianModule(BaseModule):
         self.btn_scan.setEnabled(True)
         if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(True)
         self.progress_bar.setVisible(False)
-        QMessageBox.information(
-            self.view, self.tr("common.success", "Done"),
-            self.tr("lib.msg.backfill_done", "Hashing complete: {hashed} hashed, {failed} skipped.")
-                .format(hashed=hashed, failed=failed)
-        )
+        if self.backfill_thread.outcome == InventoryStatus.COMPLETE:
+            QMessageBox.information(
+                self.view, self.tr("common.success", "Done"),
+                self.tr("lib.msg.backfill_done", "Hashing complete: {hashed} hashed, {failed} skipped.")
+                    .format(hashed=hashed, failed=failed)
+            )
+        else:
+            QMessageBox.warning(self.view, self.tr("lib.scan.warning", "Incomplete scan"),
+                self.tr("lib.hash.incomplete", "Hashing incomplete: {hashed} confirmed, {failed} skipped.")
+                    .format(hashed=hashed, failed=failed))
 
     def update_progress_text(self, text):
         self.lbl_status.setText(text)
