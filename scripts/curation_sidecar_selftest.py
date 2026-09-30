@@ -14,6 +14,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from core import curation_sidecar as sidecar
+from core.curation_export_lock import GUARD, MAGIC
 import curation_snapshot_selftest as helpers
 
 
@@ -37,7 +38,9 @@ class SidecarTests(helpers.Fixture):
         return hashlib.sha256(self.target.read_bytes()).hexdigest()
 
     def clean(self):
-        self.assertEqual([path.name for path in self.folder.iterdir() if path.name.startswith('.' + sidecar.NAME)], [])
+        self.assertEqual([path.name for path in self.folder.iterdir()
+                          if path.name.startswith('.' + sidecar.NAME) and path.name != GUARD], [])
+        self.assertEqual((self.folder / GUARD).read_bytes(), MAGIC)
 
     def test_export_owner_base_schema_and_minimum_payload(self):
         path = self.register()[0]

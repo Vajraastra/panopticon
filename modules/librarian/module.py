@@ -653,8 +653,13 @@ class LibrarianModule(BaseModule):
         folder, self._exporting = self._exporting, None
         self._update_export_controls()
         if error is not None:
+            reason = str(error)
+            if reason in ('sidecar_export_busy', 'invalid_export_guard'):
+                reason = self.tr('lib.export_reason.' + reason,
+                    'Another export is active; try again later.' if reason == 'sidecar_export_busy' else
+                    'The export guard requires manual review; it was preserved.')
             self.lbl_export.setText(self.tr('lib.export_error', 'Could not export {folder}: {reason}')
-                                    .format(folder=folder, reason=str(error)))
+                                    .format(folder=folder, reason=reason))
         else:
             self.lbl_export.setText(self.tr('lib.exported',
                 'Exported {count} copies to {path}. Missing hash: {missing}.').format(

@@ -117,6 +117,22 @@ Cherry's `catalog.db` and image files are preserved. The compare command reports
 for conflicts; it does not apply changes. Hashes are cataloged identities, not a fresh check
 of image bytes. Generation metadata and training captions are outside this export.
 
+An interrupted export can leave a lock and temporary files. Inspect them, review the
+reported file list, then quarantine that exact state using its returned fingerprint:
+
+```bat
+venv\Scripts\python.exe scripts\curation_sidecar.py inspect-recovery --folder "G:\Collections\Artist"
+venv\Scripts\python.exe scripts\curation_sidecar.py quarantine-recovery --folder "G:\Collections\Artist" --expected-fingerprint "<fingerprint from inspection>"
+```
+
+Quarantine keeps the interrupted files and a recovery plan in a new folder. It preserves
+the published sidecar, central database, Cherry catalogs and images. An active export
+blocks recovery immediately. The persistent `.panopticon.curation.db.guard` is normal;
+keep it with the folder. Recovery recognizes only current export manifests and matching
+file identities. Legacy empty locks, unclaimed temporaries and changed identities require
+manual review. A partially failed quarantine retains its plan and remaining lock; inspect
+again before retrying. This is cooperative protection tested on local Windows storage.
+
 ## License
 
 Business Source License 1.1 — free for non-commercial use.  

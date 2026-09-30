@@ -1,6 +1,8 @@
 {
   "lib.exported": "Exported {count} copies to {path}. Missing hash: {missing}.",
   "lib.export_error": "Could not export {folder}: {reason}",
+  "lib.export_reason.sidecar_export_busy": "Another export is active; try again later.",
+  "lib.export_reason.invalid_export_guard": "The export guard requires manual review; it was preserved.",
   "lib.exporting": "Exporting curation: {folder}",
   "lib.export_tip": "Select a folder and clear tag filters. Exports every indexed copy in that folder, including subfolders, to panopticon.curation.db. Replaces its previous export; preserves images and Cherry catalogs.",
   "lib.export": "Export folder curation",

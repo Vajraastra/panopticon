@@ -1,4 +1,4 @@
-"""Exportación manual y reporte de conflictos. No aplica cambios a la central."""
+"""Exportación/reporte y cuarentena explícita de recursos propios; central sin cambios."""
 import argparse
 import json
 from pathlib import Path
@@ -6,15 +6,25 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.curation_sidecar import export_curation, compare_curation_page
+from core.curation_recovery import inspect_recovery, quarantine_recovery
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('export', 'compare'))
-    parser.add_argument('--db', required=True, type=Path)
+    parser.add_argument('operation', choices=('export', 'compare', 'inspect-recovery', 'quarantine-recovery'))
+    parser.add_argument('--db', type=Path)
     parser.add_argument('--folder', required=True, type=Path)
+    parser.add_argument('--expected-fingerprint')
     args = parser.parse_args()
-    if args.operation == 'export':
+    if args.operation in ('export', 'compare') and args.db is None:
+        parser.error('--db is required for export/compare')
+    if args.operation == 'quarantine-recovery' and args.expected_fingerprint is None:
+        parser.error('--expected-fingerprint is required after inspect-recovery')
+    if args.operation == 'inspect-recovery':
+        print(json.dumps(inspect_recovery(args.folder)))
+    elif args.operation == 'quarantine-recovery':
+        print(json.dumps(quarantine_recovery(args.folder, expected_fingerprint=args.expected_fingerprint)))
+    elif args.operation == 'export':
         print(json.dumps(export_curation(args.db, args.folder)))
     else:
         after = 0

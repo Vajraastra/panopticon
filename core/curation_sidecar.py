@@ -4,6 +4,7 @@ Sólo escribe su sidecar propio. No modifica imágenes, central ni catálogo Che
 Los hashes son los catalogados, no una verificación actual de bytes.
 """
 import os
+import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import sqlite3
@@ -13,6 +14,7 @@ import uuid
 from contextlib import closing
 
 from core.library_connections import open_reader
+from core.curation_export_lock import export_guard
 from core.library_repository import LibraryRepository
 from third_party.cherry_dl.catalog import _CREATE_FILES, _CREATE_META
 
@@ -105,8 +107,13 @@ def export_curation(db_path, folder, *, cancelled=None):
     target = folder / NAME
     if target.is_symlink() or source == target or (target.exists() and os.path.samefile(source, target)):
         raise ValueError('source_target_alias')
+    with export_guard(folder):
+        return _export_curation(source, folder, target, cancelled)
+
+
+def _export_curation(source, folder, target, cancelled):
     lock = folder / ('.' + NAME + '.lock')
-    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0))
     lock_info = os.fstat(fd)
     temporary = None
     try:
@@ -115,6 +122,13 @@ def export_curation(db_path, folder, *, cancelled=None):
         handle, path = tempfile.mkstemp(prefix='.' + NAME + '-', suffix='.tmp', dir=folder)
         os.close(handle)
         temporary = Path(path)
+        token = uuid.uuid4().hex
+        info = temporary.stat()
+        manifest = json.dumps(dict(owner='panopticon.curation.export', version=1, token=token,
+            temporary=temporary.name, dev=info.st_dev, ino=info.st_ino)).encode('utf-8')
+        if os.write(fd, manifest) != len(manifest):
+            raise OSError('incomplete_export_manifest')
+        os.fsync(fd)
         with closing(sqlite3.connect(temporary, isolation_level=None)) as output:
             output.execute('PRAGMA synchronous=FULL')
             output.execute('PRAGMA foreign_keys=ON')
@@ -129,7 +143,7 @@ def export_curation(db_path, folder, *, cancelled=None):
             output.execute('BEGIN IMMEDIATE')
             output.executemany('INSERT INTO meta(key,value) VALUES(?,?)', [
                 ('owner', 'panopticon'), ('panopticon_curation_version', VERSION),
-                ('export_id', uuid.uuid4().hex), ('exported_at', int(time.time()))])
+                ('export_id', token), ('exported_at', int(time.time()))])
             count = missing_hash = 0
             with closing(open_reader(source)) as reader:
                 reader.set_progress_handler(lambda: int(bool(cancelled and cancelled())), 1000)

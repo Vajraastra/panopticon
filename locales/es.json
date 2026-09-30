@@ -1,6 +1,8 @@
 {
   "lib.exported": "Se exportaron {count} copias a {path}. Sin hash: {missing}.",
   "lib.export_error": "No se pudo exportar {folder}: {reason}",
+  "lib.export_reason.sidecar_export_busy": "Hay otra exportación activa; vuelve a intentarlo después.",
+  "lib.export_reason.invalid_export_guard": "El control de exportación requiere revisión manual; se conservó intacto.",
   "lib.exporting": "Exportando curación: {folder}",
   "lib.export_tip": "Selecciona una carpeta y limpia los filtros de tags. Exporta todas las copias indexadas, incluidas subcarpetas, a panopticon.curation.db. Reemplaza su exportación anterior y conserva imágenes y catálogos Cherry.",
   "lib.export": "Exportar curación de carpeta",
