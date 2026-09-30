@@ -4,6 +4,7 @@ import logging
 import re
 
 from core.library_fts import check_fts, repair_fts
+from core.library_selection import validate_selection, term_filter, select
 
 
 log = logging.getLogger(__name__)
@@ -385,36 +386,12 @@ class LibraryRepository:
             return 0, []
 
         cursor = self.conn.cursor()
-        conditions, params = [], []
+        condition, params = term_filter(terms)
 
-        long_terms = [t.strip() for t in terms if len(t.strip()) >= 3]
-        short_terms = [t.strip() for t in terms if 0 < len(t.strip()) < 3]
-
-        # Términos ≥3 chars → UNA búsqueda FTS5 con AND implícito entre términos.
-        # Cada término entrecomillado (y "" escapado) → subcadena vía trigram en
-        # cualquier columna indexada (filename/meta*/tags) = el viejo OR de 6.
-        if long_terms:
-            match_expr = " ".join('"' + t.replace('"', '""') + '"' for t in long_terms)
-            conditions.append("files.id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH ?)")
-            params.append(match_expr)
-
-        # Términos <3 chars → LIKE de respaldo (mismo OR de 6 campos de antes).
-        for t in short_terms:
-            like = f"%{t}%"
-            conditions.append("""(
-                meta_positive LIKE ? OR meta_negative LIKE ? OR meta_model LIKE ?
-                OR meta_tool LIKE ? OR filename LIKE ?
-                OR EXISTS (
-                    SELECT 1 FROM file_tags ft JOIN tags tg ON ft.tag_id = tg.id
-                    WHERE ft.file_id = files.id AND tg.name LIKE ?
-                )
-            )""")
-            params.extend([like] * 6)
-
-        if not conditions:  # todos los términos quedaron vacíos tras strip
+        if not condition:  # todos los términos quedaron vacíos tras strip
             return 0, []
 
-        where = "WHERE " + " AND ".join(conditions)
+        where = "WHERE " + condition
 
         total_count = cursor.execute(f"SELECT count(*) FROM files {where}", params).fetchone()[0]
         preview_paths = [
@@ -745,6 +722,29 @@ class LibraryRepository:
         else:
             count, paths = 0, []
         return dict(count=count, paths=paths)
+
+    def _selection_filter(self, terms, folder):
+        validate_selection(terms, folder)
+        if terms:
+            return term_filter(terms)
+        if folder:
+            return "path LIKE ? ESCAPE '\\'", [self._folder_like(folder)]
+        return '', []
+
+    def get_library_page(self, *, terms=(), folder=None, limit=100, offset=0):
+        """Página SQL y conteo del mismo snapshot; orden estable por identidad."""
+        if (type(limit) is not int or not 1 <= limit <= 256 or
+                type(offset) is not int or not 0 <= offset <= 2**63 - 1 or offset % limit):
+            raise ValueError('invalid_page')
+        where, params = self._selection_filter(terms, folder)
+        return select(self.conn, where, params, limit, offset)
+
+    def resolve_library_selection(self, *, terms=(), folder=None, limit=1000):
+        """Entrega completa acotada o error explícito; nunca envía un prefijo."""
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError('invalid_selection_limit')
+        where, params = self._selection_filter(terms, folder)
+        return select(self.conn, where, params, limit, complete=True)
 
     def count_files(self):
         return self.conn.execute('SELECT count(*) FROM files').fetchone()[0]

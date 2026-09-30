@@ -103,7 +103,7 @@ class LibrarianQt(helpers.Fixture):
             release.set()
         for module in self.modules:
             module.on_unload()
-            for reader in (module.overview_reader, module.browse_reader, module.scan_reader):
+            for reader in (module.overview_reader, module.browse_reader, module.scan_reader, module.handoff_reader):
                 if reader._thread:
                     reader._thread.join(3)
                     self.assertFalse(reader._thread.is_alive())
@@ -160,7 +160,7 @@ class LibrarianQt(helpers.Fixture):
         module = self.view()
         self.ready(module)
         module.combo_actions.setCurrentIndex(1)
-        entered, release, calls, hook = self.block('get_library_selection', lambda kw: kw['folder'] == 'C:/a')
+        entered, release, calls, hook = self.block('get_library_page', lambda kw: kw['folder'] == 'C:/a')
         with hook:
             module.load_folder_paths('C:/a')
             self.assertTrue(entered.wait(1))
@@ -178,7 +178,7 @@ class LibrarianQt(helpers.Fixture):
         self.register('C:/images/alpha.png')
         module = self.view()
         self.ready(module)
-        entered, release, _, hook = self.block('get_library_selection')
+        entered, release, _, hook = self.block('get_library_page')
         with hook:
             module.active_tags = ['alpha']
             module.perform_search()
@@ -194,7 +194,7 @@ class LibrarianQt(helpers.Fixture):
         self.register('C:/images/alpha.png', 'C:/images/beta.png', 'C:/images/gamma.png')
         module = self.view()
         self.ready(module)
-        entered, release, calls, hook = self.block('get_library_selection',
+        entered, release, calls, hook = self.block('get_library_page',
                                                   lambda kw: kw['terms'] == ('alpha',))
         with hook:
             module.active_tags[:] = ['alpha']
@@ -246,22 +246,23 @@ class LibrarianQt(helpers.Fixture):
         self.assertTrue(helpers.pump(lambda: module.current_folder_path is None))
         self.assertEqual(module.total_paths, [])
 
-    def test_confirmed_handoff_does_not_read_db_and_retains_bounded_contract(self):
+    def test_explicit_page_handoff_does_not_read_db_or_truncate(self):
         module = self.view()
         self.ready(module)
-        paths = [f'C:/images/{i}.png' for i in range(1001)]
+        paths = [f'C:/images/{i}.png' for i in range(100)]
+        module.combo_scope.setCurrentIndex(1)
         module.total_paths, module._browse_ready = paths, True
         received = []
         module.request_open_gallery.connect(lambda rows, title: received.append(rows))
         with patch.object(self.service, 'read', side_effect=AssertionError('GUI read')):
             module.send_to_gallery()
-        self.assertEqual(received, [paths[:1000]])
+        self.assertEqual(received, [paths])
         self.assertIn('1,000', module.btn_execute.toolTip())
 
     def test_unload_cancels_reads_timer_and_event_subscription_without_wait(self):
         module = self.view()
         self.ready(module)
-        entered, release, _, hook = self.block('get_library_selection')
+        entered, release, _, hook = self.block('get_library_page')
         with hook:
             module.load_folder_paths('C:/images')
             self.assertTrue(entered.wait(1))
@@ -335,15 +336,16 @@ class LibrarianQt(helpers.Fixture):
         module.on_unload()
         self.assertFalse(module._auto_scan_timer.isActive())
 
-    def test_large_folder_reports_full_count_and_explicit_sample(self):
+    def test_large_folder_reports_full_count_and_sql_page(self):
         paths = [f'C:/images/{i}.png' for i in range(10001)]
         self.register(*paths)
         module = self.view()
         self.ready(module)
         module.load_folder_paths('C:/images')
         self.assertTrue(helpers.pump(lambda: module._browse_ready))
-        self.assertEqual(len(module.total_paths), 10000)
-        self.assertIn('Showing 10000 of 10001', module.lbl_folder_stats.text())
+        self.assertEqual(len(module.total_paths), 100)
+        self.assertEqual(module._selection_count, 10001)
+        self.assertIn('Page contains 100 of 10001', module.lbl_folder_stats.text())
 
 
 if __name__ == '__main__':

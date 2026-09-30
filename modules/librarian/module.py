@@ -54,7 +54,10 @@ class LibrarianModule(BaseModule):
         # Estado de Paginación del Explorador de Tags
         self.current_page = 0
         self.page_size = 100
-        self.total_paths = []
+        self.total_paths = []  # Sólo la página confirmada.
+        self._selection_count = 0
+        self._external_paths = None
+        self._handoff = None
         self.current_folder_path = None
         self._closed = False
         self._browse_ready = False
@@ -73,6 +76,8 @@ class LibrarianModule(BaseModule):
         self.overview_reader = LibraryReader(self.db.service, self)
         self.browse_reader = LibraryReader(self.db.service, self)
         self.scan_reader = LibraryReader(self.db.service, self)
+        self.handoff_reader = LibraryReader(self.db.service, self)
+        self.handoff_reader.result.connect(self._on_handoff)
         self.overview_reader.result.connect(self._on_overview)
         self.browse_reader.result.connect(self._on_selection)
         self.scan_reader.result.connect(self._on_scan_folders)
@@ -357,13 +362,20 @@ class LibrarianModule(BaseModule):
         self.btn_execute.setEnabled(False)
         self.btn_execute.setToolTip(self.tr(
             "lib.execute_tip",
-            "Sends up to 1,000 loaded images to the chosen tool. Search/folder preview loads up to 10,000."))
+            "Sends every match (up to 1,000); larger sets require choosing the current page. No partial set is sent as complete."))
         self.btn_execute.clicked.connect(self.execute_selected_action)
         self.btn_execute.setStyleSheet(f"""
             QPushButton {{ background-color: {c('accent_main')}; color: {c('bg_main')}; font-weight: bold; padding: 8px 20px; border-radius: 4px; }}
             QPushButton:hover {{ background-color: {c('text_primary')}; color: {c('bg_main')}; }}
             QPushButton:disabled {{ background-color: {c('border')}; color: {c('text_dim')}; }}
         """)
+        self.combo_scope = QComboBox()
+        self.combo_scope.addItems([
+            self.tr('lib.scope.all', 'All matches (up to 1,000)'),
+            self.tr('lib.scope.page', 'Current page')])
+        self.combo_scope.setToolTip(self.tr('lib.scope_tip',
+            'Choose the complete matching set or only the displayed page. Large complete sets require streaming support.'))
+        ab_layout.addWidget(self.combo_scope)
         ab_layout.addWidget(self.btn_execute)
 
         layout.addWidget(action_bar)
@@ -372,7 +384,7 @@ class LibrarianModule(BaseModule):
 
     def _on_action_selection_changed(self, index):
         """Enables execute button only if a valid tool is selected and we have images."""
-        self.btn_execute.setEnabled(self._browse_ready and index > 0 and len(self.total_paths) > 0)
+        self.btn_execute.setEnabled(self._browse_ready and self._handoff is None and index > 0 and len(self.total_paths) > 0)
 
     def _create_bottom_bar(self) -> QWidget:
         """Bottom: Indexing Controls"""
@@ -496,14 +508,20 @@ class LibrarianModule(BaseModule):
 
     def prev_page(self):
         if self._browse_ready and self.current_page > 0:
-            self.current_page -= 1
-            self.refresh_thumbnails_grid()
+            self._load_page(self.current_page - 1)
 
     def next_page(self):
-        max_pages = (len(self.total_paths) - 1) // self.page_size
-        if self._browse_ready and self.current_page < max_pages:
-            self.current_page += 1
+        if self._browse_ready and (self.current_page + 1) * self.page_size < self._selection_count:
+            self._load_page(self.current_page + 1)
+
+    def _load_page(self, page):
+        if self._external_paths is not None:
+            self.current_page = page
+            start = page * self.page_size
+            self.total_paths = list(self._external_paths[start:start + self.page_size])
             self.refresh_thumbnails_grid()
+        else:
+            self._request_selection(page)
 
     def refresh_thumbnails_grid(self):
         """Redraws the thumbnails for the current page (non-blocking)."""
@@ -517,9 +535,7 @@ class LibrarianModule(BaseModule):
             item = self.grid_layout_images.takeAt(0)
             if item.widget(): item.widget().deleteLater()
 
-        start = self.current_page * self.page_size
-        end = start + self.page_size
-        page_items = self.total_paths[start:end]
+        page_items = self.total_paths
 
         # Dynamic columns based on current viewport width
         vp_width = self.scroll_area.viewport().width()
@@ -547,15 +563,15 @@ class LibrarianModule(BaseModule):
             self._lazy_load_timer.start()
 
         # Update Pagination UI
-        total = len(self.total_paths)
+        total = self._selection_count
         num_pages = (total - 1) // self.page_size + 1 if total > 0 else 1
         self.lbl_page_info.setText(self.tr("common.pagination", "Page {curr} of {total}").format(curr=self.current_page + 1, total=num_pages))
 
-        self.btn_prev.setEnabled(self.current_page > 0)
-        self.btn_next.setEnabled(self.current_page < num_pages - 1)
+        self.btn_prev.setEnabled(self._browse_ready and self.current_page > 0)
+        self.btn_next.setEnabled(self._browse_ready and self.current_page < num_pages - 1)
 
         # Enable Execute if we have results
-        self.btn_execute.setEnabled(self._browse_ready and total > 0 and self.combo_actions.currentIndex() > 0)
+        self.btn_execute.setEnabled(self._browse_ready and bool(self.total_paths) and self._handoff is None and self.combo_actions.currentIndex() > 0)
 
     def _load_next_batch(self):
         """Loads a small batch of thumbnail pixmaps per event-loop cycle to keep UI responsive."""
@@ -630,12 +646,16 @@ class LibrarianModule(BaseModule):
     def refresh_current_view(self):
         self._request_selection()
 
-    def _request_selection(self):
+    def _request_selection(self, page=0):
         if self._closed or not self.view:
             return
+        self.handoff_reader.invalidate()
+        self._handoff = None
+        self._external_paths = None
         self._browse_ready = False
         self.total_paths = []
-        self.current_page = 0
+        self._selection_count = 0
+        self.current_page = page
         self.refresh_thumbnails_grid()
         terms = tuple(self.active_tags)
         folder = self.current_folder_path
@@ -646,7 +666,8 @@ class LibrarianModule(BaseModule):
             self.lbl_folder_stats.setText(self.tr('common.no_selection', 'No Selection'))
             return
         self.lbl_folder_stats.setText(self.tr('lib.db.loading', 'Loading library...'))
-        self.browse_reader.request('get_library_selection', terms=terms, folder=folder, limit=10000)
+        self.browse_reader.request('get_library_page', terms=terms, folder=folder,
+                                   limit=self.page_size, offset=page * self.page_size)
 
     def _read_error(self, label, error):
         log.warning('Librarian read: %s', error)
@@ -662,15 +683,15 @@ class LibrarianModule(BaseModule):
         terms, folder = self._selection_context
         self.total_paths = value['paths']
         self._browse_ready = True
-        self.current_page = 0
-        count = value['count']
+        self.current_page = value['offset'] // self.page_size
+        count = self._selection_count = value['count']
         if terms:
             text = self.tr('lib.msg.found_tags', 'Found {count} items matching tags').format(count=count)
         else:
             text = self.tr('lib.stats.folder', '{name} | {count} Images Found').format(
                 name=os.path.basename(folder), count=count)
         if count > len(self.total_paths):
-            text += self.tr('lib.db.sample', ' | Showing {loaded} of {count}').format(
+            text += self.tr('lib.db.page', ' | Page contains {loaded} of {count}').format(
                 loaded=len(self.total_paths), count=count)
         self.lbl_folder_stats.setText(text)
         self.refresh_thumbnails_grid()
@@ -708,7 +729,8 @@ class LibrarianModule(BaseModule):
         self._closed = True
         if hasattr(self, 'folder_writer'):
             self.folder_writer.close()
-        for name in ('overview_reader', 'browse_reader', 'scan_reader'):
+        self._handoff = None
+        for name in ('overview_reader', 'browse_reader', 'scan_reader', 'handoff_reader'):
             reader = getattr(self, name, None)
             if reader:
                 reader.close()
@@ -932,36 +954,71 @@ class LibrarianModule(BaseModule):
             key = "lib.scan.cancelled" if outcome == InventoryStatus.CANCELLED else "lib.scan.incomplete"
             QMessageBox.warning(self.view, self.tr("lib.scan.warning", "Incomplete scan"), self.tr(key, "Indexing incomplete; index cleanup skipped for partial inventories."))
 
-    def _get_active_paths(self, limit=1000):
-        """Reutiliza la muestra confirmada; no reconsulta SQLite desde Qt."""
-        return self.total_paths[:limit] if self._browse_ready and not self._closed else []
+    def _get_active_paths(self):
+        """La página confirmada completa, nunca un prefijo oculto."""
+        return list(self.total_paths) if self._browse_ready and not self._closed else []
+
+    def _send_selection(self, destination):
+        if self._closed or not self._browse_ready or self._handoff is not None:
+            return
+        title = self.tr('lib.handoff.title', 'Librarian: {context}').format(
+            context=', '.join(self.active_tags) if self.active_tags else
+            os.path.basename(self.current_folder_path or ''))
+        if self.combo_scope.currentIndex() == 1:
+            title += self.tr('lib.handoff.page', ' | Page {page}').format(page=self.current_page + 1)
+            self._emit_selection(destination, self._get_active_paths(), title)
+        elif self._external_paths is not None:
+            if len(self._external_paths) > 1000:
+                self._handoff_error(ValueError('selection_requires_streaming'))
+            else:
+                self._emit_selection(destination, list(self._external_paths), title)
+        else:
+            self._handoff = (destination, title)
+            self.btn_execute.setEnabled(False)
+            self.handoff_reader.request('resolve_library_selection',
+                terms=tuple(self.active_tags), folder=self.current_folder_path)
+
+    def _on_handoff(self, ticket, value, error):
+        if self._closed or self._handoff is None:
+            return
+        destination, title = self._handoff
+        self._handoff = None
+        self._on_action_selection_changed(self.combo_actions.currentIndex())
+        if error is not None:
+            self._handoff_error(error)
+            return
+        self._emit_selection(destination, value['paths'], title)
+
+    def _handoff_error(self, error):
+        reason = getattr(error, 'cause', error)
+        if 'selection_requires_streaming' in str(reason):
+            message = self.tr('lib.handoff.too_large',
+                'The complete set exceeds 1,000 images. Choose Current page to send a page explicitly. No images were sent.')
+        else:
+            message = self.tr('lib.db.read_error', 'Could not read library: {reason}').format(reason=str(error))
+        QMessageBox.warning(self.view, self.tr('common.error', 'Error'), message)
+
+    def _emit_selection(self, destination, paths, title):
+        if not paths:
+            QMessageBox.warning(self.view, self.tr('common.error', 'No Files'), self.tr('lib.msg.no_files', 'No files found to send.'))
+            return
+        signal = getattr(self, 'request_open_' + destination)
+        if destination == 'gallery':
+            signal.emit(paths, title)
+        else:
+            signal.emit(paths)
 
     def send_to_gallery(self):
-        paths = self._get_active_paths()
-        if paths:
-            title = f"Librarian: {', '.join(self.active_tags)}" if self.active_tags else f"Librarian: {os.path.basename(self.current_folder_path or '')}"
-            self.request_open_gallery.emit(paths, title)
-             
+        self._send_selection('gallery')
+
     def send_to_optimizer(self):
-        paths = self._get_active_paths()
-        if paths:
-            self.request_open_optimizer.emit(paths)
-        else:
-            QMessageBox.warning(self.view, self.tr("common.error", "No Files"), self.tr("lib.msg.no_files", "No files found to send."))
+        self._send_selection('optimizer')
 
     def send_to_cropper(self):
-        paths = self._get_active_paths()
-        if paths:
-            self.request_open_cropper.emit(paths)
-        else:
-            QMessageBox.warning(self.view, self.tr("common.error", "No Files"), self.tr("lib.msg.no_files", "No files found to send."))
+        self._send_selection('cropper')
 
     def send_to_pickler(self):
-        paths = self._get_active_paths()
-        if paths:
-            self.request_open_pickler.emit(paths)
-        else:
-            QMessageBox.warning(self.view, self.tr("common.error", "No Files"), self.tr("lib.msg.no_files", "No files found to send."))
+        self._send_selection('pickler')
 
     # ── Re-index dirigido tras cambios externos en disco ──────────────
     def _on_library_changed(self, folder):
@@ -1017,7 +1074,11 @@ class LibrarianModule(BaseModule):
         if hasattr(self, 'browse_reader'):
             self.browse_reader.invalidate()
         self._browse_ready = True
-        self.total_paths = paths
+        self.handoff_reader.invalidate()
+        self._handoff = None
+        self._external_paths = tuple(paths)
+        self._selection_count = len(paths)
+        self.total_paths = list(paths[:self.page_size])
         self.current_page = 0
         if self.view:
             self.refresh_thumbnails_grid()
