@@ -18,6 +18,7 @@ from core.locale_manager import LocaleManager
 from core.event_bus import EventBus
 from core.logging_config import setup_logging
 from core.library_service import get_library_service, close_library_services
+from core.library_startup import create_library_window
 
 # Configuración central de logging (consola + logs/panopticon.log rotativo).
 setup_logging()
@@ -589,6 +590,10 @@ if __name__ == "__main__":
     _f = app.font()
     _f.setFamilies([_f.family(), "Noto Color Emoji", "Noto Emoji", "Segoe UI Emoji", "Apple Color Emoji"])
     app.setFont(_f)
-    window = MainWindow()
+    window = create_library_window(MainWindow, LocaleManager().tr,
+        lambda title, text: QMessageBox.critical(None, title, text))
+    if window is None:
+        close_library_services(permanent=True)
+        sys.exit(1)
     window.showMaximized() # Forzar maximizado al final para evitar re-dimensiones inesperadas
     sys.exit(app.exec())

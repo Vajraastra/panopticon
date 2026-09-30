@@ -12,13 +12,14 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future
-from contextlib import closing
+from contextlib import closing, ExitStack
 from pathlib import Path
 from queue import Queue, Full
 
 from core.library_connections import open_reader
 from core.library_metrics import LibraryMetrics
 from core.library_repository import LibraryRepository
+from core.library_writer_guard import writer_guard
 from core.paths import ProjectPaths
 
 log = logging.getLogger(__name__)
@@ -113,7 +114,9 @@ class LibraryService:
         conn = None
         command = None
         started = None
+        ownership = ExitStack()
         try:
+            ownership.enter_context(writer_guard(self.db_path))
             conn = sqlite3.connect(self.db_path, timeout=5, isolation_level=None)
             conn.execute('PRAGMA foreign_keys=ON')
             if conn.execute('PRAGMA foreign_keys').fetchone() != (1,):
@@ -172,19 +175,22 @@ class LibraryService:
                 if command is not None and not command[0].done():
                     command[0].set_exception(LibraryError(command[1], 'writer_stopped'))
         finally:
-            with self._admission:
-                self._closed = True
-                self._metrics.closed()
-            if conn is not None:
-                conn.close()
-            # No dejar productores esperando si el escritor falla inesperadamente.
-            while not self._queue.empty():
-                command = self._queue.get_nowait()
-                if command is not None:
-                    self._metrics.discard(cancelled=command[0].cancelled())
-                    if not command[0].done():
-                        command[0].set_exception(LibraryError(command[1], 'writer_stopped'))
-                self._queue.task_done()
+            try:
+                with self._admission:
+                    self._closed = True
+                    self._metrics.closed()
+                if conn is not None:
+                    conn.close()
+                # No dejar productores esperando si el escritor falla inesperadamente.
+                while not self._queue.empty():
+                    command = self._queue.get_nowait()
+                    if command is not None:
+                        self._metrics.discard(cancelled=command[0].cancelled())
+                        if not command[0].done():
+                            command[0].set_exception(LibraryError(command[1], 'writer_stopped'))
+                    self._queue.task_done()
+            finally:
+                ownership.close()
 
     def submit(self, operation, *args, **kwargs):
         if operation not in WRITES:

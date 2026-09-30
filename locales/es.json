@@ -1,6 +1,11 @@
 {
   "lib.exported": "Se exportaron {count} copias a {path}. Sin hash: {missing}.",
   "lib.export_error": "No se pudo exportar {folder}: {reason}",
+  "app.library_unavailable": "Biblioteca no disponible",
+  "app.library_error": "No se pudo abrir la biblioteca: {reason}",
+  "app.library_error.database_writer_active": "Otra instancia está usando esta biblioteca. Ciérrala antes de iniciar esta instancia.",
+  "app.library_error.invalid_database_guard": "El archivo de control de la biblioteca requiere revisión manual; se conservó intacto.",
+  "app.library_error.ambiguous_database_alias": "La base de datos tiene alias mediante enlaces físicos y requiere revisión antes de abrirse.",
   "lib.export_reason.sidecar_export_busy": "Hay otra exportación activa; vuelve a intentarlo después.",
   "lib.export_reason.invalid_export_guard": "El control de exportación requiere revisión manual; se conservó intacto.",
   "lib.exporting": "Exportando curación: {folder}",

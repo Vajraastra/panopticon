@@ -1,6 +1,11 @@
 {
   "lib.exported": "Exported {count} copies to {path}. Missing hash: {missing}.",
   "lib.export_error": "Could not export {folder}: {reason}",
+  "app.library_unavailable": "Library unavailable",
+  "app.library_error": "Could not open the library: {reason}",
+  "app.library_error.database_writer_active": "Another instance is using this library. Close it before starting this instance.",
+  "app.library_error.invalid_database_guard": "The library control file requires manual review; it was preserved.",
+  "app.library_error.ambiguous_database_alias": "The database has hard link aliases and requires review before opening.",
   "lib.export_reason.sidecar_export_busy": "Another export is active; try again later.",
   "lib.export_reason.invalid_export_guard": "The export guard requires manual review; it was preserved.",
   "lib.exporting": "Exporting curation: {folder}",

@@ -34,6 +34,13 @@ Panopticon is built on three design principles:
 - **No inter-module coupling** — modules never import each other. All communication goes through a central `EventBus`.
 - **Non-blocking UI** — all heavy processing (AI inference, batch operations) runs in background `QThread` workers. The UI never freezes.
 
+Current Panopticon processes share one writer owner per central library. A second
+instance refuses to open that database before migration; read-only tools can still
+compare or export. The persistent `<database>.panopticon-writer.guard` stays beside
+the database. Close the owner before running a tool that needs its own writer.
+This protection coordinates current versions; older instances or direct SQLite tools
+require separate coordination. Hard link aliases of the database require manual review.
+
 Every module that transforms files uses `StampLib` to embed original metadata into the output, so no provenance is lost.
 
 ---

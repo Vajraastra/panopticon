@@ -44,6 +44,7 @@ models/
 *.db
 *.db-wal
 *.db-shm
+*.panopticon-writer.guard
 
 # User data
 data/
