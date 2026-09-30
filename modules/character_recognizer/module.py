@@ -48,6 +48,7 @@ class CharacterRecognizerModule(BaseModule):
         engine = RecognitionEngine()
         engine.initialize()
         db = ProfileDB()
+        profiles = db.get_all_profiles()  # Un snapshot coherente para todo el lote headless.
         results = {}
         for path in paths:
             import cv2
@@ -61,7 +62,7 @@ class CharacterRecognizerModule(BaseModule):
             if embedding is None:
                 continue
             best_name, best_score = None, 0.0
-            for name, ref_emb in db.get_all_profiles():
+            for name, ref_emb in profiles:
                 score = engine.compare(embedding, ref_emb)
                 if score > best_score:
                     best_score = score

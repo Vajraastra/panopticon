@@ -26,12 +26,19 @@ class RecognitionWorker(QThread):
         self._override_next_idx = None  # for go_back navigation
 
     def run(self):
+        try:
+            self._run()
+        except Exception as exc:
+            self.error.emit(str(exc) or type(exc).__name__)
+        finally:
+            self.finished_signal.emit()
+
+    def _run(self):
         log.debug(f"Worker started with {len(self.paths)} items.")
         try:
             self.engine.initialize()
         except Exception as e:
             self.error.emit(str(e))
-            self.finished_signal.emit()
             return
         log.debug("Engine initialized. Starting loop.")
 
@@ -42,6 +49,9 @@ class RecognitionWorker(QThread):
 
             path = self.paths[self.current_idx]
             log.debug(f"Processing index {self.current_idx}: {path}")
+
+            # Fallo de perfiles termina visiblemente; no saltar imágenes como si no hubiera match.
+            profiles = self.db.get_all_profiles()
 
             try:
                 with open(path, "rb") as stream:
@@ -60,7 +70,6 @@ class RecognitionWorker(QThread):
                 max_score = 0
 
                 if embedding is not None:
-                    profiles = self.db.get_all_profiles()
                     for name, ref_emb in profiles:
                         score = self.engine.compare(embedding, ref_emb)
                         if score > max_score:
@@ -82,7 +91,6 @@ class RecognitionWorker(QThread):
                 log.error(f"Worker error on {path}: {e}")
                 self._advance()
 
-        self.finished_signal.emit()
 
     def _advance(self):
         """Avanza al siguiente índice, respetando go_back si fue solicitado."""
@@ -127,10 +135,17 @@ class AutoScanWorker(QThread):
 
     def run(self):
         try:
+            self._run()
+        except Exception as exc:
+            self.error.emit(str(exc) or type(exc).__name__)
+        finally:
+            self.finished_signal.emit()
+
+    def _run(self):
+        try:
             self.engine.initialize()
         except Exception as e:
             self.error.emit(str(e))
-            self.finished_signal.emit()
             return
         profiles = self.db.get_all_profiles()
         total = len(self.paths)
@@ -171,8 +186,6 @@ class AutoScanWorker(QThread):
             pct = top_count / total
             if pct >= self.DOMINANCE_THRESHOLD:
                 self.suggestion.emit(top_name, pct, top_count)
-                self.finished_signal.emit()
                 return
 
         self.no_match.emit()
-        self.finished_signal.emit()

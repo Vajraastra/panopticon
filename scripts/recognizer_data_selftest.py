@@ -70,6 +70,8 @@ class RecognizerData(helpers.Fixture):
             view.close()
             view.deleteLater()
         QApplication.processEvents()
+        from modules.character_recognizer.logic.profile_service import close_profile_services
+        close_profile_services()
 
     def view(self, paths=None):
         view = CharacterRecognitionView(dict(data_service=self.service))

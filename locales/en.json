@@ -1113,5 +1113,12 @@
   "tool.character_recognizer.retry_tags": "Reload tags",
   "tool.character_recognizer.retry_tags_tip": "Retries the library read for this image after an error.",
   "tool.character_recognizer.bulk_saving": "Saving tags: {done}/{total} confirmed.",
-  "tool.character_recognizer.bulk_cancelled": "Stopped after {done} confirmed images."
+  "tool.character_recognizer.bulk_cancelled": "Stopped after {done} confirmed images.",
+    "tool.character_recognizer.reload_profiles": "Reload profiles",
+    "tool.character_recognizer.reload_profiles_tip": "Refreshes known names after a profile read error; keeps the name being typed.",
+    "tool.character_recognizer.profiles_loading": "Loading profiles...",
+    "tool.character_recognizer.profiles_error": "Cannot read profiles: {reason}",
+    "tool.character_recognizer.reference_saving": "Tag saved. Learning reference...",
+    "tool.character_recognizer.reference_error": "Tag saved, but reference failed: {reason}. Retry Save to learn it.",
+    "tool.character_recognizer.reference_saved": "Tag and reference saved: {name}"
 }

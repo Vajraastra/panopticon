@@ -42,6 +42,12 @@ class CharacterRecognitionView(QWidget):
         self._writer = LibraryWriter(self.db.service, self)
         self._reader.result.connect(self._on_curation)
         self._writer.result.connect(self._on_edit)
+        self._profile_reader = LibraryWriter(self.profile_db.service, self)
+        self._profile_writer = LibraryWriter(self.profile_db.service, self)
+        self._profile_reader.result.connect(self._on_profiles)
+        self._profile_writer.result.connect(self._on_reference)
+        self._profile_read_pending = False
+        self._profile_read_again = False
         self.destroyed.connect(lambda: self.shutdown())
 
         content = self._create_content()
@@ -235,6 +241,18 @@ class CharacterRecognitionView(QWidget):
         desc_lbl.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px;")
         desc_lbl.setWordWrap(True)
         layout.addWidget(desc_lbl)
+
+        self.lbl_profiles = QLabel('')
+        self.lbl_profiles.setTextFormat(Qt.PlainText)
+        self.lbl_profiles.setWordWrap(True)
+        layout.addWidget(self.lbl_profiles)
+        self.btn_retry_profiles = QPushButton(self._tr(
+            'tool.character_recognizer.reload_profiles', 'Reload profiles'))
+        self.btn_retry_profiles.setToolTip(self._tr(
+            'tool.character_recognizer.reload_profiles_tip',
+            'Refreshes known names after a profile read error; keeps the name being typed.'))
+        self.btn_retry_profiles.clicked.connect(self.refresh_profiles)
+        layout.addWidget(self.btn_retry_profiles)
 
         layout.addSpacing(10)
 
@@ -514,9 +532,33 @@ class CharacterRecognitionView(QWidget):
             self.btn_mode_illustration.setStyleSheet(self._style_inactive)
 
     def refresh_profiles(self):
-        self.combo_names.clear()
-        profiles = self.profile_db.get_all_profiles()
-        self.combo_names.addItems(sorted(p[0] for p in profiles))
+        if self._closed:
+            return
+        if self._profile_read_pending:
+            self._profile_read_again = True
+            return
+        self._profile_read_pending = True
+        self.lbl_profiles.setText(self._tr('tool.character_recognizer.profiles_loading',
+            'Loading profiles...'))
+        self._profile_read_ticket = self._profile_reader.submit('snapshot')
+
+    @Slot(int, object, object)
+    def _on_profiles(self, ticket, snapshot, error):
+        if self._closed or ticket != getattr(self, '_profile_read_ticket', None):
+            return
+        self._profile_read_pending = False
+        if error is not None:
+            self.lbl_profiles.setText(self._tr('tool.character_recognizer.profiles_error',
+                'Cannot read profiles: {reason}').format(reason=str(error) or type(error).__name__))
+        else:
+            text = self.combo_names.currentText()
+            self.combo_names.clear()
+            self.combo_names.addItems([name for name, _ in snapshot.profiles])
+            self.combo_names.setEditText(text)
+            self.lbl_profiles.setText('')
+        if self._profile_read_again:
+            self._profile_read_again = False
+            self.refresh_profiles()
 
     def _set_data_controls(self):
         idle = not self._closed and self._pending_edit is None
@@ -530,6 +572,7 @@ class CharacterRecognitionView(QWidget):
             (idle or self._pending_edit['kind'] == 'bulk'))
         self.btn_tag_all.setEnabled(idle and bool(self._auto_paths or self._bulk_remaining))
         self.btn_retry_tags.setEnabled(idle and bool(self.current_path))
+        self.btn_retry_profiles.setEnabled(idle)
 
     def _request_curation(self):
         if self._closed or self._pending_edit is not None or not self.current_path:
@@ -615,15 +658,42 @@ class CharacterRecognitionView(QWidget):
                     if job['kind'] == 'remove' else self._tr('cr.tagged',
                     'Tagged: {name}').format(name=job['name']))
                 if job['kind'] == 'manual' and job['embedding'] is not None:
-                    # DB especializada: sólo aprender tras confirmar la curación central.
+                    self._pending_edit = job
+                    job['phase'] = 'reference'
+                    self._set_data_controls()
+                    self.lbl_status.setText(self._tr('tool.character_recognizer.reference_saving',
+                        'Tag saved. Learning reference...'))
                     try:
-                        self.profile_db.add_reference(job['name'], job['embedding'])
-                        self.refresh_profiles()
-                    except Exception:
-                        log.exception('Cannot update character profile after curation commit')
+                        job['profile_ticket'] = self._profile_writer.submit(
+                            'add_reference', job['name'], job['embedding'])
+                    except Exception as exc:
+                        self._on_reference(job.get('profile_ticket'), None, exc)
+                    return
                 if job['kind'] != 'remove' and self.current_path == job['path'] and self.worker is job['worker']:
                     if self.worker:
                         self.worker.request_next()
+        if self.current_path:
+            self._request_curation()
+        self._set_data_controls()
+
+    @Slot(int, object, object)
+    def _on_reference(self, ticket, committed, error):
+        job = self._pending_edit
+        if (self._closed or job is None or job.get('phase') != 'reference'
+                or ticket != job.get('profile_ticket')):
+            return
+        self._pending_edit = None
+        if job['generation'] == self._generation:
+            if error is not None or committed is not True:
+                reason = (str(error) or type(error).__name__) if error is not None else 'not_committed'
+                self.lbl_status.setText(self._tr('tool.character_recognizer.reference_error',
+                    'Tag saved, but reference failed: {reason}. Retry Save to learn it.').format(reason=reason))
+            else:
+                self.lbl_status.setText(self._tr('tool.character_recognizer.reference_saved',
+                    'Tag and reference saved: {name}').format(name=job['name']))
+                self.refresh_profiles()
+                if self.current_path == job['path'] and self.worker is job['worker'] and self.worker:
+                    self.worker.request_next()
         if self.current_path:
             self._request_curation()
         self._set_data_controls()
@@ -632,6 +702,8 @@ class CharacterRecognitionView(QWidget):
         self._closed = True
         self._reader.close()
         self._writer.close()
+        self._profile_reader.close()
+        self._profile_writer.close()
         self._queued_paths = None
         self._bulk_remaining = ()
         for worker in (self.worker, self.auto_worker):
@@ -913,6 +985,7 @@ class CharacterRecognitionView(QWidget):
             return
         paths, self._queued_paths = self._queued_paths, None
         self._retiring = False
+        self._engine_failed = False
 
         self.worker = RecognitionWorker(paths, mode=self._detection_mode)
         self.worker.image_processed.connect(self.on_image_processed)
@@ -940,6 +1013,7 @@ class CharacterRecognitionView(QWidget):
     def on_engine_error(self, msg):
         if self._closed or self._retiring or (self.sender() is not None and self.sender() is not self.worker):
             return
+        self._engine_failed = True
         self.lbl_status.setText(
             self._tr("cr.error.engine", "AI Engine error: {msg}").format(msg=msg)
         )
@@ -1082,6 +1156,9 @@ class CharacterRecognitionView(QWidget):
         self._curation_ready = False
         self._reader.invalidate()
         self._set_data_controls()
+        if getattr(self, "_engine_failed", False):
+            self.action_bar_container.hide()
+            return
         self.lbl_status.setText(self._tr("cr.status.done", "Done."))
         self.image_label.clear()
         self.image_label.setText(self._tr("cr.batch_done",

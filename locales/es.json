@@ -1113,5 +1113,12 @@
   "tool.character_recognizer.retry_tags": "Recargar etiquetas",
   "tool.character_recognizer.retry_tags_tip": "Reintenta leer la biblioteca para esta imagen después de un error.",
   "tool.character_recognizer.bulk_saving": "Guardando etiquetas: {done}/{total} confirmadas.",
-  "tool.character_recognizer.bulk_cancelled": "Se detuvo tras {done} imágenes confirmadas."
+  "tool.character_recognizer.bulk_cancelled": "Se detuvo tras {done} imágenes confirmadas.",
+    "tool.character_recognizer.reload_profiles": "Recargar perfiles",
+    "tool.character_recognizer.reload_profiles_tip": "Actualiza los nombres conocidos tras un fallo de lectura; conserva el nombre que estás escribiendo.",
+    "tool.character_recognizer.profiles_loading": "Cargando perfiles...",
+    "tool.character_recognizer.profiles_error": "No se pueden leer los perfiles: {reason}",
+    "tool.character_recognizer.reference_saving": "Etiqueta guardada. Aprendiendo referencia...",
+    "tool.character_recognizer.reference_error": "Etiqueta guardada, pero falló la referencia: {reason}. Reintenta Guardar para aprenderla.",
+    "tool.character_recognizer.reference_saved": "Etiqueta y referencia guardadas: {name}"
 }
