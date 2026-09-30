@@ -1,4 +1,8 @@
 {
+  "lib.folder.busy": "Espera a que termine la indexación o el cálculo de hashes antes de cambiar las carpetas vigiladas.",
+  "lib.folder.saving": "Guardando carpeta vigilada: {path}",
+  "lib.folder.saved": "Cambio de carpeta vigilada guardado: {path}",
+  "lib.folder.write_error": "No se pudo guardar la carpeta vigilada '{path}': {reason}",
   "lib.db.loading": "Cargando biblioteca...",
   "lib.db.read_error": "No se pudo consultar la biblioteca: {reason}",
   "lib.db.sample": " | Mostrando {loaded} de {count}",

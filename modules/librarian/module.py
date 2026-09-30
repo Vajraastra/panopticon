@@ -7,7 +7,7 @@ from core.base_module import BaseModule
 from core.components.thumbnail import ClickableThumbnail
 from core.components.tag_widgets import FlowLayout, TagChip
 from core.database_manager import DatabaseManager
-from core.library_async import LibraryReader
+from core.library_async import LibraryReader, LibraryWriter
 from .logic.indexer import IndexerWorker
 from .logic.hash_backfill import HashBackfillWorker
 from core.inventory import InventoryStatus
@@ -60,6 +60,8 @@ class LibrarianModule(BaseModule):
         self._browse_ready = False
         self._overview_ready = False
         self._scan_request = None
+        self._folder_write = None
+        self._auto_scan_after_write = False
         self._auto_scan_pending = True
         self._auto_scan_timer = QTimer(self)
         self._auto_scan_timer.setSingleShot(True)
@@ -74,6 +76,8 @@ class LibrarianModule(BaseModule):
         self.overview_reader.result.connect(self._on_overview)
         self.browse_reader.result.connect(self._on_selection)
         self.scan_reader.result.connect(self._on_scan_folders)
+        self.folder_writer = LibraryWriter(self.db.service, self)
+        self.folder_writer.result.connect(self._on_folder_written)
 
     def get_view(self) -> QWidget:
         """Inicializa y retorna la vista principal del bibliotecario."""
@@ -161,6 +165,11 @@ class LibrarianModule(BaseModule):
         btn_layout.addWidget(self.btn_add)
         btn_layout.addWidget(self.btn_remove)
         layout.addLayout(btn_layout)
+        self.lbl_folder_write = QLabel()
+        self.lbl_folder_write.setWordWrap(True)
+        self.lbl_folder_write.setTextFormat(Qt.PlainText)
+        self.lbl_folder_write.setStyleSheet(f"color: {c('text_secondary')};")
+        layout.addWidget(self.lbl_folder_write)
 
         # --- Section 2: Tag Selection ---
         layout.addSpacing(20)
@@ -690,10 +699,15 @@ class LibrarianModule(BaseModule):
         if self._auto_scan_pending:
             self._auto_scan_pending = False
             if value['folders']:
-                self._auto_scan_timer.start(500)
+                if self._folder_write is not None:
+                    self._auto_scan_after_write = True
+                else:
+                    self._auto_scan_timer.start(500)
 
     def on_unload(self):
         self._closed = True
+        if hasattr(self, 'folder_writer'):
+            self.folder_writer.close()
         for name in ('overview_reader', 'browse_reader', 'scan_reader'):
             reader = getattr(self, name, None)
             if reader:
@@ -706,28 +720,78 @@ class LibrarianModule(BaseModule):
         if eb:
             eb.unsubscribe('library_changed', self._on_library_changed)
 
+    def _can_write_folder(self):
+        if self._closed or self._folder_write is not None:
+            return False
+        # Un inventario en curso podría volver a registrar lo que se acaba de quitar.
+        busy = self._scan_request is not None or any(
+            worker and worker.isRunning() for worker in
+            (self.indexer_thread, self.backfill_thread, self._reindex_thread))
+        if busy:
+            self.lbl_folder_write.setText(self.tr(
+                'lib.folder.busy', 'Wait for indexing or hashing to finish before changing watched folders.'))
+            return False
+        return True
+
     def add_folder(self):
+        if not self._can_write_folder():
+            return
         folder = QFileDialog.getExistingDirectory(self.view, self.tr("common.select_folder", "Select Folder to Index"))
         if folder:
-            if self.db.add_watched_folder(folder):
-                self.refresh_ui()
-            else:
-                QMessageBox.warning(self.view, self.tr("common.error", "Error"), self.tr("lib.msg.add_error", "Could not add folder"))
+            self._submit_folder_write('add_watched_folder', folder)
 
     def remove_folder(self):
+        if not self._can_write_folder():
+            return
         selected = self.folder_list.currentItem()
-        if not selected: return
-        
+        if not selected:
+            return
         path = selected.text()
-        confirm = QMessageBox.question(self.view, self.tr("common.confirm", "Remove Folder"), 
+        confirm = QMessageBox.question(self.view, self.tr("common.confirm", "Remove Folder"),
                                        self.tr("lib.msg.remove_confirm", "Stop watching '{path}'?").format(path=path),
                                        QMessageBox.Yes | QMessageBox.No)
-        
         if confirm == QMessageBox.Yes:
-            if self.db.remove_watched_folder(path):
-                if hasattr(self, 'current_folder_path') and self.current_folder_path == path:
-                    self.current_folder_path = None
-                self.refresh_ui()
+            self._submit_folder_write('remove_watched_folder', path)
+
+    def _submit_folder_write(self, operation, path):
+        # Los diálogos ejecutan un event loop anidado: revalidar al salir.
+        if not self._can_write_folder():
+            return
+        self._folder_write = (None, operation, path)
+        self.btn_add.setEnabled(False)
+        self.btn_remove.setEnabled(False)
+        self._auto_scan_after_write = self._auto_scan_timer.isActive()
+        self._auto_scan_timer.stop()
+        self.lbl_folder_write.setText(self.tr(
+            'lib.folder.saving', "Saving watched folder: {path}").format(path=path))
+        try:
+            ticket = self.folder_writer.submit(operation, path)
+            self._folder_write = (ticket, operation, path)
+        except Exception as error:
+            self._on_folder_written(None, None, error)
+
+    def _on_folder_written(self, ticket, value, error):
+        if self._closed or self._folder_write is None or ticket != self._folder_write[0]:
+            return
+        _, operation, path = self._folder_write
+        self._folder_write = None
+        self.btn_add.setEnabled(True)
+        self.btn_remove.setEnabled(True)
+        if error is not None or value is not True:
+            reason = str(error) if error is not None else 'operation_failed'
+            log.warning('Watched folder write failed: %s %s: %s', operation, path, reason)
+            self.lbl_folder_write.setText(self.tr(
+                'lib.folder.write_error', "Could not save watched folder '{path}': {reason}")
+                .format(path=path, reason=reason))
+        else:
+            if operation == 'remove_watched_folder' and self.current_folder_path == path:
+                self.current_folder_path = None
+            self.lbl_folder_write.setText(self.tr(
+                'lib.folder.saved', "Watched folder change saved: {path}").format(path=path))
+            self.refresh_ui()
+        if self._auto_scan_after_write:
+            self._auto_scan_after_write = False
+            self._auto_scan_timer.start(500)
 
     def toggle_scan(self, sync_only=False, auto=False):
         if self._closed:
@@ -740,6 +804,8 @@ class LibrarianModule(BaseModule):
             self.btn_scan.setEnabled(False)
         else:
             # Start logic
+            if self._folder_write is not None:
+                return
             if self.backfill_thread and self.backfill_thread.isRunning():
                 return  # excluyente con el backfill de hashes
             if self._scan_request is not None:
@@ -755,7 +821,8 @@ class LibrarianModule(BaseModule):
         if error is not None:
             self._read_error(self.lbl_status, error)
             return
-        if ((self.indexer_thread and self.indexer_thread.isRunning()) or
+        if (self._folder_write is not None or
+                (self.indexer_thread and self.indexer_thread.isRunning()) or
                 (self.backfill_thread and self.backfill_thread.isRunning())):
             return
         if not folders:
@@ -788,6 +855,8 @@ class LibrarianModule(BaseModule):
     def toggle_backfill(self):
         """Backfill de hash_original (M3). Excluyente con el indexer: ambos
         escriben en files y compartir la barra de progreso sería ambiguo."""
+        if self._closed or self._folder_write is not None:
+            return
         if self.backfill_thread and self.backfill_thread.isRunning():
             self.backfill_thread.stop()
             self.btn_backfill.setText(self.tr("lib.status.stopping", "Stopping..."))
@@ -911,7 +980,8 @@ class LibrarianModule(BaseModule):
         if self._closed:
             return
         # No interferir con un escaneo manual ni con otro re-index en curso.
-        busy = (self.indexer_thread and self.indexer_thread.isRunning()) or \
+        busy = self._folder_write is not None or \
+               (self.indexer_thread and self.indexer_thread.isRunning()) or \
                (self._reindex_thread and self._reindex_thread.isRunning())
         if busy:
             self._dirty_timer.start()  # reintentar más tarde

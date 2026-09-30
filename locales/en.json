@@ -1,4 +1,8 @@
 {
+  "lib.folder.busy": "Wait for indexing or hashing to finish before changing watched folders.",
+  "lib.folder.saving": "Saving watched folder: {path}",
+  "lib.folder.saved": "Watched folder change saved: {path}",
+  "lib.folder.write_error": "Could not save watched folder '{path}': {reason}",
   "lib.db.loading": "Loading library...",
   "lib.db.read_error": "Could not read library: {reason}",
   "lib.db.sample": " | Showing {loaded} of {count}",
