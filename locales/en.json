@@ -1,4 +1,7 @@
 {
+  "lib.db.loading": "Loading library...",
+  "lib.db.read_error": "Could not read library: {reason}",
+  "lib.db.sample": " | Showing {loaded} of {count}",
     "lib.hash.start": "Computing SHA-256 for {count} files...",
     "lib.hash.complete": "Hashing complete: {hashed} confirmed, {failed} skipped.",
     "lib.hash.incomplete": "Hashing incomplete: {hashed} confirmed, {failed} skipped. Unconfirmed hashes remain pending.",
@@ -1007,7 +1010,7 @@
   "lib.remove_tip": "Stops watching the folder and drops its files from the index. The files on disk are NOT touched.",
   "lib.search_tip": "Searches by name, tags and metadata text across the whole indexed library, not just the open folder.",
   "lib.selection_action_tip": "Which tool to send the selected images to. Pick here and press Execute.",
-  "lib.execute_tip": "Sends the selection to the tool chosen in the dropdown next to it.",
+  "lib.execute_tip": "Sends up to 1,000 loaded images to the chosen tool. Search/folder preview loads up to 10,000.",
   "lib.purge_tip": "Goes through the index and drops entries whose file is gone from disk. Useful after deleting or moving things outside the app. It deletes no files.",
   "lib.run_indexer_tip": "Walks the watched folders and adds whatever is new to the library. On a large library it takes a while; the same button stops it.",
   "common.prev_tip": "Previous page of results.",

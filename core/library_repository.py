@@ -690,6 +690,27 @@ class LibraryRepository:
         r = cursor.fetchone()
         return r[0] if r else 0
 
+    def get_library_overview(self):
+        """Carpetas, conteo y vocabulario en el snapshot RO del servicio."""
+        return dict(folders=self.get_watched_folders(), count=self.count_files(),
+                    tags=self.get_all_tags())
+
+    def get_library_selection(self, *, terms=(), folder=None, limit=10000):
+        """Conteo completo y muestra acotada; no accede al sistema de archivos."""
+        if (not isinstance(terms, (list, tuple)) or len(terms) > 256 or
+                any(not isinstance(term, str) or not term.strip() or len(term) > 256
+                    for term in terms) or type(limit) is not int or not 1 <= limit <= 10000 or
+                (folder is not None and (not isinstance(folder, str) or not folder))):
+            raise ValueError('invalid_selection')
+        if terms:
+            count, paths = self.search_by_terms(terms, limit=limit)
+        elif folder:
+            count = self.get_folder_count(folder)
+            paths = self.get_files_recursive(folder, limit=limit)
+        else:
+            count, paths = 0, []
+        return dict(count=count, paths=paths)
+
     def count_files(self):
         return self.conn.execute('SELECT count(*) FROM files').fetchone()[0]
 

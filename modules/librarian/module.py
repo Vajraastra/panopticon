@@ -7,6 +7,7 @@ from core.base_module import BaseModule
 from core.components.thumbnail import ClickableThumbnail
 from core.components.tag_widgets import FlowLayout, TagChip
 from core.database_manager import DatabaseManager
+from core.library_async import LibraryReader
 from .logic.indexer import IndexerWorker
 from .logic.hash_backfill import HashBackfillWorker
 from core.inventory import InventoryStatus
@@ -55,10 +56,24 @@ class LibrarianModule(BaseModule):
         self.page_size = 100
         self.total_paths = []
         self.current_folder_path = None
+        self._closed = False
+        self._browse_ready = False
+        self._overview_ready = False
+        self._scan_request = None
+        self._auto_scan_pending = True
+        self._auto_scan_timer = QTimer(self)
+        self._auto_scan_timer.setSingleShot(True)
+        self._auto_scan_timer.timeout.connect(lambda: self.toggle_scan(auto=True))
 
     def on_load(self, context=None):
         super().on_load(context)
         self.db = DatabaseManager(service=(context or {}).get('data_service'))
+        self.overview_reader = LibraryReader(self.db.service, self)
+        self.browse_reader = LibraryReader(self.db.service, self)
+        self.scan_reader = LibraryReader(self.db.service, self)
+        self.overview_reader.result.connect(self._on_overview)
+        self.browse_reader.result.connect(self._on_selection)
+        self.scan_reader.result.connect(self._on_scan_folders)
 
     def get_view(self) -> QWidget:
         """Inicializa y retorna la vista principal del bibliotecario."""
@@ -79,19 +94,10 @@ class LibrarianModule(BaseModule):
             event_bus=self.context.get('event_bus')
         )
         
-        # 3. Cargar datos iniciales
-        self.refresh_ui()
-        self.update_global_stats()
-        
-        # 4. Configurar autocompletado de tags
         self.setup_completer()
-        self.populate_tag_sidebar()
+        self.refresh_ui()
 
-        # 5. Disparar escaneo inicial inteligente si hay carpetas registradas
-        if self.db.get_watched_folders():
-            QTimer.singleShot(500, lambda: self.toggle_scan(auto=True))
-
-        # 6. Escuchar cambios externos en disco (ej. Pickler movió archivos)
+        # Escuchar cambios externos en disco (ej. Pickler movió archivos)
         eb = self.context.get('event_bus')
         if eb:
             eb.subscribe("library_changed", self._on_library_changed)
@@ -342,7 +348,7 @@ class LibrarianModule(BaseModule):
         self.btn_execute.setEnabled(False)
         self.btn_execute.setToolTip(self.tr(
             "lib.execute_tip",
-            "Sends the selection to the tool chosen in the dropdown next to it."))
+            "Sends up to 1,000 loaded images to the chosen tool. Search/folder preview loads up to 10,000."))
         self.btn_execute.clicked.connect(self.execute_selected_action)
         self.btn_execute.setStyleSheet(f"""
             QPushButton {{ background-color: {c('accent_main')}; color: {c('bg_main')}; font-weight: bold; padding: 8px 20px; border-radius: 4px; }}
@@ -357,7 +363,7 @@ class LibrarianModule(BaseModule):
 
     def _on_action_selection_changed(self, index):
         """Enables execute button only if a valid tool is selected and we have images."""
-        self.btn_execute.setEnabled(index > 0 and len(self.total_paths) > 0)
+        self.btn_execute.setEnabled(self._browse_ready and index > 0 and len(self.total_paths) > 0)
 
     def _create_bottom_bar(self) -> QWidget:
         """Bottom: Indexing Controls"""
@@ -426,8 +432,7 @@ class LibrarianModule(BaseModule):
 
     def setup_completer(self):
         """Initializes the QCompleter for the tag input."""
-        all_tags = self.db.get_all_tags()
-        self.completer_model = QStringListModel(all_tags)
+        self.completer_model = QStringListModel([])
         self.completer = QCompleter(self.completer_model)
         self.completer.setCaseSensitivity(Qt.CaseInsensitive)
         self.completer.setFilterMode(Qt.MatchContains) # Allow matching 'lee' in 'Zoe Lee'
@@ -465,34 +470,8 @@ class LibrarianModule(BaseModule):
             self.perform_search() # Real-time update
 
     def perform_search(self):
-        """Executes search based on active_tags and updates UI."""
-        if not self.active_tags:
-            # If search cleared, fallback to folder or show nothing
-            if hasattr(self, 'current_folder_path') and self.current_folder_path:
-                self.load_folder_paths(self.current_folder_path)
-            else:
-                self.total_paths = []
-                self.current_page = 0
-                self.refresh_thumbnails_grid()
-                self.lbl_folder_stats.setText(self.tr("lib.explorer_cleared", "Tag Explorer Cleared."))
-            return
-
-        # Fetch results
-        count, paths = self.db.search_by_terms(self.active_tags, limit=10000)
-        self.total_paths = paths
-        self.current_page = 0
-        
-        if count == 0:
-            self.lbl_folder_stats.setText(self.tr("lib.msg.no_results", "⚠️ No images found with these tags."))
-        else:
-            self.lbl_folder_stats.setText(self.tr("lib.msg.found_tags", "🔍 Found {count} items matching tags").format(count=count))
-            
-        self.refresh_thumbnails_grid()
-        
-        # Update Footer Stats
-        folders = self.db.get_watched_folders()
-        self.lbl_stats.setText(self.tr("lib.stats.search", "📊 SEARCH | {tags} tags | Found: {count} | Folders: {total}")
-                               .format(tags=len(self.active_tags), count=count, total=len(folders)))
+        """Captura la búsqueda; sólo se publica la solicitud vigente."""
+        self._request_selection()
 
     def execute_selected_action(self):
         """Dispatches the current selection to the chosen tool (index-based, locale-safe)."""
@@ -507,13 +486,13 @@ class LibrarianModule(BaseModule):
             self.send_to_pickler()
 
     def prev_page(self):
-        if self.current_page > 0:
+        if self._browse_ready and self.current_page > 0:
             self.current_page -= 1
             self.refresh_thumbnails_grid()
 
     def next_page(self):
         max_pages = (len(self.total_paths) - 1) // self.page_size
-        if self.current_page < max_pages:
+        if self._browse_ready and self.current_page < max_pages:
             self.current_page += 1
             self.refresh_thumbnails_grid()
 
@@ -567,10 +546,12 @@ class LibrarianModule(BaseModule):
         self.btn_next.setEnabled(self.current_page < num_pages - 1)
 
         # Enable Execute if we have results
-        self.btn_execute.setEnabled(total > 0 and self.combo_actions.currentIndex() > 0)
+        self.btn_execute.setEnabled(self._browse_ready and total > 0 and self.combo_actions.currentIndex() > 0)
 
     def _load_next_batch(self):
         """Loads a small batch of thumbnail pixmaps per event-loop cycle to keep UI responsive."""
+        if self._closed:
+            return
         batch_size = 10
         loaded = 0
         while self._lazy_load_pending and loaded < batch_size:
@@ -596,11 +577,7 @@ class LibrarianModule(BaseModule):
             self.perform_search()
 
     def populate_tag_sidebar(self):
-        """Fetches all tags from the DB and populates the sidebar list."""
-        self.tag_list.clear()
-        all_tags = self.db.get_all_tags()
-        if all_tags:
-            self.tag_list.addItems(all_tags)
+        self.update_global_stats()
 
     def on_thumbnail_clicked(self, path):
         """Opens the clicked thumbnail in a larger dialog."""
@@ -628,53 +605,112 @@ class LibrarianModule(BaseModule):
         self.load_folder_paths(folder_path)
 
     def load_folder_paths(self, folder_path):
-        """Helper to fetch and display paths for a specific folder."""
-        paths = self.db.get_files_recursive(folder_path, limit=10000)
-        self.total_paths = paths
-        self.current_page = 0
-        
-        self.lbl_folder_stats.setText(self.tr("lib.stats.folder", "📂 {name} | {count} Images Found").format(name=os.path.basename(folder_path), count=len(paths)))
-        self.refresh_thumbnails_grid()
-
+        self.current_folder_path = folder_path
+        self._request_selection()
 
     def update_global_stats(self):
-        count = self.db.count_files()
-        folders = self.db.get_watched_folders()
-        self.lbl_stats.setText(self.tr("lib.stats.global", "📊 Global Status | Indexed Files: {count} | Watched Folders: {total}")
-                               .format(count=count, total=len(folders)))
+        if not self._closed and self.view:
+            self.overview_reader.request('get_library_overview')
 
     def refresh_ui(self):
-        # specific reload logic
-        self.folder_list.clear()
-        folders = self.db.get_watched_folders()
-        self.folder_list.addItems(folders)
-        self.refresh_current_view()
+        if self._closed or not self.view:
+            return
         self.update_global_stats()
+        self.refresh_current_view()
 
     def refresh_current_view(self):
-        """Forces a re-fetch of data for the current search or folder."""
-        # Check if current folder is still valid
-        if hasattr(self, 'current_folder_path') and self.current_folder_path:
-             folders = self.db.get_watched_folders()
-             if self.current_folder_path not in folders:
-                 self.current_folder_path = None
+        self._request_selection()
 
-        if self.active_tags:
-            self.perform_search()
-        elif hasattr(self, 'current_folder_path') and self.current_folder_path:
-            self.load_folder_paths(self.current_folder_path)
+    def _request_selection(self):
+        if self._closed or not self.view:
+            return
+        self._browse_ready = False
+        self.total_paths = []
+        self.current_page = 0
+        self.refresh_thumbnails_grid()
+        terms = tuple(self.active_tags)
+        folder = self.current_folder_path
+        self._selection_context = (terms, folder)
+        if not terms and not folder:
+            self.browse_reader.invalidate()
+            self._browse_ready = True
+            self.lbl_folder_stats.setText(self.tr('common.no_selection', 'No Selection'))
+            return
+        self.lbl_folder_stats.setText(self.tr('lib.db.loading', 'Loading library...'))
+        self.browse_reader.request('get_library_selection', terms=terms, folder=folder, limit=10000)
+
+    def _read_error(self, label, error):
+        log.warning('Librarian read: %s', error)
+        label.setText(self.tr('lib.db.read_error', 'Could not read library: {reason}')
+                      .format(reason=getattr(error, 'reason', str(error))))
+
+    def _on_selection(self, ticket, value, error):
+        if self._closed:
+            return
+        if error is not None:
+            self._read_error(self.lbl_folder_stats, error)
+            return
+        terms, folder = self._selection_context
+        self.total_paths = value['paths']
+        self._browse_ready = True
+        self.current_page = 0
+        count = value['count']
+        if terms:
+            text = self.tr('lib.msg.found_tags', 'Found {count} items matching tags').format(count=count)
         else:
-            self.total_paths = []
-            self.current_page = 0
-            self.refresh_thumbnails_grid()
-            self.lbl_folder_stats.setText(self.tr("common.no_selection", "No Selection"))
+            text = self.tr('lib.stats.folder', '{name} | {count} Images Found').format(
+                name=os.path.basename(folder), count=count)
+        if count > len(self.total_paths):
+            text += self.tr('lib.db.sample', ' | Showing {loaded} of {count}').format(
+                loaded=len(self.total_paths), count=count)
+        self.lbl_folder_stats.setText(text)
+        self.refresh_thumbnails_grid()
+
+    def _on_overview(self, ticket, value, error):
+        if self._closed:
+            return
+        if error is not None:
+            self._overview_ready = False
+            self._read_error(self.lbl_stats, error)
+            return
+        self._overview_ready = True
+        self.folder_list.clear()
+        self.folder_list.addItems(value['folders'])
+        selected = self.folder_list.findItems(self.current_folder_path or '', Qt.MatchExactly)
+        if selected:
+            self.folder_list.setCurrentItem(selected[0])
+        elif self.current_folder_path:
+            self.current_folder_path = None
+            self.refresh_current_view()
+        self.tag_list.clear()
+        self.tag_list.addItems(value['tags'])
+        self.completer_model.setStringList(value['tags'])
+        self.lbl_stats.setText(self.tr('lib.stats.global', 'Indexed Files: {count} | Watched Folders: {total}')
+                               .format(count=value['count'], total=len(value['folders'])))
+        if self._auto_scan_pending:
+            self._auto_scan_pending = False
+            if value['folders']:
+                self._auto_scan_timer.start(500)
+
+    def on_unload(self):
+        self._closed = True
+        for name in ('overview_reader', 'browse_reader', 'scan_reader'):
+            reader = getattr(self, name, None)
+            if reader:
+                reader.close()
+        self._dirty_timer.stop()
+        self._auto_scan_timer.stop()
+        if hasattr(self, '_lazy_load_timer'):
+            self._lazy_load_timer.stop()
+        eb = (self.context or {}).get('event_bus')
+        if eb:
+            eb.unsubscribe('library_changed', self._on_library_changed)
 
     def add_folder(self):
         folder = QFileDialog.getExistingDirectory(self.view, self.tr("common.select_folder", "Select Folder to Index"))
         if folder:
             if self.db.add_watched_folder(folder):
                 self.refresh_ui()
-                self.update_global_stats()
             else:
                 QMessageBox.warning(self.view, self.tr("common.error", "Error"), self.tr("lib.msg.add_error", "Could not add folder"))
 
@@ -692,9 +728,10 @@ class LibrarianModule(BaseModule):
                 if hasattr(self, 'current_folder_path') and self.current_folder_path == path:
                     self.current_folder_path = None
                 self.refresh_ui()
-                self.update_global_stats()
 
     def toggle_scan(self, sync_only=False, auto=False):
+        if self._closed:
+            return
         if self.indexer_thread and self.indexer_thread.isRunning():
             # Stop logic
             self.indexer_thread.stop()
@@ -705,30 +742,48 @@ class LibrarianModule(BaseModule):
             # Start logic
             if self.backfill_thread and self.backfill_thread.isRunning():
                 return  # excluyente con el backfill de hashes
-            folders = self.db.get_watched_folders()
-            if not folders:
-                if not auto:
-                    QMessageBox.warning(self.view, self.tr("common.error", "No Folders"), self.tr("lib.msg.no_folders", "Please add at least one folder to index."))
+            if self._scan_request is not None:
                 return
-            
-            # Update UI state
+            self._scan_request = (sync_only, auto)
+            self.scan_reader.request('get_watched_folders')
+
+    def _on_scan_folders(self, ticket, folders, error):
+        if self._closed or self._scan_request is None:
+            return
+        sync_only, auto = self._scan_request
+        self._scan_request = None
+        if error is not None:
+            self._read_error(self.lbl_status, error)
+            return
+        if ((self.indexer_thread and self.indexer_thread.isRunning()) or
+                (self.backfill_thread and self.backfill_thread.isRunning())):
+            return
+        if not folders:
             if not auto:
-                tm = self.context.get('theme_manager')
-                c = tm.get_color if tm else lambda k: '#000000'
-                self.btn_scan.setText(self.tr("lib.stop_indexer", "🛑 Stop Scanning"))
-                self.btn_scan.setStyleSheet(f"background-color: {c('accent_warning')}; color: {c('text_primary')}; border-radius: 4px; padding: 6px; font-weight: bold;")
-                if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(False)
-                if hasattr(self, 'btn_backfill'): self.btn_backfill.setEnabled(False)
-                self.progress_bar.setVisible(True)
-                self.progress_bar.setValue(0)
-                self.lbl_status.setText(self.tr("lib.indexing", "🔍 Running Background Sync..."))
-            
-            # Pass sync_only as deep_clean to trigger Full Audit + Vacuum
-            self.indexer_thread = IndexerWorker(self.db, folders, deep_clean=sync_only, translate=self.tr)
-            self.indexer_thread.progress_signal.connect(self.update_progress_text)
-            self.indexer_thread.count_signal.connect(self.update_progress_bar)
-            self.indexer_thread.finished_signal.connect(self.scan_finished)
-            self.indexer_thread.start()
+                QMessageBox.warning(self.view, self.tr('common.error', 'No Folders'),
+                                    self.tr('lib.msg.no_folders', 'Please add a folder to index.'))
+            return
+        self._start_scan(folders, sync_only, auto)
+
+    def _start_scan(self, folders, sync_only, auto):
+        # Update UI state
+        if not auto:
+            tm = self.context.get('theme_manager')
+            c = tm.get_color if tm else lambda k: '#000000'
+            self.btn_scan.setText(self.tr("lib.stop_indexer", "🛑 Stop Scanning"))
+            self.btn_scan.setStyleSheet(f"background-color: {c('accent_warning')}; color: {c('text_primary')}; border-radius: 4px; padding: 6px; font-weight: bold;")
+            if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(False)
+            if hasattr(self, 'btn_backfill'): self.btn_backfill.setEnabled(False)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.lbl_status.setText(self.tr("lib.indexing", "🔍 Running Background Sync..."))
+
+        # Una auditoría profunda reconcilia sólo inventarios completos.
+        self.indexer_thread = IndexerWorker(self.db, folders, deep_clean=sync_only, translate=self.tr)
+        self.indexer_thread.progress_signal.connect(self.update_progress_text)
+        self.indexer_thread.count_signal.connect(self.update_progress_bar)
+        self.indexer_thread.finished_signal.connect(self.scan_finished)
+        self.indexer_thread.start()
 
     def toggle_backfill(self):
         """Backfill de hash_original (M3). Excluyente con el indexer: ambos
@@ -756,6 +811,8 @@ class LibrarianModule(BaseModule):
             self.backfill_thread.start()
 
     def backfill_finished(self, hashed, failed):
+        if self._closed:
+            return
         tm = self.context.get('theme_manager')
         c = tm.get_color if tm else lambda k: '#000000'
         self.btn_backfill.setText(self.tr("lib.backfill", "🧬 Compute Hashes"))
@@ -776,14 +833,20 @@ class LibrarianModule(BaseModule):
                     .format(hashed=hashed, failed=failed))
 
     def update_progress_text(self, text):
+        if self._closed:
+            return
         self.lbl_status.setText(text)
 
     def update_progress_bar(self, current, total):
+        if self._closed:
+            return
         self.progress_bar.setVisible(True)
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
 
     def scan_finished(self):
+        if self._closed:
+            return
         tm = self.context.get('theme_manager')
         c = tm.get_color if tm else lambda k: '#000000'
         self.btn_scan.setText(self.tr("lib.run_indexer", "🚀 Run Indexer"))
@@ -793,7 +856,6 @@ class LibrarianModule(BaseModule):
         self.btn_scan.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.refresh_ui()
-        self.populate_tag_sidebar() # Ensure new tags appear
         outcome = self.indexer_thread.outcome
         if outcome == InventoryStatus.COMPLETE:
             QMessageBox.information(self.view, self.tr("common.success", "Done"), self.tr("lib.msg.done", "Library Scan Complete!"))
@@ -802,19 +864,13 @@ class LibrarianModule(BaseModule):
             QMessageBox.warning(self.view, self.tr("lib.scan.warning", "Incomplete scan"), self.tr(key, "Indexing incomplete; index cleanup skipped for partial inventories."))
 
     def _get_active_paths(self, limit=1000):
-        """Helper to get currently filtered or selected paths."""
-        if self.active_tags:
-            _, paths = self.db.search_by_terms(self.active_tags, limit=limit)
-            return paths
-        elif self.folder_list.currentItem():
-            folder_path = self.folder_list.currentItem().text()
-            return self.db.get_files_recursive(folder_path, limit=limit)
-        return []
+        """Reutiliza la muestra confirmada; no reconsulta SQLite desde Qt."""
+        return self.total_paths[:limit] if self._browse_ready and not self._closed else []
 
     def send_to_gallery(self):
         paths = self._get_active_paths()
         if paths:
-            title = f"Librarian: {', '.join(self.active_tags)}" if self.active_tags else f"Librarian: {os.path.basename(self.folder_list.currentItem().text())}"
+            title = f"Librarian: {', '.join(self.active_tags)}" if self.active_tags else f"Librarian: {os.path.basename(self.current_folder_path or '')}"
             self.request_open_gallery.emit(paths, title)
              
     def send_to_optimizer(self):
@@ -845,13 +901,15 @@ class LibrarianModule(BaseModule):
         Coalesce las carpetas afectadas y dispara un re-index dirigido y silencioso
         tras un breve debounce, en vez de reescanear toda la librería.
         """
-        if not folder:
+        if self._closed or not folder:
             return
         self._dirty_folders.add(str(folder))
         self._dirty_timer.start()  # reinicia el debounce
 
     def _flush_dirty_reindex(self):
         """Re-indexa (silenciosamente) solo las carpetas marcadas como sucias."""
+        if self._closed:
+            return
         # No interferir con un escaneo manual ni con otro re-index en curso.
         busy = (self.indexer_thread and self.indexer_thread.isRunning()) or \
                (self._reindex_thread and self._reindex_thread.isRunning())
@@ -871,11 +929,12 @@ class LibrarianModule(BaseModule):
 
     def _quiet_reindex_finished(self):
         """Refresca la vista tras el re-index dirigido, sin diálogos."""
+        if self._closed:
+            return
         try:
             if self._reindex_thread.outcome != InventoryStatus.COMPLETE:
                 self.lbl_status.setText(self.tr("lib.scan.incomplete", "Indexing incomplete; index cleanup skipped for partial inventories."))
             self.refresh_ui()
-            self.populate_tag_sidebar()
         except Exception as e:
             log.warning(f"Refresh tras re-index dirigido falló: {e}")
 
@@ -883,6 +942,11 @@ class LibrarianModule(BaseModule):
         """Permite cargar carpetas o rutas en modo programático (sin interacción del usuario)."""
         if not paths:
             return
+        if self._closed:
+            return
+        if hasattr(self, 'browse_reader'):
+            self.browse_reader.invalidate()
+        self._browse_ready = True
         self.total_paths = paths
         self.current_page = 0
         if self.view:

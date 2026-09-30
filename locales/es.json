@@ -1,4 +1,7 @@
 {
+  "lib.db.loading": "Cargando biblioteca...",
+  "lib.db.read_error": "No se pudo consultar la biblioteca: {reason}",
+  "lib.db.sample": " | Mostrando {loaded} de {count}",
     "lib.hash.start": "Calculando SHA-256 de {count} archivos...",
     "lib.hash.complete": "Hashing completo: {hashed} confirmados, {failed} saltados.",
     "lib.hash.incomplete": "Hashing incompleto: {hashed} confirmados, {failed} saltados. Los hashes no confirmados quedan pendientes.",
@@ -1007,7 +1010,7 @@
   "lib.remove_tip": "Deja de vigilar la carpeta y borra sus archivos del índice. Los archivos en disco NO se tocan.",
   "lib.search_tip": "Busca por nombre, etiquetas y texto de la metadata en toda la biblioteca indexada, no solo en la carpeta abierta.",
   "lib.selection_action_tip": "A qué herramienta mandar las imágenes seleccionadas. Elige aquí y pulsa Ejecutar.",
-  "lib.execute_tip": "Manda la selección a la herramienta elegida en el desplegable de al lado.",
+  "lib.execute_tip": "Envía hasta 1.000 imágenes cargadas a la herramienta elegida. La vista de búsqueda/carpeta carga hasta 10.000.",
   "lib.purge_tip": "Repasa el índice y quita las entradas cuyo archivo ya no está en disco. Útil tras borrar o mover cosas por fuera de la app. No borra ningún archivo.",
   "lib.run_indexer_tip": "Recorre las carpetas vigiladas y mete en la biblioteca lo que sea nuevo. En una biblioteca grande tarda; se puede parar con el mismo botón.",
   "common.prev_tip": "Página anterior de resultados.",
