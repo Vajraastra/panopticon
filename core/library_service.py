@@ -9,6 +9,7 @@ import logging
 import os
 import sqlite3
 import threading
+import time
 import uuid
 from concurrent.futures import Future
 from contextlib import closing
@@ -16,6 +17,7 @@ from pathlib import Path
 from queue import Queue, Full
 
 from core.library_connections import open_reader
+from core.library_metrics import LibraryMetrics
 from core.library_repository import LibraryRepository
 from core.paths import ProjectPaths
 
@@ -91,8 +93,11 @@ def _migrate(conn, db_path):
 
 class LibraryService:
     def __init__(self, db_path, capacity=64):
+        if type(capacity) is not int or capacity < 1:
+            raise ValueError('invalid_queue_capacity')
         self.db_path = str(Path(db_path).resolve())
         self._queue = Queue(maxsize=capacity)
+        self._metrics = LibraryMetrics(capacity)
         self._admission = threading.Lock()
         self._closed = False
         self._ready = Future()
@@ -107,6 +112,7 @@ class LibraryService:
     def _run(self):
         conn = None
         command = None
+        started = None
         try:
             conn = sqlite3.connect(self.db_path, timeout=5, isolation_level=None)
             conn.execute('PRAGMA foreign_keys=ON')
@@ -123,23 +129,42 @@ class LibraryService:
                 try:
                     if command is None:
                         break
-                    future, operation, args, kwargs = command
+                    future, operation, args, kwargs, submitted = command
+                    started = self._metrics.start_write(operation, submitted)
                     if not future.set_running_or_notify_cancel():
+                        self._metrics.finish_write('cancelled', started)
+                        started = None
                         continue
                     try:
                         if operation != 'vacuum_database':
-                            conn.execute('BEGIN IMMEDIATE')
+                            phase = time.perf_counter()
+                            try:
+                                conn.execute('BEGIN IMMEDIATE')
+                            finally:
+                                self._metrics.observe('begin', time.perf_counter() - phase)
                         value = getattr(repo, operation)(*args, **kwargs)
                         if value is not True:
                             raise LibraryError(operation, 'operation_failed')
-                        conn.commit()
-                        future.set_result(value)
+                        phase = time.perf_counter()
+                        try:
+                            conn.commit()
+                        finally:
+                            self._metrics.observe('commit', time.perf_counter() - phase)
+                        self._metrics.finish_write('committed', started)
+                        started = None
                     except BaseException as exc:
                         conn.rollback()
+                        self._metrics.finish_write('failed', started)
+                        started = None
                         future.set_exception(LibraryError(operation, str(exc)))
+                    else:
+                        future.set_result(value)
                 finally:
                     self._queue.task_done()
         except BaseException as exc:
+            if started is not None:
+                self._metrics.finish_write('failed', started)
+                started = None
             if not self._ready.done():
                 self._ready.set_exception(LibraryError('startup', str(exc)))
             else:
@@ -149,13 +174,16 @@ class LibraryService:
         finally:
             with self._admission:
                 self._closed = True
+                self._metrics.closed()
             if conn is not None:
                 conn.close()
             # No dejar productores esperando si el escritor falla inesperadamente.
             while not self._queue.empty():
                 command = self._queue.get_nowait()
-                if command is not None and not command[0].done():
-                    command[0].set_exception(LibraryError(command[1], 'writer_stopped'))
+                if command is not None:
+                    self._metrics.discard(cancelled=command[0].cancelled())
+                    if not command[0].done():
+                        command[0].set_exception(LibraryError(command[1], 'writer_stopped'))
                 self._queue.task_done()
 
     def submit(self, operation, *args, **kwargs):
@@ -163,13 +191,14 @@ class LibraryService:
             raise ValueError(f'Unknown write: {operation}')
         future = Future()
         # El productor no puede cambiar el lote mientras espera su turno.
-        command = future, operation, copy.deepcopy(args), copy.deepcopy(kwargs)
+        command = future, operation, copy.deepcopy(args), copy.deepcopy(kwargs), time.perf_counter()
         with self._admission:
             if self._closed:
+                self._metrics.reject_closed()
                 future.set_exception(LibraryError(operation, 'service_closed'))
             else:
                 try:
-                    self._queue.put_nowait(command)
+                    self._metrics.enqueue(self._queue, command)
                 except Full:
                     future.set_exception(LibraryError(operation, 'queue_full'))
         return future
@@ -179,7 +208,10 @@ class LibraryService:
             raise ValueError(f'Unknown read: {operation}')
         with self._admission:
             if self._closed:
+                self._metrics.reject_closed(read=True)
                 raise LibraryError(operation, 'service_closed')
+        started = self._metrics.start_read()
+        outcome = 'failed'
         try:
             with closing(open_reader(self.db_path)) as conn:
                 if cancel_event is not None:
@@ -188,11 +220,33 @@ class LibraryService:
                     conn.set_progress_handler(lambda: int(cancel_event.is_set()), 1000)
                 # Count + página y consultas relacionadas ven la misma revisión.
                 conn.execute('BEGIN')
-                return getattr(LibraryRepository(conn), operation)(*args, **kwargs)
+                value = getattr(LibraryRepository(conn), operation)(*args, **kwargs)
+                outcome = 'completed'
+                return value
         except sqlite3.Error as exc:
+            outcome = 'failed'
             if cancel_event is not None and cancel_event.is_set():
+                outcome = 'cancelled'
                 raise LibraryError(operation, 'cancelled') from exc
             raise LibraryError(operation, str(exc)) from exc
+        except LibraryError as exc:
+            outcome = 'failed'
+            if exc.reason == 'cancelled':
+                outcome = 'cancelled'
+            raise
+        except BaseException:
+            outcome = 'failed'
+            raise
+        finally:
+            self._metrics.finish_read(outcome, started)
+
+    def metrics_snapshot(self):
+        """Contadores/timings locales, sin SQL, stat, payloads ni espera del dueño.
+
+        BEGIN incluye espera por el escritor SQLite, pero no distingue su causa.
+        No informa frames/checkpoints WAL ni mide memoria/bytes o cambios externos.
+        """
+        return self._metrics.snapshot()
 
     def close(self):
         if threading.current_thread() is self._thread:
@@ -200,6 +254,7 @@ class LibraryService:
         with self._admission:
             first_close = not self._closed
             self._closed = True
+            self._metrics.closed()
         if first_close and self._thread.is_alive():
             # Drenar sólo comandos aceptados; no requiere event loop de Qt.
             self._queue.put(None)
