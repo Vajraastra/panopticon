@@ -103,7 +103,7 @@ class LibrarianQt(helpers.Fixture):
             release.set()
         for module in self.modules:
             module.on_unload()
-            for reader in (module.overview_reader, module.browse_reader, module.scan_reader, module.handoff_reader):
+            for reader in (module.overview_reader, module.browse_reader, module.scan_reader, module.handoff_reader, module.export_reader):
                 if reader._thread:
                     reader._thread.join(3)
                     self.assertFalse(reader._thread.is_alive())

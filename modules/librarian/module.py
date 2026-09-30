@@ -8,6 +8,7 @@ from core.components.thumbnail import ClickableThumbnail
 from core.components.tag_widgets import FlowLayout, TagChip
 from core.database_manager import DatabaseManager
 from core.library_async import LibraryReader, LibraryWriter
+from core.curation_tasks import CurationExportTasks
 from .logic.indexer import IndexerWorker
 from .logic.hash_backfill import HashBackfillWorker
 from core.inventory import InventoryStatus
@@ -58,6 +59,7 @@ class LibrarianModule(BaseModule):
         self._selection_count = 0
         self._external_paths = None
         self._handoff = None
+        self._exporting = None
         self.current_folder_path = None
         self._closed = False
         self._browse_ready = False
@@ -78,6 +80,8 @@ class LibrarianModule(BaseModule):
         self.scan_reader = LibraryReader(self.db.service, self)
         self.handoff_reader = LibraryReader(self.db.service, self)
         self.handoff_reader.result.connect(self._on_handoff)
+        self.export_reader = LibraryReader(CurationExportTasks(self.db.db_path), self)
+        self.export_reader.result.connect(self._on_export_finished)
         self.overview_reader.result.connect(self._on_overview)
         self.browse_reader.result.connect(self._on_selection)
         self.scan_reader.result.connect(self._on_scan_folders)
@@ -175,6 +179,21 @@ class LibrarianModule(BaseModule):
         self.lbl_folder_write.setTextFormat(Qt.PlainText)
         self.lbl_folder_write.setStyleSheet(f"color: {c('text_secondary')};")
         layout.addWidget(self.lbl_folder_write)
+
+        self.btn_export_curation = QPushButton(self.tr('lib.export', 'Export folder curation'))
+        self.btn_export_curation.setToolTip(self.tr('lib.export_tip',
+            'Select a folder and clear tag filters. Exports every indexed copy in that folder, including subfolders, '
+            'to panopticon.curation.db. Replaces its previous export; preserves images and Cherry catalogs.'))
+        self.btn_export_curation.setEnabled(False)
+        self.btn_export_curation.setStyleSheet(
+            f"background-color: {c('bg_input')}; color: {c('accent_info')}; border: 1px solid {c('border_strong')}; padding: 6px;")
+        self.btn_export_curation.clicked.connect(self.export_folder_curation)
+        layout.addWidget(self.btn_export_curation)
+        self.lbl_export = QLabel()
+        self.lbl_export.setWordWrap(True)
+        self.lbl_export.setTextFormat(Qt.PlainText)
+        self.lbl_export.setStyleSheet(f"color: {c('text_secondary')};")
+        layout.addWidget(self.lbl_export)
 
         # --- Section 2: Tag Selection ---
         layout.addSpacing(20)
@@ -572,6 +591,39 @@ class LibrarianModule(BaseModule):
 
         # Enable Execute if we have results
         self.btn_execute.setEnabled(self._browse_ready and bool(self.total_paths) and self._handoff is None and self.combo_actions.currentIndex() > 0)
+        self._update_export_controls()
+
+    def _can_export_curation(self):
+        return (not self._closed and self.view is not None and self._browse_ready and
+                bool(self.current_folder_path) and not self.active_tags and
+                self._external_paths is None and self._selection_count > 0 and
+                self._exporting is None and self._folder_write is None)
+
+    def _update_export_controls(self):
+        if hasattr(self, 'btn_export_curation'):
+            self.btn_export_curation.setEnabled(self._can_export_curation())
+
+    def export_folder_curation(self):
+        if not self._can_export_curation():
+            return
+        folder = str(self.current_folder_path)
+        self._exporting = folder
+        self._update_export_controls()
+        self.lbl_export.setText(self.tr('lib.exporting', 'Exporting curation: {folder}').format(folder=folder))
+        self.export_reader.request('export_curation', folder=folder)
+
+    def _on_export_finished(self, ticket, value, error):
+        if self._closed or self._exporting is None:
+            return
+        folder, self._exporting = self._exporting, None
+        self._update_export_controls()
+        if error is not None:
+            self.lbl_export.setText(self.tr('lib.export_error', 'Could not export {folder}: {reason}')
+                                    .format(folder=folder, reason=str(error)))
+        else:
+            self.lbl_export.setText(self.tr('lib.exported',
+                'Exported {count} copies to {path}. Missing hash: {missing}.').format(
+                    count=value['copies'], path=value['path'], missing=value['missing_hash']))
 
     def _load_next_batch(self):
         """Loads a small batch of thumbnail pixmaps per event-loop cycle to keep UI responsive."""
@@ -730,7 +782,8 @@ class LibrarianModule(BaseModule):
         if hasattr(self, 'folder_writer'):
             self.folder_writer.close()
         self._handoff = None
-        for name in ('overview_reader', 'browse_reader', 'scan_reader', 'handoff_reader'):
+        self._exporting = None
+        for name in ('overview_reader', 'browse_reader', 'scan_reader', 'handoff_reader', 'export_reader'):
             reader = getattr(self, name, None)
             if reader:
                 reader.close()
@@ -789,6 +842,7 @@ class LibrarianModule(BaseModule):
         try:
             ticket = self.folder_writer.submit(operation, path)
             self._folder_write = (ticket, operation, path)
+            self._update_export_controls()
         except Exception as error:
             self._on_folder_written(None, None, error)
 
@@ -797,6 +851,7 @@ class LibrarianModule(BaseModule):
             return
         _, operation, path = self._folder_write
         self._folder_write = None
+        self._update_export_controls()
         self.btn_add.setEnabled(True)
         self.btn_remove.setEnabled(True)
         if error is not None or value is not True:

@@ -90,7 +90,9 @@ WinRAR is required.
 
 ## Portable curation export
 
-Export tags, ratings and tag sources for an indexed folder on demand:
+In Librarian, select a folder, clear tag filters and click **Export folder curation**.
+The export includes all indexed copies and subfolders, regardless of the visible page.
+Progress and errors appear beside the button. To export or compare from the command line:
 
 ```bat
 venv\Scripts\python.exe scripts\curation_sidecar.py export --db panopticon.db --folder "G:\Collections\Artist"
