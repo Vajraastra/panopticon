@@ -88,6 +88,21 @@ available for another manual attempt. Nested archives are available for the next
 manual pass. Installation is automatic through `run.bat`; no system 7-Zip or
 WinRAR is required.
 
+## Portable curation export
+
+Export tags, ratings and tag sources for an indexed folder on demand:
+
+```bat
+venv\Scripts\python.exe scripts\curation_sidecar.py export --db panopticon.db --folder "G:\Collections\Artist"
+venv\Scripts\python.exe scripts\curation_sidecar.py compare --db panopticon.db --folder "G:\Collections\Artist"
+```
+
+The export creates `panopticon.curation.db` alongside the folder's files, using relative
+paths and cataloged hashes. Copies retain separate curation even when their hashes match.
+Cherry's `catalog.db` and image files are preserved. The compare command reports both values
+for conflicts; it does not apply changes. Hashes are cataloged identities, not a fresh check
+of image bytes. Generation metadata and training captions are outside this export.
+
 ## License
 
 Business Source License 1.1 — free for non-commercial use.  
