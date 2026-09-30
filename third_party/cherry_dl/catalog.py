@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import time
 from pathlib import Path
 from typing import Callable
 
 import aiosqlite
+from .url_receipts import CREATE as _CREATE_URL_RECEIPTS, write_receipt, merge_download_history
 
 CATALOG_NAME = "catalog.db"
 
@@ -207,6 +209,7 @@ async def init_catalog(artist_dir: Path) -> None:
         await db.execute(_CREATE_META)
         await db.execute(_CREATE_IDX)
         await db.execute(_CREATE_IDX_URL)
+        await db.execute(_CREATE_URL_RECEIPTS)
         await db.execute(_CREATE_CONTENT_ALIASES)
         await db.execute(_CREATE_IDX_ALIAS_HASH)
         await db.execute(_CREATE_PENDING)
@@ -398,6 +401,24 @@ async def next_counter(artist_dir: Path, namespace: str | None = None) -> int:
     return row[0]
 
 
+async def reserve_destination(folder, artist_name, filename):
+    """El contador no autoriza sobrescribir una ruta ya ocupada.
+
+Comparte nombres entre descarga y fusión. La comprobación no es una reserva
+atómica frente a terceros; el límite evita recorrer colisiones indefinidamente.
+"""
+    from .file_routing import route, routed_name, destination
+
+    file_route = route(filename)
+    for _ in range(1000):
+        counter = await next_counter(folder, file_route.key)
+        final_name = routed_name(artist_name, counter, filename)
+        download_folder, catalog_name = destination(folder, final_name)
+        if not os.path.lexists(download_folder / final_name):
+            return counter, final_name, download_folder, catalog_name
+    raise ValueError('download_target_conflict')
+
+
 async def ensure_layout_version(
     artist_dir: Path,
     namespaces: tuple[str, ...],
@@ -513,8 +534,10 @@ async def url_exists(
     async with _db(db_path) as db:
         preview_clause = "" if include_previews else " AND is_preview = 0"
         async with db.execute(
-            "SELECT 1 FROM files WHERE url_source = ?" + preview_clause
-            + " LIMIT 1", (url,)
+            "SELECT 1 FROM files WHERE url_source = ? AND content_role IS NOT 'archive_member'" + preview_clause
+            + " UNION ALL SELECT 1 FROM downloaded_url_receipts r JOIN files f ON f.hash=r.file_hash "
+            "WHERE r.url_source = ?" + ("" if include_previews else " AND f.is_preview=0")
+            + " LIMIT 1", (url, url)
         ) as cur:
             return await cur.fetchone() is not None
 
@@ -570,6 +593,7 @@ class ScanCatalogBatch:
         self._preview_buffer: dict[str, tuple] = {}
         self._resolved_previews: set[str] = set()
         self._alias_buffer: dict[tuple[str, str, str, int], tuple] = {}
+        self._url_buffer: dict[str, str] = {}
         self._next_queue_position = 0
         self.write_commits = 0
         self._closed = False
@@ -588,10 +612,15 @@ class ScanCatalogBatch:
                            role, position) in cur:
                     if is_preview:
                         continue
-                    if url_source:
+                    if url_source and role != 'archive_member':
                         batch.downloaded_urls[url_source] = file_hash
                     if file_hash:
                         batch.downloaded_hashes.add(file_hash)
+
+            async with db.execute('SELECT r.url_source,r.file_hash FROM downloaded_url_receipts r '
+                                  'JOIN files f ON f.hash=r.file_hash WHERE f.is_preview=0') as cur:
+                async for url_source, file_hash in cur:
+                    batch.downloaded_urls.setdefault(url_source, file_hash)
 
             async with db.execute(
                 "SELECT service, post_id, original_filename, content_position, "
@@ -683,6 +712,22 @@ class ScanCatalogBatch:
             file_hash,
         )
         if len(self._alias_buffer) >= self.batch_size:
+            await self.flush()
+        return True
+
+    async def stage_downloaded_url(self, url_source: str, file_hash: str) -> bool:
+        if self._closed:
+            raise RuntimeError("el lote de catálogo ya está cerrado")
+        if not url_source or file_hash not in self.downloaded_hashes:
+            return False
+        previous = self.downloaded_urls.get(url_source)
+        if previous is not None:
+            if previous != file_hash:
+                raise ValueError('download_url_history_conflict')
+            return True
+        self.downloaded_urls[url_source] = file_hash
+        self._url_buffer[url_source] = file_hash
+        if len(self._url_buffer) >= self.batch_size:
             await self.flush()
         return True
 
@@ -795,8 +840,23 @@ class ScanCatalogBatch:
 
     async def flush(self) -> None:
         if (not self._buffer and not self._alias_buffer
-                and not self._preview_buffer and not self._resolved_previews):
+                and not self._preview_buffer and not self._resolved_previews and not self._url_buffer):
             return
+        await self._db_conn.execute('BEGIN IMMEDIATE')
+        try:
+            await self._flush_buffers()
+            await self._db_conn.commit()
+        except BaseException:
+            await self._db_conn.rollback()
+            raise
+        self.write_commits += 1
+        self._buffer.clear()
+        self._alias_buffer.clear()
+        self._url_buffer.clear()
+        self._preview_buffer.clear()
+        self._resolved_previews.clear()
+
+    async def _flush_buffers(self) -> None:
         if self._preview_buffer:
             preview_urls = tuple(self._preview_buffer)
             placeholders = ",".join("?" for _ in preview_urls)
@@ -880,13 +940,9 @@ class ScanCatalogBatch:
                 """,
                 list(self._alias_buffer.values()),
             )
-        await self._db_conn.commit()
-        self.write_commits += 1
-        for url_source in tuple(self._buffer):
-            self._buffer.pop(url_source, None)
-        self._alias_buffer.clear()
-        self._preview_buffer.clear()
-        self._resolved_previews.clear()
+        for url_source, file_hash in self._url_buffer.items():
+            if not await write_receipt(self._db_conn, url_source, file_hash):
+                raise ValueError('download_url_history_unproven')
 
     async def close(self) -> None:
         if self._closed:
@@ -939,6 +995,9 @@ async def add_file(
                 post_id or "", content_role or "", content_position,
             ),
         )
+        if not is_preview and url_source and content_role != 'archive_member':
+            if not await write_receipt(db, url_source, file_hash):
+                raise ValueError('download_url_history_unproven')
         await db.commit()
 
 
@@ -1830,7 +1889,8 @@ async def migrate_unique_files(
 
     - Hash NO existe en dst + archivo existe en disco  → mover, registrar en dst
     - Hash SÍ existe en dst                            → dejar en src (huérfano)
-    - En catalog de src pero no en disco               → omitir (purgado)
+    - En catalog de src pero no en disco               → no mover bytes (purgado)
+    - Sin errores físicos                             → conservar todo el historial en dst
 
     Retorna:
         moved          — archivos migrados exitosamente
@@ -1840,7 +1900,7 @@ async def migrate_unique_files(
         orphaned_paths — rutas físicas de los archivos huérfanos en src
     """
     from .file_routing import (
-        COUNTER_NAMESPACES, LAYOUT_VERSION, destination, route, routed_name,
+        COUNTER_NAMESPACES, LAYOUT_VERSION,
     )
 
     if not await ensure_layout_version(
@@ -1880,10 +1940,8 @@ async def migrate_unique_files(
             continue
 
         try:
-            spec = route(f["filename"])
-            ctr = await next_counter(folder_dst, spec.key)
-            basename = routed_name(artist_name, ctr, f["filename"])
-            new_dir, new_name = destination(folder_dst, basename)
+            ctr, basename, new_dir, new_name = await reserve_destination(
+                folder_dst, artist_name, f["filename"])
             new_dir.mkdir(parents=True, exist_ok=True)
             new_path = folder_dst / new_name
 
@@ -1908,8 +1966,9 @@ async def migrate_unique_files(
         from .archives import migrate_history
         try:
             await migrate_history(folder_src, folder_dst)
+            await merge_download_history(folder_src, folder_dst)
         except Exception as exc:
-            errors.append(f"Historial de comprimidos: {exc}")
+            errors.append(f"Historial de descargas y comprimidos: {exc}")
 
     return {
         "moved":          moved,

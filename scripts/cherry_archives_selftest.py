@@ -43,7 +43,8 @@ async def register(folder, name, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     h = hashlib.sha256(data).hexdigest()
-    await cat.add_file(folder, h, name, 'https://example.test/' + name,
+    # Archivos locales diferentes representan fuentes diferentes en este fixture.
+    await cat.add_file(folder, h, name, 'https://example.test/' + name + '?sha256=' + h,
                        len(data), counter)
     return h
 
@@ -125,7 +126,7 @@ async def main():
         check(not list((folder / 'Comprimidos').glob('*.zip')), 'remove verified ZIP')
         check(not (base / 'escape.txt').exists(), 'no archive path traversal')
         check(await cat.hash_exists(folder, ah), 'retain archive hash')
-        check(await cat.url_exists(folder, 'https://example.test/Landidzu_00003.zip'), 'retain URL')
+        check(await cat.url_exists(folder, 'https://example.test/Landidzu_00003.zip?sha256=' + ah), 'retain URL')
         check(await cat.content_alias_hash(folder, 'patreon', '123', 'bundle.zip', 0) == ah, 'retain alias')
         receipt = json.loads((folder / arc.STATE_DIR / f'{ah}.json').read_text('utf-8'))
         check(receipt['state'] == 'completed' and len(receipt['entries']) == 5, 'manifest')

@@ -20,6 +20,7 @@ propaga CancelledError limpiamente (cancela productor + workers y re-lanza).
 from __future__ import annotations
 
 import asyncio
+from .url_receipts import remember_downloaded_url
 import json
 import logging
 import time
@@ -38,11 +39,8 @@ from .downloads import (
 from .file_routing import (
     COUNTER_NAMESPACES,
     LAYOUT_VERSION,
-    destination,
     prepare_selected_folders,
     relative_filename,
-    route,
-    routed_name,
 )
 from .archives import organize_project
 from .catalog import (
@@ -59,7 +57,7 @@ from .catalog import (
     hash_exists,
     init_catalog,
     ensure_layout_version,
-    next_counter,
+    reserve_destination as _reserve_destination,
     pending_count,
     reactivate_awaiting_archive,
     remove_pending,
@@ -363,12 +361,15 @@ def _wait_on_site_throttle(
 
 
 async def _remember_content_alias(
-    folder: Path, file_info: FileInfo, file_hash: str,
+    folder: Path, file_info: FileInfo, file_hash: str, *, url_recorded: bool = False,
 ) -> bool:
     """Conserva la identidad original sólo cuando ya existe un hash probado."""
     if file_info.is_preview:
         return False
-    return await add_content_alias(
+    receipt = url_recorded or await remember_downloaded_url(folder, file_info.dedup_key, file_hash)
+    if not receipt:
+        raise ValueError('download_url_history_unproven')
+    alias = await add_content_alias(
         folder,
         file_hash,
         file_info.content_service,
@@ -378,6 +379,7 @@ async def _remember_content_alias(
         file_info.content_position,
         file_info.remote_size,
     )
+    return receipt or alias
 
 
 def ordered_sources(sources: list[dict]) -> list[dict]:
@@ -1008,6 +1010,7 @@ async def run_profile_download(
                                 continue
                             if matched_hash:
                                 scan_catalog.resolve_preview_only(key)
+                                await scan_catalog.stage_downloaded_url(key, matched_hash)
                                 await scan_catalog.stage_content_alias(
                                     matched_hash,
                                     fi.content_service or artist_info.service,
@@ -1309,14 +1312,8 @@ async def run_profile_download(
                             _counters()
                             continue
 
-                        file_route = route(fi.filename)
-                        counter = await next_counter(folder, file_route.key)
-                        final_name = routed_name(
-                            artist_info.name, counter, fi.filename,
-                        )
-                        download_folder, catalog_name = destination(
-                            folder, final_name,
-                        )
+                        counter, final_name, download_folder, catalog_name = await _reserve_destination(
+                            folder, artist_info.name, fi.filename)
                         emit(WorkerStart(slot_id, fi.filename))
 
                         def make_cb(s: int) -> Callable[[int, int], None]:
@@ -1533,7 +1530,7 @@ async def run_profile_download(
                             continue
 
                         # Dedup post-descarga (mismo contenido ya catalogado).
-                        if await hash_exists(folder, result.file_hash):
+                        if await hash_exists(folder, result.file_hash, include_previews=False):
                             summ.skipped += 1
                             await _remember_content_alias(
                                 folder, fi, result.file_hash,
@@ -1575,7 +1572,7 @@ async def run_profile_download(
                                 content_position=fi.content_position,
                             )
                             await _remember_content_alias(
-                                folder, fi, result.file_hash,
+                                folder, fi, result.file_hash, url_recorded=True,
                             )
                             await remove_pending(folder, fi.dedup_key)
                             summ.downloaded += 1
@@ -1598,7 +1595,7 @@ async def run_profile_download(
                                 content_position=fi.content_position,
                             )
                             await _remember_content_alias(
-                                folder, fi, result.file_hash,
+                                folder, fi, result.file_hash, url_recorded=True,
                             )
                             await remove_pending(folder, fi.dedup_key)
                             local_hashes[result.file_hash] = result.dest

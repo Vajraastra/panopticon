@@ -13,20 +13,23 @@ Uso (siempre con el Python del venv):
     venv/Scripts/python.exe scripts/cherry_bridge_selftest.py --scan 3   # TOCA LA RED
     venv/Scripts/python.exe scripts/cherry_bridge_selftest.py --download 3 [--cancel-after 20]
 
-Sin argumentos NO sale a la red: los ocho primeros casos usan eventos
-sintéticos, perfiles sin template y lecturas locales de `index.db`. `--scan` y
-`--download` sí golpean la API del sitio y descargan de verdad.
+Sin argumentos usa eventos sintéticos y bases/configuración temporales; no lee
+las bibliotecas del usuario. `--list` consulta el índice del usuario; `--scan` y
+`--download` sí golpean la API del sitio y pueden descargar de verdad.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import closing, contextmanager, ExitStack
+import sqlite3
 import sys
 import tempfile
 import threading
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 # El script vive en scripts/; la raíz del proyecto es el padre.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -720,6 +723,32 @@ def test_ext_filter() -> None:
           ef.decode("{roto") == (set(), "{roto"))
 
 
+@contextmanager
+def temporary_state():
+    from core.paths import ProjectPaths
+    from third_party.cherry_dl import config, download_service
+    from third_party.cherry_dl.index import init_index, create_profile
+
+    with tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+        root = Path(folder)
+        cherry = root / '.cherry-dl'
+        cherry.mkdir()
+        for name, value in {'CHERRY_DIR': cherry, 'INDEX_DB': cherry / 'index.db',
+                            'CONFIG_FILE': cherry / 'config.toml',
+                            'SESSION_FILE': cherry / 'session.json'}.items():
+            stack.enter_context(patch.object(config, name, value))
+        stack.enter_context(patch.object(download_service, 'INDEX_DB', config.INDEX_DB))
+        stack.enter_context(patch.object(ProjectPaths, 'root', return_value=root))
+        config.save_config(config.UserConfig(download_dir=str(root / 'downloads')))
+        asyncio.run(init_index(config.INDEX_DB))
+        asyncio.run(create_profile(config.INDEX_DB, 'Fixture', root / 'downloads/Fixture', 'fixture'))
+        with closing(sqlite3.connect(root / 'panopticon.db')) as db, db:
+            db.execute('CREATE TABLE watched_folders(path TEXT)')
+            db.execute('INSERT INTO watched_folders VALUES(?)', ((root / 'collection').as_posix(),))
+            db.execute('CREATE TABLE files(path TEXT, artist TEXT, origin_site TEXT)')
+        yield
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--list", action="store_true", help="listar perfiles y salir")
@@ -730,6 +759,14 @@ def main() -> int:
     ap.add_argument("--cancel-after", type=float, metavar="SEG",
                     help="cancelar tras N segundos (prueba de A1.4 en vivo)")
     args = ap.parse_args()
+
+    if args.scan is None and args.download is None and not args.list:
+        with temporary_state():
+            return run_tests(args)
+    return run_tests(args)
+
+
+def run_tests(args) -> int:
 
     app = QCoreApplication(sys.argv)
     runtime = CherryRuntime()

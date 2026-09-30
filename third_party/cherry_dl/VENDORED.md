@@ -744,3 +744,28 @@ de `modules/cherry/logic/archive_batch.py` no contiene una segunda implementaci�
 agrega resultados y aísla sus errores. `scripts/cherry_archive_batch.py` expone vista previa,
 selección por id, auditoría forzada, aplicación explícita y reporte JSON para controlar la primera
 limpieza real sin mantener lógica desechable.
+
+## Recibos de URLs duplicadas e historial de descarga (2026-09-30)
+
+Una URL nueva cuyo contenido ya estaba catalogado podía descargarse en cada sesión si
+carecía de identidad lógica suficiente: se descartaban sus bytes sin recordar esa URL.
+`url_receipts.py` conserva el vínculo URL/hash dentro de cada `catalog.db`; la API canónica
+confirma el recibo antes de descartar un duplicado o retirar su pendiente. El scan incorpora
+URLs nuevas por lotes, con rollback de recibos/alias/cola juntos. Previews y hashes no probados
+no crean recibos de originales; conflictos no sobrescriben la identidad previa.
+
+La fusión preserva todos los recibos de contenido final y sus alias, incluidos archivos sin
+presencia física, después de la migración física y antes de que el wrapper retire el perfil
+origen. Importa historia en bloques y una transacción destino; filas ausentes usan el marcador
+existente `_purged_<hash>`, sin crear archivos ni avanzar contadores. Fallos conservan el origen
+y revierten la importación de historia; movimientos previos siguen el protocolo existente.
+
+Los miembros extraídos conservan la URL del comprimido como procedencia; no reemplazan
+su recibo por el hash de una imagen interna. Un miembro sí puede probar una descarga
+individual de esos mismos bytes en otra URL.
+
+Descarga y fusión omiten rutas ocupadas cuando el contador está rezagado, con un límite de intentos;
+no es una reserva atómica frente a programas externos. Validación en Windows con catálogos
+temporales, sesiones del servicio con transporte simulado y regresiones de Cherry. La curación
+central y la elección global de la copia más documentada pertenecen a Panopticon; este bloque
+no borra copias ni consulta esa DB. La estructura de catálogos separados y portabilidad se conserva.

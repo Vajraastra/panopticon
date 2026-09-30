@@ -287,7 +287,7 @@ async def main() -> None:
             "attachments": [{"name": "source.psd", "path": "/cc/dd/" + hash_b + "/x"}],
         }
         kemono = list(kemono_files(post, origin))
-        pawchive = list(pawchive_files(post, origin))
+        pawchive = list(pawchive_files(post, origin, 'fixture-user-agent'))
         check(kemono[0].original_filename == "raw:name.png", "Kemono conserva nombre sin sanitizar")
         check(pawchive[0].original_filename == "raw:name.png", "Pawchive conserva nombre sin sanitizar")
         check(

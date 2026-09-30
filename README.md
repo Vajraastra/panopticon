@@ -165,6 +165,18 @@ Closing the window cancels work that has not started and drops late results. A q
 already started continues in its worker; closing does not undo it. Application shutdown
 does not yet guarantee draining every module worker.
 
+Cherry catalogs retain download history even when a physical copy has been moved or
+removed after deduplication. Alternate URLs confirmed as the same cataloged content are
+saved in `catalog.db`, including URLs without a logical post identity. Profile merging
+preserves these receipts and logical aliases before retiring the source profile. Keep
+the catalog with its folder; deleting catalog history also deletes its download safeguard.
+Preview records do not block an original download. Conflicting URL/content histories
+stop the merge for review instead of replacing the earlier identity.
+
+Download and merge names skip occupied paths if a counter is stale. This protects existing copies
+under normal cooperative use; it does not reserve a destination against external programs
+creating a file after the check.
+
 ## License
 
 Business Source License 1.1 — free for non-commercial use.  
