@@ -10,6 +10,7 @@ from core.database_manager import DatabaseManager
 from core.library_async import LibraryReader, LibraryWriter
 from core.curation_tasks import CurationExportTasks
 from core.components.curation_review import CurationReviewDialog
+from core.components.curation_recovery import CurationRecoveryDialog
 from .logic.indexer import IndexerWorker
 from .logic.hash_backfill import HashBackfillWorker
 from core.inventory import InventoryStatus
@@ -62,6 +63,7 @@ class LibrarianModule(BaseModule):
         self._handoff = None
         self._exporting = None
         self._review_dialog = None
+        self._recovery_dialog = None
         self.current_folder_path = None
         self._closed = False
         self._browse_ready = False
@@ -205,6 +207,14 @@ class LibrarianModule(BaseModule):
             f"background-color: {c('bg_input')}; color: {c('accent_info')}; border: 1px solid {c('border_strong')}; padding: 6px;")
         self.btn_review_curation.clicked.connect(self.review_folder_curation)
         layout.addWidget(self.btn_review_curation)
+        self.btn_recover_curation = QPushButton(self.tr('lib.recovery.open', 'Recover interrupted export…'))
+        self.btn_recover_curation.setToolTip(self.tr('lib.recovery.open_tip',
+            'Choose any folder, including one not indexed. Inspect interrupted export resources, '
+            'then explicitly quarantine verified resources without touching its images or catalogs.'))
+        self.btn_recover_curation.setStyleSheet(
+            f"background-color: {c('bg_input')}; color: {c('text_primary')}; border: 1px solid {c('border_strong')}; padding: 6px;")
+        self.btn_recover_curation.clicked.connect(self.recover_folder_curation)
+        layout.addWidget(self.btn_recover_curation)
 
         # --- Section 2: Tag Selection ---
         layout.addSpacing(20)
@@ -638,6 +648,24 @@ class LibrarianModule(BaseModule):
     def _review_closed(self):
         self._review_dialog = None
 
+    def recover_folder_curation(self):
+        if self._closed:
+            return
+        if self._recovery_dialog is None:
+            folder = QFileDialog.getExistingDirectory(self.view,
+                self.tr('lib.recovery.choose', 'Choose folder to inspect'), self.current_folder_path or '')
+            if not folder:
+                return
+            self._recovery_dialog = CurationRecoveryDialog(folder, self.tr,
+                self.context.get('theme_manager'), self.view)
+            self._recovery_dialog.finished.connect(lambda _: self._recovery_closed())
+        self._recovery_dialog.show()
+        self._recovery_dialog.raise_()
+        self._recovery_dialog.activateWindow()
+
+    def _recovery_closed(self):
+        self._recovery_dialog = None
+
     def export_folder_curation(self):
         if not self._can_export_curation():
             return
@@ -825,6 +853,8 @@ class LibrarianModule(BaseModule):
         self._exporting = None
         if self._review_dialog is not None:
             self._review_dialog.close()
+        if self._recovery_dialog is not None:
+            self._recovery_dialog.close()
         for name in ('overview_reader', 'browse_reader', 'scan_reader', 'handoff_reader', 'export_reader'):
             reader = getattr(self, name, None)
             if reader:

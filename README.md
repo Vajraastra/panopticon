@@ -156,6 +156,15 @@ file identities. Legacy empty locks, unclaimed temporaries and changed identitie
 manual review. A partially failed quarantine retains its plan and remaining lock; inspect
 again before retrying. This is cooperative protection tested on local Windows storage.
 
+In Librarian, **Recover interrupted export…** opens a folder chooser even when that
+folder is not indexed. Its nonmodal window inspects in a worker and displays the full
+resource list, export token and fingerprint. Choose **Quarantine listed resources** only
+after reviewing that list; a changed state rejects the action and requires another
+inspection. Errors preserve resources for review, including any partial recovery plan.
+Closing the window cancels work that has not started and drops late results. A quarantine
+already started continues in its worker; closing does not undo it. Application shutdown
+does not yet guarantee draining every module worker.
+
 ## License
 
 Business Source License 1.1 — free for non-commercial use.  
