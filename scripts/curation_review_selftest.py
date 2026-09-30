@@ -189,7 +189,7 @@ class ReviewQt(helpers.Fixture):
         self.assertIn('Comparison stopped', new.status.text())
         self.assertFalse((other / NAME).exists())
 
-    def test_empty_indexed_folder_can_review_unregistered_copies(self):
+    def test_empty_operational_folder_reviews_history_without_allowing_registration(self):
         module, dialog, paths = self.open_review(2)
         dialog.close()
         self.service.submit('remove_files', paths).result(3)
@@ -201,7 +201,9 @@ class ReviewQt(helpers.Fixture):
         dialog = module._review_dialog
         self.dialogs.append((dialog, dialog.reader))
         self.assertTrue(helpers.pump(lambda: not dialog._busy))
-        self.assertEqual([r['status'] for r in dialog._reports], ['unregistered', 'unregistered'])
+        self.assertEqual([r['status'] for r in dialog._reports], ['offline_history', 'offline_history'])
+        self.assertFalse(dialog.register_button.isEnabled())
+        self.assertFalse(dialog.apply_button.isEnabled())
         self.assertIn('No registered copy', dialog.central_text.toPlainText())
 
     def test_filters_export_and_folder_write_disable_review(self):

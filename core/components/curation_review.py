@@ -7,6 +7,8 @@ from core.curation_review import CurationReviewTasks
 from core.curation_apply import CurationApplyTasks
 
 _ERROR_DEFAULTS = {
+    'version_identity_required': 'This path has offline history; review its specific copy version',
+    'offline_version_requires_review': 'This is an offline version; review it in the offline catalog',
     'sidecar_changed': 'The export changed during this review',
     'sidecar_count_mismatch': 'The declared copy count does not match the available records',
     'sidecar_payload_too_large': 'One copy contains more tag data than the comparison can read',

@@ -167,15 +167,17 @@ class LibrarySafety(unittest.TestCase):
         self.assertNotIn('bad', self.db.get_all_tags())
         self.assertEqual(self.sql('PRAGMA foreign_key_check'), [])
 
-    def test_deletion_cascades_links_and_fts_preserving_tag_dictionary(self):
+    def test_removal_archives_identity_links_and_fts(self):
         self.assertTrue(self.db.remove_files([str(self.file)]))
-        self.assertEqual(self.sql('SELECT * FROM file_tags'), [])
-        self.assertEqual(self.sql('SELECT count(*) FROM files_fts'), [(0,)])
+        self.assertEqual(self.sql('SELECT count(*) FROM file_tags'), [(1,)])
+        self.assertEqual(self.sql('SELECT count(*) FROM files_fts'), [(1,)])
+        self.assertEqual(self.sql('SELECT is_offline FROM files'), [(1,)])
+        self.assertIsNone(self.db.get_file_id(str(self.file)))
         self.assertEqual(self.db.get_all_tags(), ['preserved'])
 
     def test_failed_watch_removal_restores_curation_and_watch(self):
         self.assertTrue(self.db.add_watched_folder(str(self.file.parent)))
-        self.sql('DROP TABLE files_fts')
+        self.sql("CREATE TRIGGER fail_archive BEFORE UPDATE OF is_offline ON files BEGIN SELECT RAISE(ABORT,'fixture'); END")
         self.assertFalse(self.db.remove_watched_folder(str(self.file.parent)))
         self.assertTrue(self.db.update_file_rating(str(self.file), 4))
         self.assertEqual(self.db.get_tags_for_file(str(self.file)), ['preserved'])

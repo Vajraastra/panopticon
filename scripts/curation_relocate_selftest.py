@@ -71,7 +71,9 @@ class RelocationQt(helpers.Fixture):
         else:
             paths = old_paths
             if mode == 'absent':
-                self.service.submit('remove_files', [paths[0]]).result(3)
+                # Simular pérdida real del registro; retirar del inventario ahora lo archiva.
+                self.sql('DELETE FROM files_fts WHERE rowid=?', (self.old['state']['id'],))
+                self.sql('DELETE FROM files WHERE id=?', (self.old['state']['id'],))
             else:
                 self.sql('UPDATE files SET hash_original=NULL,hash_mod=NULL WHERE path=?', (paths[0],))
                 self.service.submit('edit_curation', paths[0], remove_tags=['exported'], rating=0).result(3)

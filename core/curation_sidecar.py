@@ -19,7 +19,7 @@ from core.library_repository import LibraryRepository
 from third_party.cherry_dl.catalog import _CREATE_FILES, _CREATE_META
 
 NAME = 'panopticon.curation.db'
-VERSION = '1'
+VERSION = '2'
 BLOCK = 256
 MAX_PAGE_TAGS = 4096
 
@@ -58,17 +58,24 @@ def _identity(path):
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
 
 
-def _owner(conn):
+def _owner(conn, *, with_version=False):
     metadata = dict(conn.execute("SELECT key,value FROM meta WHERE key IN "
         "('owner','panopticon_curation_version','export_id','copy_count')"))
-    if metadata.get('owner') != 'panopticon' or str(metadata.get('panopticon_curation_version')) != VERSION:
+    version = str(metadata.get('panopticon_curation_version'))
+    if metadata.get('owner') != 'panopticon' or version not in ('1', '2'):
+        raise ValueError('foreign_or_unsupported_sidecar')
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(curation_copies)')}
+    expected = {'id', 'relative_path', 'hash_original', 'hash_mod', 'rating', 'file_size', 'created_date'}
+    if version == '2':
+        expected.add('is_offline')
+    if columns != expected:
         raise ValueError('foreign_or_unsupported_sidecar')
     token = metadata.get('export_id')
     if not isinstance(token, str) or not re.fullmatch('[0-9a-f]{32}', token):
         raise ValueError('invalid_export_id')
     if type(metadata.get('copy_count')) is not int or metadata['copy_count'] < 0:
         raise ValueError('invalid_copy_count')
-    return token
+    return (token, version) if with_version else token
 
 
 def _existing(target):
@@ -135,8 +142,9 @@ def _export_curation(source, folder, target, cancelled):
             output.execute(_CREATE_FILES)
             output.execute(_CREATE_META)
             output.execute('CREATE TABLE curation_copies(id INTEGER PRIMARY KEY, '
-                'relative_path TEXT UNIQUE NOT NULL,hash_original TEXT,hash_mod TEXT,'
-                'rating INTEGER NOT NULL CHECK(rating BETWEEN 0 AND 5),file_size INTEGER,created_date)')
+                'relative_path TEXT NOT NULL,hash_original TEXT,hash_mod TEXT,'
+                'rating INTEGER NOT NULL CHECK(rating BETWEEN 0 AND 5),file_size INTEGER,created_date,'
+                'is_offline INTEGER NOT NULL CHECK(is_offline IN (0,1)))')
             output.execute('CREATE TABLE curation_tags(copy_id INTEGER NOT NULL,name TEXT NOT NULL,'
                 'source TEXT,category TEXT,PRIMARY KEY(copy_id,name),'
                 'FOREIGN KEY(copy_id) REFERENCES curation_copies(id))')
@@ -149,21 +157,23 @@ def _export_curation(source, folder, target, cancelled):
                 reader.set_progress_handler(lambda: int(bool(cancelled and cancelled())), 1000)
                 reader.execute('BEGIN')
                 like = LibraryRepository(reader)._folder_like(str(folder))
-                cursor = reader.execute('SELECT id,path,hash_original,hash_mod,rating,file_size,created_date '
+                cursor = reader.execute('SELECT id,path,hash_original,hash_mod,rating,file_size,created_date,is_offline '
                     "FROM files WHERE path LIKE ? ESCAPE '\\' ORDER BY id", (like,))
                 while rows := cursor.fetchmany(BLOCK):
                     _check_cancel(cancelled)
                     copied = {}
-                    for file_id, path, original, modified, rating, size, created in rows:
+                    for file_id, path, original, modified, rating, size, created, offline in rows:
                         relative = _relative(path, folder)
                         original, modified = _digest(original), _digest(modified)
                         rating = 0 if rating is None else rating
                         if type(rating) is not int or not 0 <= rating <= 5:
                             raise ValueError('invalid_catalogued_rating')
+                        if type(offline) is not int or offline not in (0, 1):
+                            raise ValueError('invalid_copy_versions_state')
                         count += 1
                         copied[file_id] = count
-                        output.execute('INSERT INTO curation_copies VALUES(?,?,?,?,?,?,?)',
-                            (count, relative, original, modified, rating, size, created))
+                        output.execute('INSERT INTO curation_copies VALUES(?,?,?,?,?,?,?,?)',
+                            (count, relative, original, modified, rating, size, created, offline))
                         # NULL permite conservar copias sin hash sin inventar identidad SHA.
                         digest = original or modified
                         missing_hash += digest is None
@@ -217,14 +227,15 @@ def read_curation_page(folder, *, after=0, limit=256, export_id=None):
         raise ValueError('invalid_page')
     with closing(open_reader(Path(folder) / NAME)) as conn:
         conn.execute('BEGIN')
-        token = _owner(conn)
+        token, version = _owner(conn, with_version=True)
         total = conn.execute("SELECT value FROM meta WHERE key='copy_count'").fetchone()[0]
         if export_id is not None and export_id != token:
             raise ValueError('sidecar_changed')
-        rows = conn.execute('SELECT id,relative_path,hash_original,hash_mod,rating '
+        offline_column = 'is_offline' if version == '2' else '0'
+        rows = conn.execute('SELECT id,relative_path,hash_original,hash_mod,rating,' + offline_column + ' '
             'FROM curation_copies WHERE id>? ORDER BY id LIMIT ?', (after, limit)).fetchall()
         records = {}
-        for key, relative, original, modified, rating in rows:
+        for key, relative, original, modified, rating, offline in rows:
             if not isinstance(relative, str) or not relative or len(relative) > 32768 or '\\' in relative:
                 raise ValueError('invalid_relative_path')
             relative_path = PurePosixPath(relative)
@@ -232,8 +243,10 @@ def read_curation_page(folder, *, after=0, limit=256, export_id=None):
                 raise ValueError('invalid_relative_path')
             if type(rating) is not int or not 0 <= rating <= 5:
                 raise ValueError('invalid_catalogued_rating')
+            if type(offline) is not int or offline not in (0, 1):
+                raise ValueError('invalid_copy_versions_state')
             records[key] = dict(id=key, relative_path=relative, hash_original=_digest(original),
-                                hash_mod=_digest(modified), rating=rating, tags=[])
+                                hash_mod=_digest(modified), rating=rating, tags=[], is_offline=offline)
         if records:
             placeholders = ','.join('?' for _ in records)
             seen = 0
@@ -260,13 +273,22 @@ def compare_curation_page(db_path, folder, **page):
     copies = value['copies']
     paths = [(folder / record['relative_path']).as_posix() for record in copies]
     current = {}
+    historical = set()
     if paths:
         with closing(open_reader(db_path)) as conn:
             conn.execute('BEGIN')
-            placeholders = ','.join('?' for _ in paths)
-            for key, path, original, modified, rating in conn.execute('SELECT id,path,hash_original,hash_mod,rating '
-                    f'FROM files WHERE path IN ({placeholders})', paths):
-                current[path] = dict(id=key, hash_original=original, hash_mod=modified, rating=rating or 0, tags=[])
+            unique_paths = tuple(dict.fromkeys(paths))
+            requested = ' UNION ALL '.join(['SELECT ? AS path'] * len(unique_paths))
+            # Una fila por ruta: usa el índice de copia operativa y EXISTS del
+            # historial. No materializa todas sus versiones ni hace N consultas.
+            for key, path, original, modified, rating, offline in conn.execute(
+                    'SELECT f.id,r.path,f.hash_original,f.hash_mod,f.rating,(f.id IS NULL) '
+                    f'FROM ({requested}) r LEFT JOIN files f ON f.path=r.path AND f.is_offline=0 '
+                    'WHERE f.id IS NOT NULL OR EXISTS(SELECT 1 FROM files h WHERE h.path=r.path AND h.is_offline=1)', unique_paths):
+                if offline:
+                    historical.add(path)
+                else:
+                    current[path] = dict(id=key, hash_original=original, hash_mod=modified, rating=rating or 0, tags=[])
             ids = {record['id']: record for record in current.values()}
             if ids:
                 placeholders = ','.join('?' for _ in ids)
@@ -281,8 +303,10 @@ def compare_curation_page(db_path, folder, **page):
                     ids[key]['tags'].append(_tag(name, source, category))
     reports = []
     for record, path in zip(copies, paths):
-        local = current.get(path)
-        if local is None:
+        local = None if record['is_offline'] else current.get(path)
+        if record['is_offline'] or (local is None and path in historical):
+            status = 'offline_history'
+        elif local is None:
             status = 'unregistered'
         elif (local['hash_original'], local['hash_mod']) == (None, None) and (record['hash_original'] or record['hash_mod']):
             status = 'central_identity_missing'

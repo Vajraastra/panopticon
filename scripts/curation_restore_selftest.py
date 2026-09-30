@@ -92,7 +92,9 @@ class Restore(helpers.Fixture):
 
     def test_delete_recreate_with_same_path_and_hash_invalidates_approval(self):
         old = self.read()
-        self.service.submit('remove_files', [self.paths[0]]).result(3)
+        # Simular pérdida de la fila: retirar del inventario conserva ahora su identidad.
+        self.sql('DELETE FROM files_fts WHERE rowid=?', (old['state']['id'],))
+        self.sql('DELETE FROM files WHERE id=?', (old['state']['id'],))
         self.service.submit('register_files_minimal', [dict(path=self.paths[0], filename='one.png',
             size=1, created=1, hash_original='a'*64)]).result(3)
         self.assertNotEqual(self.read()['state']['id'], old['state']['id'])

@@ -11,6 +11,7 @@ from core.library_async import LibraryReader, LibraryWriter
 from core.curation_tasks import CurationExportTasks
 from core.components.curation_review import CurationReviewDialog
 from core.components.curation_recovery import CurationRecoveryDialog
+from core.components.copy_versions import CopyVersionsDialog
 from .logic.indexer import IndexerWorker
 from .logic.hash_backfill import HashBackfillWorker
 from core.inventory import InventoryStatus
@@ -64,6 +65,7 @@ class LibrarianModule(BaseModule):
         self._exporting = None
         self._review_dialog = None
         self._recovery_dialog = None
+        self._versions_dialog = None
         self.current_folder_path = None
         self._closed = False
         self._browse_ready = False
@@ -215,6 +217,12 @@ class LibrarianModule(BaseModule):
             f"background-color: {c('bg_input')}; color: {c('text_primary')}; border: 1px solid {c('border_strong')}; padding: 6px;")
         self.btn_recover_curation.clicked.connect(self.recover_folder_curation)
         layout.addWidget(self.btn_recover_curation)
+        self.btn_copy_versions = QPushButton(self.tr('lib.versions.open', 'Copy versions and offline catalog…'))
+        self.btn_copy_versions.setToolTip(self.tr('lib.versions.open_tip',
+            'Review stored copies by ID, preserve an active copy offline or verify a file before making it available.'))
+        self.btn_copy_versions.setStyleSheet(self.btn_recover_curation.styleSheet())
+        self.btn_copy_versions.clicked.connect(self.review_copy_versions)
+        layout.addWidget(self.btn_copy_versions)
 
         # --- Section 2: Tag Selection ---
         layout.addSpacing(20)
@@ -617,7 +625,7 @@ class LibrarianModule(BaseModule):
     def _can_export_curation(self):
         return (not self._closed and self.view is not None and self._browse_ready and
                 bool(self.current_folder_path) and not self.active_tags and
-                self._external_paths is None and self._selection_count > 0 and
+                self._external_paths is None and
                 self._exporting is None and self._folder_write is None)
 
     def _update_export_controls(self):
@@ -647,6 +655,21 @@ class LibrarianModule(BaseModule):
 
     def _review_closed(self):
         self._review_dialog = None
+
+    def review_copy_versions(self):
+        if self._closed:
+            return
+        if self._versions_dialog is None:
+            self._versions_dialog = CopyVersionsDialog(self.db.service, self.tr,
+                self.context.get('theme_manager'), self.view)
+            self._versions_dialog.finished.connect(lambda _: self._versions_closed())
+            self._versions_dialog.copies_changed.connect(lambda: self._on_curation_restored(''))
+        self._versions_dialog.show()
+        self._versions_dialog.raise_()
+        self._versions_dialog.activateWindow()
+
+    def _versions_closed(self):
+        self._versions_dialog = None
 
     def recover_folder_curation(self):
         if self._closed:
@@ -855,6 +878,8 @@ class LibrarianModule(BaseModule):
             self._review_dialog.close()
         if self._recovery_dialog is not None:
             self._recovery_dialog.close()
+        if self._versions_dialog is not None:
+            self._versions_dialog.close()
         for name in ('overview_reader', 'browse_reader', 'scan_reader', 'handoff_reader', 'export_reader'):
             reader = getattr(self, name, None)
             if reader:

@@ -110,7 +110,7 @@ class IndexerWorker(QThread):
                 result.fail(InventoryStatus.CANCELLED)
                 return
             if missing:
-                self._progress("lib.scan.cleanup", "Removing {count} confirmed missing entries from the index...", count=len(missing))
+                self._progress("lib.scan.cleanup", "Archiving {count} confirmed missing entries offline...", count=len(missing))
                 if not self.is_running:
                     result.fail(InventoryStatus.CANCELLED)
                     return

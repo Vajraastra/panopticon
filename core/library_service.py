@@ -10,7 +10,6 @@ import os
 import sqlite3
 import threading
 import time
-import uuid
 from concurrent.futures import Future
 from contextlib import closing, ExitStack
 from pathlib import Path
@@ -20,6 +19,7 @@ from core.library_connections import open_reader
 from core.library_metrics import LibraryMetrics
 from core.library_repository import LibraryRepository
 from core.library_writer_guard import writer_guard
+from core.library_versions_schema import backup_database, migrate as migrate_versions, upgrade_table, ready as versions_ready
 from core.paths import ProjectPaths
 
 log = logging.getLogger(__name__)
@@ -31,12 +31,14 @@ READS = frozenset({
     'get_file_rating', 'count_files', 'get_curation_snapshot', 'get_curation_restore_state',
     'get_library_overview', 'get_library_selection', 'get_library_page',
     'resolve_library_selection', 'check_fts',
+    'get_copy_versions_page', 'get_copy_version_state',
 })
 WRITES = frozenset({
     'register_files_minimal', 'update_file_metadata', 'remove_files',
     'add_watched_folder', 'remove_watched_folder', 'add_tag_to_file',
     'remove_tag_from_file', 'set_hash_original_bulk', 'update_file_rating',
     'rebuild_fts', 'repair_fts', 'vacuum_database', 'edit_curation', 'restore_curation', 'register_curation_copy', 'adopt_curation_identity',
+    'archive_copy', 'make_copy_online',
 })
 
 
@@ -53,6 +55,8 @@ def require_ready_schema(conn):
         raise ValueError('library_not_ready')
     if conn.execute("SELECT value FROM panopticon_schema WHERE name='integrity_v1'").fetchone() != ('1',):
         raise ValueError('library_not_ready')
+    if not versions_ready(conn):
+        raise ValueError('library_not_ready')
 
 
 def _migrate(conn, db_path):
@@ -61,24 +65,21 @@ def _migrate(conn, db_path):
     ready = marker and conn.execute(
         "SELECT value FROM panopticon_schema WHERE name='integrity_v1'").fetchone()
     if ready:
+        if ready != ('1',):
+            raise ValueError('library_not_ready')
+        migrate_versions(conn, db_path)
         return
     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='files'").fetchone():
         # Backup SQLite consistente, incluyendo WAL. Nunca copiar sólo el .db.
-        backup_path = Path(str(db_path) + f'.pre-integrity-{uuid.uuid4().hex}.bak')
-        temporary = Path(str(backup_path) + '.tmp')
-        try:
-            with closing(sqlite3.connect(temporary)) as backup:
-                conn.backup(backup)
-            os.replace(temporary, backup_path)
-        except BaseException:
-            temporary.unlink(missing_ok=True)
-            raise
+        backup_path = backup_database(conn, db_path, 'integrity')
         log.info('Respaldo previo a migración: %s', backup_path)
     repo = LibraryRepository(conn)
+    conn.execute('PRAGMA foreign_keys=OFF')
     conn.execute('BEGIN IMMEDIATE')
     try:
         repo.create_schema()
         repo.run_transformations()
+        upgrade_table(conn)
         # Preservar vínculos previos inválidos en una tabla propia recuperable.
         conn.execute('CREATE TABLE IF NOT EXISTS orphaned_file_tags ('
                      'file_id INTEGER, tag_id INTEGER, source TEXT, '
@@ -98,6 +99,10 @@ def _migrate(conn, db_path):
     except BaseException:
         conn.rollback()
         raise
+    finally:
+        conn.execute('PRAGMA foreign_keys=ON')
+        if conn.execute('PRAGMA foreign_keys').fetchone() != (1,):
+            raise sqlite3.DatabaseError('foreign_keys unavailable')
 
 
 class LibraryService:

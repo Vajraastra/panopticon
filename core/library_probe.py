@@ -117,19 +117,20 @@ def artist_summary(artist: str, sample_folders: int = 3) -> dict:
     if con is None:
         return empty
     try:
+        active = 'is_offline=0 AND ' if any(row[1] == 'is_offline' for row in con.execute('PRAGMA table_info(files)')) else ''
         total = con.execute(
-            "SELECT COUNT(*) FROM files WHERE artist = ?", (name,)).fetchone()[0]
+            f"SELECT COUNT(*) FROM files WHERE {active}artist = ?", (name,)).fetchone()[0]
         if not total:
             return empty
         sites = con.execute(
-            "SELECT origin_site, COUNT(*) FROM files WHERE artist = ? "
+            f"SELECT origin_site, COUNT(*) FROM files WHERE {active}artist = ? "
             "GROUP BY origin_site ORDER BY 2 DESC", (name,)).fetchall()
         # Las carpetas se sacan de una muestra, no de un DISTINCT: un artista
         # con 40K archivos vive en un puñado de carpetas y ordenarlas todas
         # costaría más que la cuenta entera.
         folders: list[str] = []
         rows = con.execute(
-            "SELECT path FROM files WHERE artist = ? LIMIT 500", (name,)).fetchall()
+            f"SELECT path FROM files WHERE {active}artist = ? LIMIT 500", (name,)).fetchall()
         for (p,) in rows:
             parent = normalize(Path(p).parent)
             if parent not in folders:
@@ -154,9 +155,10 @@ def known_artists() -> list[str]:
     if con is None:
         return []
     try:
+        active = 'is_offline=0 AND ' if any(row[1] == 'is_offline' for row in con.execute('PRAGMA table_info(files)')) else ''
         rows = con.execute(
             "SELECT DISTINCT artist FROM files "
-            "WHERE artist IS NOT NULL AND artist <> '' ORDER BY artist").fetchall()
+            f"WHERE {active}artist IS NOT NULL AND artist <> '' ORDER BY artist").fetchall()
         return [r[0] for r in rows]
     except sqlite3.Error as exc:
         log.warning("library_probe: no se pudieron leer los artistas: %s", exc)

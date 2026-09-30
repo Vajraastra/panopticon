@@ -5,6 +5,7 @@ import re
 
 from core.library_fts import check_fts, repair_fts
 from core.library_selection import validate_selection, term_filter, select
+from core.library_versions_schema import initialize_new
 
 
 log = logging.getLogger(__name__)
@@ -17,12 +18,13 @@ class LibraryRepository:
 
     def create_schema(self):
         cursor = self.conn.cursor()
+        new_files = not cursor.execute("SELECT 1 FROM sqlite_master WHERE name='files'").fetchone()
 
         # Files Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                path TEXT UNIQUE NOT NULL,
+                path TEXT NOT NULL,
                 filename TEXT,
                 file_size INTEGER DEFAULT 0,
                 width INTEGER DEFAULT 0,
@@ -45,9 +47,12 @@ class LibraryRepository:
                 phash TEXT,          -- hash perceptual (near-dups), poblado por backfill opcional
                 origin_url TEXT,     -- url_source de cherry-dl
                 origin_site TEXT,    -- kemono/patreon/pixiv/...
-                artist TEXT          -- display_name del perfil cherry
+                artist TEXT,         -- display_name del perfil cherry
+                is_offline INTEGER NOT NULL DEFAULT 0 CHECK(is_offline IN (0,1))
             )
         """)
+        if new_files:
+            initialize_new(self.conn)
 
         # Tags Table
         cursor.execute("""
@@ -200,15 +205,17 @@ class LibraryRepository:
         observations = [(self._normalize_path(f['path']), f) for f in files_data]
         paths = list(dict.fromkeys(path for path, _ in observations))
         previous = {}
+        historical = set()
         for start in range(0, len(paths), 256):
             block = paths[start:start + 256]
             placeholders = ','.join('?' * len(block))
             rows = cursor.execute(
                 'SELECT path, filename, file_size, created_date, hash_original, '
-                'origin_url, origin_site, artist FROM files '
+                'origin_url, origin_site, artist,is_offline FROM files '
                 f'WHERE path IN ({placeholders})', block,
             ).fetchall()
-            previous.update((row[0], row[1:]) for row in rows)
+            previous.update((row[0], row[1:-1]) for row in rows if not row[-1])
+            historical.update(row[0] for row in rows if row[-1])
 
         # Simular observaciones repetidas en orden: primer hash no-NULL y último
         # origen no-NULL; nunca perder un valor porque la siguiente lo omite.
@@ -216,6 +223,9 @@ class LibraryRepository:
         inserts = []
         updates = []
         for path, f in observations:
+            # Inventario no verifica bytes ni identifica la versión que está viendo.
+            if path in historical:
+                continue
             old = current.get(path)
             values = (f['filename'], f['size'], f['created'],
                       f.get('hash_original'), f.get('origin_url'),
@@ -243,18 +253,18 @@ class LibraryRepository:
         cursor.executemany("""
             UPDATE files SET filename=?, file_size=?, created_date=?,
                              hash_original=?, origin_url=?, origin_site=?, artist=?
-            WHERE path=?
+            WHERE is_offline=0 AND path=?
         """, updates)
         # Tamaño/fecha/hash/origen no son buscables. Sólo filas nuevas o cambios
         # de nombre requieren FTS; metas/tags se conservan y se leen al sincronizar.
         # Reparar un FTS parcialmente corrupto es una operación explícita aparte.
-        fts_paths = [path for path in paths
+        fts_paths = [path for path in paths if path not in historical
                      if path not in previous or previous[path][0] != current[path][0]]
         for start in range(0, len(fts_paths), 256):
             block = fts_paths[start:start + 256]
             placeholders = ','.join('?' * len(block))
             ids = cursor.execute(
-                f'SELECT id FROM files WHERE path IN ({placeholders}) ORDER BY id', block,
+                f'SELECT id FROM files WHERE is_offline=0 AND path IN ({placeholders}) ORDER BY id', block,
             ).fetchall()
             for (fid,) in ids:
                 self._fts_sync_file(fid, cursor)
@@ -268,12 +278,13 @@ class LibraryRepository:
         """
         cursor = self.conn.cursor()
         norm_path = self._normalize_path(path)
+        self._require_unversioned_path(norm_path)
 
         sql = """
             UPDATE files SET
                 width=?, height=?, meta_tool=?, meta_model=?,
                 meta_positive=?, meta_negative=?, meta_seed=?
-            WHERE path=?
+            WHERE is_offline=0 AND path=?
         """
         try:
             cursor.execute(sql, (
@@ -286,7 +297,7 @@ class LibraryRepository:
                 str(meta.get('seed', '')),
                 norm_path
             ))
-            row = cursor.execute("SELECT id FROM files WHERE path=?", (norm_path,)).fetchone()
+            row = cursor.execute("SELECT id FROM files WHERE is_offline=0 AND path=?", (norm_path,)).fetchone()
             if row:
                 self._fts_sync_file(row[0], cursor)
             return bool(row)
@@ -300,7 +311,7 @@ class LibraryRepository:
         """Returns set of normalized paths for files known in a specific folder (recursive)."""
         cursor = self.conn.cursor()
         msg_path = self._folder_like(folder_path)
-        cursor.execute("SELECT path FROM files WHERE path LIKE ? ESCAPE '\\'", (msg_path,))
+        cursor.execute("SELECT path FROM files WHERE is_offline=0 AND path LIKE ? ESCAPE '\\'", (msg_path,))
         return set(row[0] for row in cursor.fetchall())
 
     def get_files_recursive(self, folder_path, limit=None):
@@ -308,21 +319,19 @@ class LibraryRepository:
         cursor = self.conn.cursor()
         msg_path = self._folder_like(folder_path)
         if limit:
-            cursor.execute("SELECT path FROM files WHERE path LIKE ? ESCAPE '\\' LIMIT ?", (msg_path, limit))
+            cursor.execute("SELECT path FROM files WHERE is_offline=0 AND path LIKE ? ESCAPE '\\' LIMIT ?", (msg_path, limit))
         else:
-            cursor.execute("SELECT path FROM files WHERE path LIKE ? ESCAPE '\\'", (msg_path,))
+            cursor.execute("SELECT path FROM files WHERE is_offline=0 AND path LIKE ? ESCAPE '\\'", (msg_path,))
         return [row[0] for row in cursor.fetchall()]
 
     def remove_files(self, paths_list):
+        """Retira del inventario operativo, conservando identidad/curación offline."""
         if not paths_list: return True
         cursor = self.conn.cursor()
         try:
             for p in paths_list:
                 norm = self._normalize_path(p)
-                row = cursor.execute("SELECT id FROM files WHERE path = ?", (norm,)).fetchone()
-                cursor.execute("DELETE FROM files WHERE path = ?", (norm,))
-                if row:
-                    cursor.execute("DELETE FROM files_fts WHERE rowid=?", (row[0],))
+                cursor.execute("UPDATE files SET is_offline=1 WHERE is_offline=0 AND path = ?", (norm,))
             return True
         except Exception as e:
             log.warning("[DB] remove_files error: %s", e)
@@ -350,13 +359,7 @@ class LibraryRepository:
         try:
             like = self._folder_like(path)
             cursor.execute("DELETE FROM watched_folders WHERE path=?", (norm,))
-            # Limpiar el índice FTS de los archivos que se van a borrar.
-            ids = cursor.execute(
-                "SELECT id FROM files WHERE path LIKE ? ESCAPE '\\'", (like,)
-            ).fetchall()
-            cursor.execute("DELETE FROM files WHERE path LIKE ? ESCAPE '\\'", (like,))
-            for (fid,) in ids:
-                cursor.execute("DELETE FROM files_fts WHERE rowid=?", (fid,))
+            cursor.execute("UPDATE files SET is_offline=1 WHERE is_offline=0 AND path LIKE ? ESCAPE '\\'", (like,))
             return True
         except Exception as e:
             log.warning("[DB] remove_watched_folder error: %s", e)
@@ -365,13 +368,13 @@ class LibraryRepository:
     def get_folder_count(self, folder_path):
         cursor = self.conn.cursor()
         query = self._folder_like(folder_path)
-        cursor.execute("SELECT count(*) FROM files WHERE path LIKE ? ESCAPE '\\'", (query,))
+        cursor.execute("SELECT count(*) FROM files WHERE is_offline=0 AND path LIKE ? ESCAPE '\\'", (query,))
         return cursor.fetchone()[0]
 
     def get_folder_preview(self, folder_path, limit=5):
         cursor = self.conn.cursor()
         query = self._folder_like(folder_path)
-        cursor.execute("SELECT path FROM files WHERE path LIKE ? ESCAPE '\\' LIMIT ?", (query, limit))
+        cursor.execute("SELECT path FROM files WHERE is_offline=0 AND path LIKE ? ESCAPE '\\' LIMIT ?", (query, limit))
         return [row[0] for row in cursor.fetchall()]
 
     def search_by_terms(self, terms, limit=5):
@@ -391,7 +394,7 @@ class LibraryRepository:
         if not condition:  # todos los términos quedaron vacíos tras strip
             return 0, []
 
-        where = "WHERE " + condition
+        where = "WHERE is_offline=0 AND (" + condition + ")"
 
         total_count = cursor.execute(f"SELECT count(*) FROM files {where}", params).fetchone()[0]
         preview_paths = [
@@ -405,7 +408,7 @@ class LibraryRepository:
         """Helper: Gets the DB ID for a file path."""
         cursor = self.conn.cursor()
         norm_path = self._normalize_path(path)
-        cursor.execute("SELECT id FROM files WHERE path = ?", (norm_path,))
+        cursor.execute("SELECT id FROM files WHERE is_offline=0 AND path = ?", (norm_path,))
         row = cursor.fetchone()
         return row[0] if row else None
 
@@ -426,7 +429,7 @@ class LibraryRepository:
         placeholders = ','.join('?' for _ in unique)
         records = {}
         for file_id, path, rating in self.conn.execute(
-                f'SELECT id, path, rating FROM files WHERE path IN ({placeholders})', unique):
+                f'SELECT id, path, rating FROM files WHERE is_offline=0 AND path IN ({placeholders})', unique):
             records[path] = dict(id=file_id, path=path, rating=rating or 0, tags=[])
         by_id = {record['id']: record for record in records.values()}
         if by_id:
@@ -482,7 +485,7 @@ class LibraryRepository:
         """, (file_id,))
         return [row[0] for row in cursor.fetchall()]
 
-    def edit_curation(self, path, *, add_tags=(), remove_tags=(), rating=None):
+    def edit_curation(self, path, *, add_tags=(), remove_tags=(), rating=None, expected_copy_id=None):
         """Delta acotado sobre una fila existente; el servicio confirma todo o nada.
 
         No registra archivos ni modifica bytes, metadata de generación o hashes.
@@ -504,8 +507,14 @@ class LibraryRepository:
             raise ValueError('invalid_rating')
         if not added and not removed and rating is None:
             raise ValueError('empty_edit')
-        row = self.conn.execute('SELECT id FROM files WHERE path=?',
+        if expected_copy_id is not None and (type(expected_copy_id) is not int or not -2**63 <= expected_copy_id <= 2**63-1):
+            raise ValueError('invalid_copy_version_id')
+        if expected_copy_id is None:
+            self._require_unversioned_path(self._normalize_path(path))
+        row = self.conn.execute('SELECT id FROM files WHERE is_offline=0 AND path=?',
                                 (self._normalize_path(path),)).fetchone()
+        if expected_copy_id is not None and (row is None or row[0] != expected_copy_id):
+            raise ValueError('curation_copy_changed')
         if row is None:
             raise ValueError('file_not_registered')
         file_id = row[0]
@@ -535,6 +544,7 @@ class LibraryRepository:
     def add_tag_to_file(self, path, tag_name, file_data=None):
         """Adds a tag to a file. Creates file record and tag if not exists."""
 
+        self._require_unversioned_path(self._normalize_path(path))
         tag_name = tag_name.lower().strip()
         if not tag_name:
             return False
@@ -568,6 +578,7 @@ class LibraryRepository:
             return False
 
     def remove_tag_from_file(self, path, tag_name):
+        self._require_unversioned_path(self._normalize_path(path))
         file_id = self.get_file_id(path)
         if not file_id: return False
 
@@ -593,7 +604,7 @@ class LibraryRepository:
     def search_files_paginated(self, query=None, tags=None, search_terms=None, limit=50,
                                offset=0, *, folder=None, min_rating=0):
         cursor = self.conn.cursor()
-        conditions, params = [], []
+        conditions, params = ["is_offline=0"], []
 
         # 1. Search Terms
         if search_terms:
@@ -684,7 +695,7 @@ class LibraryRepository:
     def count_files_missing_hash(self):
         cursor = self.conn.cursor()
         return cursor.execute(
-            "SELECT count(*) FROM files WHERE hash_original IS NULL"
+            "SELECT count(*) FROM files WHERE is_offline=0 AND hash_original IS NULL"
         ).fetchone()[0]
 
     def get_files_missing_hash(self, after_id=0, limit=200):
@@ -692,7 +703,7 @@ class LibraryRepository:
         archivos que fallen al hashear no re-entran en la misma corrida."""
         cursor = self.conn.cursor()
         return cursor.execute(
-            "SELECT id, path FROM files WHERE hash_original IS NULL AND id > ? "
+            "SELECT id, path FROM files WHERE is_offline=0 AND hash_original IS NULL AND id > ? "
             "ORDER BY id LIMIT ?", (after_id, limit)
         ).fetchall()
 
@@ -702,7 +713,7 @@ class LibraryRepository:
         if not pairs: return True
         try:
             self.conn.executemany(
-                "UPDATE files SET hash_original=? WHERE id=? AND hash_original IS NULL",
+                "UPDATE files SET hash_original=? WHERE is_offline=0 AND id=? AND hash_original IS NULL",
                 pairs
             )
             return True
@@ -725,7 +736,7 @@ class LibraryRepository:
 
     def get_file_rating(self, path):
         cursor = self.conn.cursor()
-        cursor.execute("SELECT rating FROM files WHERE path=?", (self._normalize_path(path),))
+        cursor.execute("SELECT rating FROM files WHERE is_offline=0 AND path=?", (self._normalize_path(path),))
         r = cursor.fetchone()
         return r[0] if r else 0
 
@@ -774,12 +785,35 @@ class LibraryRepository:
         return select(self.conn, where, params, limit, complete=True)
 
     def count_files(self):
-        return self.conn.execute('SELECT count(*) FROM files').fetchone()[0]
+        return self.conn.execute('SELECT count(*) FROM files WHERE is_offline=0').fetchone()[0]
 
     def update_file_rating(self, path, rating):
+        self._require_unversioned_path(self._normalize_path(path))
         try:
-            cursor = self.conn.execute("UPDATE files SET rating=? WHERE path=?", (rating, self._normalize_path(path)))
+            cursor = self.conn.execute("UPDATE files SET rating=? WHERE is_offline=0 AND path=?", (rating, self._normalize_path(path)))
             return cursor.rowcount > 0
         except Exception as e:
             log.warning("[DB] update_file_rating error: %s", e)
             return False
+
+    def _require_unversioned_path(self, path):
+        # Lecturas por ruta muestran la copia operativa; una escritura antigua sin
+        # ID/revisión no puede atribuir datos a otra versión recién admitida.
+        if self.conn.execute('SELECT 1 FROM files WHERE path=? AND is_offline=1 LIMIT 1', (path,)).fetchone():
+            raise ValueError('version_identity_required')
+
+    def get_copy_versions_page(self, **kwargs):
+        from core.library_versions import page
+        return page(self.conn, **kwargs)
+
+    def get_copy_version_state(self, copy_id):
+        from core.library_versions import state
+        return state(self.conn, copy_id)
+
+    def archive_copy(self, copy_id, **kwargs):
+        from core.library_versions import archive
+        return archive(self.conn, copy_id, **kwargs)
+
+    def make_copy_online(self, copy_id, **kwargs):
+        from core.library_versions import make_online
+        return make_online(self.conn, copy_id, update_fts=self._fts_sync_file, **kwargs)

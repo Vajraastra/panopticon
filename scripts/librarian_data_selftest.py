@@ -44,7 +44,7 @@ class SelectionSQL(helpers.Fixture):
         def reader(path):
             conn = real_open(path)
             def trace(sql):
-                if sql == 'SELECT count(*) FROM files':
+                if sql.startswith('SELECT count(*) FROM files'):
                     self.register('C:/images/b.png')
                     self.service.submit('add_watched_folder', 'C:/other').result(3)
                     self.service.submit('edit_curation', 'C:/images/a.png', add_tags=['new']).result(3)

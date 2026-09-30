@@ -47,7 +47,7 @@ def fingerprint(state):
 
 
 def read_state(conn, path):
-    row = conn.execute('SELECT id,hash_original,hash_mod,rating FROM files WHERE path=?', (path,)).fetchone()
+    row = conn.execute('SELECT id,hash_original,hash_mod,rating FROM files WHERE is_offline=0 AND path=?', (path,)).fetchone()
     if row is None:
         raise ValueError('file_not_registered')
     tags = []
@@ -127,8 +127,10 @@ def register_copy(conn, path, *, incoming, observation, update_fts):
             type(size) is not int or not 0 <= size <= 2**63-1 or type(created) not in (int, float) or
             not 0 <= created <= 253402300799 or not math.isfinite(created)):
         raise ValueError('invalid_curation_observation')
-    if conn.execute('SELECT 1 FROM files WHERE path=?', (path,)).fetchone() is not None:
+    if conn.execute('SELECT 1 FROM files WHERE is_offline=0 AND path=?', (path,)).fetchone() is not None:
         raise ValueError('file_now_registered')
+    if conn.execute('SELECT 1 FROM files WHERE is_offline=1 AND path=?', (path,)).fetchone() is not None:
+        raise ValueError('version_identity_required')
     conn.execute('INSERT INTO files(path,filename,file_size,created_date,hash_original,hash_mod) '
                  'VALUES(?,?,?,?,?,?)', (path, name, size, created, value['hash_original'], value['hash_mod']))
     expected = read_state(conn, path)['fingerprint']

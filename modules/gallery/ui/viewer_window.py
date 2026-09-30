@@ -148,6 +148,7 @@ class AdvancedViewer(QDialog):
         self.db = DatabaseManager(service=service)
         self._closed = False
         self._curation_ready = False
+        self._registered_id = None
         self._current_rating = 0
         self._registered = False
         self._pending_edit = None
@@ -424,7 +425,7 @@ class AdvancedViewer(QDialog):
         if not self._can_edit(): return
         path = self.paths[self.current_idx]
         # Navegar no retargetea ni cancela la escritura aceptada; sólo una en vuelo.
-        ticket = self.writer.submit('edit_curation', path, **delta)
+        ticket = self.writer.submit('edit_curation', path, expected_copy_id=self._registered_id, **delta)
         self._pending_edit = (ticket, path, self.input_tag.text(), bool(delta.get('add_tags')))
         self._write_error = False
         self.update_edit_controls()
@@ -446,6 +447,12 @@ class AdvancedViewer(QDialog):
             return
         if error is not None or value is not True:
             reason = getattr(error, 'reason', str(error))
+            if reason == 'version_identity_required':
+                reason = LocaleManager().tr('gallery.viewer.version_history',
+                    'This path has offline history; review the specific copy version before editing')
+            elif reason == 'curation_copy_changed':
+                reason = LocaleManager().tr('gallery.viewer.copy_changed',
+                    'The registered copy changed; reload it before editing')
             self.lbl_curation_status.setText(LocaleManager().tr(
                 'gallery.viewer.write_error', 'Could not save curation: {path} ({reason}).').format(
                     path=path, reason=reason))
@@ -496,6 +503,7 @@ class AdvancedViewer(QDialog):
         self._curation_ready = True
         was_registered = self._registered
         self._registered = record['id'] is not None
+        self._registered_id = record['id']
         self.update_edit_controls()
         if not self._registered and self._pending_edit is None and not self._write_error:
             self.lbl_curation_status.setText(LocaleManager().tr(

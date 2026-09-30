@@ -30,6 +30,7 @@ def term_filter(terms):
 def select(conn, where, params, limit, offset=0, *, complete=False):
     if not where:
         return dict(count=0, paths=[], offset=0, limit=limit)
+    where = 'is_offline=0 AND (' + where + ')'
     count = conn.execute(f'SELECT count(*) FROM files WHERE {where}', params).fetchone()[0]
     if complete and count > limit:
         raise ValueError('selection_requires_streaming')

@@ -78,7 +78,10 @@ class AtomicEdit(helpers.Fixture):
                dict(add_tags=['x' * 257]), dict(add_tags=['x'] * 257),
                dict(add_tags=['x'] * 128, remove_tags=['y'] * 129),
                dict(add_tags=['A'], remove_tags=['a']), dict(rating=True),
-               dict(rating=6), dict(rating=-1), dict(rating=1.5), {}]
+               dict(rating=6), dict(rating=-1), dict(rating=1.5),
+               dict(rating=1, expected_copy_id=True),
+               dict(rating=1, expected_copy_id=2**63),
+               dict(rating=1, expected_copy_id='1'), {}]
         with closing(open_reader(self.service.db_path)) as conn:
             statements = []
             conn.set_trace_callback(statements.append)
@@ -199,6 +202,43 @@ class AsyncEdit(helpers.Fixture):
         rows = self.service.read('get_curation_snapshot', paths)
         self.assertEqual([r['rating'] for r in rows], [1, 4])
 
+    def test_open_viewer_cannot_curate_replacement_version_with_stale_copy_id(self):
+        from PIL import Image
+        from core.copy_version_tasks import CopyVersionTasks
+        path = str(Path(self.temp.name) / 'version.png')
+        Image.new('RGB', (8, 8), 'red').save(path)
+        self.register(path)
+        self.service.submit('edit_curation', path, add_tags=['documented'], rating=4).result(3)
+        view = self.viewer([path])
+        self.ready(view)
+        old_id = view._registered_id
+        approval = self.service.read('get_copy_version_state', old_id)['fingerprint']
+        Image.new('RGB', (8, 8), 'blue').save(path)
+        CopyVersionTasks(self.service).read('make_copy_online', copy_id=old_id,
+                                           expected_fingerprint=approval)
+        new_id = self.service.read('get_curation_snapshot', (path,))[0]['id']
+        self.assertNotEqual(new_id, old_id)
+        saved = []
+        view.curation_saved.connect(lambda: saved.append(True))
+        view.input_tag.setText('stale-editor-tag')
+        view.add_tag()
+        self.completed(view)
+        from core.locale_manager import LocaleManager
+        self.assertIn(LocaleManager().tr('gallery.viewer.copy_changed',
+            'The registered copy changed; reload it before editing'), view.lbl_curation_status.text())
+        self.assertEqual(saved, [])
+        current = self.service.read('get_curation_snapshot', (path,))[0]
+        self.assertEqual((current['rating'], current['tags']), (0, ()))
+        old = self.service.read('get_copy_version_state', old_id)['state']
+        self.assertEqual(old['file']['rating'], 4)
+        self.assertEqual([t['name'] for t in old['tags']], ['documented'])
+        self.assertEqual(view._registered_id, new_id)
+        view.input_tag.setText('new-version-tag')
+        view.add_tag()
+        self.completed(view)
+        self.assertEqual(self.service.read('get_curation_snapshot', (path,))[0]['tags'],
+                         ('new-version-tag',))
+
     def test_close_keeps_accepted_write_and_refreshes_parent_after_commit(self):
         path = 'C:/images/a.png'
         self.register(path)
@@ -279,7 +319,9 @@ class AsyncEdit(helpers.Fixture):
         self.service.submit('remove_files', [path]).result(3)
         view.cycle_current_rating()
         self.completed(view)
-        self.assertIn('file_not_registered', view.lbl_curation_status.text())
+        from core.locale_manager import LocaleManager
+        self.assertIn(LocaleManager().tr('gallery.viewer.copy_changed',
+            'The registered copy changed; reload it before editing'), view.lbl_curation_status.text())
         self.assertFalse(view.input_tag.isEnabled())
         self.assertEqual(self.service.read('count_files'), 0)
 

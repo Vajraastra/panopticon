@@ -102,8 +102,9 @@ class FolderWrites(helpers.Fixture):
         self.assertEqual(module.current_folder_path, 'C:/B')
         self.assertEqual(module.total_paths, ['C:/B/b.png'])
         with closing(open_reader(self.service.db_path)) as conn:
-            self.assertEqual(conn.execute('SELECT count(*) FROM file_tags').fetchone()[0], 0)
-            self.assertEqual(conn.execute('SELECT count(*) FROM files_fts').fetchone()[0], 1)
+            self.assertEqual(conn.execute('SELECT count(*) FROM file_tags').fetchone()[0], 1)
+            self.assertEqual(conn.execute('SELECT count(*) FROM files_fts').fetchone()[0], 2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM files WHERE is_offline=1').fetchone()[0], 1)
             self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(), [])
 
     def test_remove_current_folder_clears_confirmed_selection_only_after_commit(self):

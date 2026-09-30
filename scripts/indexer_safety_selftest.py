@@ -136,23 +136,25 @@ class IndexerSafety(unittest.TestCase):
         self.assertEqual(worker.outcome, Status.ERROR)
         self.assert_preserved(missing, before)
 
-    def test_empty_accessible_folder_removes_confirmed_absence(self):
+    def test_empty_accessible_folder_archives_confirmed_absence(self):
         path = self.folder / 'deleted.png'
-        self.seed(path)
+        before = self.seed(path)
         worker = self.run_worker()
         self.assertEqual(worker.outcome, Status.COMPLETE)
-        self.assertIsNone(self.row(path))
-        self.assertEqual(self.inspect_conn.execute('SELECT count(*) FROM files_fts').fetchone()[0], 0)
+        self.assert_preserved(path, before)
+        self.assertIsNone(self.db.get_file_id(path.as_posix()))
+        self.assertEqual(self.inspect_conn.execute('SELECT count(*) FROM files_fts').fetchone()[0], 1)
 
-    def test_valid_walk_ingests_and_removes_only_missing(self):
+    def test_valid_walk_ingests_and_archives_only_missing(self):
         live = self.image('live.png')
         before = self.seed(live)
         missing = self.folder / 'deleted.png'
-        self.seed(missing)
+        missing_before = self.seed(missing)
         worker = self.run_worker()
         self.assertEqual(worker.outcome, Status.COMPLETE)
         self.assert_preserved(live, before)
-        self.assertIsNone(self.row(missing))
+        self.assert_preserved(missing, missing_before)
+        self.assertIsNone(self.db.get_file_id(missing.as_posix()))
 
     def test_catalog_sql_error_closes_handle_and_preserves(self):
         path = self.image('live.png')
@@ -276,7 +278,7 @@ class IndexerSafety(unittest.TestCase):
     def test_failed_cleanup_rolls_back_and_reports_error(self):
         missing = self.folder / 'gone.png'
         before = self.seed(missing)
-        self.inspect_conn.execute('DROP TABLE files_fts')
+        self.inspect_conn.execute("CREATE TRIGGER fail_archive BEFORE UPDATE OF is_offline ON files BEGIN SELECT RAISE(ABORT,'fixture'); END")
         self.inspect_conn.commit()
         worker = self.run_worker()
         self.assertEqual(worker.outcome, Status.ERROR)
@@ -294,7 +296,8 @@ class IndexerSafety(unittest.TestCase):
         self.assertEqual(worker.outcome, Status.UNAVAILABLE)
         self.assertEqual(worker.folder_statuses[str(healthy)], Status.COMPLETE)
         self.assert_preserved(missing, before)
-        self.assertIsNone(self.row(removed))
+        self.assertIsNotNone(self.row(removed))
+        self.assertIsNone(self.db.get_file_id(removed.as_posix()))
 
     def test_root_replaced_between_discovery_and_cleanup(self):
         missing = self.folder / 'deleted.png'

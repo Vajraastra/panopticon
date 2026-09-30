@@ -98,7 +98,7 @@ WinRAR is required.
 ## Portable curation export
 
 In Librarian, select a folder, clear tag filters and click **Export folder curation**.
-The export includes all indexed copies and subfolders, regardless of the visible page.
+The export includes all indexed copies, offline versions and subfolders, regardless of the visible page.
 Progress and errors appear beside the button. **Review folder curation** opens a
 read-only comparison in pages of up to 100 copies. Select a row to see both states;
 large text previews are marked incomplete. **Use exported curation** explicitly
@@ -136,6 +136,9 @@ the library separately first. Comparison and recovery commands do not apply cura
 
 The export creates `panopticon.curation.db` alongside the folder's files, using relative
 paths and cataloged hashes. Copies retain separate curation even when their hashes match.
+Version 2 retains multiple versions of the same relative path and their offline status;
+version 1 exports remain readable. Offline entries and paths with offline history require
+review in the copy-version catalog before regular curation restoration.
 Cherry's `catalog.db` and image files are preserved. The compare command reports both values
 for conflicts; it does not apply changes. Hashes are cataloged identities, not a fresh check
 of image bytes. Generation metadata and training captions are outside this export.
@@ -176,6 +179,34 @@ stop the merge for review instead of replacing the earlier identity.
 Download and merge names skip occupied paths if a counter is stale. This protects existing copies
 under normal cooperative use; it does not reserve a destination against external programs
 creating a file after the check.
+
+## Offline copies and independent versions
+
+Librarian's **Copy versions and offline catalog…** lists stored identities in pages of
+100. Offline copies retain their tags, rating, provenance and generation metadata, but
+are excluded from normal counts, searches, selections, previews and hash backfill.
+Confirmed missing files and removed watched folders are archived rather than deleted.
+An incomplete or unavailable inventory leaves records unchanged.
+
+Select **All copy versions** to review active copies too. Select an ID and read its
+complete stored state. **Keep offline** archives that identity without touching file
+bytes. **Verify and make available** computes the current SHA-256 in a worker. If it
+matches the stored current hash, the same ID and curation become available. Different
+or unknown content creates a new ID with empty curation, provenance and generation
+metadata while preserving the earlier version offline. An occupied active path or
+changed reviewed state stops the action. Scanning alone never reactivates history.
+The viewer binds edits to its displayed copy ID and rejects a replaced identity.
+
+The initial native schema migration creates a SQLite backup beside the database before
+rebuilding path uniqueness for active copies. Unsupported custom schemas are preserved
+and rejected for review. Command-line curation application requires the migrated schema
+and never performs that migration itself. Review supports at most 256 tags, 65,536
+characters per stored field and 1 MiB serialized state; larger records remain stored
+and require separate review. Closing the catalog cancels pre-admission verification;
+an accepted database action continues, and the catalog can be reopened to see its result.
+File verification and the SQLite commit are separate operations, without an atomic
+snapshot spanning external file changes. These actions preserve Cherry catalogs and
+their download receipts. Global preference for the curated duplicate remains under development.
 
 ## License
 

@@ -58,6 +58,8 @@ class CurationApplyTasks:
         if not page['copies'] or page['copies'][0]['id'] != copy_id:
             raise ValueError('sidecar_changed')
         record = page['copies'][0]
+        if record.get('is_offline', 0):
+            raise ValueError('offline_version_requires_review')
         if record['relative_path'] != relative_path:
             raise ValueError('sidecar_changed')
         incoming = _payload({key: record[key] for key in FIELDS})
