@@ -206,8 +206,8 @@ and require separate review. Closing the catalog cancels pre-admission verificat
 an accepted database action continues, and the catalog can be reopened to see its result.
 File verification and the SQLite commit are separate operations, without an atomic
 snapshot spanning external file changes. These actions preserve Cherry catalogs and
-their download receipts. Duplicate Finder applies curation priority to folder scans;
-database-wide candidate discovery remains under development.
+their download receipts. Duplicate Finder applies curation priority to exact folder
+scans and complete native groups across folders.
 
 ### Duplicate review and recovery
 
@@ -220,12 +220,27 @@ offline identities, links, physical aliases, captions and curation sidecars also
 retirement. The tree displays 100 copies per page; **View group in Gallery** sends the
 complete image group, up to 1,000 images, for inspection.
 
+For cross-folder discovery, select **Native library (exact groups)**, then **Find
+native candidates**. Pages contain up to 25 active stored-hash groups. They read no
+images and never authorize retirement. Select a group and **Verify selected group**
+to read its current bytes and complete curation, up to 256 members. Changed, missing
+or unreviewed copies block retirement; larger groups remain visible for separate
+review without approving a subset. Pages reflect current catalog state.
+
+**Prepare search index** explicitly builds or reuses the compatible partial index
+through the central database owner. Reads and startup create no index. Construction
+may hold other writes for up to 30 seconds, then rolls back if it exceeds its budget;
+candidate reads have a 10-second budget. The index tracks hash and offline changes.
+Global retirement requires the prepared index and rechecks every current member,
+including additions or identity replacements since verification. Preparing the
+index, changing options or selecting another group consumes the previous review.
+
 **Select recommended copies** only marks safe exact candidates. **Retire selected
 copies** shows the count, destination and full reviewed states for confirmation,
 then rechecks every member, including the retained copy, before archiving the chosen
 IDs. Their curation and history remain offline in the native database. Physical files
-move to a persistent recovery folder on the same volume, outside all watched folders
-and Cherry catalog ancestors. This action supports native Windows and never changes
+move to a persistent recovery folder on their volume, outside every source folder,
+watched root and Cherry catalog ancestor. A retained copy may be on another volume. This action supports native Windows and never changes
 Cherry catalog tables or download receipts. Known source URLs remain downloaded even
 without their physical copy; previously unknown URLs may need one transfer to prove
 that their content matches an existing hash.
@@ -235,7 +250,7 @@ its journal and moved paths; it requires review before retrying. SQLite and file
 do not share an atomic transaction. Recovery moves do not free disk space. Automatic
 restore or permanent purge is not provided; retained bytes and complete native states
 remain available for deliberate recovery. Dashboard closure keeps the event loop and
-catalog alive until Duplicate Finder's accepted group finishes.
+catalog alive until Duplicate Finder's accepted group or index construction finishes.
 
 Folder scans admit at most 100,000 files, 1,000 groups, 2,000 candidate copies and a
 4 MiB review. Exact hashing admits batches of 256 jobs; native snapshots and retirement
@@ -243,8 +258,8 @@ groups contain at most 256 copies. Watched-folder validation admits at most 256 
 Limits or inventory errors disable retirement instead of publishing a discardable
 partial result. **Visual similarity** admits at most 2,000 images and 10 million pixels
 per image, with four workers and bounded pair comparison. It never authorizes retirement
-and does not persist pHash. Cross-folder database discovery and persistent pHash remain
-separate pending work. Persistent pHash will run as a separate explicit phase on
+and does not persist pHash. Folder overlap reports, mass classification and persistent
+pHash remain pending. Persistent pHash will run as a separate explicit phase on
 selected folders, independently of SHA-256 backfill.
 
 ## License

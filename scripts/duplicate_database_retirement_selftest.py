@@ -17,6 +17,35 @@ import duplicate_database_review_selftest as prior
 
 
 class Retirement(prior.Review):
+    def test_short_path_cannot_hide_cherry_ancestor_from_recovery_guard(self):
+        import ctypes
+        raw=self.file('LongCherryProfileDirectory/subdirectory/raw.png')
+        curated=self.file('curated/keeper.png',rating=5,tags=['documented'])
+        receipt=raw.parent.parent/'catalog.db'
+        receipt.write_bytes(b'portable Cherry receipts')
+        buffer=ctypes.create_unicode_buffer(32768)
+        get_short=ctypes.windll.kernel32.GetShortPathNameW
+        get_short.argtypes=(ctypes.c_wchar_p,ctypes.c_wchar_p,ctypes.c_uint)
+        get_short.restype=ctypes.c_uint
+        length=get_short(str(raw),buffer,len(buffer))
+        if not length or Path(buffer.value).as_posix().casefold()==raw.as_posix().casefold():
+            self.skipTest('Windows filesystem does not expose an 8.3 alias')
+        state=self.service.read('get_duplicate_snapshot',[raw.as_posix()])[0]
+        self.service.submit('archive_copy',state['state']['file']['id'],expected_fingerprint=state['fingerprint']).result(3)
+        short=Path(buffer.value)
+        self.service.submit('register_files_minimal',[dict(path=short.as_posix(),filename=short.name,
+            size=raw.stat().st_size,created=1,hash_original=prior.DIGEST)]).result(3)
+        self.service.submit('prepare_duplicate_search').result(3)
+        value=review_group(self.service,prior.DIGEST)
+        self.assertTrue(value['complete'])
+        value.update(folder=str(self.root),mode='hash',policy=asdict(DuplicatePolicy()),cancelled=False,error=None,token=1)
+        result=self.retire(value,short,recovery=raw.parent.parent/'recovery')
+        self.assertFalse(result['complete'])
+        self.assertFalse(result['groups'][0]['archived'])
+        self.assertEqual(result['groups'][0]['error'],'duplicate_recovery_inside_cherry_project')
+        self.assertTrue(raw.exists() and curated.exists())
+        self.assertEqual(receipt.read_bytes(),b'portable Cherry receipts')
+
     def packet(self, *, prepare=True):
         raw,curated=self.pair()
         if prepare:

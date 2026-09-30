@@ -99,15 +99,18 @@ class DuplicateRetirementTasks:
             path = Path(name)
             if not path.is_absolute() or (not database_scope and (path == root or root not in path.parents)):
                 raise ValueError('duplicate_retirement_source_outside_collection')
-            if database_scope and (recovery == path.parent or path.parent in recovery.parents):
-                raise ValueError('duplicate_recovery_inside_collection')
             _plain_chain(path)
+            parent = path.parent.resolve(strict=True)
+            if database_scope and (recovery == parent or parent in recovery.parents):
+                raise ValueError('duplicate_recovery_inside_collection')
             if _documented(path):
                 raise ValueError('external_documentation_requires_review')
             # Un destino dentro de un proyecto Cherry externo al scope tampoco es seguro.
-            if any(os.path.lexists(parent/'catalog.db') and (recovery == parent or parent in recovery.parents)
-                   for parent in path.parents):
-                raise ValueError('duplicate_recovery_inside_cherry_project')
+            for ancestor in path.parents:
+                if os.path.lexists(ancestor/'catalog.db'):
+                    actual = ancestor.resolve(strict=True)
+                    if recovery == actual or actual in recovery.parents:
+                        raise ValueError('duplicate_recovery_inside_cherry_project')
             proof, error = _probe(name, event)
             before = proofs.get(name)
             if (error is not None or before is None or proof['digest'] != digest or

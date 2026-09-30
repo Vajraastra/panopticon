@@ -15,6 +15,7 @@ from core.duplicate_policy import DuplicatePolicy
 from core.components.standard_layout import StandardToolLayout
 from .logic.review_worker import ExactReviewWorker, VisualReviewWorker
 from .logic.retirement_worker import DuplicateRetirementWorker
+from .logic.database_worker import DatabaseGroupReviewWorker, NativeDuplicateQueryWorker
 
 # Un QThread sin parent sigue vivo aunque se destruya la vista durante I/O.
 _LIVE_WORKERS = set()
@@ -31,6 +32,11 @@ class DuplicateFinderModule(BaseModule):
         self.accent_color = Theme.ACCENT_MAIN
         self.context = {}
         self.view = self.worker = self.retirement_worker = None
+        self.native_worker = None
+        self._native_busy = False
+        self._db_prepared = None
+        self._db_page, self._db_cursors, self._db_has_more = 0, [None], False
+        self._pending_db_page = 0
         self.review = None
         self.folder_path = ''
         self._closed = self._busy = self._acting = False
@@ -58,6 +64,7 @@ class DuplicateFinderModule(BaseModule):
         layout.addWidget(QLabel(self.text('mode_label', 'Comparison mode:')))
         self.combo_mode = QComboBox()
         self.combo_mode.addItems([self.text('mode_hash', 'Exact content (SHA-256)'), self.text('mode_visual', 'Visual similarity (review only)')])
+        self.combo_mode.addItem(self.text('mode_database', 'Native library (exact groups)'))
         self.combo_mode.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.combo_mode.setMinimumContentsLength(16)
         self.combo_mode.setToolTip(self.text('mode_tip', 'Exact content verifies current bytes and curation. Visual similarity only proposes groups for review.'))
@@ -135,6 +142,7 @@ class DuplicateFinderModule(BaseModule):
             self.tree.header().setSectionResizeMode(column, QHeaderView.ResizeToContents)
         self.tree.itemChanged.connect(self._checked)
         self.tree.currentItemChanged.connect(self._details)
+        layout.addWidget(self._database_controls())
         layout.addWidget(self.tree, 3)
         navigation = QHBoxLayout()
         self.btn_previous = self._button('previous', 'Previous', lambda: self._navigate(-1))
@@ -155,6 +163,34 @@ class DuplicateFinderModule(BaseModule):
         self.action_status.setMaximumHeight(120)
         layout.addWidget(self.action_status)
         return box
+
+    def _database_controls(self):
+        self.db_box = QWidget()
+        layout = QVBoxLayout(self.db_box)
+        layout.setContentsMargins(0,0,0,0)
+        self.db_status = QLabel(self.text('db_status_unknown', 'Search index status has not been checked.'))
+        self.db_status.setTextFormat(Qt.PlainText)
+        self.db_status.setWordWrap(True)
+        layout.addWidget(self.db_status)
+        self.db_tree = QTreeWidget()
+        self.db_tree.setStyleSheet(self.tree.styleSheet())
+        self.db_tree.setToolTip(self.text('db_tree_tip','Select a complete stored-hash group for physical verification; counts include active native copies across folders.'))
+        self.db_tree.setHeaderLabels([self.text('db_hash', 'Stored SHA-256'),
+            self.text('db_copies', 'Active copies'), self.text('db_review', 'Verification')])
+        self.db_tree.header().setSectionResizeMode(0,QHeaderView.Stretch)
+        self.db_tree.header().setSectionResizeMode(1,QHeaderView.ResizeToContents)
+        self.db_tree.setMaximumHeight(180)
+        self.db_tree.itemSelectionChanged.connect(self._db_selected)
+        layout.addWidget(self.db_tree)
+        actions = QHBoxLayout()
+        self.btn_db_prepare = self._button('db_prepare', 'Prepare search index', self.prepare_database)
+        self.btn_db_previous = self._button('db_previous', 'Previous groups', lambda:self._db_page_request(-1))
+        self.btn_db_next = self._button('db_next', 'Next groups', lambda:self._db_page_request(1))
+        self.btn_db_verify = self._button('db_verify', 'Verify selected group', self.verify_database_group)
+        for button in (self.btn_db_prepare,self.btn_db_previous,self.btn_db_next,self.btn_db_verify):
+            actions.addWidget(button)
+        layout.addLayout(actions)
+        return self.db_box
 
     def _bottom(self):
         box = QWidget()
@@ -184,24 +220,40 @@ class DuplicateFinderModule(BaseModule):
         return DuplicatePolicy(**{name: control.value() for name, control in self.weights.items()})
 
     def _valid_review(self):
-        return bool(self.review and self.review.get('token') == self._token and self.review['folder'] == self.folder_path and
-            self.review['mode'] == 'hash' and self.combo_mode.currentIndex() == 0 and self.review['complete'] and
+        mode = self.combo_mode.currentIndex()
+        expected_folder = str(ProjectPaths.root()) if mode==2 else self.folder_path
+        expected_scope = 'database' if mode==2 else 'folder'
+        return bool(self.review and self.review.get('token') == self._token and self.review['folder'] == expected_folder and
+            self.review.get('scope','folder') == expected_scope and self.review['mode'] == 'hash' and mode in (0,2) and self.review['complete'] and
             not self.review['cancelled'] and not self.review['error'] and self.review['policy'] == asdict(self._policy()))
 
     def _controls(self):
-        idle = not self._closed and not self._busy and not self._acting
+        idle = not self._closed and not self._busy and not self._acting and not self._native_busy
+        database = self.combo_mode.currentIndex()==2
         for control in (self.btn_run, self.btn_select, self.combo_mode, self.slider_thr, self.recovery, self.btn_recovery, *self.weights.values()):
             control.setEnabled(idle)
         self.threshold_container.setVisible(self.combo_mode.currentIndex() == 1)
-        self.weight_box.setVisible(self.combo_mode.currentIndex() == 0)
+        self.weight_box.setVisible(self.combo_mode.currentIndex() != 1)
+        self.db_box.setVisible(database)
+        self.lbl_folder.setText(self.text('db_scope','Scope: all active indexed copies') if database else
+            (self.folder_path or self.text('no_folder','No folder selected')))
+        self.btn_select.setEnabled(idle and not database)
+        self.btn_run.setText(self.text('db_search', 'Find native candidates') if database else self.text('run_scan','Start scan'))
+        self.btn_run.setToolTip(self.text('db_search_tip', 'Read a page of stored-hash candidates. Physical bytes and curation still require group verification.') if database else self.text('run_scan_tip','Read current files and documented states. No database records or file bytes are changed by scanning.'))
         self.lbl_thr_val.setText(self.text('value', 'Value: {value}').format(value=self.slider_thr.value()))
-        self.btn_cancel.setEnabled(not self._closed and (self._busy or self._acting))
+        self.btn_cancel.setEnabled(not self._closed and (self._busy or self._acting or self._native_busy))
         valid = idle and self._valid_review()
         self.btn_auto_select.setEnabled(bool(valid and any(report['remove'] for report in self.review['reports'].values())))
-        self.btn_delete.setEnabled(bool(valid and self._checked_paths))
+        self.btn_delete.setEnabled(bool(valid and self._checked_paths and (not database or self._db_prepared is True)))
         self.btn_previous.setEnabled(idle and self._page > 0)
         self.btn_next.setEnabled(idle and (self._page+1)*100 < len(self._rows))
         self.btn_open_group.setEnabled(bool(idle and self.review and self.tree.currentItem() is not None and self.context.get('main_window')))
+        self.db_tree.setEnabled(idle)
+        self.btn_db_prepare.setEnabled(idle and database)
+        self.btn_db_previous.setEnabled(idle and database and self._db_page>0)
+        self.btn_db_next.setEnabled(idle and database and self._db_has_more)
+        selected = self.db_tree.currentItem()
+        self.btn_db_verify.setEnabled(bool(idle and database and selected and selected.data(0,Qt.UserRole)['reviewable']))
 
     def _configuration_changed(self, *unused):
         if self.view is None or self._closed:
@@ -212,9 +264,11 @@ class DuplicateFinderModule(BaseModule):
             self.status.setText(self.text('rescan_required', 'Options changed. Scan again before retiring files.'))
         self._render_page()
         self._controls()
+        if self.combo_mode.currentIndex()==2 and self._db_prepared is None and not self._native_busy:
+            self._native_request('get_duplicate_search_status')
 
     def select_folder(self):
-        if self._closed or self._busy or self._acting:
+        if self._closed or self._busy or self._acting or self._native_busy:
             return
         folder = QFileDialog.getExistingDirectory(self.view, self.text('select_folder', 'Select folder'))
         if folder:
@@ -223,14 +277,18 @@ class DuplicateFinderModule(BaseModule):
             self._configuration_changed()
 
     def select_recovery(self):
-        if self._closed or self._busy or self._acting:
+        if self._closed or self._busy or self._acting or self._native_busy:
             return
         folder = QFileDialog.getExistingDirectory(self.view, self.text('choose_recovery', 'Choose recovery folder'))
         if folder:
             self.recovery.setText(folder)
 
     def run_scan(self):
-        if self._closed or self._busy or self._acting or (self.worker is not None and self.worker.isRunning()):
+        if self._closed or self._busy or self._acting or self._native_busy or (self.worker is not None and self.worker.isRunning()):
+            return
+        if self.combo_mode.currentIndex()==2:
+            self._db_cursors=[None]
+            self._native_request('get_duplicate_candidates_page',page=0,after_hash=None,limit=25)
             return
         if not self.folder_path:
             self.status.setText(self.text('no_folder_warn', 'Select a folder first.'))
@@ -396,7 +454,8 @@ class DuplicateFinderModule(BaseModule):
         return box.exec() == QMessageBox.Yes
 
     def delete_files(self):
-        if (self._closed or self._busy or self._acting or not self._valid_review()
+        if (self._closed or self._busy or self._acting or self._native_busy or not self._valid_review()
+                or (self.combo_mode.currentIndex()==2 and self._db_prepared is not True)
                 or (self.retirement_worker is not None and self.retirement_worker.isRunning())):
             return
         selected = sorted(self._checked_paths)
@@ -439,9 +498,15 @@ class DuplicateFinderModule(BaseModule):
                 message = self.text('retirement_partial', 'Retirement incomplete: {count} copies moved. {reason} Review the catalog and recovery journals before retrying.').format(count=result['moved'], reason=self.reason(reason))
             message += '\n'+json.dumps(result, ensure_ascii=False, indent=2)
             if any(group['archived'] for group in result['groups']):
+                if self.review.get('scope')=='database':
+                    self.db_tree.clear()
+                    self._db_page,self._db_cursors,self._db_has_more=0,[None],False
                 bus = self.context.get('event_bus')
                 if bus:
-                    bus.publish('library_changed', self.review['folder'])
+                    affected = (sorted({Path(path).parent.as_posix() for path in self.retirement_worker.arguments['selected']})
+                        if self.review.get('scope')=='database' else [self.review['folder']])
+                    for folder in affected:
+                        bus.publish('library_changed',folder)
         self.action_status.setPlainText(message)
         self.status.setText(self.text('rescan_required', 'Scan again before retiring files.'))
         self._render_page()
@@ -460,7 +525,114 @@ class DuplicateFinderModule(BaseModule):
 
     def shutdown_ready(self):
         return all(worker is None or not worker.isRunning()
-                   for worker in (self.worker, self.retirement_worker))
+                   for worker in (self.worker, self.retirement_worker, self.native_worker))
+
+    def _db_selected(self):
+        if self.view is None or self._closed or self._busy or self._acting or self._native_busy:
+            return
+        self._token += 1
+        self.review,self._rows,self._checked_paths,self._page=None,[],set(),0
+        self._render_page()
+        self._controls()
+
+    def _db_page_request(self, offset):
+        page=self._db_page+offset
+        if not 0<=page<len(self._db_cursors) or (offset>0 and not self._db_has_more):
+            return
+        self._native_request('get_duplicate_candidates_page',page=page,after_hash=self._db_cursors[page],limit=25)
+
+    def prepare_database(self):
+        if self.combo_mode.currentIndex()==2:
+            self._native_request('prepare_duplicate_search')
+
+    def _native_request(self, operation, *, page=0, **arguments):
+        if (self._closed or self._busy or self._acting or self._native_busy
+                or (self.native_worker is not None and self.native_worker.isRunning())):
+            return
+        self._token+=1
+        self.review,self._rows,self._checked_paths,self._page=None,[],set(),0
+        self._render_page()
+        self._native_busy=True
+        self._pending_db_page=page
+        worker=NativeDuplicateQueryWorker(self.context.get('data_service'),operation,token=self._token,**arguments)
+        self.native_worker=worker
+        _LIVE_WORKERS.add(worker)
+        worker.finished.connect(lambda worker=worker:_LIVE_WORKERS.discard(worker))
+        worker.finished.connect(self._native_query_finished)
+        worker.finished_signal.connect(self._native_received)
+        self.db_status.setText(self.text('db_working','Reading the native catalog or finishing index preparation…'))
+        self._controls()
+        worker.start()
+
+    @Slot(dict)
+    def _native_received(self,result):
+        if self._closed or self.sender() is not self.native_worker or result['token']!=self._token:
+            return
+        if result['cancelled'] or result['error']:
+            self.db_status.setText(self.text('db_failed','Catalog action incomplete: {reason}').format(
+                reason=self.reason(result['error'] or 'cancelled')))
+            if result['operation']=='get_duplicate_candidates_page':
+                self.db_tree.clear()
+                self._db_has_more=False
+            return
+        if result['operation'] in ('get_duplicate_search_status','prepare_duplicate_search'):
+            self._db_prepared=result['value'] is True if result['operation']=='prepare_duplicate_search' else result['value']['prepared']
+            self.db_status.setText(self.text('db_ready','Search index prepared. Find candidates, then verify a complete group.') if self._db_prepared else
+                self.text('db_unprepared','Search index is not prepared. Candidate reads are available; global retirement requires preparation.'))
+            return
+        value=result['value']
+        self.db_tree.blockSignals(True)
+        self.db_tree.clear()
+        for group in value['groups']:
+            item=QTreeWidgetItem([group['digest'],str(group['copies']),
+                self.text('db_verifiable','Verify current bytes') if group['reviewable'] else self.text('db_large_group','Separate review required (>256 copies)')])
+            item.setData(0,Qt.UserRole,group)
+            item.setToolTip(0,group['digest']+'\n'+self.text('db_hash_tip','Stored hashes only propose candidates. They never authorize retirement.'))
+            self.db_tree.addTopLevelItem(item)
+        self.db_tree.blockSignals(False)
+        self._db_page=self._pending_db_page
+        self._db_has_more=value['has_more']
+        self._db_cursors=self._db_cursors[:self._db_page+1]
+        if value['has_more']:
+            self._db_cursors.append(value['next_after_hash'])
+        self.db_status.setText(self.text('db_page','Candidate page {page}: {groups} groups. Select one and verify its current bytes and curation.').format(
+            page=self._db_page+1,groups=len(value['groups'])))
+
+    @Slot()
+    def _native_query_finished(self):
+        worker=self.sender()
+        if worker is self.native_worker:
+            self.native_worker=None
+            self._native_busy=False
+            if not self._closed:
+                self._controls()
+        worker.deleteLater()
+
+    def verify_database_group(self):
+        if (self._closed or self._busy or self._acting or self._native_busy
+                or self.combo_mode.currentIndex()!=2 or self.db_tree.currentItem() is None
+                or (self.worker is not None and self.worker.isRunning())):
+            return
+        group=self.db_tree.currentItem().data(0,Qt.UserRole)
+        if not group['reviewable']:
+            return
+        self._token+=1
+        self._busy=True
+        self.review,self._rows,self._checked_paths,self._page=None,[],set(),0
+        self._render_page()
+        self.progress.setRange(0,0)
+        self.progress.show()
+        worker=DatabaseGroupReviewWorker(str(ProjectPaths.root()),self.context.get('data_service'),group['digest'],
+            expected_count=group['copies'],policy=self._policy(),token=self._token)
+        self.worker=worker
+        _LIVE_WORKERS.add(worker)
+        worker.finished.connect(lambda worker=worker:_LIVE_WORKERS.discard(worker))
+        worker.finished.connect(self._native_finished)
+        worker.progress.connect(self.update_progress)
+        worker.phase.connect(self._phase)
+        worker.finished_signal.connect(self.on_scan_finished)
+        self._controls()
+        worker.start()
 
     def reason(self, error):
         code = str(getattr(error, 'reason', error)).rsplit(': ', 1)[-1]
@@ -473,6 +645,8 @@ class DuplicateFinderModule(BaseModule):
             self.worker.stop()
         if self.retirement_worker is not None:
             self.retirement_worker.stop()
+        if self.native_worker is not None:
+            self.native_worker.stop()
 
     def on_unload(self, *unused):
         self._closed = True
@@ -481,6 +655,8 @@ class DuplicateFinderModule(BaseModule):
             self.worker.stop()
         if self.retirement_worker is not None:
             self.retirement_worker.stop()
+        if self.native_worker is not None:
+            self.native_worker.stop()
 
     def run_headless(self, params, input_data):
         raise NotImplementedError('duplicate_review_requires_explicit_approval')
