@@ -1,18 +1,18 @@
 # cherry_dl — copia interna (vendored)
 
-- **Origen:** `E:\githubs\cherry-dl` (repo autónomo). **Ya no es la fuente canónica del motor**
-  — ver la regla 1.
+- **Origen histórico:** `E:\githubs\cherry-dl` (repo autónomo). Esa carpeta no existe
+  en la ubicación indicada; no se ha verificado una ubicación archivada del standalone.
+  El motor canónico está aquí — ver la regla 1.
 - **Commit de origen:** `befa56d` (2026-06-28) — copiado el 2026-07-02.
 - **Licencia:** BSL 1.1 (mismo licenciante que Panopticon). Ver `LICENSE` en esta carpeta.
 
 ## Reglas
 
 1. **Esta copia diverge del origen a propósito, y los arreglos del motor se hacen AQUÍ**
-   (David, 2026-09-05). La dirección de CF2 se invirtió: el standalone se queda **congelado y sin
-   tocar** porque es la red de seguridad mientras el módulo no esté al 100%. Arreglar upstream y
-   re-copiar habría dejado las dos versiones rotas a la vez.
-   - Cada divergencia se anota abajo con su motivo; esa lista es el parche a portar si algún día
-     se retoma el standalone.
+   (David, 2026-09-05). La integración se oficializó el 2026-09-16: Panopticon es la
+   fuente única y su interfaz aloja el runtime Cherry. La antigua protección mediante
+   un standalone congelado no acredita un respaldo disponible en disco.
+   - Cada divergencia se anota abajo con su motivo, conservando la procedencia del motor.
    - Sigue vigente el espíritu de CF2: **nada de cambios cosméticos ni refactors de gusto.** Se
      toca lo que está roto y se explica por qué.
 2. Corre sobre el **pool de dependencias de Panopticon** (`requirements.txt` raíz). Deps
@@ -20,10 +20,11 @@
    browser-cookie3, nodriver.
 3. Se importa añadiendo `third_party/` a `sys.path`/`PYTHONPATH` (el paquete usa imports
    relativos; el único absoluto es `__main__.py`).
-4. El estado vive en `~/.cherry-dl/` (config, index.db, sesión) — **compartido con el
-   standalone**. No ejecutar ambas GUIs a la vez contra los mismos perfiles.
-5. El standalone **no se retira ni se modifica** hasta que el módulo funcione al 100%
-   (David, 2026-09-05): es la versión a la que volver si algo de aquí se rompe.
+4. El estado vive en `~/.cherry-dl/` (config, index.db, sesión). Esta carpeta de datos
+   no es un respaldo del código. No ejecutar otro cliente contra los mismos perfiles
+   mientras Panopticon los esté usando.
+5. No reconstruir un standalone ni declarar una copia archivada como respaldo sin
+   localizarla y verificar su procedencia. La ruta histórica por sí sola no basta.
 
 ## Divergencias respecto a `befa56d`
 

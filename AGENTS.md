@@ -37,16 +37,17 @@ core/            base_module · mod_loader · event_bus · paths · theme(_manag
   metadata/      extractor · stamper · verifier · batch_verifier · bundle
   ai/            helpers de descarga de modelos
 modules/         un módulo por carpeta (13 hoy); se descubren solos
-third_party/     cherry_dl vendorizado SIN modificar (ver VENDORED.md)
+third_party/     cherry_dl vendorizado, motor canónico (ver VENDORED.md)
 scripts/         utilidades autónomas de una sola vez (p.ej. merge_patreon.py)
 locales/         en.json · es.json
 ```
 
 ## Qué se versiona y qué no
 
-Solo `README.md` y `LICENSE` están trackeados entre los `.md`. Todo el resto de la documentación
-(`TASKS`, `BITACORA`, `HANDOFF`, `*_DESIGN.md`, este archivo) está **gitignored**: git no los
-respalda, así que **hay que copiarlos antes de reescribirlos**. Tampoco se versionan `venv/`,
+`README.md`, `AGENTS.md` y `third_party/cherry_dl/VENDORED.md` están trackeados, además de
+las licencias. La documentación de trabajo (`TASKS`, `BITACORA`, `HANDOFF`, `*_DESIGN.md`)
+está **gitignored**: git no la respalda, así que **hay que copiarla antes de reescribirla**.
+Tampoco se versionan `venv/`,
 `models/`, `data/`, `cache/`, `logs/`, `config.json` ni las `*.db`.
 
 ## El patrón fijo para añadir un módulo
@@ -122,13 +123,15 @@ commit, y `git status` limpio de `__pycache__`.
 
 ## Cherry-dl
 
-`third_party/cherry_dl/` es una copia del repo autónomo `E:\githubs\cherry-dl`. **Desde el
-2026-09-05 los arreglos del motor se hacen aquí, no upstream** (decisión de David): el standalone
-se queda congelado y sin tocar porque es la red de seguridad mientras el módulo no esté al 100%,
-y arreglar allá para re-copiar dejaría las dos versiones rotas a la vez. Cada divergencia se
-anota en `third_party/cherry_dl/VENDORED.md` con su motivo — esa lista es el parche a portar si
-el standalone se retoma. Lo que **no** cambia: nada de cambios cosméticos ni refactors de gusto
-en esa carpeta; se toca lo que está roto y se explica por qué.
+`third_party/cherry_dl/` contiene el motor canónico de Cherry dentro de Panopticon.
+Su origen histórico es `E:\githubs\cherry-dl` (commit `befa56d`), pero esa carpeta ya no
+existe en la ubicación indicada; no se ha verificado una ubicación archivada del standalone.
+No usar esa ruta como respaldo ni reconstruir un segundo repositorio por inferencia.
+**Desde el 2026-09-05 los arreglos del motor se hacen aquí** (decisión de David);
+la integración quedó oficializada el 2026-09-16, con Panopticon como fuente única.
+Cada divergencia se anota en `third_party/cherry_dl/VENDORED.md` con su motivo.
+Nada de cambios cosméticos ni refactors de gusto en esa carpeta; se toca lo que está roto
+y se explica por qué.
 Regla: **Panopticon no escribe los archivos de cherry-dl con SQL propio ni cambia su schema**;
 un sidecar nuevo y propio junto a ellos sí es válido.
 
@@ -160,4 +163,5 @@ escribe por su cuenta, delega en `profile_writes.add_url`.
 
 Esos tres archivos son los únicos de Panopticon que escriben ahí.
 
-Oficializar esta fusión es trabajo abierto — ver `TASKS.md` y `CHERRY_FUSION_DESIGN.md`.
+La fusión está oficializada; el trabajo de producto pendiente está en `TASKS.md` y las
+decisiones cerradas en `CHERRY_FUSION_DESIGN.md`.
