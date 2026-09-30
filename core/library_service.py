@@ -35,6 +35,7 @@ READS = frozenset({
     'get_duplicate_snapshot',
     'get_duplicate_retirement_roots',
     'get_duplicate_candidates_page', 'get_duplicate_candidate_copies',
+    'get_duplicate_search_status',
 })
 
 # Agrupar puede recorrer toda la DB aun con LIMIT. Acotar duración y permitir
@@ -50,6 +51,7 @@ WRITES = frozenset({
     'rebuild_fts', 'repair_fts', 'vacuum_database', 'edit_curation', 'restore_curation', 'register_curation_copy', 'adopt_curation_identity',
     'archive_copy', 'make_copy_online',
     'archive_duplicate_copies',
+    'prepare_duplicate_search',
 })
 
 

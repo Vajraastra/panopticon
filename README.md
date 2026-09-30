@@ -244,7 +244,8 @@ Limits or inventory errors disable retirement instead of publishing a discardabl
 partial result. **Visual similarity** admits at most 2,000 images and 10 million pixels
 per image, with four workers and bounded pair comparison. It never authorizes retirement
 and does not persist pHash. Cross-folder database discovery and persistent pHash remain
-separate pending work.
+separate pending work. Persistent pHash will run as a separate explicit phase on
+selected folders, independently of SHA-256 backfill.
 
 ## License
 

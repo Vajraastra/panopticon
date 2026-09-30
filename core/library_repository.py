@@ -827,6 +827,14 @@ class LibraryRepository:
         from core.duplicate_candidates import copies
         return copies(self.conn, digest, **kwargs)
 
+    def get_duplicate_search_status(self):
+        from core.duplicate_index import status
+        return status(self.conn)
+
+    def prepare_duplicate_search(self):
+        from core.duplicate_index import prepare
+        return prepare(self.conn)
+
     def archive_duplicate_copies(self, approved, selected, **kwargs):
         from core.duplicate_archive import archive
         return archive(self.conn, approved, selected, normalize_path=self._normalize_path, **kwargs)
