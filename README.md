@@ -92,7 +92,11 @@ WinRAR is required.
 
 In Librarian, select a folder, clear tag filters and click **Export folder curation**.
 The export includes all indexed copies and subfolders, regardless of the visible page.
-Progress and errors appear beside the button. To export or compare from the command line:
+Progress and errors appear beside the button. **Review folder curation** opens a
+read-only comparison in pages of up to 100 copies. Select a row to see both states;
+large text previews are marked incomplete. No changes are applied. Restart the
+review if the export changes. Each page reflects the central database when read.
+To export or compare from the command line:
 
 ```bat
 venv\Scripts\python.exe scripts\curation_sidecar.py export --db panopticon.db --folder "G:\Collections\Artist"

@@ -9,6 +9,7 @@ from core.components.tag_widgets import FlowLayout, TagChip
 from core.database_manager import DatabaseManager
 from core.library_async import LibraryReader, LibraryWriter
 from core.curation_tasks import CurationExportTasks
+from core.components.curation_review import CurationReviewDialog
 from .logic.indexer import IndexerWorker
 from .logic.hash_backfill import HashBackfillWorker
 from core.inventory import InventoryStatus
@@ -60,6 +61,7 @@ class LibrarianModule(BaseModule):
         self._external_paths = None
         self._handoff = None
         self._exporting = None
+        self._review_dialog = None
         self.current_folder_path = None
         self._closed = False
         self._browse_ready = False
@@ -194,6 +196,15 @@ class LibrarianModule(BaseModule):
         self.lbl_export.setTextFormat(Qt.PlainText)
         self.lbl_export.setStyleSheet(f"color: {c('text_secondary')};")
         layout.addWidget(self.lbl_export)
+        self.btn_review_curation = QPushButton(self.tr('lib.review', 'Review folder curation'))
+        self.btn_review_curation.setToolTip(self.tr('lib.review_tip',
+            'Select a folder and clear tag filters. Compare its exported curation with the central database '
+            'in pages; conflicts retain both values. No changes are applied.'))
+        self.btn_review_curation.setEnabled(False)
+        self.btn_review_curation.setStyleSheet(
+            f"background-color: {c('bg_input')}; color: {c('accent_info')}; border: 1px solid {c('border_strong')}; padding: 6px;")
+        self.btn_review_curation.clicked.connect(self.review_folder_curation)
+        layout.addWidget(self.btn_review_curation)
 
         # --- Section 2: Tag Selection ---
         layout.addSpacing(20)
@@ -602,6 +613,24 @@ class LibrarianModule(BaseModule):
     def _update_export_controls(self):
         if hasattr(self, 'btn_export_curation'):
             self.btn_export_curation.setEnabled(self._can_export_curation())
+        if hasattr(self, 'btn_review_curation'):
+            self.btn_review_curation.setEnabled(not self._closed and self._browse_ready and
+                bool(self.current_folder_path) and not self.active_tags and self._external_paths is None and
+                self._exporting is None and self._folder_write is None)
+
+    def review_folder_curation(self):
+        if not self.btn_review_curation.isEnabled():
+            return
+        if self._review_dialog is None:
+            self._review_dialog = CurationReviewDialog(self.db.db_path, self.current_folder_path,
+                self.tr, self.context.get('theme_manager'), self.view)
+            self._review_dialog.finished.connect(lambda _: self._review_closed())
+        self._review_dialog.show()
+        self._review_dialog.raise_()
+        self._review_dialog.activateWindow()
+
+    def _review_closed(self):
+        self._review_dialog = None
 
     def export_folder_curation(self):
         if not self._can_export_curation():
@@ -783,6 +812,8 @@ class LibrarianModule(BaseModule):
             self.folder_writer.close()
         self._handoff = None
         self._exporting = None
+        if self._review_dialog is not None:
+            self._review_dialog.close()
         for name in ('overview_reader', 'browse_reader', 'scan_reader', 'handoff_reader', 'export_reader'):
             reader = getattr(self, name, None)
             if reader:
