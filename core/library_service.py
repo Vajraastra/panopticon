@@ -16,6 +16,7 @@ from queue import Queue, Full, Empty
 
 from core.library_connections import open_reader
 from core.library_metrics import LibraryMetrics
+from core.library_results import ReadResultError
 from core.library_payload import snapshot as snapshot_write_payload, snapshot_read
 from core.library_repository import LibraryRepository
 from core.library_writer_guard import writer_guard
@@ -347,6 +348,17 @@ class LibraryService:
                 check()
                 outcome = 'completed'
                 return value
+        except ReadResultError as exc:
+            outcome = 'failed'
+            try:
+                check()
+            except LibraryError as interrupted:
+                if interrupted.reason == 'cancelled':
+                    outcome = 'cancelled'
+                raise
+            if str(exc) == 'read_result_too_large':
+                self._metrics.reject_result()
+            raise LibraryError(operation, str(exc)) from exc
         except sqlite3.Error as exc:
             outcome = 'failed'
             if cancel_event is not None and cancel_event.is_set():

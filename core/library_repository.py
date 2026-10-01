@@ -4,6 +4,7 @@ import logging
 import re
 
 from core.library_fts import check_fts, repair_fts
+from core.library_results import validate_page, collect_rows, ResultBudget
 from core.library_selection import validate_selection, term_filter, select
 from core.library_versions_schema import initialize_new
 
@@ -324,12 +325,16 @@ class LibraryRepository:
 
     def get_files_recursive(self, folder_path, limit=None):
         """Returns a list of all files under a folder (recursive)."""
+        if limit is not None:
+            validate_page(limit)
         cursor = self.conn.cursor()
         msg_path = self._folder_like(folder_path)
-        if limit:
+        if limit is not None:
             cursor.execute("SELECT path FROM files WHERE is_offline=0 AND path LIKE ? ESCAPE '\\' LIMIT ?", (msg_path, limit))
         else:
             cursor.execute("SELECT path FROM files WHERE is_offline=0 AND path LIKE ? ESCAPE '\\'", (msg_path,))
+        if limit is not None:
+            return collect_rows(cursor, lambda row: row[0])
         return [row[0] for row in cursor.fetchall()]
 
     def remove_files(self, paths_list):
@@ -393,10 +398,11 @@ class LibraryRepository:
         return cursor.fetchone()[0]
 
     def get_folder_preview(self, folder_path, limit=5):
+        validate_page(limit)
         cursor = self.conn.cursor()
         query = self._folder_like(folder_path)
         cursor.execute("SELECT path FROM files WHERE is_offline=0 AND path LIKE ? ESCAPE '\\' LIMIT ?", (query, limit))
-        return [row[0] for row in cursor.fetchall()]
+        return collect_rows(cursor, lambda row: row[0])
 
     def search_by_terms(self, terms, limit=5):
         """
@@ -406,6 +412,7 @@ class LibraryRepository:
         solo para los términos más cortos, que trigram no indexa.
         Returns a tuple: (total_count, list_of_preview_paths)
         """
+        validate_page(limit)
         if not terms:
             return 0, []
 
@@ -418,11 +425,9 @@ class LibraryRepository:
         where = "WHERE is_offline=0 AND (" + condition + ")"
 
         total_count = cursor.execute(f"SELECT count(*) FROM files {where}", params).fetchone()[0]
-        preview_paths = [
-            row[0] for row in cursor.execute(
-                f"SELECT path FROM files {where} LIMIT ?", params + [limit]
-            ).fetchall()
-        ]
+        preview_paths = collect_rows(cursor.execute(
+            f"SELECT path FROM files {where} LIMIT ?", params + [limit]),
+            lambda row: row[0])
         return total_count, preview_paths
 
     def get_file_id(self, path):
@@ -669,6 +674,7 @@ class LibraryRepository:
 
     def search_files_paginated(self, query=None, tags=None, search_terms=None, limit=50,
                                offset=0, *, folder=None, min_rating=0):
+        validate_page(limit, offset)
         cursor = self.conn.cursor()
         conditions, params = ["is_offline=0"], []
 
@@ -737,9 +743,10 @@ class LibraryRepository:
         total = cursor.fetchone()[0]
 
         cursor.execute(f"SELECT path, rating FROM files {where} ORDER BY id DESC LIMIT ? OFFSET ?", params + [limit, offset])
-        return total, [(r[0], r[1]) for r in cursor.fetchall()]
+        return total, collect_rows(cursor, lambda row: (row[0], row[1]))
 
     def get_folders_paginated(self, limit=50, offset=0):
+        validate_page(limit, offset)
         # Returns list of watched folders with counts
         cursor = self.conn.cursor()
         cursor.execute("SELECT count(*) FROM watched_folders")
@@ -747,12 +754,14 @@ class LibraryRepository:
 
         cursor.execute("SELECT path FROM watched_folders LIMIT ? OFFSET ?", (limit, offset))
         folders = []
-        for row in cursor.fetchall():
-            path = row[0]
+        budget = ResultBudget()
+        for path in collect_rows(cursor, lambda row: row[0]):
             count = self.get_folder_count(path)
             prev = self.get_folder_preview(path, 1)
             cover = prev[0] if prev else None
-            folders.append({'path': path, 'name': os.path.basename(path), 'count': count, 'cover': cover})
+            item = {'path': path, 'name': os.path.basename(path), 'count': count, 'cover': cover}
+            budget.add(item)
+            folders.append(item)
 
         return total, folders
 
@@ -767,11 +776,11 @@ class LibraryRepository:
     def get_files_missing_hash(self, after_id=0, limit=200):
         """Lote de (id, path) sin hash, por keyset (id > after_id): los
         archivos que fallen al hashear no re-entran en la misma corrida."""
+        validate_page(limit, after_id)
         cursor = self.conn.cursor()
-        return cursor.execute(
+        return collect_rows(cursor.execute(
             "SELECT id, path FROM files WHERE is_offline=0 AND hash_original IS NULL AND id > ? "
-            "ORDER BY id LIMIT ?", (after_id, limit)
-        ).fetchall()
+            "ORDER BY id LIMIT ?", (after_id, limit)))
 
     def set_hash_original_bulk(self, pairs):
         """pairs: [(hash_hex, file_id)]. El guard IS NULL preserva la

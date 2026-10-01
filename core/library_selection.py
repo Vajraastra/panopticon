@@ -1,4 +1,5 @@
 """Contratos SQL de selección; no abre conexiones ni toca archivos."""
+from core.library_results import collect_rows
 
 
 def validate_selection(terms, folder):
@@ -36,7 +37,7 @@ def select(conn, where, params, limit, offset=0, *, complete=False):
         raise ValueError('selection_requires_streaming')
     # Una página desaparecida por borrados vuelve a la última página válida.
     offset = min(offset, max(0, (count - 1) // limit) * limit)
-    paths = [row[0] for row in conn.execute(
+    paths = collect_rows(conn.execute(
         f'SELECT path FROM files WHERE {where} ORDER BY id LIMIT ? OFFSET ?',
-        [*params, limit, offset])]
+        [*params, limit, offset]), lambda row: row[0])
     return dict(count=count, paths=paths, offset=offset, limit=limit)

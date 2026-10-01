@@ -727,8 +727,22 @@ one read-only snapshot. Metrics separately count rejected read payloads.
 The Qt reader validates input without arbitrary deepcopy hooks. Invalid requests
 use queued error delivery without opening SQL or starting another thread, while
 the existing one-active/latest-pending behavior remains. Old tickets and closed
-owners discard late results. Read response sizes, write scheduling, cross-view
-invalidation and live WAL pressure remain open.
+owners discard late results.
+
+Path pages, previews and hash-backfill batches require exact integer limits from
+1 to 10,000 and nonnegative SQLite integer offsets/cursors. Negative LIMIT can no
+longer turn a paginated request into an unrestricted query. These responses and
+Librarian selections accumulate rows incrementally within an 8 MiB estimated
+Python-object budget, with a 1 MiB field cap; oversized results fail explicitly
+instead of returning a partial list. Count and page share the same read snapshot,
+and complete selections still reject transfers that require streaming. Metrics
+count oversized responses without retaining their content. Cancellation and
+deadlines retain priority over a response-size error.
+
+This bounds the accumulated response, not total process RAM or a temporary cell
+already decoded by SQLite. Complete legacy inventories, tag vocabulary/overview
+and other response contracts still need bounded APIs and consumer migration.
+Write scheduling, cross-view invalidation and live WAL pressure remain open.
 
 ## License
 
