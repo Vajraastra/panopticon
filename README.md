@@ -716,7 +716,19 @@ tag, matching portable restoration. The writer checks the resulting total
 inside the same transaction, including replacement deltas and queued writers.
 Old oversized curation remains stored and can be reduced or rated; no tags are
 automatically removed. Unicode lowercase expansion is checked before storage.
-Read input/output limits, write scheduling and live WAL pressure remain open.
+Native reads also snapshot bounded plain input before opening SQL. All reads
+have a 10-second default budget; existing discovery APIs retain their timeout
+reason. SQLite progress checks interrupt long queries and release their reader.
+Cancellation is checked before admission and after result work, so cancelled
+or late results are not delivered. This is cooperative SQL cancellation: it
+does not forcibly terminate arbitrary Python work. Count and page still share
+one read-only snapshot. Metrics separately count rejected read payloads.
+
+The Qt reader validates input without arbitrary deepcopy hooks. Invalid requests
+use queued error delivery without opening SQL or starting another thread, while
+the existing one-active/latest-pending behavior remains. Old tickets and closed
+owners discard late results. Read response sizes, write scheduling, cross-view
+invalidation and live WAL pressure remain open.
 
 ## License
 

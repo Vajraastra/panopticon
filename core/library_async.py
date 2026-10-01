@@ -1,9 +1,10 @@
 """Entrega Qt sin compartir conexiones ni esperar SQLite desde la GUI."""
-import copy
 import threading
 import weakref
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
+from core.library_payload import snapshot_read
+from core.library_service import LibraryError
 
 
 class LibraryReader(QObject):
@@ -32,7 +33,13 @@ class LibraryReader(QObject):
         if self._closed:
             raise RuntimeError('Reader closed')
         self._ticket += 1
-        request = self._ticket, operation, copy.deepcopy(args), copy.deepcopy(kwargs)
+        error = None
+        try:
+            saved_args, saved_kwargs = snapshot_read(args, kwargs)
+        except ValueError as exc:
+            saved_args, saved_kwargs = (), {}
+            error = LibraryError(operation, str(exc))
+        request = self._ticket, operation, saved_args, saved_kwargs, error
         if self._active:
             self._pending = request
             self._cancel.set()
@@ -43,7 +50,12 @@ class LibraryReader(QObject):
     def _start(self, request):
         self._active = True
         cancel = self._cancel = threading.Event()
-        ticket, operation, args, kwargs = request
+        ticket, operation, args, kwargs, preflight_error = request
+        if preflight_error is not None:
+            # Use the same queued delivery/state machine, including latest-only
+            # pending requests. Never open SQL or launch a thread for this error.
+            self._delivered.emit(ticket, None, preflight_error)
+            return
 
         def run():
             value = error = None

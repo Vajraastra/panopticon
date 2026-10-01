@@ -16,7 +16,7 @@ from queue import Queue, Full, Empty
 
 from core.library_connections import open_reader
 from core.library_metrics import LibraryMetrics
-from core.library_payload import snapshot as snapshot_write_payload
+from core.library_payload import snapshot as snapshot_write_payload, snapshot_read
 from core.library_repository import LibraryRepository
 from core.library_writer_guard import writer_guard
 from core.library_versions_schema import backup_database, migrate as migrate_versions, upgrade_table, ready as versions_ready
@@ -47,6 +47,7 @@ READS = frozenset({
 
 # Agrupar puede recorrer toda la DB aun con LIMIT. Acotar duración y permitir
 # cancelación sin mantener indefinidamente un lector que retenga el WAL.
+DEFAULT_READ_BUDGET_SECONDS = 10
 READ_BUDGET_SECONDS = {
     'get_metadata_edit_state': 10,
     'get_metadata_edit_history_record': 10,
@@ -313,22 +314,37 @@ class LibraryService:
         started = self._metrics.start_read()
         outcome = 'failed'
         timed_out = False
+        # Preserve the timeout reason of existing bounded discovery APIs.
+        timeout_reason = ('duplicate_discovery_budget_exceeded'
+                          if operation in READ_BUDGET_SECONDS else 'read_budget_exceeded')
+        budget = READ_BUDGET_SECONDS.get(operation, DEFAULT_READ_BUDGET_SECONDS)
+        deadline = time.monotonic() + budget
+        def check():
+            if cancel_event is not None and cancel_event.is_set():
+                raise LibraryError(operation, 'cancelled')
+            if time.monotonic() >= deadline:
+                raise LibraryError(operation, timeout_reason)
         try:
+            check()
+            try:
+                saved_args, saved_kwargs = snapshot_read(args, kwargs)
+            except ValueError as exc:
+                self._metrics.reject_payload(read=True)
+                raise LibraryError(operation, str(exc)) from exc
+            check()
             with closing(open_reader(self.db_path)) as conn:
-                if cancel_event is not None:
-                    if cancel_event.is_set():
-                        raise LibraryError(operation, 'cancelled')
-                budget = READ_BUDGET_SECONDS.get(operation)
-                if budget is not None or cancel_event is not None:
-                    deadline = time.monotonic()+budget if budget is not None else None
-                    def interrupt():
-                        nonlocal timed_out
-                        timed_out = deadline is not None and time.monotonic() >= deadline
-                        return int(timed_out or (cancel_event is not None and cancel_event.is_set()))
-                    conn.set_progress_handler(interrupt, 1000)
+                def interrupt():
+                    nonlocal timed_out
+                    timed_out = time.monotonic() >= deadline
+                    return int(timed_out or (cancel_event is not None and cancel_event.is_set()))
+                conn.set_progress_handler(interrupt, 1000)
+                check()
                 # Count + página y consultas relacionadas ven la misma revisión.
                 conn.execute('BEGIN')
-                value = getattr(LibraryRepository(conn), operation)(*args, **kwargs)
+                value = getattr(LibraryRepository(conn), operation)(*saved_args, **saved_kwargs)
+                # Python result work may not execute enough SQLite instructions
+                # to invoke the handler. Never deliver a late/cancelled result.
+                check()
                 outcome = 'completed'
                 return value
         except sqlite3.Error as exc:
@@ -337,7 +353,7 @@ class LibraryService:
                 outcome = 'cancelled'
                 raise LibraryError(operation, 'cancelled') from exc
             if timed_out:
-                raise LibraryError(operation, 'duplicate_discovery_budget_exceeded') from exc
+                raise LibraryError(operation, timeout_reason) from exc
             raise LibraryError(operation, str(exc)) from exc
         except LibraryError as exc:
             outcome = 'failed'

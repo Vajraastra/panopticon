@@ -65,3 +65,12 @@ def snapshot(args, kwargs):
         return clone(args, 0), clone(kwargs, 0)
     except (RuntimeError, TypeError) as exc:
         raise ValueError('invalid_write_payload') from exc
+
+
+def snapshot_read(args, kwargs):
+    try:
+        return snapshot(args, kwargs)
+    except ValueError as exc:
+        reason = {'write_payload_too_large': 'read_payload_too_large',
+                  'invalid_write_payload': 'invalid_read_payload'}[str(exc)]
+        raise ValueError(reason) from exc

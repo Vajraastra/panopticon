@@ -42,8 +42,11 @@ class Fixture(unittest.TestCase):
         self.addCleanup(self.service.close)
 
     def register(self, *paths):
-        self.service.submit('register_files_minimal', [dict(path=p, filename=p.rsplit('/', 1)[-1],
-                            size=1, created=1) for p in paths]).result(3)
+        # Seed large fixtures through bounded requests, like actual ingestion.
+        for start in range(0, len(paths), 100):
+            self.assertTrue(self.service.submit('register_files_minimal', [
+                dict(path=p, filename=p.rsplit('/', 1)[-1], size=1, created=1)
+                for p in paths[start:start+100]]).result(3))
 
 
 class SnapshotSQL(Fixture):
