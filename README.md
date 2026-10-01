@@ -222,6 +222,27 @@ or unknown content creates a new ID with empty curation, provenance and generati
 metadata while preserving the earlier version offline. An occupied active path or
 changed reviewed state stops the action. Scanning alone never reactivates history.
 The viewer binds edits to its displayed copy ID and rejects a replaced identity.
+Character Recognizer also captures the native copy ID before decoding each image.
+Manual tag additions/removals and reference learning require the displayed registered
+identity and a confirmed curation commit. A changed native ID disables tag editing until
+the batch is reloaded. Optional curation revisions use the complete stored state;
+legacy snapshot consumers retain their two-query interface. The revision read uses
+three bounded queries, up to 256 paths and 1 MiB, with a 10-second SQL budget.
+
+Automatic recognition captures the whole selected scope before inference, in read
+blocks of up to 256, without registering images. The scope is limited to 100,000 paths,
+8 MiB of serialized bindings and 30 seconds for capture. Oversized selections fail
+before approving a prefix or allocating a serialization of the entire large selection.
+Bulk tagging submits one identity/revision at a time. A changed identity or stored
+state stops the remaining batch and requires a fresh scan; confirmed tags remain.
+A transient write failure can retry the unchanged tail. Missing native identities
+never inherit tags through the path. This does not pin image bytes against external
+replacement or make inference and SQLite an atomic transaction.
+
+Recognizer workers remain retained through native thread completion. Closing cancels
+pending reads and inference loops without blocking Qt; an admitted native write still
+finishes. Application shutdown checks recognition workers before closing services;
+the other remaining module workers are still outside this guarantee.
 
 The initial native schema migration creates a SQLite backup beside the database before
 rebuilding path uniqueness for active copies. Unsupported custom schemas are preserved

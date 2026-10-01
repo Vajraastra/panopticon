@@ -76,12 +76,15 @@ class RecognizerData(helpers.Fixture):
     def view(self, paths=None):
         view = CharacterRecognitionView(dict(data_service=self.service))
         view.worker = PausedWorker(paths or (self.a, self.b))
+        from modules.character_recognizer.logic.copy_bindings import normalized
+        view._fixture_ids={normalized(path):self.service.read('get_file_id',path) for path in view.worker.paths}
         self.views.append(view)
         return view
 
     def image(self, view, path, name='Alpha', embedding=None):
+        from modules.character_recognizer.logic.copy_bindings import normalized
         view.on_image_processed(path, np.zeros((10, 12, 3), dtype=np.uint8),
-            embedding, name, None, .9)
+            embedding, name, None, .9,dict(path=normalized(path),id=view._fixture_ids.get(normalized(path))))
 
     def ready(self, view):
         self.assertTrue(helpers.pump(lambda: view._curation_ready))
@@ -102,16 +105,16 @@ class RecognizerData(helpers.Fixture):
             return original(repo, *args, **kwargs)
         return entered, release, patch.object(LibraryRepository, method, block)
 
-    def test_read_is_two_selects_off_gui_and_delivery_on_qt(self):
+    def test_read_revision_is_three_selects_off_gui_and_delivery_on_qt(self):
         self.register(self.a)
         self.service.submit('edit_curation', self.a, add_tags=['beta'], rating=3).result(3)
         original = LibraryRepository.get_curation_snapshot
         sql, threads, received, connections = [], [], [], []
-        def read(repo, *args):
+        def read(repo, *args, **kwargs):
             threads.append(threading.get_ident())
             connections.append(repo.conn)
             repo.conn.set_trace_callback(sql.append)
-            return original(repo, *args)
+            return original(repo, *args, **kwargs)
         service_read = self.service.read
         closed = []
         def after_read(*args, **kwargs):
@@ -128,7 +131,7 @@ class RecognizerData(helpers.Fixture):
             self.image(view, self.a)
             self.ready(view)
         self.assertEqual(self.tags(view), ['beta'])
-        self.assertEqual(sum(s.startswith('SELECT') for s in sql), 2)
+        self.assertEqual(sum(s.startswith('SELECT') for s in sql), 3)
         self.assertNotEqual(threads, [threading.get_ident()])
         self.assertEqual(received, [threading.get_ident()])
         self.assertEqual(closed, threads)
@@ -383,6 +386,8 @@ class RecognizerData(helpers.Fixture):
         self.assertEqual(view.worker.next_count, 1)
 
     def bulk(self, view, paths, name='Bulk'):
+        from modules.character_recognizer.logic.copy_bindings import capture
+        view._auto_bindings=capture(self.service,list(paths))
         view._auto_input = tuple(paths)
         view._auto_cancelled = False
         view.on_auto_suggestion(name, .9, len(paths))

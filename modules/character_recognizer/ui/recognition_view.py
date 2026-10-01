@@ -9,13 +9,21 @@ from PySide6.QtCore import Qt, Slot, QFileInfo
 from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont
 from ..logic.profile_db import ProfileDB
 from ..logic.thread_worker import RecognitionWorker, AutoScanWorker
+from ..logic.copy_bindings import normalized
 from core.database_manager import DatabaseManager
 from core.library_async import LibraryReader, LibraryWriter
+from core.curation_bindings import valid as valid_binding
 from core.components.standard_layout import StandardToolLayout
 from core.theme import Theme
 import cv2
 
 log = logging.getLogger(__name__)
+_LIVE_WORKERS = set()
+
+
+def _retain(worker):
+    _LIVE_WORKERS.add(worker)
+    worker.finished.connect(lambda worker=worker: _LIVE_WORKERS.discard(worker))
 
 
 class CharacterRecognitionView(QWidget):
@@ -33,6 +41,10 @@ class CharacterRecognitionView(QWidget):
         self._pending_edit = None
         self._closed = False
         self._curation_ready = False
+        self._curation_binding = None
+        self._processed_copy_id = None
+        self._auto_bindings = {}
+        self._bulk_review_required = False
         self._generation = 0
         self._queued_paths = None
         self._retiring = False
@@ -441,13 +453,10 @@ class CharacterRecognitionView(QWidget):
         layout.addWidget(lbl_auto)
 
         self.btn_auto_scan = QPushButton(self._tr("cr.auto_scan", "🤖 Auto Scan"))
-        self.btn_auto_scan.setToolTip(self._tr(
-            "cr.auto_scan_tip",
-            "Goes through the whole folder recognising faces without asking one by one, "
-            "then shows what it found for you to confirm."))
         self.btn_auto_scan.setToolTip(
             self._tr("cr.auto_scan.tooltip",
-                     "Pre-scan all images and suggest a bulk tag if one character dominates")
+                     "Captures up to 100,000 copy identities before analysis, then suggests a bulk "
+                     "tag for review. Split larger batches; no partial scope is approved.")
         )
         self.btn_auto_scan.setStyleSheet(f"""
             QPushButton {{
@@ -496,11 +505,13 @@ class CharacterRecognitionView(QWidget):
         self.btn_tag_all = QPushButton(self._tr("cr.auto.tag_all", "Tag All"))
         self.btn_tag_all.setToolTip(self._tr(
             "cr.tag_all_tip",
-            "Applies the suggested name to every indexed image in the scanned batch, "
-            "including images without a match. Stops on error; retry keeps confirmed tags."))
+            "Applies the suggested name to the captured copy IDs, including images without "
+            "a match. Stops on changed identity or revision; confirmed tags are kept."))
         self.btn_tag_all.setStyleSheet(
-            f"background-color: {Theme.ACCENT_SUCCESS}; color: {Theme.BG_MAIN};"
-            " border-radius: 4px; font-size: 11px; font-weight: bold; padding: 4px 6px;"
+            f"QPushButton {{background-color: {Theme.ACCENT_SUCCESS}; color: {Theme.BG_MAIN};"
+            " border-radius: 4px; font-size: 11px; font-weight: bold; padding: 4px 6px;}"
+            f"QPushButton:disabled {{background-color: {Theme.BG_INPUT}; color: {Theme.TEXT_DIM};"
+            f" border: 1px solid {Theme.BORDER_HOVER};}}"
         )
         self.btn_auto_cancel = QPushButton(self._tr("cr.auto.cancel", "Cancel"))
         self.btn_auto_cancel.setToolTip(self._tr(
@@ -570,7 +581,8 @@ class CharacterRecognitionView(QWidget):
             control.setEnabled(idle)
         self.btn_auto_cancel.setEnabled(not self._closed and
             (idle or self._pending_edit['kind'] == 'bulk'))
-        self.btn_tag_all.setEnabled(idle and bool(self._auto_paths or self._bulk_remaining))
+        self.btn_tag_all.setEnabled(idle and not self._bulk_review_required and bool(self._auto_bindings) and
+            bool(self._auto_paths or self._bulk_remaining))
         self.btn_retry_tags.setEnabled(idle and bool(self.current_path))
         self.btn_retry_profiles.setEnabled(idle)
 
@@ -578,10 +590,11 @@ class CharacterRecognitionView(QWidget):
         if self._closed or self._pending_edit is not None or not self.current_path:
             return
         self._curation_ready = False
+        self._curation_binding = None
         self.list_tags.clear()
         self.list_tags.addItem(self._tr('tool.character_recognizer.data_loading', 'Loading tags...'))
         self._set_data_controls()
-        ticket = self._reader.request('get_curation_snapshot', (self.current_path,))
+        ticket = self._reader.request('get_curation_snapshot', (self.current_path,), include_revision=True)
         self._read_request = (ticket, self.current_path, self._generation)
 
     @Slot(int, object, object)
@@ -590,7 +603,8 @@ class CharacterRecognitionView(QWidget):
                 ticket, self.current_path, self._generation):
             return
         self.list_tags.clear()
-        if error is None and (not isinstance(rows, list) or len(rows) != 1):
+        if error is None and (not isinstance(rows, list) or len(rows) != 1 or
+                not valid_binding(rows[0],normalized(self.current_path))):
             error = RuntimeError('Incomplete curation snapshot')
         if error is not None:
             self.list_tags.addItem(self._tr('tool.character_recognizer.data_error',
@@ -598,8 +612,12 @@ class CharacterRecognitionView(QWidget):
         elif rows[0]['id'] is None:
             self.list_tags.addItem(self._tr('tool.character_recognizer.unregistered',
                 'Index this image in Librarian before editing its tags.'))
+        elif rows[0]['id'] != self._processed_copy_id:
+            self.list_tags.addItem(self._tr('tool.character_recognizer.copy_changed',
+                'This image no longer matches the analyzed copy ID. Reload the batch to review it.'))
         else:
             self._curation_ready = True
+            self._curation_binding = dict(id=rows[0]['id'],fingerprint=rows[0]['fingerprint'])
             tags = rows[0]['tags']
             self.list_tags.addItems(sorted(tags) if tags else [self._tr('cr.no_tags', '(No tags)')])
         self._set_data_controls()
@@ -619,8 +637,15 @@ class CharacterRecognitionView(QWidget):
                 done=self._bulk_done, total=self._bulk_done + len(self._bulk_remaining))
             if kind == 'bulk' else self._tr('tool.character_recognizer.saving', 'Saving tags...'))
         try:
+            binding = self._auto_bindings.get(normalized(path)) if kind == 'bulk' else self._curation_binding
+            if binding is None:
+                raise ValueError('recognition_copy_identity_unbound')
+            if binding['id'] is None:
+                raise ValueError('file_not_registered')
             payload = {'remove_tags' if kind == 'remove' else 'add_tags': (name,)}
-            job['ticket'] = self._writer.submit('edit_curation', path, **payload)
+            job['copy_id'],job['fingerprint'] = binding['id'],binding['fingerprint']
+            job['ticket'] = self._writer.submit('edit_curation', path,
+                expected_copy_id=job['copy_id'],expected_fingerprint=job['fingerprint'],**payload)
         except Exception as exc:
             self._on_edit(job.get('ticket'), None, exc)
 
@@ -633,13 +658,22 @@ class CharacterRecognitionView(QWidget):
         current = job['generation'] == self._generation
         if error is not None or committed is not True:
             reason = (str(error) or type(error).__name__) if error is not None else 'not_committed'
+            code = str(getattr(error, 'reason', reason))
+            if code in ('curation_copy_changed','copy_version_changed_since_review'):
+                reason = self._tr('tool.character_recognizer.edit_changed',
+                    'The copy ID or its reviewed state changed. Reload or rescan the batch; confirmed tags are kept.')
+                if current and job['kind'] == 'bulk':self._bulk_review_required = True
             if current:
                 key = 'bulk_error' if job['kind'] == 'bulk' else 'write_error'
+                if job['kind'] == 'bulk' and self._bulk_review_required:
+                    key = 'bulk_review_error'
                 label = self.lbl_auto_status if job['kind'] == 'bulk' else self.lbl_status
                 label.setText(self._tr('tool.character_recognizer.' + key,
+                    'Confirmed copies: {done}. {reason}' if key == 'bulk_review_error' else
                     'Stopped after {done} confirmed images: {reason}.' if key == 'bulk_error'
                     else 'Cannot save tags: {reason}').format(
                         done=self._bulk_done, reason=reason))
+                label.show()
         elif current:
             if job['kind'] == 'bulk':
                 self._bulk_done += 1
@@ -708,15 +742,21 @@ class CharacterRecognitionView(QWidget):
         self._bulk_remaining = ()
         for worker in (self.worker, self.auto_worker):
             if worker:
-                worker.is_running = False
+                if hasattr(worker, 'stop'):worker.stop()
+                else:worker.is_running = False
 
-    @Slot(str, object, object, str, object, float)
-    def on_image_processed(self, path, cv_img, embedding, suggestion, bbox, confidence):
+    def shutdown_ready(self):
+        return all(worker is None or not worker.isRunning() for worker in (self.worker,self.auto_worker))
+
+    @Slot(str, object, object, str, object, float, object)
+    def on_image_processed(self, path, cv_img, embedding, suggestion, bbox, confidence, binding=None):
         if self._closed or self._retiring or (self.sender() is not None and self.sender() is not self.worker):
             return
         log.debug(f"UI received processed image: {path}")
         try:
             self.current_path = path
+            self._processed_copy_id = (binding.get('id') if isinstance(binding,dict) and
+                binding.get('path') == normalized(path) else None)
             self.current_embedding = embedding
             self.current_suggestion = suggestion
 
@@ -961,6 +1001,8 @@ class CharacterRecognitionView(QWidget):
         self._curation_ready = False
         self._reader.invalidate()
         self._auto_paths = ()
+        self._auto_bindings = {}
+        self._bulk_review_required = False
         self._bulk_remaining = ()
         self._bulk_done = 0
         self._auto_suggestion_name = None
@@ -968,13 +1010,13 @@ class CharacterRecognitionView(QWidget):
         self.frame_suggestion.hide()
         self.action_bar_container.hide()
         if self.auto_worker:
-            self.auto_worker.is_running = False
+            self.auto_worker.stop()
         self._set_data_controls()
         self.lbl_status.setText(self._tr("cr.status.init", "Initializing AI Engine..."))
 
         if self.worker:
             if self.worker.isRunning():
-                self.worker.is_running = False
+                self.worker.stop()
             self._retiring = True
             return  # Reemplazar sólo tras finished nativo; nunca esperar desde Qt.
 
@@ -987,7 +1029,8 @@ class CharacterRecognitionView(QWidget):
         self._retiring = False
         self._engine_failed = False
 
-        self.worker = RecognitionWorker(paths, mode=self._detection_mode)
+        self.worker = RecognitionWorker(paths, mode=self._detection_mode,library_service=self.db.service)
+        _retain(self.worker)
         self.worker.image_processed.connect(self.on_image_processed)
         self.worker.finished_signal.connect(self.on_finished)
         self.worker.progress.connect(self.update_progress)
@@ -1022,8 +1065,14 @@ class CharacterRecognitionView(QWidget):
     def on_auto_error(self, msg):
         if not self._accept_auto_result():
             return
+        review_error = msg.startswith(('recognition_copy_','get_curation_snapshot:',
+            'duplicate_snapshot_','unsupported_duplicate_'))
+        if msg in ('recognition_copy_scope_limit','recognition_copy_check_budget_exceeded','duplicate_snapshot_payload_too_large'):
+            msg = self._tr('tool.character_recognizer.scope_limit',
+                'Copy review exceeded its size or time limit. Split the batch and rescan; no prefix was approved.')
         self.lbl_auto_status.setText(
-            self._tr("cr.error.engine", "AI Engine error: {msg}").format(msg=msg)
+            (self._tr('tool.character_recognizer.auto_review_error', 'Cannot review copy identities: {msg}')
+             if review_error else self._tr("cr.error.engine", "AI Engine error: {msg}")).format(msg=msg)
         )
         self.lbl_auto_status.show()
 
@@ -1074,14 +1123,32 @@ class CharacterRecognitionView(QWidget):
         self._bulk_remaining = ()
         self._bulk_done = 0
 
-        self.auto_worker = AutoScanWorker(list(self.worker.paths), mode=self._detection_mode)
+        self.auto_worker = AutoScanWorker(list(self.worker.paths), mode=self._detection_mode,
+            library_service=self.db.service)
+        _retain(self.auto_worker)
+        self._auto_bindings = {}
+        self._bulk_review_required = False
         self._auto_input = tuple(self.worker.paths)
         self._auto_cancelled = False
         self.auto_worker.progress.connect(self.on_auto_progress)
         self.auto_worker.suggestion.connect(self.on_auto_suggestion)
         self.auto_worker.no_match.connect(self.on_auto_no_match)
         self.auto_worker.error.connect(self.on_auto_error)
+        self.auto_worker.bindings_ready.connect(self._on_auto_bindings)
+        self.auto_worker.finished.connect(self._on_auto_stopped)
         self.auto_worker.start()
+
+    @Slot(object)
+    def _on_auto_bindings(self, bindings):
+        if self._accept_auto_result():self._auto_bindings = bindings
+
+    @Slot()
+    def _on_auto_stopped(self):
+        worker=self.sender()
+        if worker is self.auto_worker:
+            self.auto_worker=None
+            if not self._closed:self._set_data_controls()
+        worker.deleteLater()
 
     def _accept_auto_result(self):
         return (not self._closed and not getattr(self, '_auto_cancelled', True)
@@ -1100,7 +1167,10 @@ class CharacterRecognitionView(QWidget):
         if not self._accept_auto_result():
             return
         self._auto_suggestion_name = name
-        self._auto_paths = tuple(dict.fromkeys(self._auto_input))
+        self._bulk_review_required = False
+        unique={}
+        for path in self._auto_input:unique.setdefault(normalized(path),path)
+        self._auto_paths = tuple(unique.values())
         self._bulk_remaining = ()
         self._bulk_done = 0
         self._set_data_controls()
@@ -1110,6 +1180,7 @@ class CharacterRecognitionView(QWidget):
                 name=name, pct=pct_str
             )
         )
+        self.lbl_auto_status.show()
         self.lbl_suggestion_text.setText(
             f"{self._tr('cr.auto.tag_all', 'Tag All')}:\n{name}  ({pct_str}, {count} imgs)"
         )
@@ -1126,7 +1197,7 @@ class CharacterRecognitionView(QWidget):
 
     def on_tag_all(self):
         name = self._auto_suggestion_name
-        if self._closed or self._pending_edit is not None or not name:
+        if self._closed or self._pending_edit is not None or self._bulk_review_required or not name:
             return
         if not self._bulk_remaining:
             self._bulk_remaining = self._auto_paths
@@ -1143,7 +1214,7 @@ class CharacterRecognitionView(QWidget):
         self._auto_paths = ()
         self._bulk_remaining = ()
         if self.auto_worker and self.auto_worker.isRunning():
-            self.auto_worker.is_running = False
+            self.auto_worker.stop()
         self.frame_suggestion.hide()
         if self._pending_edit is None:
             self.lbl_auto_status.hide()

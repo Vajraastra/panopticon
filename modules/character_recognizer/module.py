@@ -32,6 +32,9 @@ class CharacterRecognizerModule(BaseModule):
     def on_unload(self):
         if self.view:
             self.content_view.shutdown()
+
+    def shutdown_ready(self):
+        return not self.view or self.content_view.shutdown_ready()
     
     def get_default_input_folder(self):
         return CachePaths.get_cache_root()

@@ -425,12 +425,16 @@ class LibraryRepository:
         row = cursor.fetchone()
         return row[0] if row else None
 
-    def get_curation_snapshot(self, paths):
+    def get_curation_snapshot(self, paths, *, include_revision=False):
         """Hasta 256 rutas, dos SELECT en el snapshot del lector; sin registrar archivos.
 
         Conserva orden/duplicados. id=None distingue ausencia de curación vacía;
         cero estrellas y tags vacíos de una fila registrada son autoritativos.
+        include_revision agrega huella del estado completo: tres SELECT acotados,
+        sin materializar un estado por ruta repetida ni crear schema.
         """
+        if type(include_revision) is not bool:
+            raise ValueError('invalid_curation_snapshot_revision')
         if not isinstance(paths, (list, tuple)) or len(paths) > 256:
             raise ValueError('Curation snapshot requires at most 256 paths')
         if any(not isinstance(path, str) or not path for path in paths):
@@ -439,6 +443,9 @@ class LibraryRepository:
         unique = tuple(dict.fromkeys(normalized))
         if not unique:
             return []
+        if include_revision:
+            from core.curation_bindings import compact
+            return compact(self.get_duplicate_snapshot(unique), normalized)
         placeholders = ','.join('?' for _ in unique)
         records = {}
         for file_id, path, rating in self.conn.execute(
@@ -498,7 +505,8 @@ class LibraryRepository:
         """, (file_id,))
         return [row[0] for row in cursor.fetchall()]
 
-    def edit_curation(self, path, *, add_tags=(), remove_tags=(), rating=None, expected_copy_id=None):
+    def edit_curation(self, path, *, add_tags=(), remove_tags=(), rating=None,
+                      expected_copy_id=None, expected_fingerprint=None):
         """Delta acotado sobre una fila existente; el servicio confirma todo o nada.
 
         No registra archivos ni modifica bytes, metadata de generación o hashes.
@@ -528,6 +536,11 @@ class LibraryRepository:
                                 (self._normalize_path(path),)).fetchone()
         if expected_copy_id is not None and (row is None or row[0] != expected_copy_id):
             raise ValueError('curation_copy_changed')
+        if expected_fingerprint is not None:
+            if expected_copy_id is None:
+                raise ValueError('curation_revision_requires_identity')
+            from core.library_versions import _reviewed
+            _reviewed(self.conn, expected_copy_id, expected_fingerprint)
         if row is None:
             raise ValueError('file_not_registered')
         file_id = row[0]

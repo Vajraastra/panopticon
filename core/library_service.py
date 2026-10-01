@@ -46,6 +46,7 @@ READS = frozenset({
 # Agrupar puede recorrer toda la DB aun con LIMIT. Acotar duración y permitir
 # cancelación sin mantener indefinidamente un lector que retenga el WAL.
 READ_BUDGET_SECONDS = {
+    'get_curation_snapshot': 10,
     'get_folder_archive_preview': 10,
     'get_duplicate_snapshot': 10,
     'get_duplicate_recovery_state': 10,

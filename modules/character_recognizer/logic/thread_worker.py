@@ -1,23 +1,27 @@
 import logging
+import threading
 from PySide6.QtCore import QThread, Signal
 import cv2
 import numpy as np
 from .recognition_engine import RecognitionEngine
 from .profile_db import ProfileDB
+from .copy_bindings import capture, normalized
 
 log = logging.getLogger(__name__)
 
 
 class RecognitionWorker(QThread):
-    image_processed = Signal(str, object, object, str, object, float)
+    image_processed = Signal(str, object, object, str, object, float, object)
     finished_signal = Signal()
     progress = Signal(int, int)
     error = Signal(str)
 
-    def __init__(self, paths, mode='illustration'):
+    def __init__(self, paths, mode='illustration', *, library_service=None):
         super().__init__()
         self.paths = paths
         self.mode = mode
+        self.library_service = library_service
+        self._cancel = threading.Event()
         self.is_running = True
         self.engine = RecognitionEngine()
         self.db = ProfileDB()
@@ -34,6 +38,8 @@ class RecognitionWorker(QThread):
             self.finished_signal.emit()
 
     def _run(self):
+        if not self.is_running:
+            return
         log.debug(f"Worker started with {len(self.paths)} items.")
         try:
             self.engine.initialize()
@@ -51,6 +57,11 @@ class RecognitionWorker(QThread):
             log.debug(f"Processing index {self.current_idx}: {path}")
 
             # Fallo de perfiles termina visiblemente; no saltar imágenes como si no hubiera match.
+            bindings = capture(self.library_service,[path],running=lambda:self.is_running,
+                cancel_event=self._cancel) if self.library_service else None
+            if not self.is_running:
+                return
+            binding = bindings[normalized(path)] if bindings is not None else None
             profiles = self.db.get_all_profiles()
 
             try:
@@ -78,7 +89,7 @@ class RecognitionWorker(QThread):
                                 suggestion = name
 
                 final_confidence = max_score if suggestion else 0.0
-                self.image_processed.emit(path, img, embedding, suggestion, bbox, final_confidence)
+                self.image_processed.emit(path, img, embedding, suggestion, bbox, final_confidence, binding)
 
                 self.paused = True
                 while self.paused and self.is_running:
@@ -103,6 +114,10 @@ class RecognitionWorker(QThread):
     def request_next(self):
         self.paused = False
 
+    def stop(self):
+        self.is_running = False
+        self._cancel.set()
+
     def pause(self):
         self.paused = True
 
@@ -122,13 +137,16 @@ class AutoScanWorker(QThread):
     no_match = Signal()
     finished_signal = Signal()
     error = Signal(str)
+    bindings_ready = Signal(object)
 
     DOMINANCE_THRESHOLD = 0.60  # 60% de las imágenes deben coincidir
 
-    def __init__(self, paths, mode='illustration'):
+    def __init__(self, paths, mode='illustration', *, library_service=None):
         super().__init__()
         self.paths = paths
         self.mode = mode
+        self.library_service = library_service
+        self._cancel = threading.Event()
         self.engine = RecognitionEngine()
         self.db = ProfileDB()
         self.is_running = True
@@ -142,6 +160,11 @@ class AutoScanWorker(QThread):
             self.finished_signal.emit()
 
     def _run(self):
+        bindings = capture(self.library_service,self.paths,running=lambda:self.is_running,
+            cancel_event=self._cancel) if self.library_service else None
+        if not self.is_running:
+            return
+        self.bindings_ready.emit(bindings or {})
         try:
             self.engine.initialize()
         except Exception as e:
@@ -180,6 +203,8 @@ class AutoScanWorker(QThread):
             except Exception as e:
                 log.error(f"AutoScan error on {path}: {e}")
 
+        if not self.is_running:
+            return
         if tally:
             top_name = max(tally, key=tally.get)
             top_count = tally[top_name]
@@ -189,3 +214,7 @@ class AutoScanWorker(QThread):
                 return
 
         self.no_match.emit()
+
+    def stop(self):
+        self.is_running = False
+        self._cancel.set()

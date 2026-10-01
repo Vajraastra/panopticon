@@ -463,7 +463,7 @@
   "cr.no_tag_selected": "No tag selected.",
   "cr.auto_mode": "AUTO MODE",
   "cr.auto_scan": "🤖 Auto Scan",
-  "cr.auto_scan.tooltip": "Pre-scan all images to detect a dominant character and suggest bulk tagging.",
+  "cr.auto_scan.tooltip": "Captures up to 100,000 copy identities before analysis, then suggests a bulk tag for review. Split larger batches; no partial scope is approved.",
   "cr.auto.scanning": "Auto-scanning {current}/{total}...",
   "cr.auto.suggestion": "Auto detected: {name} ({pct}% of images)",
   "cr.auto.no_match": "No dominant character found.",
@@ -1049,7 +1049,7 @@
   "cr.btn_save_tip": "Saves the typed name and links it to this face.",
   "cr.combo_names_tip": "Characters already known. Pick one instead of typing it to avoid duplicates from a typo.",
   "cr.btn_remove_tag_tip": "Removes this tag from the image. The file itself is untouched.",
-  "cr.tag_all_tip": "Applies the suggested name to every indexed image in the scanned batch, including images without a match. Stops on error; retry keeps confirmed tags.",
+  "cr.tag_all_tip": "Applies the suggested name to the captured copy IDs, including images without a match. Stops on changed identity or revision; confirmed tags are kept.",
   "cr.auto_cancel_tip": "Stops the automatic scan. Whatever was tagged so far is kept.",
   "cr.btn_back_tip": "Goes back without saving the typed name.",
   "crop.ar_tip": "Locks the crop ratio. «Free» lets you drag as you like; the rest keep the shape fixed while you adjust.",
@@ -1604,5 +1604,10 @@
   "lib.folder.archive_yes": "Archive and stop watching",
   "lib.folder.archive_no": "Cancel",
   "lib.folder.archive_yes_tip": "Confirm this scope. Membership is checked again before the database commit.",
-  "lib.folder.archive_no_tip": "Close without changing watched folders or copy availability."
+  "lib.folder.archive_no_tip": "Close without changing watched folders or copy availability.",
+  "tool.character_recognizer.copy_changed": "This image no longer matches the analyzed copy ID. Reload the batch to review it.",
+  "tool.character_recognizer.edit_changed": "The copy ID or its reviewed state changed. Reload or rescan the batch; confirmed tags are kept.",
+  "tool.character_recognizer.scope_limit": "Copy review exceeded its size or time limit. Split the batch and rescan; no prefix was approved.",
+  "tool.character_recognizer.auto_review_error": "Cannot review copy identities: {msg}",
+  "tool.character_recognizer.bulk_review_error": "Confirmed copies: {done}. {reason}"
 }
