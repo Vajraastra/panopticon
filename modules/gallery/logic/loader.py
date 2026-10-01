@@ -1,114 +1,126 @@
-from PySide6.QtCore import QObject, Signal, QRunnable, QThreadPool, QSize, Qt
-from PySide6.QtGui import QImage
-import os
-import sys
+"""Per-view thumbnails with bounded admission and worker-validated cache."""
+from collections import OrderedDict
 import logging
+import os
 import threading
+from PySide6.QtCore import QObject, Signal, Slot, QRunnable, QThreadPool, QSize, Qt
+from PySide6.QtGui import QImage
+from .thumbnail_cache import ThumbnailCache
+from .thumbnail_decode import load_thumbnail
 
 log = logging.getLogger(__name__)
 
+
 class WorkerSignals(QObject):
-    """Signals for background results."""
-    result = Signal(str, QImage)
+    result = Signal(int, str, QImage)
+
 
 class ThumbnailWorker(QRunnable):
-    """Worker thread for loading and scaling a single image using QImage (thread-safe)."""
-    def __init__(self, path, size, cancel_event=None):
+    def __init__(self, path, size, cancel_event=None, *, ticket=0, cache=None, epoch=None):
         super().__init__()
-        self.path = path
-        self.size = size
-        self.cancel_event = cancel_event
+        self.path, self.size = path, QSize(size)
+        self.cancel_event = cancel_event or threading.Event()
+        self.ticket, self.cache, self.epoch = ticket, cache, epoch
         self.signals = WorkerSignals()
 
     def run(self):
+        image = QImage()
         try:
-            if self.cancel_event is not None and self.cancel_event.is_set(): return
-            # print(f"[Loader] Starting load for: {os.path.basename(self.path)}")
-            image = QImage(self.path)
-            if self.cancel_event is not None and self.cancel_event.is_set(): return
-            if not image.isNull():
-                scaled = image.scaled(self.size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                self.signals.result.emit(self.path, scaled)
-            else:
-                self.signals.result.emit(self.path, None)
-        except Exception as e:
-            log.error("Error crítico cargando %s: %s", self.path, e)
-            self.signals.result.emit(self.path, None)
+            image = load_thumbnail(self.path, self.size, self.cache, self.epoch, self.cancel_event)
+        except Exception as exc:
+            log.warning('Thumbnail failed: %s', str(exc))
+        finally:
+            # Even cancelled/failed jobs release their bounded admission slot.
+            self.signals.result.emit(self.ticket, self.path, image)
+
 
 class ThumbnailLoader(QObject):
-    """
-    Singleton-loader managing a thread pool and a dictionary-based memory cache for QImages.
-    """
     thumbnail_ready = Signal(str, QImage)
 
-    def __init__(self, max_items=1500):
+    def __init__(self, max_items=256, *, max_bytes=16*1024*1024, max_pending=256):
         super().__init__()
+        if any(type(value) is not int or value < 1 for value in (max_items, max_bytes, max_pending)):
+            raise ValueError('invalid_thumbnail_limits')
         self.pool = QThreadPool(self)
-        self.pool.setMaxThreadCount(min(8, max(1, os.cpu_count() or 1)))
+        self.pool.setMaxThreadCount(min(4, max(1, os.cpu_count() or 1)))
+        self.cache = ThumbnailCache(max_items, max_bytes)
+        self.max_items, self.max_pending = max_items, max_pending
+        self._pending = OrderedDict()
+        self._active = {}
+        self._generation = self._ticket = 0
         self._closed = False
-        self._cancel = threading.Event()
-            
-        self.cache = {} # path -> QImage
-        self.max_items = max_items
-        self.pending_paths = set()
+
+    @property
+    def pending_paths(self):
+        if self._closed:
+            return set()
+        return {key[0] for key in self._pending} | {
+            key[0] for generation, key, _ in self._active.values() if generation == self._generation}
 
     def get_thumbnail_image(self, path, size=QSize(130, 130)):
-        if self._closed: return None
-        # Normalize to forward slashes to match DB consistency
-        norm_path = os.path.normpath(path).replace('\\', '/')
-        
-        # 1. Check Cache
-        if norm_path in self.cache:
-            # print(f"[Loader] Cache HIT for {os.path.basename(path)}")
-            return self.cache[norm_path]
-
-        # 2. Check if already loading
-        if norm_path in self.pending_paths:
+        if self._closed:
             return None
-
-        # 3. Start loading
-        self.pending_paths.add(norm_path)
-        worker = ThumbnailWorker(norm_path, size, self._cancel)
-        # Connect signal to our local handler
-        worker.signals.result.connect(self._on_worker_done)
-        self.pool.start(worker)
+        if (not isinstance(path, str) or not path or len(path) > 4096 or '\x00' in path
+                or not isinstance(size, QSize) or not size.isValid()
+                or not 1 <= size.width() <= 512 or not 1 <= size.height() <= 512):
+            raise ValueError('invalid_thumbnail_request')
+        normalized = os.path.normpath(path).replace('\\', '/')
+        key = normalized, size.width(), size.height()
+        if key in self._pending or any(
+                generation == self._generation and active_key == key
+                for generation, active_key, _ in self._active.values()):
+            return None
+        if len(self._pending) >= self.max_pending:
+            raise ValueError('thumbnail_queue_full')
+        self._pending[key] = QSize(size)
+        self._schedule()
+        # Cache hits also validate the file's stat in the worker.
         return None
 
-    def _on_worker_done(self, path, image):
-        if self._closed: return
-        # This will be executed via QueuedConnection if the worker is in another thread
-        # ensuring thread safety when accessing self.cache/pending_paths
-        
-        if image:
-            # Simple LRU-ish cache management (cap by count)
-            if len(self.cache) >= self.max_items:
-                keys = list(self.cache.keys())
-                # Remove first 100 to avoid frequent clearing
-                for i in range(min(100, len(keys))):
-                    del self.cache[keys[i]]
-            
-            self.cache[path] = image
-        
-        if path in self.pending_paths:
-            self.pending_paths.remove(path)
-            
-        # print(f"[Loader] Finished loading: {os.path.basename(path)} (Success: {image is not None})")
-        self.thumbnail_ready.emit(path, image)
+    def _schedule(self):
+        while not self._closed and self._pending and len(self._active) < self.pool.maxThreadCount():
+            key, size = self._pending.popitem(last=False)
+            self._ticket += 1
+            worker = ThumbnailWorker(key[0], size, ticket=self._ticket,
+                                     cache=self.cache, epoch=self.cache.epoch())
+            self._active[self._ticket] = self._generation, key, worker
+            worker.signals.result.connect(self._on_worker_done, Qt.QueuedConnection)
+            self.pool.start(worker)
+
+    @Slot(int, str, QImage)
+    def _on_worker_done(self, ticket, path, image):
+        record = self._active.pop(ticket, None)
+        if self._closed or record is None:
+            return
+        if record[0] == self._generation:
+            self.thumbnail_ready.emit(path, image)
+        self._schedule()
+
+    def invalidate(self, *, clear_cache=False):
+        self._generation += 1
+        self._pending.clear()
+        for _, _, worker in self._active.values():
+            worker.cancel_event.set()
+        if clear_cache:
+            self.cache.clear()
 
     def shutdown(self):
+        if self._closed:
+            return
         self._closed = True
-        self._cancel.set()
-        self.pool.clear()  # Only this loader's queued work, never global pools.
-        self.pending_paths.clear()
-        self.cache.clear()
+        self.invalidate(clear_cache=True)
+        self.pool.clear()
+        self._active.clear()
 
     def shutdown_ready(self):
-        # Zero timeout: poll actual completion, including idle pool threads.
+        # Logical result delivery is not native pool/thread completion.
         return self.pool.waitForDone(0)
 
 
-# Global Instance
+# Compatibility factory; active Gallery grids create their own loader.
 _loader_instance = None
+
+
 def get_loader():
     global _loader_instance
     if _loader_instance is not None and _loader_instance._closed:

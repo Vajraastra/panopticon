@@ -38,6 +38,7 @@ class GalleryModule(BaseModule):
         self.state  = GalleryState()
         self.engine = QueryEngine(service=self.context.get('data_service'))
         initial_revision = self.engine.db.service.revision_snapshot()
+        self._preview_revision = self.engine.db.service.preview_revision_snapshot()
         self.view_widget = GalleryView(self.state, self.engine, self.context)
         self.revisions = LibraryRevisionWatcher(self.engine.db.service, self.view_widget, initial=initial_revision,
             busy=lambda: self.view_widget.grid.reader._active or self.view_widget.sidebar.tag_completions.busy)
@@ -51,6 +52,10 @@ class GalleryModule(BaseModule):
     def _on_native_revision(self, revision):
         if self._closed or self.view_widget is None:
             return
+        preview_revision = self.engine.db.service.preview_revision_snapshot()
+        if preview_revision != self._preview_revision:
+            self._preview_revision = preview_revision
+            self.view_widget.grid.loader.invalidate(clear_cache=True)
         self.view_widget.grid.refresh()
         self.view_widget.sidebar.tag_completions.reload_page()
 

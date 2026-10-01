@@ -871,6 +871,34 @@ A slow filesystem stat can delay the owner while snapshots remain available;
 these observations are diagnostics, not deadlines or automatic pressure control.
 `scripts/library_wal_metrics_selftest.py` verifies private WAL/occupancy behavior.
 
+Gallery grids now own independent thumbnail loaders and pools; unloading one
+does not stop another. Up to four workers run per grid, with at most 256 pending
+requests. Navigation drops pending old-page work, cancels active old requests and
+discards their late results. Shutdown clears only its own pool and polls actual
+thread completion without a GUI wait. The compatibility `get_loader()` factory
+remains available, but active Gallery grids no longer share that singleton.
+
+Each cache is an LRU bounded to 256 images and 16 MiB of retained decoded pixels.
+Keys include path and requested dimensions (maximum 512 per edge). Even cache
+hits asynchronously check file device/identity, size and nanosecond mtime in the
+worker; decoding verifies that the source identity did not change. QImageReader
+uses decoder scaling when supported and explicitly closes its device. Source
+limits match preview (256 MiB/100M pixels); plugins may still allocate a full
+source image, so cache/queue limits are not a total process-memory guarantee.
+Cache values use QImage copy-on-write semantics; QPixmap construction stays in UI.
+Failures show a localized unavailable label instead of an endless placeholder.
+
+Native also exposes a coarse `preview_revision_snapshot()`: potential physical
+publication commands (`commit_metadata_edit`, legacy `update_file_metadata`,
+`register_derived_copy`, `restore_duplicate_copy`) advance it after a changed
+commit; unknown external commits invalidate it conservatively. Ordinary local
+curation, observations and hash backfill retain image caches. Gallery clears its
+cache on that hint, while worker stat validation detects other changed sources.
+Old cache epochs cannot repopulate cleared entries. This is not a content hash,
+durable publication proof or defense against external edits preserving all stat
+fields. Viewer physical reloads and other consumers still need integration.
+`scripts/thumbnail_version_selftest.py` verifies private image/cache/window cases.
+
 ## License
 
 Business Source License 1.1 — free for non-commercial use.  

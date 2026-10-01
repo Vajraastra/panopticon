@@ -6,7 +6,7 @@ from core.library_async import LibraryReader, LibraryWriter
 import logging
 from PySide6.QtGui import QImage, QPixmap
 
-from modules.gallery.logic.loader import get_loader
+from modules.gallery.logic.loader import ThumbnailLoader
 from .components import FolderCard, ClickableThumbnail
 
 class GalleryGrid(QWidget):
@@ -17,7 +17,7 @@ class GalleryGrid(QWidget):
         super().__init__(parent)
         self.state = state
         self.engine = query_engine
-        self.loader = get_loader()
+        self.loader = ThumbnailLoader()
         self._closed = False
         self._loading = False
         self.reader = LibraryReader(self.engine.db.service, self)
@@ -147,6 +147,7 @@ class GalleryGrid(QWidget):
             self.load_images(rows)
             
     def clear_grid(self):
+        self.loader.invalidate()
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
             widget = item.widget()
@@ -160,7 +161,7 @@ class GalleryGrid(QWidget):
             
             # Request cover
             if album['cover']:
-                img = self.loader.get_thumbnail_image(album['cover'])
+                img = self._request_thumbnail(album['cover'], card.lbl_cover)
                 if img: card.set_cover_image(QPixmap.fromImage(img))
                 
             self.grid_layout.addWidget(card, i // cols, i % cols)
@@ -179,11 +180,18 @@ class GalleryGrid(QWidget):
                 thumb.setSelected(True)
             
             # Request Image
-            img = self.loader.get_thumbnail_image(path)
+            img = self._request_thumbnail(path, thumb)
             if img: thumb.setPixmap(QPixmap.fromImage(img))
             
             self.grid_layout.addWidget(thumb, i // cols, i % cols)
             
+    def _request_thumbnail(self, path, label):
+        try:
+            return self.loader.get_thumbnail_image(path)
+        except ValueError:
+            label.setText(LocaleManager().tr('gallery.thumbnail_unavailable', 'Unavailable'))
+            return None
+
     def update_pagination_ui(self):
         current = self.state._page + 1
         total_pages = self.state.total_pages
@@ -219,6 +227,7 @@ class GalleryGrid(QWidget):
         self._closed = True
         self.reader.close()
         self.writer.close()
+        self.loader.shutdown()
             
     def on_image_clicked(self, path):
         if self.state.picker_active:
@@ -269,13 +278,19 @@ class GalleryGrid(QWidget):
 
     @Slot(str, QImage)
     def on_thumbnail_loaded(self, path, image):
-        if not image: return
-        pix = QPixmap.fromImage(image)
+        if self._closed: return
+        pix = None if image.isNull() else QPixmap.fromImage(image)
         
         # Iterate and find
         for i in range(self.grid_layout.count()):
             w = self.grid_layout.itemAt(i).widget()
             if isinstance(w, FolderCard) and w.cover_path == path:
-                w.set_cover_image(pix)
+                if pix is None:
+                    w.lbl_cover.setText(LocaleManager().tr('gallery.thumbnail_unavailable', 'Unavailable'))
+                else:
+                    w.set_cover_image(pix)
             elif isinstance(w, ClickableThumbnail) and w.path == path:
-                w.setPixmap(pix)
+                if pix is None:
+                    w.setText(LocaleManager().tr('gallery.thumbnail_unavailable', 'Unavailable'))
+                else:
+                    w.setPixmap(pix)

@@ -11,6 +11,7 @@ class RevisionClock:
         self._lock = threading.Lock()
         self._epoch = uuid.uuid4().hex
         self._sequence = 0
+        self._preview_sequence = 0
         self._version = None
         self._healthy = True
 
@@ -18,9 +19,15 @@ class RevisionClock:
         with self._lock:
             return self._epoch, self._sequence, self._healthy
 
-    def committed(self):
+    def preview_snapshot(self):
+        with self._lock:
+            return self._epoch, self._preview_sequence, self._healthy
+
+    def committed(self, *, previews_changed=False):
         with self._lock:
             self._sequence += 1
+            if previews_changed:
+                self._preview_sequence += 1
 
     def stopped(self):
         with self._lock:
@@ -46,3 +53,4 @@ class RevisionClock:
             self._version, self._healthy = version, True
             if changed:
                 self._sequence += 1
+                self._preview_sequence += 1

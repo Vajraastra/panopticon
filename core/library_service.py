@@ -87,6 +87,12 @@ WRITES = frozenset({
 })
 
 
+# These successful Native commands can represent published/replaced image bytes.
+# Observation-only registration/hash and ordinary curation retain physical caches.
+PREVIEW_WRITES = frozenset({'commit_metadata_edit', 'update_file_metadata',
+                          'register_derived_copy', 'restore_duplicate_copy'})
+
+
 class LibraryError(RuntimeError):
     def __init__(self, operation, reason):
         self.operation = operation
@@ -244,7 +250,7 @@ class LibraryService:
                         try:
                             conn.commit()
                             if conn.total_changes != changes_before:
-                                self._revision.committed()
+                                self._revision.committed(previews_changed=operation in PREVIEW_WRITES)
                         finally:
                             self._metrics.observe('commit', time.perf_counter() - phase)
                         repo.finish_derived_paths(True, operation)
@@ -447,6 +453,10 @@ class LibraryService:
         External commits are coalesced by persistent owner data_version polling.
         """
         return self._revision.snapshot()
+
+    def preview_revision_snapshot(self):
+        """Local coarse hint for published bytes/unknown external DB changes."""
+        return self._revision.preview_snapshot()
 
     def metrics_snapshot(self):
         """Contadores/timings locales, sin SQL, stat, payloads ni espera del dueño.
