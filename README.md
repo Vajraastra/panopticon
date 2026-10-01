@@ -40,6 +40,15 @@ the database. Close the owner before running a tool that needs its own writer.
 This protection coordinates current versions; older instances or direct SQLite tools
 require separate coordination. Hard link aliases of the database require manual review.
 
+
+After participating producers finish, dashboard shutdown requests the central
+database writer to close admission and drain accepted commands. The window keeps
+the Qt event loop alive until the writer has closed its connection and released
+ownership; it does not wait for the writer on the GUI thread, even with a full
+command queue. Pending cancelled commands are skipped and failed transactions
+resolve their futures. Blocking `close()` remains available for CLI/tests.
+This writer guarantee does not yet cover every module's own shutdown handler.
+
 Cropper and Image Optimizer can preserve embedded generation
 metadata in their outputs through the shared metadata layer. Watermarker deliberately
 removes it for public distribution. Central curation and `.txt` captions remain

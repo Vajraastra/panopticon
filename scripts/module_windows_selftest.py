@@ -2,6 +2,7 @@
 import asyncio
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +15,8 @@ from PySide6.QtTest import QTest
 from core.base_module import BaseModule
 from modules.cherry.module import CherryModule
 from main import MainWindow
+from core.paths import ProjectPaths
+from core.library_service import close_library_services, request_close_library_services
 
 
 class Tool(BaseModule):
@@ -46,6 +49,15 @@ class ModuleWindows(unittest.TestCase):
         cls.app.setQuitOnLastWindowClosed(False)
 
     def setUp(self):
+        temp=tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        for replacement in (
+            patch.object(ProjectPaths,'root',return_value=Path(temp.name)),
+            patch('main.close_library_services',side_effect=lambda **kwargs:close_library_services()),
+            patch('main.request_close_library_services',side_effect=lambda **kwargs:request_close_library_services())):
+            replacement.start()
+            self.addCleanup(replacement.stop)
+        self.addCleanup(close_library_services)
         with patch.object(MainWindow, 'load_available_modules'):
             self.main = MainWindow()
         self.a, self.b = Tool('A'), Tool('B')
@@ -57,6 +69,10 @@ class ModuleWindows(unittest.TestCase):
 
     def tearDown(self):
         self.main.close()
+        for _ in range(150):
+            if self.main._shutdown_finished: break
+            QTest.qWait(20)
+        self.assertTrue(self.main._shutdown_finished)
         self.main.deleteLater()
         self.app.processEvents()
 

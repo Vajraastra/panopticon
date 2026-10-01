@@ -17,7 +17,8 @@ from core.theme_manager import ThemeManager
 from core.locale_manager import LocaleManager
 from core.event_bus import EventBus
 from core.logging_config import setup_logging
-from core.library_service import get_library_service, close_library_services
+from core.library_service import (get_library_service, close_library_services,
+    request_close_library_services, library_services_shutdown_ready)
 from core.library_startup import create_library_window
 
 # Configuración central de logging (consola + logs/panopticon.log rotativo).
@@ -588,6 +589,14 @@ class MainWindow(QMainWindow):
                     self._shutdown_retry_scheduled = True
                     QTimer.singleShot(50, self._retry_close)
                 return
+        request_close_library_services(permanent=True)
+        if not library_services_shutdown_ready():
+            event.ignore()
+            self.statusBar().showMessage(self.tr('app.shutdown_wait', 'Finishing accepted work before closing…'))
+            if not self._shutdown_retry_scheduled:
+                self._shutdown_retry_scheduled = True
+                QTimer.singleShot(50, self._retry_close)
+            return
         close_library_services(permanent=True)
         self._shutdown_finished = True
         super().closeEvent(event)

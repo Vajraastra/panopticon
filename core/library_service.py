@@ -13,7 +13,7 @@ import time
 from concurrent.futures import Future
 from contextlib import closing, ExitStack, contextmanager
 from pathlib import Path
-from queue import Queue, Full
+from queue import Queue, Full, Empty
 
 from core.library_connections import open_reader
 from core.library_metrics import LibraryMetrics
@@ -192,7 +192,14 @@ class LibraryService:
             repo = LibraryRepository(conn, cache_derived_paths=True)
             self._ready.set_result(True)
             while True:
-                command = self._queue.get()
+                try:
+                    command = self._queue.get(timeout=.1)
+                except Empty:
+                    # Admission is closed before exit: no command can appear
+                    # after the drained queue is observed under this lock.
+                    with self._admission:
+                        if self._closed and self._queue.empty(): break
+                    continue
                 try:
                     if command is None:
                         break
@@ -353,16 +360,27 @@ class LibraryService:
         """
         return self._metrics.snapshot()
 
+    def request_close(self):
+        """Reject new admission and let the owner drain accepted commands.
+
+        No queue insertion or join: safe even when the bounded queue is full.
+        Already admitted readers own their connections; their producer must
+        finish before application shutdown proceeds.
+        """
+        with self._admission:
+            if not self._closed:
+                self._closed = True
+                self._metrics.closed()
+
+    def shutdown_ready(self):
+        """No SQL or wait; true only after owner cleanup and guard release."""
+        return not self._thread.is_alive()
+
     def close(self):
+        """Blocking compatibility API for tests/CLI; GUI uses request_close."""
         if threading.current_thread() is self._thread:
             raise RuntimeError('Cannot join writer from writer')
-        with self._admission:
-            first_close = not self._closed
-            self._closed = True
-            self._metrics.closed()
-        if first_close and self._thread.is_alive():
-            # Drenar sólo comandos aceptados; no requiere event loop de Qt.
-            self._queue.put(None)
+        self.request_close()
         self._thread.join()
 
 
@@ -380,6 +398,21 @@ def get_library_service(db_path=None):
         if key not in _services:
             _services[key] = LibraryService(path)
         return _services[key]
+
+
+def request_close_library_services(*, permanent=False):
+    """Close registry admission; keep owners retained until final close."""
+    global _accepting
+    with _registry_lock:
+        if permanent: _accepting = False
+        services = tuple(_services.values())
+    for service in services: service.request_close()
+
+
+def library_services_shutdown_ready():
+    with _registry_lock:
+        services = tuple(_services.values())
+    return all(service.shutdown_ready() for service in services)
 
 
 def close_library_services(*, permanent=False):
