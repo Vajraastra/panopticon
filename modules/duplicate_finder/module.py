@@ -327,7 +327,7 @@ class DuplicateFinderModule(BaseModule):
         if self.combo_mode.currentIndex() == 0:
             worker = ExactReviewWorker(self.folder_path, self.context.get('data_service'), policy=self._policy(), token=self._token)
         else:
-            worker = VisualReviewWorker(self.folder_path, self.slider_thr.value(), token=self._token)
+            worker = VisualReviewWorker(self.folder_path, self.slider_thr.value(), token=self._token,service=self.context.get('data_service'))
         self.worker = worker
         _LIVE_WORKERS.add(worker)
         worker.finished.connect(lambda worker=worker: _LIVE_WORKERS.discard(worker))

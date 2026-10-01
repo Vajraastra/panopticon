@@ -38,6 +38,7 @@ READS = frozenset({
     'get_duplicate_search_status',
     'get_folder_overlap',
     'get_phash_registry_status', 'get_phash_page',
+    'get_phash_states',
 })
 
 # Agrupar puede recorrer toda la DB aun con LIMIT. Acotar duración y permitir
@@ -47,6 +48,7 @@ READ_BUDGET_SECONDS = {
     'get_duplicate_candidate_copies': 10,
     'get_folder_overlap': 10,
     'get_phash_page': 10,
+    'get_phash_states': 10,
 }
 WRITES = frozenset({
     'register_files_minimal', 'update_file_metadata', 'remove_files',

@@ -1,5 +1,6 @@
 """Cache derivado explícito por ID/SHA/algoritmo; no curación ni prueba de retiro."""
 import re
+from pathlib import PureWindowsPath
 
 from core.duplicate_candidates import DIGEST, VALID
 from core.duplicate_policy import SHA
@@ -108,3 +109,30 @@ def store(conn,records,algorithm,*,normalize):
             'ON CONFLICT(copy_id) DO UPDATE SET source_sha256=excluded.source_sha256,algorithm=excluded.algorithm,phash=excluded.phash',
             (key,digest,algorithm,phash))
     return True
+
+
+def states(conn,paths,algorithm,*,normalize):
+    _algorithm(algorithm)
+    if (not isinstance(paths,(list,tuple)) or not 1<=len(paths)<=256 or
+            any(not isinstance(path,str) or not path or len(path)>4096 or '\x00' in path
+                or not PureWindowsPath(path).is_absolute() for path in paths) or len(encode(paths))>512*1024):
+        raise ValueError('invalid_phash_state_request')
+    normalized=[normalize(path) for path in paths]
+    params=[]
+    for index,path in enumerate(normalized):params.extend((index,path))
+    fields='NULL'
+    joins=''
+    if status(conn)['prepared']:
+        fields=f'CASE WHEN e.source_sha256={DIGEST} AND e.algorithm=? AND e.phash=files.phash THEN e.phash END'
+        joins=f'LEFT JOIN {NAME} e ON e.copy_id=files.id'
+        params.append(algorithm)
+    rows=conn.execute(f"WITH requested(n,wanted_path) AS (VALUES {','.join('(?,?)' for _ in paths)}) "
+        f'SELECT requested.wanted_path,files.id,{DIGEST},{fields} FROM requested '
+        f'LEFT JOIN files ON files.path=requested.wanted_path AND {VALID} AND {IMAGES} {joins} ORDER BY requested.n',params).fetchall()
+    if len(rows)!=len(paths) or [row[0] for row in rows]!=normalized:
+        raise ValueError('phash_state_identity_changed')
+    if any(cached is not None and (not isinstance(cached,str) or not PHASH.fullmatch(cached)) for _,_,_,cached in rows):
+        raise ValueError('phash_state_requires_review')
+    result=[dict(path=path,copy_id=key,source_sha256=digest,phash=cached) for path,key,digest,cached in rows]
+    if len(encode(result))>2*1024*1024:raise ValueError('phash_page_payload_limit')
+    return result

@@ -71,8 +71,8 @@ class ExactReviewWorker(QThread):
 class VisualReviewWorker(ExactReviewWorker):
     mode = 'visual'
 
-    def __init__(self, folder, threshold, *, token=1):
-        super().__init__(folder, None, token=token)
+    def __init__(self, folder, threshold, *, token=1,service=None):
+        super().__init__(folder, service, token=token)
         if type(threshold) is not int or not 1 <= threshold <= 20:
             raise ValueError('invalid_duplicate_visual_threshold')
         self.threshold = threshold
@@ -80,4 +80,4 @@ class VisualReviewWorker(ExactReviewWorker):
     def _scan(self):
         from .visual_review import scan
         self.phase.emit('visual')
-        return scan(self.folder, self.threshold, self._progress, self._cancel)
+        return scan(self.folder, self.threshold, self._progress, self._cancel,service=self.service)

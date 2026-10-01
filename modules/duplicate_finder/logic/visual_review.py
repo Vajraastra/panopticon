@@ -29,7 +29,16 @@ def _hash(path, event):
         return None, str(error)
 
 
-def scan(folder, threshold, progress, event):
+def _review_hash(path,event,record=None):
+    if record is not None and record['phash'] is not None:
+        import imagehash
+        from .perceptual_backfill import calculate
+        proof,error=calculate(record,event)
+        return (imagehash.hex_to_hash(proof['record']['phash']) if proof else None),error
+    return _hash(path,event)
+
+
+def scan(folder, threshold, progress, event,*,service=None):
     import numpy as np
     root = Path(folder)
     if not root.is_absolute() or not root.is_dir():
@@ -59,11 +68,21 @@ def scan(folder, threshold, progress, event):
                 if len(paths) > 2000:
                     raise ValueError('duplicate_visual_inventory_limit')
     hashes = {}
+    algorithm=None
+    if service is not None:
+        from .perceptual_backfill import algorithm_id
+        algorithm=algorithm_id()
     with ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 4)) as pool:
         for start in range(0, len(paths), 256):
             _check_cancel(event)
             block = paths[start:start+256]
-            for index, (path, (value, error)) in enumerate(zip(block, pool.map(lambda name: _hash(name, event), block)), start+1):
+            records=[None]*len(block)
+            if service is not None:
+                records=service.read('get_phash_states',block,algorithm,cancel_event=event)
+                if len(records)!=len(block) or [row['path'] for row in records]!=block:
+                    raise ValueError('phash_state_identity_changed')
+            jobs=zip(block,records,strict=True)
+            for index, (path, (value, error)) in enumerate(zip(block, pool.map(lambda job:_review_hash(job[0],event,job[1]),jobs)), start+1):
                 _check_cancel(event)
                 if error is not None:
                     problem(path, error)

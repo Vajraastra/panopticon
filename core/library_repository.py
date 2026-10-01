@@ -839,6 +839,10 @@ class LibraryRepository:
         from core.perceptual_hash import status
         return status(self.conn)
 
+    def get_phash_states(self, paths, algorithm):
+        from core.perceptual_hash import states
+        return states(self.conn, paths, algorithm, normalize=self._normalize_path)
+
     def get_phash_page(self, folders, algorithm, **kwargs):
         from core.perceptual_hash import page
         return page(self.conn, folders, algorithm, normalize=self._normalize_path, **kwargs)
