@@ -497,6 +497,8 @@ copy with its own SHA-256 and generation data, linked to the reviewed source cop
 It preserves a receipt for safe retries without inheriting central curation or
 Cherry download records. Integration with Optimizer, Cropper and Format Converter
 is still pending; their current outputs are not automatically registered.
+The database owner reuses bounded destination keys between derivative approvals
+and registrations, refreshing them after external commits or other writes.
 
 The shared stamping API requires `prepared=True`, meaning a private temporary
 output owned by its producer. It does not authorize editing an indexed original.

@@ -53,8 +53,11 @@ def _budget(conn):
         raise RuntimeError('derived_write_requires_transaction')
     deadline = time.monotonic() + BUDGET
     conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+    def check():
+        if time.monotonic() >= deadline:
+            raise ValueError('derived_write_budget')
     try:
-        yield
+        yield check
         if time.monotonic() >= deadline:
             raise ValueError('derived_write_budget')
     except sqlite3.OperationalError as exc:
@@ -153,7 +156,7 @@ def _request(copy_id, expected_fingerprint, operation_id, source_path, path,
     return source_path, path, aliases, hashlib.sha256(raw).hexdigest()
 
 
-def _check(conn, copy_id, expected_fingerprint, source_path, source_digest, aliases):
+def _check(conn, copy_id, expected_fingerprint, source_path, source_digest, aliases, destinations=None, check=lambda: None):
     source = _reviewed(conn, copy_id, expected_fingerprint)
     if source['is_offline'] != 0:
         raise ValueError('derived_source_offline')
@@ -163,15 +166,17 @@ def _check(conn, copy_id, expected_fingerprint, source_path, source_digest, alia
     if known is not None and (not isinstance(known, str) or not SHA.fullmatch(known.lower()) or
                               known.lower() != source_digest):
         raise ValueError('derived_source_hash_changed')
-    if path_status(conn, aliases, normalize=lambda value: value)['occupied']:
+    occupied = (destinations.occupied(aliases, check) if destinations is not None else
+                path_status(conn, aliases, normalize=lambda value: value)['occupied'])
+    if occupied:
         raise ValueError('derived_destination_occupied')
 
 
 def approve(conn, copy_id, *, expected_fingerprint, operation_id, source_path,
             path, destination_paths, producer, source_digest, result_digest,
-            generation, observation, normalize):
+            generation, observation, normalize, destinations=None):
     """Preflight explícito sin DML; no reserva ruta ni revisión entre llamadas."""
-    with _budget(conn):
+    with _budget(conn) as check:
         source_path, path, aliases, fingerprint = _request(copy_id, expected_fingerprint,
             operation_id, source_path, path, destination_paths, producer, source_digest,
             result_digest, generation, observation, normalize=normalize)
@@ -180,20 +185,20 @@ def approve(conn, copy_id, *, expected_fingerprint, operation_id, source_path,
             raise ValueError('derived_schema_not_prepared')
         if saved['receipt'] is not None:
             raise ValueError('derived_operation_already_committed')
-        _check(conn, copy_id, expected_fingerprint, source_path, source_digest, aliases)
+        _check(conn, copy_id, expected_fingerprint, source_path, source_digest, aliases, destinations, check)
     return True
 
 
 def register(conn, copy_id, *, expected_fingerprint, operation_id, source_path,
              path, destination_paths, producer, source_digest, result_digest,
-             generation, observation, normalize, update_fts):
+             generation, observation, normalize, update_fts, destinations=None):
     """Alta + FTS + recibo en una transacción; sin lectura/hashing de disco.
 
     SHA y observaciones son evidencia del worker autorizado. El origen debe estar
     indexado y online; una ruta sin identidad requiere otra operación explícita.
     True con recibo previo sólo confirma el commit histórico, sin reaplicar estado.
     """
-    with _budget(conn):
+    with _budget(conn) as check:
         source_path, path, aliases, fingerprint = _request(copy_id, expected_fingerprint,
             operation_id, source_path, path, destination_paths, producer, source_digest,
             result_digest, generation, observation, normalize=normalize)
@@ -204,7 +209,7 @@ def register(conn, copy_id, *, expected_fingerprint, operation_id, source_path,
             if saved['receipt']['request_fingerprint'] != fingerprint:
                 raise ValueError('derived_operation_conflict')
             return True
-        _check(conn, copy_id, expected_fingerprint, source_path, source_digest, aliases)
+        _check(conn, copy_id, expected_fingerprint, source_path, source_digest, aliases, destinations, check)
         values = (path, observation['filename'], observation['size'], observation['created'],
                   result_digest, *(generation[name] for name in FIELDS))
         key = conn.execute('INSERT INTO files(path,filename,file_size,created_date,hash_original,'
@@ -214,4 +219,6 @@ def register(conn, copy_id, *, expected_fingerprint, operation_id, source_path,
         conn.execute(f'INSERT INTO {NAME} (' + ','.join(RECEIPT_FIELDS[:-1]) + ') VALUES(?,?,?,?,?,?,?,?,?,?)',
                      (operation_id, key, copy_id, expected_fingerprint, source_digest, result_digest,
                       source_path, path, producer, fingerprint))
+        if destinations is not None:
+            destinations.inserted(path)
     return True

@@ -13,8 +13,16 @@ log = logging.getLogger(__name__)
 class LibraryRepository:
     """SQL privado. La conexión se crea, usa y cierra en el hilo dueño."""
 
-    def __init__(self, conn):
+    def __init__(self, conn, *, cache_derived_paths=False):
         self.conn = conn
+        self._derived_paths = None
+        if cache_derived_paths:
+            from core.derived_paths import DerivedPaths
+            self._derived_paths = DerivedPaths(conn)
+
+    def finish_derived_paths(self, committed, operation):
+        if self._derived_paths is not None:
+            self._derived_paths.finish(committed, operation)
 
     def create_schema(self):
         cursor = self.conn.cursor()
@@ -878,12 +886,13 @@ class LibraryRepository:
 
     def approve_derived_copy(self, copy_id, **kwargs):
         from core.derived_copies import approve
-        return approve(self.conn, copy_id, normalize=self._normalize_path, **kwargs)
+        return approve(self.conn, copy_id, normalize=self._normalize_path,
+                       destinations=self._derived_paths, **kwargs)
 
     def register_derived_copy(self, copy_id, **kwargs):
         from core.derived_copies import register
         return register(self.conn, copy_id, normalize=self._normalize_path,
-                        update_fts=self._fts_sync_file, **kwargs)
+                        update_fts=self._fts_sync_file, destinations=self._derived_paths, **kwargs)
 
     def get_duplicate_snapshot(self, paths):
         from core.duplicate_snapshot import snapshot

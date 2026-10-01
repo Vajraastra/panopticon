@@ -165,6 +165,7 @@ class LibraryService:
             raise
 
     def _run(self):
+        repo = None
         conn = None
         command = None
         started = None
@@ -188,7 +189,7 @@ class LibraryService:
                 if conn.execute('PRAGMA journal_mode=WAL').fetchone()[0].lower() != 'wal':
                     raise sqlite3.DatabaseError('WAL unavailable')
             conn.execute('PRAGMA synchronous=FULL')
-            repo = LibraryRepository(conn)
+            repo = LibraryRepository(conn, cache_derived_paths=True)
             self._ready.set_result(True)
             while True:
                 command = self._queue.get()
@@ -216,9 +217,11 @@ class LibraryService:
                             conn.commit()
                         finally:
                             self._metrics.observe('commit', time.perf_counter() - phase)
+                        repo.finish_derived_paths(True, operation)
                         self._metrics.finish_write('committed', started)
                         started = None
                     except BaseException as exc:
+                        repo.finish_derived_paths(False, operation)
                         conn.rollback()
                         self._metrics.finish_write('failed', started)
                         started = None
@@ -242,6 +245,8 @@ class LibraryService:
                 with self._admission:
                     self._closed = True
                     self._metrics.closed()
+                if repo is not None:
+                    repo.finish_derived_paths(False, 'shutdown')
                 if conn is not None:
                     conn.close()
                 # No dejar productores esperando si el escritor falla inesperadamente.
