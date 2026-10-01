@@ -21,6 +21,7 @@ from .ui.perceptual_panel import PerceptualPanel
 from .logic.perceptual_worker import PerceptualBackfillWorker
 from .logic.recovery_worker import RecoveryReviewWorker
 from .ui.recovery_panel import RecoveryPanel
+from .logic.restore_worker import RecoveryRestoreWorker
 
 # Un QThread sin parent sigue vivo aunque se destruya la vista durante I/O.
 _LIVE_WORKERS = set()
@@ -41,6 +42,7 @@ class DuplicateFinderModule(BaseModule):
         self.phash_worker=None
         self._phash_busy=False
         self.recovery_review_worker=None
+        self.recovery_restore_worker=None
         self._recovery_busy=False
         self._native_busy = False
         self._db_prepared = None
@@ -165,6 +167,8 @@ class DuplicateFinderModule(BaseModule):
         layout.addWidget(self.phash_panel,1)
         self.recovery_panel=RecoveryPanel(self.text,self.accent_color,color)
         self.recovery_panel.changed.connect(self._configuration_changed)
+        self.recovery_panel.selection_changed.connect(self._controls)
+        self.recovery_panel.restore_requested.connect(self.restore_selected_copy)
         layout.addWidget(self.recovery_panel,1)
         layout.addWidget(self.tree, 3)
         navigation = QHBoxLayout()
@@ -273,6 +277,7 @@ class DuplicateFinderModule(BaseModule):
         self.phash_panel.set_idle(idle)
         self.recovery_panel.setVisible(recovery_review)
         self.recovery_panel.set_idle(idle)
+        self.recovery_panel.restore.setEnabled(bool(idle and recovery_review and self.context.get("data_service") is not None and self.recovery_panel.selected_restore()))
         for widget in (self.tree,self.details,self.action_status,self.btn_previous,self.btn_next,self.btn_open_group,self.page_status):
             widget.setVisible(not report_only)
         for widget in (self.recovery_label,self.recovery,self.btn_recovery,self.policy_note,self.btn_auto_select,self.btn_delete):
@@ -585,7 +590,7 @@ class DuplicateFinderModule(BaseModule):
 
     def shutdown_ready(self):
         return all(worker is None or not worker.isRunning()
-                   for worker in (self.worker, self.retirement_worker, self.native_worker,self.phash_worker,self.recovery_review_worker))
+                   for worker in (self.worker, self.retirement_worker, self.native_worker,self.phash_worker,self.recovery_review_worker,self.recovery_restore_worker))
 
     def _db_selected(self):
         if self.view is None or self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or self._recovery_busy:
@@ -705,6 +710,78 @@ class DuplicateFinderModule(BaseModule):
         worker.finished_signal.connect(self.on_scan_finished)
         self._controls()
         worker.start()
+
+    def _confirm_restore(self,arguments):
+        box=QMessageBox(self.view)
+        box.setWindowTitle(self.text('restore_confirm_title','Review restoration'))
+        box.setTextFormat(Qt.PlainText)
+        action=self.text('restore_confirm_move','Return copy ID {id} from:\n{destination}\n\nTo its original path:\n{source}') if arguments['observed']=='retired_verified' else self.text('restore_confirm_online','Reactivate copy ID {id} at its intact original path:\n{source}')
+        box.setText(action.format(id=arguments['copy_id'],source=arguments['source'],destination=arguments['destination'])+'\n\n'+self.text('restore_confirm_note','Preserves the same ID, curation and Cherry download receipts. Rechecks before admission and never overwrites an occupied path. The original retirement journal is retained; restoration has its own journal.'))
+        box.setStandardButtons(QMessageBox.Yes|QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+        box.button(QMessageBox.Yes).setText(self.text('restore_confirm_yes','Restore'))
+        box.button(QMessageBox.No).setText(self.text('restore_confirm_no','Cancel'))
+        box.button(QMessageBox.Yes).setToolTip(self.text('restore_confirm_yes_tip','Confirm this copy and these paths; the worker checks them again before admission.'))
+        box.button(QMessageBox.No).setToolTip(self.text('restore_confirm_no_tip','Close without admitting restoration; the current reviewed evidence is retained.'))
+        try:return box.exec()==QMessageBox.Yes
+        finally:
+            try:box.deleteLater()
+            except RuntimeError:pass  # El padre puede haber sido destruido en el modal.
+
+    def restore_selected_copy(self):
+        if (self.combo_mode.currentIndex()!=5 or self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or self._recovery_busy
+                or (self.recovery_restore_worker is not None and self.recovery_restore_worker.isRunning())):
+            return
+        arguments=self.recovery_panel.selected_restore()
+        if arguments is None or self.context.get('data_service') is None:return
+        ticket=self._token
+        if not self._confirm_restore(arguments):return
+        # La aprobación pertenece a esta copia/ruta/huellas, capturadas antes del modal.
+        if (self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or self._recovery_busy
+                or ticket!=self._token or self.combo_mode.currentIndex()!=5 or arguments!=self.recovery_panel.selected_restore()):
+            return
+        self._acting=True
+        self._token+=1
+        self.recovery_panel.invalidate()
+        self.progress.setRange(0,0);self.progress.show()
+        self.status.setText(self.text('restore_working','Rechecking the selected copy and preparing a separate restoration journal…'))
+        worker=RecoveryRestoreWorker(self.context['data_service'],token=self._token,
+            **{key:arguments[key] for key in ('journal','copy_id','journal_fingerprint','expected_fingerprint')})
+        self.recovery_restore_worker=worker
+        _LIVE_WORKERS.add(worker)
+        worker.finished.connect(lambda worker=worker:_LIVE_WORKERS.discard(worker))
+        worker.finished.connect(self._recovery_restore_finished)
+        worker.finished_signal.connect(self._recovery_restored)
+        self._controls();worker.start()
+
+    @Slot(dict)
+    def _recovery_restored(self,result):
+        if self._closed or self.sender() is not self.recovery_restore_worker:return
+        if (result['moved'] or result['committed']) and result['source']:
+            bus=self.context.get('event_bus')
+            if bus:bus.publish('library_changed',Path(result['source']).parent.as_posix())
+        if result['token']!=self._token:return
+        self._token+=1
+        self.recovery_panel.show_restore(result,self.reason)
+        if result['complete']:
+            message=self.text('restore_summary','Copy ID {id} restored with curation preserved. Request a fresh journal review.').format(id=result['copy_id'])
+        elif result['cancelled']:
+            message=self.text('restore_cancelled','Restoration cancelled before admission. No file was moved or ID reactivated.')
+        elif result['committed']:
+            message=self.text('restore_journal_partial','Native restoration confirmed; operation journal incomplete: {reason}. Keep the bytes and journals for review.').format(reason=self.reason(result['error']))
+        else:
+            message=self.text('restore_partial','Restoration not confirmed: {reason}. Inspect the paths and operation journal before retrying.').format(reason=self.reason(result['error']))
+        self.status.setText(message)
+
+    @Slot()
+    def _recovery_restore_finished(self):
+        worker=self.sender()
+        if worker is self.recovery_restore_worker:
+            self.recovery_restore_worker=None
+            self._acting=False
+            if not self._closed:
+                self.progress.hide();self._controls()
+        worker.deleteLater()
 
     def _start_recovery_review(self):
         if (self.combo_mode.currentIndex()!=5 or self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or self._recovery_busy
@@ -830,6 +907,8 @@ class DuplicateFinderModule(BaseModule):
             self.phash_worker.stop()
         if self.recovery_review_worker is not None:
             self.recovery_review_worker.stop()
+        if self.recovery_restore_worker is not None:
+            self.recovery_restore_worker.stop()
 
     def on_unload(self, *unused):
         self._closed = True
@@ -844,6 +923,8 @@ class DuplicateFinderModule(BaseModule):
             self.phash_worker.stop()
         if self.recovery_review_worker is not None:
             self.recovery_review_worker.stop()
+        if self.recovery_restore_worker is not None:
+            self.recovery_restore_worker.stop()
 
     def run_headless(self, params, input_data):
         raise NotImplementedError('duplicate_review_requires_explicit_approval')

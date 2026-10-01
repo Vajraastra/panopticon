@@ -8,13 +8,15 @@ from core.theme import Theme
 
 class RecoveryPanel(QWidget):
     changed=Signal()
+    selection_changed=Signal()
+    restore_requested=Signal()
 
     def __init__(self,text,accent,color=None):
         super().__init__()
         self.text=text
         self.result=None
         layout=QVBoxLayout(self);layout.setContentsMargins(0,0,0,0)
-        note=QLabel(text('recovery_review_note','Select one retirement journal explicitly. Compares native IDs, curation and current bytes at both locations. Recorded phase is not proof of completion. This review changes nothing and does not restore or purge.'))
+        note=QLabel(text('recovery_review_note','Select one retirement journal explicitly. Review compares IDs, curation and current bytes without changing anything. Restore is a separate confirmed action for the selected copy; recorded phase is not proof of completion. No purge occurs.'))
         note.setWordWrap(True);layout.addWidget(note)
         row=QHBoxLayout()
         self.journal=QLineEdit()
@@ -37,6 +39,13 @@ class RecoveryPanel(QWidget):
         self.tree.setToolTip(text('recovery_review_tree_tip','Select a copy to inspect its original and recovery paths, native ID, current occupant and documentation. Equal SHA with different file identity remains pending review.'))
         self.tree.currentItemChanged.connect(self._selected)
         layout.addWidget(self.tree,2)
+        self.restore=QPushButton(text('restore_selected','Restore selected copy'))
+        self.restore.setToolTip(text('restore_selected_tip','Return only the reviewed copy to its original empty path, or reactivate its intact source. Preserves the same ID, curation and Cherry receipts. Requires confirmation and a fresh worker check; never overwrites.'))
+        self.restore.setCursor(Qt.PointingHandCursor)
+        self.restore.setStyleSheet(Theme.get_button_style(color('accent_success')))
+        self.restore.setEnabled(False)
+        self.restore.clicked.connect(self.restore_requested)
+        layout.addWidget(self.restore)
         self.details=QPlainTextEdit();self.details.setReadOnly(True)
         self.details.setToolTip(text('recovery_review_details_tip','Evidence reflects this inspection only. Missing paths are distinguished from unavailable parents; any future restore or purge requires a fresh check and an explicit action.'))
         layout.addWidget(self.details,1)
@@ -53,6 +62,24 @@ class RecoveryPanel(QWidget):
 
     def invalidate(self):
         self.result=None;self.tree.clear();self.details.clear()
+        self.restore.setEnabled(False)
+
+    def selected_restore(self):
+        item=self.tree.currentItem()
+        if self.result is None or not self.result['complete'] or item is None:return None
+        move=item.data(0,Qt.UserRole)
+        if move['observed'] not in ('retired_verified','archived_source_present'):return None
+        copy=next(copy for copy in self.result['copies'] if copy['copy_id']==move['copy_id'])
+        return dict(journal=self.path(),copy_id=copy['copy_id'],journal_fingerprint=self.result['journal_fingerprint'],
+            expected_fingerprint=copy['fingerprint'],source=move['source'],destination=move['destination'],observed=move['observed'])
+
+    def show_restore(self,value,reason):
+        self.invalidate()
+        self.details.setPlainText(self.text('restore_details','Native restoration confirmed: {confirmed}\nFile returned: {moved}\nOriginal: {source}\nRecovery: {destination}\nOperation journal: {journal}\n\n{reason}\nRequest a fresh journal review before another action.').format(
+            confirmed=self.text('recovery_yes','Yes') if value['committed'] else self.text('recovery_no','No'),
+            moved=self.text('recovery_yes','Yes') if value['moved'] else self.text('recovery_no','No'),
+            source=value['source'] or '—',destination=value['destination'] or '—',journal=value['operation_journal'] or '—',
+            reason=reason(value['error']) if value['error'] else ''))
 
     def label(self,kind,value):return self.text('recovery_'+kind+'_'+value,value)
 
@@ -78,6 +105,7 @@ class RecoveryPanel(QWidget):
         if self.tree.topLevelItemCount():self.tree.setCurrentItem(self.tree.topLevelItem(0))
 
     def _selected(self,item,previous):
+        self.selection_changed.emit()
         if item is None or self.result is None:return
         move=item.data(0,Qt.UserRole)
         copy=next(copy for copy in self.result['copies'] if copy['source']==move['source'])

@@ -247,10 +247,10 @@ that their content matches an existing hash.
 
 Each retirement group has a durable recovery journal. A partial failure is shown with
 its journal and moved paths; it requires review before retrying. SQLite and file moves
-do not share an atomic transaction. Recovery moves do not free disk space. Automatic
-restore or permanent purge is not provided; retained bytes and complete native states
-remain available for deliberate recovery. An explicit journal review is available below. Dashboard closure keeps the event loop and
-catalog alive until Duplicate Finder's accepted group or index construction finishes.
+do not share an atomic transaction. Recovery moves do not free disk space. Explicit
+restoration by reviewed native ID is available below. No automatic restore or permanent
+purge occurs. Dashboard closure keeps the event loop and catalog alive until Duplicate
+Finder's accepted work finishes.
 
 Folder scans admit at most 100,000 files, 1,000 groups, 2,000 candidate copies and a
 4 MiB review. Exact hashing admits batches of 256 jobs; native snapshots and retirement
@@ -274,7 +274,7 @@ the journal, image files nor Cherry catalogs are modified.
 Recorded phases and move statuses are shown separately from observed evidence:
 an interrupted process can leave them behind the actual commit or rename. The table
 distinguishes verified retirements, offline IDs whose source is still present,
-operations not admitted, and cases requiring review. Replaced files with identical
+copies active at their original path, and cases requiring review. Replaced files with identical
 SHA, changed native states, new occupants or unavailable paths remain pending.
 A missing path counts as absent only when its parent is accessible; a disconnected
 disk is not treated as proven loss. Select a copy to inspect IDs, both paths and
@@ -286,6 +286,32 @@ It rereads the journal before publishing evidence. Changes, limits, errors or
 cancellation discard the entire result. The interface remains responsive and
 dashboard closure waits for workers before closing the catalog. This is an
 inspection at a point in time, without a global filesystem/SQLite transaction.
+
+### Restore a reviewed copy by ID
+
+After reviewing a recovery journal, select a verified offline copy and press
+**Restore selected copy**. The confirmation shows its ID and captured paths;
+**Cancel** is the default. A fresh worker check must still confirm the same native
+state, journal, SHA, file identity and documentation before admitting effects.
+Ambiguous copies, occupied paths, unavailable original folders or changed curation
+require review. Folders are not recreated automatically.
+
+For a verified retirement, Windows renames the recovered file to its empty original
+path on the same volume, without overwriting. If retirement committed but the source
+never moved, it reactivates that intact source without a file move. The owner rechecks
+the complete native fingerprint, effective SHA and all active path occupants, including
+case/Unicode aliases, within a 10-second check budget. It changes only the offline
+flag of the same ID: tags, rating, generation, original/modified hashes, FTS and all
+Cherry hash/URL/alias receipts are preserved. No new version inherits curation.
+
+Each attempt has its own durable `restore-UUID.json`, preserving the original retirement
+journal. A failed commit after a move leaves bytes at the original path with the ID
+still offline; request a fresh review before retrying. No automatic file compensation
+occurs. Once a move or owner command is admitted, cancellation or dashboard closure
+waits for its verification, commit and journal without blocking the interface. Results
+distinguish returned bytes from confirmed native restoration. A final journal failure
+still reports a confirmed commit accurately. Subsequent actions require new evidence.
+No global filesystem/SQLite transaction protects against later external changes.
 
 ### Explicit perceptual hash phase
 
