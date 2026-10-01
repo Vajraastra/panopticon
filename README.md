@@ -906,6 +906,16 @@ unaffected images conservatively; file edits without a Native notice are checked
 on later navigation, not by a filesystem watcher. Other consumers remain open.
 `scripts/thumbnail_version_selftest.py` verifies private image/cache/window cases.
 
+`scripts/path_identity_policy_selftest.py` reproduces current path-policy gaps on
+private Windows files: ASCII case variants can refer to one file but register
+two Native IDs with independent curation; Unicode folder aliases can disagree
+with legacy SQLite LIKE counts. Synthetic case-distinct paths also demonstrate
+that ASCII LIKE combines scopes regardless of filesystem rules. Tests preserve
+both histories when one spelling is archived. No canonicalization/migration is
+implemented yet; defining lookup and folder case policy precedes changing keys
+or prefix indexes. Folder spelling and portable Cherry data remain preserved.
+[Windows supports case rules per directory](https://learn.microsoft.com/en-us/windows/wsl/case-sensitivity).
+
 ## License
 
 Business Source License 1.1 — free for non-commercial use.  
