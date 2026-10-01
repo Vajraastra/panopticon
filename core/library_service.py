@@ -16,6 +16,7 @@ from queue import Queue, Full, Empty
 
 from core.library_connections import open_reader
 from core.library_metrics import LibraryMetrics
+from core.library_wal import WalSampler
 from core.library_revision import RevisionClock
 from core.library_results import ReadResultError
 from core.library_payload import snapshot as snapshot_write_payload, snapshot_read
@@ -165,6 +166,7 @@ class LibraryService:
         self.db_path = str(Path(db_path).resolve())
         self._queue = Queue(maxsize=capacity)
         self._metrics = LibraryMetrics(capacity)
+        self._wal = WalSampler(self.db_path, self._metrics)
         self._revision = RevisionClock()
         self._admission = threading.Lock()
         self._closed = False
@@ -204,8 +206,10 @@ class LibraryService:
             conn.execute('PRAGMA synchronous=FULL')
             repo = LibraryRepository(conn, cache_derived_paths=True)
             self._revision.poll(conn)
+            self._wal.poll()
             self._ready.set_result(True)
             while True:
+                self._wal.poll()
                 try:
                     command = self._queue.get(timeout=.1)
                 except Empty:
@@ -285,6 +289,7 @@ class LibraryService:
                             command[0].set_exception(LibraryError(command[1], 'writer_stopped'))
                     self._queue.task_done()
             finally:
+                self._wal.stop()
                 ownership.close()
 
     def submit(self, operation, *args, **kwargs):
@@ -447,7 +452,9 @@ class LibraryService:
         """Contadores/timings locales, sin SQL, stat, payloads ni espera del dueño.
 
         BEGIN incluye espera por el escritor SQLite, pero no distingue su causa.
-        No informa frames/checkpoints WAL ni mide memoria/bytes o cambios externos.
+        WAL: tamaño físico muestreado por el dueño como máximo1Hz, edad/salud.
+        No equivale a frames pendientes ni informa checkpoints o memoria total.
+        Busy mide ocupación continua, no el lector/elemento más antiguo ni locks.
         """
         return self._metrics.snapshot()
 

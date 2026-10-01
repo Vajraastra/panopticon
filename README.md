@@ -851,6 +851,26 @@ requests. Whole discovery memory, active transactions and long maintenance remai
 separate work; FIFO does not guarantee an immediate rating under sustained load.
 `scripts/library_batch_selftest.py` exercises private admission and cancellation.
 
+Native `metrics_snapshot()` now includes sampled physical `wal_bytes`,
+`wal_status` (`unsampled`, `present`, `absent`, `error`), sample age, observer
+state and stat duration/error counters. The existing owner samples outside SQL
+transactions, at most once per second. Sampling failures are nonfatal and clear
+the current size; snapshots do not perform SQL/stat or wait for the owner. A busy
+owner delays samples, so check age and observer state before interpreting them.
+An absent WAL is not proof that a disk/database is healthy. Physical size can
+include reused space and does not measure pending frames or checkpoint progress;
+the sampler never requests a checkpoint or changes durability/pragmas.
+[SQLite explains WAL reuse and checkpointing](https://www.sqlite.org/wal.html).
+
+`queue_busy_seconds` and `reads_busy_seconds` measure continuous nonempty queue
+and read-call occupancy; overlapping work keeps that interval open. They are not
+the age of the oldest current item/reader or measurements of SQLite locks.
+`write_active_seconds` is elapsed time for the current owner command. Metrics
+retain only fixed scalar state, with no paths, payloads or per-request history.
+A slow filesystem stat can delay the owner while snapshots remain available;
+these observations are diagnostics, not deadlines or automatic pressure control.
+`scripts/library_wal_metrics_selftest.py` verifies private WAL/occupancy behavior.
+
 ## License
 
 Business Source License 1.1 — free for non-commercial use.  
