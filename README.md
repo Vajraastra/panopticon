@@ -559,6 +559,15 @@ Cropper protects existing destinations even for explicitly chosen save paths. It
 worker registers indexed recrops through this contract; external sources remain
 unregistered.
 
+Watermarker publishes a new public copy through a private temporary file,
+one encoding pass, full decode/privacy verification and a no-replace rename
+on Windows. Existing outputs, Native destination history and Cherry folders
+are protected. Missing/changed assets abort publication; source and assets
+stay untouched. Embedded metadata is deliberately removed; these copies
+do not inherit Native curation or register automatically as dataset derivatives.
+Inputs are limited to 256 MiB, one frame and 20 million pixels; pattern work
+is bounded. The GUI preview/save worker migration is a separate next step.
+
 Format Converter is retired from module discovery and cannot be opened through
 the application loader. Existing converted files remain untouched. Its legacy
 implementation stays in Git for compatibility and historical tests; shared

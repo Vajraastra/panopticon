@@ -1,255 +1,293 @@
-"""
-Watermarker Logic - Refactored v2
-USA strip_metadata para eliminar prompts/tags de imágenes de distribución pública.
-"""
-from PIL import Image
+"""Public copies: bounded rendering, verified privacy and new-path publication."""
+import hashlib
+import logging
+import math
 import os
 from pathlib import Path
+import tempfile
+import uuid
 
+from PIL import Image
+from core.output_paths import safe_path, path_variants
 from core.paths import CachePaths
-from core.metadata import MetadataStamper
+
+MAX_FILE = 256 * 1024 * 1024
+MAX_PIXELS = 20_000_000
+MAX_TILES = 1_000_000
+FORMATS = {'.png': 'PNG', '.jpg': 'JPEG', '.jpeg': 'JPEG', '.webp': 'WEBP', '.avif': 'AVIF'}
+log = logging.getLogger(__name__)
+
+
+class WatermarkCancelled(Exception):
+    pass
+
+
+def _cancel(cancel_event):
+    if cancel_event is not None and cancel_event.is_set():
+        raise WatermarkCancelled('watermarker_cancelled')
+
+
+def _dimensions(size):
+    w, h = size
+    if min(w, h) < 1 or max(w, h) > 32768 or w * h > MAX_PIXELS:
+        raise ValueError('watermarker_image_limit')
+
+
+def _identity(path):
+    info = path.stat(follow_symlinks=False)
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _digest(path, cancel_event):
+    value, size = hashlib.sha256(), 0
+    with path.open('rb') as stream:
+        while block := stream.read(1024 * 1024):
+            _cancel(cancel_event)
+            size += len(block)
+            if size > MAX_FILE:
+                raise ValueError('watermarker_file_limit')
+            value.update(block)
+    return value.hexdigest()
+
+
+def _inputs(source_path, watermark_path, logo_path, cancel_event):
+    paths, observed = [], []
+    for entry in (source_path, watermark_path, logo_path):
+        if entry is None:
+            paths.append(None)
+            continue
+        path = safe_path(Path(entry).absolute())
+        before = _identity(path)
+        if before[2] > MAX_FILE:
+            raise ValueError('watermarker_file_limit')
+        digest = _digest(path, cancel_event)
+        if _identity(path) != before:
+            raise ValueError('watermarker_input_changed')
+        paths.append(path)
+        observed.append((path, before, digest))
+    return paths, observed
+
+
+def _unchanged(observed, cancel_event):
+    for path, before, digest in observed:
+        _cancel(cancel_event)
+        if safe_path(path) != path or _identity(path) != before or _digest(path, cancel_event) != digest:
+            raise ValueError('watermarker_input_changed')
 
 
 def _load_asset(path, target_size=None):
-    """
-    Loads an image asset (PNG, JPG, SVG) and returns a PIL Image in RGBA mode.
-    If SVG, it renders it using PySide6.QtSvg.
-    """
-    if path.lower().endswith('.svg'):
+    path = Path(path)
+    if path.stat().st_size > MAX_FILE:
+        raise ValueError('watermarker_file_limit')
+    if path.suffix.lower() == '.svg':
+        from PySide6.QtSvg import QSvgRenderer
+        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtCore import QSize, Qt
+        if path.stat().st_size > 8 * 1024 * 1024:
+            raise ValueError('watermarker_svg_limit')
+        renderer = QSvgRenderer(str(path))
+        if not renderer.isValid():
+            raise ValueError('watermarker_invalid_svg')
+        size = target_size or (renderer.defaultSize().width(), renderer.defaultSize().height())
+        _dimensions(size)
+        qimg = QImage(QSize(*size), QImage.Format_RGBA8888)
+        if qimg.isNull():
+            raise ValueError('watermarker_image_limit')
+        qimg.fill(Qt.transparent)
+        painter = QPainter(qimg)
         try:
-            from PySide6.QtSvg import QSvgRenderer
-            from PySide6.QtGui import QImage, QPainter
-            from PySide6.QtCore import QSize, Qt
-            import io
-
-            renderer = QSvgRenderer(path)
-            if not renderer.isValid():
-                raise Exception("Invalid SVG file")
-            
-            # Determine rendering size
-            if target_size:
-                render_size = QSize(target_size[0], target_size[1])
-            else:
-                render_size = renderer.defaultSize()
-            
-            # Render SVG to QImage
-            qimg = QImage(render_size, QImage.Format_ARGB32)
-            qimg.fill(Qt.transparent)
-            painter = QPainter(qimg)
             renderer.render(painter)
+        finally:
             painter.end()
-            
-            # Convert QImage to PIL
-            bits = qimg.bits()
-            img_data = bits.tobytes()
-            pil_img = Image.frombuffer('RGBA', (qimg.width(), qimg.height()), img_data, 'raw', 'BGRA', 0, 1)
-            return pil_img.copy()
-        except Exception as e:
-            raise Exception(f"Failed to render SVG {path}: {str(e)}")
-    else:
-        # Standard image loading
-        img = Image.open(path).convert('RGBA')
-        if target_size:
-            img = img.resize(target_size, Image.LANCZOS)
-        return img
+        return Image.frombytes('RGBA', size, qimg.bits().tobytes(), 'raw', 'RGBA', qimg.bytesPerLine())
+    with Image.open(path) as image:
+        _dimensions(image.size)
+        if getattr(image, 'n_frames', 1) != 1:
+            raise ValueError('watermarker_single_frame_required')
+        result = image.convert('RGBA')
+    if target_size:
+        _dimensions(target_size)
+        resized = result.resize(target_size, Image.Resampling.LANCZOS)
+        result.close()
+        result = resized
+    return result
 
 
-def apply_watermark_pattern(base_image, watermark_path, angle=0, scale=1.0, opacity=0.3):
-    """
-    Applies a repeating watermark pattern across the base image.
-    """
+def apply_watermark_pattern(base_image, watermark_path, angle=0, scale=1.0, opacity=0.3,
+                            cancel_event=None):
+    if not all(math.isfinite(value) for value in (angle, scale, opacity)) or not 0.1 <= scale <= 2 or not 0 <= opacity <= 1:
+        raise ValueError('watermarker_invalid_parameters')
+    _dimensions(base_image.size)
+    with _load_asset(watermark_path) as asset:
+        size = (max(1, int(asset.width * scale)), max(1, int(asset.height * scale)))
+        _dimensions(size)
+        with asset.resize(size, Image.Resampling.LANCZOS) as scaled:
+            # Reject the upper bound before allocating an expanded rotation.
+            radians = math.radians(angle)
+            _dimensions((math.ceil(abs(size[0]*math.cos(radians))+abs(size[1]*math.sin(radians)))+2,
+                         math.ceil(abs(size[0]*math.sin(radians))+abs(size[1]*math.cos(radians)))+2))
+            with scaled.rotate(angle, expand=True, resample=Image.Resampling.BICUBIC) as mark:
+                columns = math.ceil(base_image.width / mark.width)
+                rows = math.ceil(base_image.height / mark.height)
+                if rows * columns > MAX_TILES:
+                    raise ValueError('watermarker_tile_limit')
+                with Image.new('RGBA', base_image.size) as pattern:
+                    for y in range(0, base_image.height, mark.height):
+                        for x in range(0, base_image.width, mark.width):
+                            _cancel(cancel_event)
+                            pattern.paste(mark, (x, y), mark)
+                    with pattern.getchannel('A') as alpha:
+                        with alpha.point(lambda value: int(value * opacity)) as faded:
+                            pattern.putalpha(faded)
+                    _cancel(cancel_event)
+                    return Image.alpha_composite(base_image, pattern)
+
+
+def apply_logo(base_image, logo_path, position='top-right', size=150, cancel_event=None):
+    if position not in ('top-left', 'top-right', 'bottom-left', 'bottom-right') or not isinstance(size, int) or not 1 <= size <= 500:
+        raise ValueError('watermarker_invalid_parameters')
+    _dimensions(base_image.size)
+    with _load_asset(logo_path) as asset:
+        target = (size, max(1, int(size * asset.height / asset.width)))
+        _dimensions(target)
+        with asset.resize(target, Image.Resampling.LANCZOS) as logo:
+            margin = 25
+            x = margin if position.endswith('left') else base_image.width - logo.width - margin
+            y = margin if position.startswith('top') else base_image.height - logo.height - margin
+            with Image.new('RGBA', base_image.size) as layer:
+                layer.paste(logo, (x, y), logo)
+                _cancel(cancel_event)
+                return Image.alpha_composite(base_image, layer)
+
+
+def render_image(source_path, watermark_path=None, logo_path=None, wm_angle=0, wm_scale=1.0,
+                 wm_opacity=0.3, logo_position='top-right', logo_size=150, cancel_event=None):
+    _cancel(cancel_event)
+    image = _load_asset(source_path)
     try:
-        # Ensure base image is RGBA
-        if base_image.mode != 'RGBA':
-            base_image = base_image.convert('RGBA')
-        
-        # Load watermark
-        watermark = _load_asset(watermark_path)
-        
-        # Scale watermark
-        if scale != 1.0:
-            new_size = (int(watermark.width * scale), int(watermark.height * scale))
-            watermark = watermark.resize(new_size, Image.LANCZOS)
-        
-        # Rotate watermark
-        if angle != 0:
-            watermark = watermark.rotate(angle, expand=True, resample=Image.BICUBIC)
-        
-        # Create pattern layer
-        pattern = Image.new('RGBA', base_image.size, (0, 0, 0, 0))
-        
-        # Tile watermark across the pattern
-        wm_width, wm_height = watermark.size
-        for y in range(0, base_image.height, wm_height):
-            for x in range(0, base_image.width, wm_width):
-                pattern.paste(watermark, (x, y), watermark)
-        
-        # Apply opacity to entire pattern
-        if opacity < 1.0:
-            orig_alpha = pattern.split()[3]
-            final_alpha = Image.eval(orig_alpha, lambda p: int(p * opacity))
-            pattern.putalpha(final_alpha)
-        
-        # Composite pattern onto base image
-        result = Image.alpha_composite(base_image, pattern)
-        
-        return result
-        
-    except Exception as e:
-        raise Exception(f"Watermark application failed: {str(e)}")
+        if watermark_path:
+            next_image = apply_watermark_pattern(image, watermark_path, wm_angle, wm_scale, wm_opacity, cancel_event)
+            image.close()
+            image = next_image
+        if logo_path:
+            next_image = apply_logo(image, logo_path, logo_position, logo_size, cancel_event)
+            image.close()
+            image = next_image
+        _cancel(cancel_event)
+        # A fresh image cannot inherit EXIF, XMP, ICC, PNG text or prompts.
+        clean = Image.new('RGBA', image.size)
+        clean.paste(image)
+        return clean
+    finally:
+        image.close()
 
 
-def apply_logo(base_image, logo_path, position="top-right", size=150):
-    """
-    Applies a logo overlay at a specified corner position.
-    """
+def render_preview(source_path, *, cancel_event=None, preview_size=(1600, 1200), **options):
+    _dimensions(preview_size)
+    paths, observed = _inputs(source_path, options.get('watermark_path'), options.get('logo_path'), cancel_event)
+    options.update(watermark_path=paths[1], logo_path=paths[2])
+    image = render_image(paths[0], cancel_event=cancel_event, **options)
     try:
-        # Ensure base image is RGBA
-        if base_image.mode != 'RGBA':
-            base_image = base_image.convert('RGBA')
-        
-        # Load logo
-        if logo_path.lower().endswith('.svg'):
-            temp_svg = _load_asset(logo_path)
-            aspect_ratio = temp_svg.height / temp_svg.width
-            new_height = int(size * aspect_ratio)
-            logo = _load_asset(logo_path, target_size=(size, new_height))
-        else:
-            logo = Image.open(logo_path).convert('RGBA')
-            aspect_ratio = logo.height / logo.width
-            new_width = size
-            new_height = int(size * aspect_ratio)
-            logo = logo.resize((new_width, new_height), Image.LANCZOS)
-        
-        # Calculate position with margin
-        margin = 25
-        positions = {
-            "top-left": (margin, margin),
-            "top-right": (base_image.width - logo.width - margin, margin),
-            "bottom-left": (margin, base_image.height - logo.height - margin),
-            "bottom-right": (base_image.width - logo.width - margin, 
-                           base_image.height - logo.height - margin)
-        }
-        
-        coords = positions.get(position, positions["top-right"])
-        
-        # Composite logo
-        logo_layer = Image.new('RGBA', base_image.size, (0, 0, 0, 0))
-        logo_layer.paste(logo, coords, logo)
-        
-        result = Image.alpha_composite(base_image, logo_layer)
-        
-        return result
-        
-    except Exception as e:
-        raise Exception(f"Logo application failed: {str(e)}")
+        image.thumbnail(preview_size, Image.Resampling.LANCZOS)
+        _unchanged(observed, cancel_event)
+        return image
+    except Exception:
+        image.close()
+        raise
+
+
+def _destination(output_path, native_service, cancel_event):
+    destination = safe_path(output_path, exists=False, portable=True)
+    if os.path.lexists(destination):
+        raise ValueError('watermarker_requires_new_output')
+    if native_service is not None and native_service.read('get_metadata_path_status',
+            path_variants(destination, output_path), cancel_event=cancel_event)['occupied']:
+        raise ValueError('watermarker_output_has_native_history')
+    return destination
+
+
+def _verify_output(path, dimensions, expected_format):
+    with Image.open(path) as image:
+        if image.format != expected_format or image.size != dimensions or getattr(image, 'n_frames', 1) != 1:
+            raise ValueError('watermarker_invalid_output')
+        image.load()
+        intrinsic = {'jfif', 'jfif_version', 'jfif_unit', 'jfif_density', 'loop', 'background', 'timestamp', 'duration'}
+        if image.getexif() or set(image.info) - intrinsic or getattr(image, 'text', {}):
+            raise ValueError('watermarker_privacy_verification_failed')
 
 
 def process_image(source_path, output_path=None, watermark_path=None, logo_path=None,
-                 wm_angle=0, wm_scale=1.0, wm_opacity=0.3,
-                 logo_position="top-right", logo_size=150):
+                  wm_angle=0, wm_scale=1.0, wm_opacity=0.3,
+                  logo_position='top-right', logo_size=150, *, cancel_event=None, native_service=None):
+    """Publish a new verified public copy. Never overwrite or inherit Native curation.
+
+    Cancellation is honored before publication. Published bytes are kept; no retry
+    or rollback is inferred from a late cancellation. This API returns (bool, text).
+    Native is consulted only to protect destination history; this public copy is
+    not automatically registered as a dataset derivative.
     """
-    Processes a single image with watermark and/or logo.
-    
-    PRIVACY MODE: Strips ALL metadata from output.
-    Watermarked images are for public distribution and should NOT
-    contain prompts, tags, or other proprietary information.
-    
-    Args:
-        source_path: Path to source image
-        output_path: Output path (uses cache if None)
-        watermark_path: Path to watermark asset
-        logo_path: Path to logo asset
-        wm_angle: Watermark rotation angle
-        wm_scale: Watermark scale factor
-        wm_opacity: Watermark opacity (0-1)
-        logo_position: Logo position (top-left, top-right, etc.)
-        logo_size: Logo width in pixels
-    
-    Returns:
-        (success, message) tuple
-    """
-    source_path = Path(source_path)
-    
-    # Generate output path if not provided
-    if output_path is None:
-        output_path = get_export_path(source_path)
-    else:
-        output_path = Path(output_path)
-    
+    temporary, owned_identity = None, None
     try:
-        # Load base image
-        base_image = Image.open(source_path).convert('RGBA')
-        
-        # Apply watermark if provided
-        if watermark_path and os.path.exists(watermark_path):
-            base_image = apply_watermark_pattern(
-                base_image, watermark_path, wm_angle, wm_scale, wm_opacity
-            )
-        
-        # Apply logo if provided
-        if logo_path and os.path.exists(logo_path):
-            base_image = apply_logo(
-                base_image, logo_path, logo_position, logo_size
-            )
-        
-        # Convert back to RGB if saving as JPEG
-        output_str = str(output_path)
-        if output_str.lower().endswith(('.jpg', '.jpeg')):
-            # Create white background for JPEG
-            rgb_image = Image.new('RGB', base_image.size, (255, 255, 255))
-            rgb_image.paste(base_image, mask=base_image.split()[3])
-            rgb_image.save(output_str, quality=95, optimize=True)
-        elif output_str.lower().endswith('.avif'):
-            base_image.save(output_str, "AVIF", quality=90)
+        _cancel(cancel_event)
+        paths, observed = _inputs(source_path, watermark_path, logo_path, cancel_event)
+        output = Path(output_path).absolute() if output_path is not None else get_export_path(paths[0])
+        fmt = FORMATS.get(output.suffix.lower())
+        if fmt is None:
+            raise ValueError('watermarker_unsupported_format')
+        output = _destination(output, native_service, cancel_event)
+        fd, name = tempfile.mkstemp(prefix='.panopticon-watermark-', suffix=output.suffix, dir=output.parent)
+        os.close(fd)
+        temporary = Path(name)
+        owned_identity = _identity(temporary)[:2]
+        with render_image(paths[0], paths[1], paths[2], wm_angle, wm_scale, wm_opacity,
+                          logo_position, logo_size, cancel_event) as image:
+            dimensions = image.size
+            _cancel(cancel_event)
+            if fmt == 'JPEG':
+                with Image.new('RGB', dimensions, 'white') as rgb:
+                    with image.getchannel('A') as alpha:
+                        rgb.paste(image, mask=alpha)
+                    rgb.save(temporary, fmt, quality=95, optimize=True)
+            else:
+                options = {'quality': 95} if fmt in ('WEBP', 'AVIF') else {'optimize': True}
+                image.save(temporary, fmt, **options)
+        if temporary.stat().st_size > MAX_FILE:
+            raise ValueError('watermarker_file_limit')
+        _verify_output(temporary, dimensions, fmt)
+        with temporary.open('r+b') as stream:
+            os.fsync(stream.fileno())
+        prepared = _identity(temporary)
+        _unchanged(observed, cancel_event)
+        if _destination(output, native_service, cancel_event) != output or _identity(temporary) != prepared:
+            raise ValueError('watermarker_prepared_file_changed')
+        _cancel(cancel_event)
+        if os.name == 'nt':
+            os.rename(temporary, output)  # Windows rename refuses an existing destination.
         else:
-            # Save as PNG with transparency
-            base_image.save(output_str, optimize=True)
-        
-        # ⚠️ PRIVACY MODE: Strip ALL metadata
-        # Watermarked images should NOT contain AI prompts or tags
-        MetadataStamper.strip_metadata(output_path)
-        
-        return True, f"Processed: {output_path.name}"
-        
-    except Exception as e:
-        return False, f"Error: {str(e)}"
+            os.link(temporary, output)   # New directory entry; never replaces a winner.
+        return True, f'Processed: {output.name}'
+    except Exception as error:
+        return False, str(error)
+    finally:
+        try:
+            if temporary is not None and os.path.lexists(temporary) and _identity(temporary)[:2] == owned_identity:
+                temporary.unlink()
+        except OSError:
+            log.warning('Could not remove owned Watermarker temporary %s', temporary, exc_info=True)
 
 
-def get_export_path(source_path, suffix="_watermarked"):
-    """
-    Generates export path using centralized cache system.
-    
-    Args:
-        source_path: Original file path
-        suffix: Suffix to add before extension
-    
-    Returns:
-        Path object for output file
-    """
-    source_path = Path(source_path)
-    export_dir = CachePaths.get_tool_cache("watermarker")
-    
-    stem = source_path.stem
-    ext = source_path.suffix
-    filename = f"{stem}{suffix}{ext}"
-    
-    return export_dir / filename
+def get_export_path(source_path, suffix='_watermarked'):
+    source = Path(source_path)
+    if len(suffix) > 100 or any(character in suffix for character in '/\\:'):
+        raise ValueError('watermarker_invalid_suffix')
+    identity = hashlib.sha256(str(source.absolute()).encode('utf-8')).hexdigest()[:12]
+    name = f'{source.stem[:100]}{suffix}_{identity}_{uuid.uuid4().hex[:12]}{source.suffix}'
+    return CachePaths.get_tool_cache('watermarker') / name
 
 
 def batch_process(files, **kwargs):
-    """
-    Processes multiple files with watermark/logo.
-    
-    Args:
-        files: List of file paths
-        **kwargs: Arguments passed to process_image
-    
-    Yields:
-        (index, total, result_dict) for each file
-    """
     total = len(files)
-    
-    for i, source in enumerate(files):
+    for index, source in enumerate(files, 1):
+        _cancel(kwargs.get('cancel_event'))
         success, message = process_image(source, **kwargs)
-        yield i + 1, total, {"success": success, "message": message}
+        yield index, total, {'success': success, 'message': message}

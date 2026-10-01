@@ -286,6 +286,7 @@ class WatermarkerModule(BaseModule):
 
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp_path = tmp.name
+        os.unlink(tmp_path)
 
         success, msg = watermark_image(
             self.source_image, tmp_path,
@@ -343,7 +344,8 @@ class WatermarkerModule(BaseModule):
             wm_scale=self.slider_scale.value() / 100.0,
             wm_opacity=self.slider_opacity.value() / 100.0,
             logo_position=self.combo_logo_pos.currentText().lower(),
-            logo_size=self.slider_logo_size.value()
+            logo_size=self.slider_logo_size.value(),
+            native_service=(self.context or {}).get('data_service')
         )
 
         if success:
