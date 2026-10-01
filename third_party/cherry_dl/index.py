@@ -7,6 +7,7 @@ Permite relinkar carpetas movidas sin perder el historial.
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timezone
 
 import aiosqlite
 
@@ -605,9 +606,23 @@ async def update_profile_url_sync(
     url_id: int,
     artist_id: str | None = None,
     file_count: int | None = None,
+    *,
+    last_synced: str | None = None,
 ) -> None:
-    """Actualiza artist_id, file_count y last_synced de una URL de perfil."""
+    """Artist/count updates never advance discovery. A completed scan supplies UTC start."""
+    watermark = None
+    if last_synced is not None:
+        if not isinstance(last_synced,str):
+            raise ValueError('invalid_completed_scan_watermark')
+        try:
+            watermark = datetime.strptime(last_synced,'%Y-%m-%d %H:%M:%S')
+        except ValueError as exc:
+            raise ValueError('invalid_completed_scan_watermark') from exc
+        if watermark.strftime('%Y-%m-%d %H:%M:%S')!=last_synced:
+            raise ValueError('invalid_completed_scan_watermark')
     async with aiosqlite.connect(db_path) as db:
+        # Serialize against another completed scan before reading its frontier.
+        await db.execute('BEGIN IMMEDIATE')
         if artist_id is not None:
             await db.execute(
                 "UPDATE profile_urls SET artist_id = ? WHERE id = ?",
@@ -618,10 +633,19 @@ async def update_profile_url_sync(
                 "UPDATE profile_urls SET file_count = ? WHERE id = ?",
                 (file_count, url_id),
             )
-        await db.execute(
-            "UPDATE profile_urls SET last_synced = datetime('now') WHERE id = ?",
-            (url_id,),
-        )
+        if watermark is not None:
+            async with db.execute('SELECT last_synced FROM profile_urls WHERE id=?',(url_id,)) as cursor:
+                row = await cursor.fetchone()
+            previous = None
+            if row is not None and isinstance(row[0],str):
+                try:
+                    previous = datetime.fromisoformat(row[0].replace('Z','+00:00'))
+                    if previous.tzinfo is not None:
+                        previous = previous.astimezone(timezone.utc).replace(tzinfo=None)
+                except ValueError:
+                    pass  # An explicit complete scan can replace an invalid legacy date.
+            if row is not None and (previous is None or watermark>previous):
+                await db.execute('UPDATE profile_urls SET last_synced=? WHERE id=?',(last_synced,url_id))
         await db.commit()
 
     pid = await _profile_id_of_url(db_path, url_id)

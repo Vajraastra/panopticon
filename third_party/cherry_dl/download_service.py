@@ -7,7 +7,7 @@ Encapsula el flujo canónico de descarga en dos fases:
       → cooldown si el scan fue agresivo (politeness)
       → descarga productor/workers (dedup atómico, remove_pending por éxito)
       → errores temporales al fondo para la próxima sesión
-      → update last_synced + file_count
+      → completed discovery commits its UTC start watermark; downloads update file_count
 
 La interfaz no conoce asyncio: pasa un callback `emit(evento)` y recibe eventos
 tipados (ver más abajo). Todo corre en un único event loop,
@@ -26,7 +26,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Optional, Union
 
@@ -417,6 +417,26 @@ class DownloadSummary:
 
 
 # ── Servicio ────────────────────────────────────────────────────────────────────
+
+def _scan_watermark() -> str:
+    # Whole UTC seconds overlap boundary posts rather than skip them.
+    return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+
+
+async def _close_scan_catalog(catalog) -> None:
+    """Drain the owned partial-batch flush even if closure itself is cancelled."""
+    closing = asyncio.create_task(catalog.close(),name='cherry-scan-catalog-close')
+    cancelled = False
+    while not closing.done():
+        try:
+            await asyncio.shield(closing)
+        except asyncio.CancelledError:
+            cancelled = True
+    # Retrieve failures before reporting any complete scan; no detached close task.
+    closing.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
 
 async def run_profile_download(
     profile: dict,
@@ -838,6 +858,7 @@ async def run_profile_download(
                 _emit_quota_status(force=True)
 
             # ── Resolver artista (puede disparar lazy auth / modal) ─────────
+            scan_started_at = _scan_watermark()
             pixiv_auth_refreshed = False
             try:
                 artist_info = await template.get_artist_info(pu["url"])
@@ -943,12 +964,8 @@ async def run_profile_download(
             #     la paginación al cruzar la fecha, así que es barato y no
             #     martillea al servidor.
             full_done = await get_meta_int(folder, "full_scan_done")
-            # Migración legacy: un catálogo ya sincronizado antes (tiene
-            # last_synced) es anterior a este flag → se asume con cobertura
-            # histórica completa, para no re-escanear todo una vez más.
-            if not full_done and url_since is not None:
-                await set_meta_int(folder, "full_scan_done", 1)
-                full_done = 1
+            # A legacy timestamp alone cannot prove full historical coverage:
+            # older artist/count writes advanced it before discovery completed.
             need_full = force_full or pixiv_auth_refreshed or not full_done
             scan_since = None if need_full else url_since
             emit(Log(
@@ -1074,18 +1091,20 @@ async def run_profile_download(
                         break
             finally:
                 # Conserva hasta el último bloque parcial ante error o cancelación.
-                await asyncio.shield(scan_catalog.close())
-                source_metrics.finish_scan(scan_files_seen)
+                try:
+                    await _close_scan_catalog(scan_catalog)
+                finally:
+                    source_metrics.finish_scan(scan_files_seen)
 
             if scan_ok:
                 await _set_available()
 
-            # Marcar cobertura histórica completa SOLO si un scan completo
-            # terminó entero (sin error). last_synced se fija al inicio de la
-            # run, así que sin este flag un completo interrumpido se tomaría por
-            # incremental en la próxima run y perdería el tramo no paginado.
-            if need_full and scan_ok and scan_files_seen > 0:
-                await set_meta_int(folder, "full_scan_done", 1)
+            # Every catalog batch is durable and closed before advancing discovery.
+            # This frontier belongs to discovery, independently of later downloads.
+            if scan_ok:
+                if need_full:
+                    await set_meta_int(folder, "full_scan_done", 1)
+                await update_profile_url_sync(INDEX_DB,pu["id"],last_synced=scan_started_at)
             emit(Log(f"Scan: {new_this_scan} nuevo(s) en cola", "dim"))
             if preview_markers:
                 emit(Log(

@@ -695,6 +695,15 @@ use `encoder_options` before saving and `verify_prepared` afterward.
 Prepared stamping accepts single-frame images up to 256 MiB and 20 million pixels,
 with at most 256 KiB of shared metadata; JPEG EXIF also has its segment size limit.
 
+Cherry advances a source's incremental discovery frontier only after a complete
+remote scan and durable catalog flush, using the scan's UTC start time. Artist
+registration and transfer counters cannot advance it. Interrupted scans keep
+the previous frontier; downloads interrupted after completed discovery keep
+their durable pending queue. Catalog and index remain separate portable DBs.
+A legacy timestamp without full-history coverage triggers a complete scan.
+Previously incorrect frontiers with coverage already marked require review
+and an explicit Rescan; this update does not inspect or reset real profiles.
+
 ## License
 
 Business Source License 1.1 — free for non-commercial use.  

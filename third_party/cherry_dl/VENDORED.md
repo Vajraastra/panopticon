@@ -28,6 +28,33 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Frontera incremental confirmada por descubrimiento (2026-10-01)
+
+Guardar `artist_id` o `file_count` adelantaba `last_synced` antes de terminar
+el recorrido remoto y podía saltar publicaciones después de una interrupción.
+La API vendorizada sólo mueve esa frontera cuando recibe explícitamente la
+hora UTC de inicio de un recorrido completo. Primero confirma y cierra todos
+los lotes del catálogo; errores de paginación, autenticación o flush y la
+cancelación durante el recorrido conservan la frontera anterior. El cierre
+del catálogo se recoge incluso ante cancelaciones repetidas, sin tareas sueltas.
+Una transacción del índice compara fechas UTC y evita retroceder la frontera
+cuando termina después un recorrido iniciado antes. No cambia el esquema.
+
+El descubrimiento y las transferencias tienen fronteras distintas: una descarga
+cancelada después de confirmar el recorrido conserva su cola durable y la
+frontera de descubrimiento. Un recorrido vacío que llega al final también es
+válido. Sin prueba `full_scan_done`, una fecha heredada no acredita cobertura
+histórica y se recorre todo el historial. El espejo portable sigue usando
+`profile_meta`; si falla, su fecha anterior obliga a repetir, sin perder la cola.
+Catálogo e índice son DBs separadas: este orden evita saltos, no constituye
+una transacción SQLite entre ambas.
+
+Pruebas privadas sin red: `cherry_scan_frontier_selftest.py`. Los perfiles que ya
+traían una frontera incorrecta y `full_scan_done=1` requieren revisión/Rescan:
+la fecha almacenada no permite deducir qué publicaciones faltan. No se alteraron
+catálogos reales. Las fechas retroactivas del servidor y los cambios remotos
+durante la paginación quedan fuera de la garantía del contrato incremental.
+
 ### `site_throttle.py` — ventana móvil por archivos o GB (2026-09-10)
 
 Pawchive se detiene cuando ocurre primero uno de dos topes configurables dentro

@@ -283,9 +283,12 @@ def test_shutdown_contract() -> None:
     check("el runtime auxiliar arranca", runtime.start())
     future = runtime.submit(asyncio.sleep(30))
     started = time.monotonic()
+    # The caller owns cancellation; runtime stop drains admitted cleanup.
+    # This contract changed when native worker ownership became explicit.
+    future.cancel()
     runtime.stop()
     elapsed = time.monotonic() - started
-    check("stop() cancela trabajo activo", future.cancelled() or future.done())
+    check("cancelación explícita completa antes de stop()", future.cancelled())
     check("stop() no deja el hilo vivo", not runtime.is_running)
     check("stop() vuelve dentro del límite", elapsed < 6.0, f"({elapsed:.2f}s)")
 
