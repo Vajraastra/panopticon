@@ -863,6 +863,10 @@ class LibraryRepository:
         from core.duplicate_archive import archive
         return archive(self.conn, approved, selected, normalize_path=self._normalize_path, **kwargs)
 
+    def get_duplicate_recovery_state(self, copy_ids):
+        from core.duplicate_snapshot import recovery_states
+        return recovery_states(self.conn, copy_ids)
+
     def archive_copy(self, copy_id, **kwargs):
         from core.library_versions import archive
         return archive(self.conn, copy_id, **kwargs)

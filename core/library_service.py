@@ -33,6 +33,7 @@ READS = frozenset({
     'resolve_library_selection', 'check_fts',
     'get_copy_versions_page', 'get_copy_version_state',
     'get_duplicate_snapshot',
+    'get_duplicate_recovery_state',
     'get_duplicate_retirement_roots',
     'get_duplicate_candidates_page', 'get_duplicate_candidate_copies',
     'get_duplicate_search_status',
@@ -44,6 +45,7 @@ READS = frozenset({
 # Agrupar puede recorrer toda la DB aun con LIMIT. Acotar duración y permitir
 # cancelación sin mantener indefinidamente un lector que retenga el WAL.
 READ_BUDGET_SECONDS = {
+    'get_duplicate_recovery_state': 10,
     'get_duplicate_candidates_page': 10,
     'get_duplicate_candidate_copies': 10,
     'get_folder_overlap': 10,
