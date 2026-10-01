@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from PIL import Image
 from core.duplicate_snapshot import encode
-from core.generation_history import OBSERVED, FIELDS, COLUMNS
+from core.generation_history import OBSERVED, FIELDS, COLUMNS, _request
 from core.output_paths import safe_path, path_variants
 from .modifier import modify_metadata
 from .reader import UniversalParser
@@ -260,9 +260,26 @@ class MetadataTasks:
             data.update(phase='published', published=True, request=args if overwrite else None)
             _journal(journal_path, data)
             if overwrite:
-                if self.service.submit('commit_metadata_edit', data['copy_id'], **args).result() is not True:
-                    raise ValueError('metadata_commit_unconfirmed')
+                def confirm():
+                    receipt = self.service.read('get_metadata_edit_receipt', job)['receipt']
+                    if (receipt is None or receipt['copy_id'] != data['copy_id'] or
+                            receipt['request_fingerprint'] != _request(data['copy_id'], **args)):
+                        raise ValueError('metadata_receipt_unconfirmed')
+                    return receipt
+                try:
+                    if self.service.submit('commit_metadata_edit', data['copy_id'], **args).result() is not True:
+                        raise ValueError('metadata_commit_unconfirmed')
+                except Exception as commit_error:
+                    # A lost acknowledgement does not prove rollback. Read the
+                    # historical receipt once; never resubmit an original edit.
+                    try:
+                        receipt = confirm()
+                    except Exception:
+                        raise commit_error
+                else:
+                    receipt = confirm()
                 native_committed = True
+                data['receipt'] = receipt
             data.update(phase='complete', native_committed=native_committed)
             _journal(journal_path, data)
             return dict(status='complete', published=True, native_committed=native_committed, destination=str(output), journal=str(journal_path))

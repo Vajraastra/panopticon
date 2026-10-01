@@ -520,6 +520,11 @@ result requires review using its recovery journal and backup; there is no automa
 disk rollback or atomic transaction spanning the file and SQLite. External editors
 can still race with revalidation. Reload the image before another operation.
 Backups remain available after success and are not automatically deleted.
+A native update is confirmed by a bounded historical receipt for its operation ID.
+If the commit response is lost, Metadata Hub checks that receipt once without
+resubmitting the edit. A missing or conflicting receipt leaves the published
+file and backup for review. Confirmation proves the historical commit; later
+file, identity or curation changes require separate current-state review.
 
 ### Metadata in transformed outputs
 

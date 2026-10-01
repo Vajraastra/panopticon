@@ -856,6 +856,10 @@ class LibraryRepository:
         from core.generation_history import path_status
         return path_status(self.conn, path, normalize=self._normalize_path)
 
+    def get_metadata_edit_receipt(self, operation_id):
+        from core.generation_history import receipt
+        return receipt(self.conn, operation_id)
+
     def get_generation_history_page(self, copy_id, **kwargs):
         from core.generation_history import page
         return page(self.conn, copy_id, **kwargs)

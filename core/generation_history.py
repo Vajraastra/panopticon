@@ -101,12 +101,7 @@ def path_status(conn, path, *, normalize):
     return dict(occupied=row is not None)
 
 
-def _request(copy_id, expected_fingerprint, operation_id, source_digest, result_digest,
-             generation, observation, source_generation):
-    _id(copy_id)
-    for value in (expected_fingerprint, source_digest, result_digest):
-        if not isinstance(value, str) or not SHA.fullmatch(value):
-            raise ValueError('invalid_metadata_digest')
+def _operation(operation_id):
     try:
         if not isinstance(operation_id, str) or len(operation_id) != 36:
             raise ValueError
@@ -115,6 +110,39 @@ def _request(copy_id, expected_fingerprint, operation_id, source_digest, result_
             raise ValueError
     except (ValueError, TypeError, AttributeError) as exc:
         raise ValueError('invalid_metadata_operation_id') from exc
+    return operation_id
+
+
+def receipt(conn, operation_id):
+    """Bounded historical acknowledgement, independent of current copy state."""
+    _operation(operation_id)
+    if not status(conn)['prepared']:
+        return dict(prepared=False, receipt=None)
+    row = conn.execute(f'SELECT id,copy_id,substr(operation_id,1,37),'
+        f'substr(request_fingerprint,1,65),substr(source_sha256,1,65),'
+        f'substr(result_sha256,1,65),substr(recorded_at,1,65) '
+        f'FROM {NAME} WHERE operation_id=?', (operation_id,)).fetchone()
+    if row is None:
+        return dict(prepared=True, receipt=None)
+    key, copy_id, job, fingerprint, source, result, recorded = row
+    _id(key)
+    _id(copy_id)
+    if (job != operation_id or any(not isinstance(value,str) or not SHA.fullmatch(value)
+            for value in (fingerprint,source,result)) or not isinstance(recorded,str) or
+            not recorded or len(recorded)>64 or '\x00' in recorded):
+        raise ValueError('generation_history_invalid_receipt')
+    return dict(prepared=True, receipt=dict(id=key, copy_id=copy_id, operation_id=job,
+        request_fingerprint=fingerprint, source_sha256=source, result_sha256=result,
+        recorded_at=recorded))
+
+
+def _request(copy_id, expected_fingerprint, operation_id, source_digest, result_digest,
+             generation, observation, source_generation):
+    _id(copy_id)
+    for value in (expected_fingerprint, source_digest, result_digest):
+        if not isinstance(value, str) or not SHA.fullmatch(value):
+            raise ValueError('invalid_metadata_digest')
+    _operation(operation_id)
     if not isinstance(generation, dict) or set(generation) != set(FIELDS):
         raise ValueError('invalid_metadata_generation')
     for key, value in generation.items():

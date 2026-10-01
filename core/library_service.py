@@ -24,7 +24,7 @@ from core.paths import ProjectPaths
 
 log = logging.getLogger(__name__)
 READS = frozenset({
-    'get_metadata_edit_state', 'get_generation_history_status', 'get_generation_history_page',
+    'get_metadata_edit_state', 'get_metadata_edit_receipt', 'get_generation_history_status', 'get_generation_history_page',
     'get_metadata_path_status', 'get_derived_copies_status', 'get_derived_copy_receipt',
     'get_known_files_in_folder', 'get_files_recursive', 'get_watched_folders',
     'get_folder_count', 'get_folder_preview', 'search_by_terms', 'get_file_id',
@@ -49,6 +49,7 @@ READS = frozenset({
 # cancelación sin mantener indefinidamente un lector que retenga el WAL.
 READ_BUDGET_SECONDS = {
     'get_metadata_edit_state': 10,
+    'get_metadata_edit_receipt': 10,
     'get_derived_copy_receipt': 10,
     'get_metadata_path_status': 10,
     'get_generation_history_page': 10,
