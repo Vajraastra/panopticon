@@ -337,6 +337,10 @@ class LibraryRepository:
             log.warning("[DB] remove_files error: %s", e)
             return False
 
+    def archive_missing_copies(self, approved, *, folder):
+        from core.inventory_archive import archive_missing
+        return archive_missing(self.conn, approved, folder=folder, normalize=self._normalize_path)
+
     # --- Standard Queries (Gallery/Search) ---
 
     def get_watched_folders(self):

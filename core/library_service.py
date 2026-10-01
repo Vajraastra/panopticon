@@ -45,6 +45,7 @@ READS = frozenset({
 # Agrupar puede recorrer toda la DB aun con LIMIT. Acotar duración y permitir
 # cancelación sin mantener indefinidamente un lector que retenga el WAL.
 READ_BUDGET_SECONDS = {
+    'get_duplicate_snapshot': 10,
     'get_duplicate_recovery_state': 10,
     'get_duplicate_candidates_page': 10,
     'get_duplicate_candidate_copies': 10,
@@ -54,6 +55,7 @@ READ_BUDGET_SECONDS = {
 }
 WRITES = frozenset({
     'register_files_minimal', 'update_file_metadata', 'remove_files',
+    'archive_missing_copies',
     'add_watched_folder', 'remove_watched_folder', 'add_tag_to_file',
     'remove_tag_from_file', 'set_hash_original_bulk', 'update_file_rating',
     'rebuild_fts', 'repair_fts', 'vacuum_database', 'edit_curation', 'restore_curation', 'register_curation_copy', 'adopt_curation_identity',

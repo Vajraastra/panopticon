@@ -2,7 +2,7 @@ import os
 import logging
 from PySide6.QtCore import QThread, Signal
 from core.catalog_reader import is_cherry_catalog, read_image_files, get_artist_info
-from core.inventory import InventoryResult, InventoryStatus, directory_identity
+from core.inventory import InventoryResult, InventoryStatus, directory_identity, directory_chain_identity
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ class IndexerWorker(QThread):
         self.tr = translate or (lambda key, default: default)
         self.outcome = InventoryStatus.COMPLETE
         self.folder_statuses = {}
+        self.archived_count = 0
 
     def _progress(self, key, default, **values):
         self.progress_signal.emit(self.tr(key, default).format(**values))
@@ -35,7 +36,8 @@ class IndexerWorker(QThread):
             extensions = ('.png', '.jpg', '.jpeg', '.webp', '.avif')
             for folder in self.folders:
                 if not self.is_running:
-                    self.outcome = InventoryStatus.CANCELLED
+                    if self.outcome == InventoryStatus.COMPLETE:
+                        self.outcome = InventoryStatus.CANCELLED
                     break
                 self._progress("lib.scan.folder", "Scanning: {folder}", folder=folder)
                 result = self._discover_tree(folder, extensions)
@@ -50,7 +52,7 @@ class IndexerWorker(QThread):
                             break
                         total_found += len(batch)
                         self.count_signal.emit(i + len(batch), len(result.files))
-                    if not self.is_running:
+                    if not self.is_running and result.complete:
                         result.fail(InventoryStatus.CANCELLED)
                     if self.deep_clean and result.complete:
                         self._reconcile_missing(folder, result)
@@ -63,20 +65,20 @@ class IndexerWorker(QThread):
                         self.outcome = result.status
                     log.warning("[Indexer] Inventario %s: %s; %s", folder, result.status.value, result.issues)
                     self._progress("lib.scan.incomplete_folder",
-                                   "Incomplete scan; index cleanup skipped: {folder}", folder=folder)
+                                   "Incomplete inventory; further offline archival stopped: {folder}", folder=folder)
         except Exception:
             self.outcome = InventoryStatus.ERROR
             log.exception("[Indexer] Fallo inesperado")
         finally:
-            if not self.is_running:
+            if not self.is_running and self.outcome == InventoryStatus.COMPLETE:
                 self.outcome = InventoryStatus.CANCELLED
             try:
                 if self.outcome == InventoryStatus.COMPLETE:
                     self._progress("lib.scan.complete", "Indexing complete: {count} files registered.", count=total_found)
                 elif self.outcome == InventoryStatus.CANCELLED:
-                    self._progress("lib.scan.cancelled", "Indexing cancelled; partial inventories were not cleaned up.")
+                    self._progress("lib.scan.cancelled", "Indexing cancelled; confirmed batches remain. Pending inventory was not archived.")
                 else:
-                    self._progress("lib.scan.incomplete", "Indexing incomplete; unavailable or failed inventories were not cleaned up.")
+                    self._progress("lib.scan.incomplete", "Indexing incomplete; unverified batches were not archived. Confirmed batches remain.")
             finally:
                 self.finished_signal.emit()
 
@@ -92,6 +94,7 @@ class IndexerWorker(QThread):
                 return
             candidates = set(self.db.get_known_files_in_folder(folder)) - result.paths
             missing = []
+            parents = {}
             for path in candidates:
                 if not self.is_running:
                     result.fail(InventoryStatus.CANCELLED)
@@ -99,6 +102,18 @@ class IndexerWorker(QThread):
                 try:
                     os.lstat(path)
                 except FileNotFoundError:
+                    # ENOENT también ocurre por padre inaccesible/desconectado;
+                    # no convertirlo en ausencia confirmada por una raíz sana.
+                    parent = os.path.dirname(path)
+                    if parent not in parents:
+                        parents[parent] = directory_chain_identity(parent)
+                    # La carpeta pudo cambiar mientras verificábamos acceso.
+                    try:
+                        os.lstat(path)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        continue
                     missing.append(path)
                 except OSError as exc:
                     result.fail(InventoryStatus.ERROR, exc)
@@ -106,16 +121,62 @@ class IndexerWorker(QThread):
             if directory_identity(folder) != identity:
                 result.fail(InventoryStatus.UNAVAILABLE, "La raíz cambió antes de limpiar")
                 return
+            for parent, before in parents.items():
+                if not self.is_running:
+                    result.fail(InventoryStatus.CANCELLED)
+                    return
+                if directory_chain_identity(parent) != before:
+                    result.fail(InventoryStatus.UNAVAILABLE, 'La carpeta padre cambió antes de limpiar')
+                    return
             if not self.is_running:
                 result.fail(InventoryStatus.CANCELLED)
                 return
             if missing:
-                self._progress("lib.scan.cleanup", "Archiving {count} confirmed missing entries offline...", count=len(missing))
+                self._progress("lib.scan.cleanup", "Reviewing {count} missing candidates for archival by copy ID...", count=len(missing))
                 if not self.is_running:
                     result.fail(InventoryStatus.CANCELLED)
                     return
-                if not self.db.remove_files(missing):
-                    result.fail(InventoryStatus.ERROR, "No se pudo confirmar la limpieza")
+                # Leer la versión antes de verificar ausencia de nuevo. El owner
+                # compara IDs/estado completo: nunca archivar por la ruta sola.
+                missing.sort()
+                for start in range(0, len(missing), 256):
+                    if not self.is_running:
+                        result.fail(InventoryStatus.CANCELLED)
+                        return
+                    block = missing[start:start+256]
+                    current = self.db.get_duplicate_snapshot(block)
+                    if (not isinstance(current, list) or len(current) != len(block) or
+                            [copy.get('path') for copy in current] != block or
+                            any(copy['state'] is None for copy in current)):
+                        result.fail(InventoryStatus.ERROR, 'Cambió la identidad del inventario')
+                        return
+                    approved, touched = [], set()
+                    for copy in current:
+                        if not self.is_running:
+                            result.fail(InventoryStatus.CANCELLED)
+                            return
+                        try:
+                            os.lstat(copy['path'])
+                        except FileNotFoundError:
+                            touched.add(os.path.dirname(copy['path']))
+                            approved.append(dict(path=copy['path'], copy_id=copy['state']['file']['id'],
+                                fingerprint=copy['fingerprint']))
+                        except OSError as exc:
+                            result.fail(InventoryStatus.UNAVAILABLE, exc)
+                            return
+                    if directory_identity(folder) != identity or any(
+                            directory_chain_identity(parent) != parents[parent] for parent in touched):
+                        result.fail(InventoryStatus.UNAVAILABLE, 'La carpeta cambió antes de archivar el lote')
+                        return
+                    if not self.is_running:
+                        result.fail(InventoryStatus.CANCELLED)
+                        return
+                    if approved:
+                        normalized = os.path.normpath(folder).replace('\\', '/')
+                        if self.db.archive_missing_copies(approved, folder=normalized) is not True:
+                            result.fail(InventoryStatus.ERROR, 'No se pudo confirmar el archivado por ID')
+                            return
+                        self.archived_count += len(approved)
         except OSError as exc:
             result.fail(InventoryStatus.UNAVAILABLE, exc)
 

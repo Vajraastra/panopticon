@@ -32,11 +32,11 @@
   "lib.scan.warning": "Incomplete scan",
   "lib.scan.folder": "Scanning: {folder}",
   "lib.scan.catalog": "Reading Cherry catalog...",
-  "lib.scan.cleanup": "Archiving {count} confirmed missing entries offline...",
-  "lib.scan.incomplete_folder": "Incomplete scan; index cleanup skipped: {folder}",
+  "lib.scan.cleanup": "Reviewing {count} missing candidates for archival by copy ID...",
+  "lib.scan.incomplete_folder": "Incomplete inventory; further offline archival stopped: {folder}",
   "lib.scan.complete": "Indexing complete: {count} files registered.",
-  "lib.scan.cancelled": "Indexing cancelled; partial inventories were not cleaned up.",
-  "lib.scan.incomplete": "Indexing incomplete; unavailable or failed inventories were not cleaned up.",
+  "lib.scan.cancelled": "Indexing cancelled; confirmed batches remain. Pending inventory was not archived.",
+  "lib.scan.incomplete": "Indexing incomplete; unverified batches were not archived. Confirmed batches remain.",
   "tool.format_converter.verifying": "Verifying metadata: {current}/{total}",
   "dashboard.open_module_tip": "Open this tool in its own window. Click again to return to the same session.",
   "dashboard.module_open_error": "Could not open this tool. See the log for details.",
@@ -1592,5 +1592,6 @@
   "dup.reason_duplicate_purge_approval_unconfirmed": "Native approval was not confirmed. No deletion was admitted.",
   "dup.reason_duplicate_purge_deletion_unconfirmed": "Deletion was marked but file absence could not be confirmed. Inspect the journal and paths.",
   "dup.reason_invalid_duplicate_purge_handle": "The opened file cannot be used for this deletion. Keep the file for review.",
-  "dup.purge_selection_changed": "Selection changed; prepare a new preview for the selected copy."
+  "dup.purge_selection_changed": "Selection changed; prepare a new preview for the selected copy.",
+  "lib.scan.archived_count": "Identities confirmed offline: {count}. Curation and history are retained."
 }

@@ -1,6 +1,7 @@
 """Resultado explícito de un recorrido: un fallo nunca equivale a una lista vacía."""
 import os
 import stat
+from pathlib import Path
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -48,3 +49,13 @@ def directory_identity(folder):
     with os.scandir(folder) as entries:
         next(entries, None)
     return info.st_dev, info.st_ino
+
+
+def directory_chain_identity(folder):
+    """Padre listable, sin enlaces/reparse points que oculten otro volumen offline."""
+    path = Path(folder)
+    for entry in (path, *path.parents):
+        info = entry.lstat()
+        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise OSError('linked_directory_requires_review')
+    return directory_identity(path)

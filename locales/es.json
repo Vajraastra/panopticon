@@ -32,11 +32,11 @@
   "lib.scan.warning": "Recorrido incompleto",
   "lib.scan.folder": "Revisando: {folder}",
   "lib.scan.catalog": "Leyendo el catálogo de Cherry...",
-  "lib.scan.cleanup": "Conservando offline {count} entradas cuya ausencia se confirmó...",
-  "lib.scan.incomplete_folder": "Recorrido incompleto; se omitió la limpieza del índice: {folder}",
+  "lib.scan.cleanup": "Revisando {count} candidatos ausentes para archivar por ID de copia...",
+  "lib.scan.incomplete_folder": "Inventario incompleto; se detuvo el archivado offline restante: {folder}",
   "lib.scan.complete": "Indexado completo: {count} archivos registrados.",
-  "lib.scan.cancelled": "Indexado cancelado; no se limpiaron inventarios parciales.",
-  "lib.scan.incomplete": "Indexado incompleto; no se limpiaron inventarios inaccesibles o con errores.",
+  "lib.scan.cancelled": "Indexado cancelado; se conservan los lotes confirmados. No se archivó el inventario pendiente.",
+  "lib.scan.incomplete": "Indexado incompleto; no se archivaron lotes sin verificar. Se conservan los lotes confirmados.",
   "tool.format_converter.verifying": "Verificando metadatos: {current}/{total}",
   "dashboard.open_module_tip": "Abre esta herramienta en su propia ventana. Otro clic recupera la misma sesión.",
   "dashboard.module_open_error": "No se pudo abrir la herramienta. Consulta el registro para más detalles.",
@@ -1592,5 +1592,6 @@
   "dup.reason_duplicate_purge_approval_unconfirmed": "No se confirmó la aprobación nativa. No se admitió la eliminación.",
   "dup.reason_duplicate_purge_deletion_unconfirmed": "Se marcó la eliminación pero no se pudo confirmar la ausencia del archivo. Revisa el diario y las rutas.",
   "dup.reason_invalid_duplicate_purge_handle": "El archivo abierto no puede usarse para esta eliminación. Consérvalo para revisión.",
-  "dup.purge_selection_changed": "Cambió la selección; prepara una vista previa nueva para la copia seleccionada."
+  "dup.purge_selection_changed": "Cambió la selección; prepara una vista previa nueva para la copia seleccionada.",
+  "lib.scan.archived_count": "Identidades confirmadas offline: {count}. Se conservan curación e historial."
 }

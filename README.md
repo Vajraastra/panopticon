@@ -186,7 +186,16 @@ Librarian's **Copy versions and offline catalog…** lists stored identities in 
 100. Offline copies retain their tags, rating, provenance and generation metadata, but
 are excluded from normal counts, searches, selections, previews and hash backfill.
 Confirmed missing files and removed watched folders are archived rather than deleted.
-An incomplete or unavailable inventory leaves records unchanged.
+An incomplete or unavailable inventory leaves unverified records unchanged.
+Missing-file cleanup also requires an accessible, listable parent with stable identity;
+a healthy collection root does not prove absence under a disconnected or replaced
+subfolder. Linked/reparse parents require separate review. A file that reappears during
+verification is skipped. Only a complete observed inventory admits archival by captured
+copy ID and full state fingerprint, in batches of up to 256; changed identities or curation
+reject the entire affected batch. No tags, hashes, generation, FTS or Cherry receipts are
+deleted. Scan results show confirmed offline identities. Earlier confirmed batches remain
+if a later batch fails or cancellation occurs; admitted errors remain visible. Filesystem
+and SQLite observations do not form an atomic transaction.
 
 Select **All copy versions** to review active copies too. Select an ID and read its
 complete stored state. **Keep offline** archives that identity without touching file

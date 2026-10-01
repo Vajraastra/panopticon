@@ -15,6 +15,7 @@ from core.components.copy_versions import CopyVersionsDialog
 from .logic.indexer import IndexerWorker
 from .logic.hash_backfill import HashBackfillWorker
 from core.inventory import InventoryStatus
+from core.theme import Theme
 import os
 import logging
 
@@ -1091,7 +1092,7 @@ class LibrarianModule(BaseModule):
         if self._closed:
             return
         tm = self.context.get('theme_manager')
-        c = tm.get_color if tm else lambda k: '#000000'
+        c = tm.get_color if tm else Theme._c
         self.btn_scan.setText(self.tr("lib.run_indexer", "🚀 Run Indexer"))
         self.btn_scan.setStyleSheet(f"background-color: {c('accent_main')}; color: {c('bg_main')}; font-weight: bold; border-radius: 4px; padding: 6px;")
         if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(True)
@@ -1100,11 +1101,15 @@ class LibrarianModule(BaseModule):
         self.progress_bar.setVisible(False)
         self.refresh_ui()
         outcome = self.indexer_thread.outcome
+        archived = self._archived_summary(self.indexer_thread)
         if outcome == InventoryStatus.COMPLETE:
-            QMessageBox.information(self.view, self.tr("common.success", "Done"), self.tr("lib.msg.done", "Library Scan Complete!"))
+            QMessageBox.information(self.view, self.tr("common.success", "Done"), self.tr("lib.msg.done", "Library Scan Complete!")+'\n\n'+archived)
         else:
             key = "lib.scan.cancelled" if outcome == InventoryStatus.CANCELLED else "lib.scan.incomplete"
-            QMessageBox.warning(self.view, self.tr("lib.scan.warning", "Incomplete scan"), self.tr(key, "Indexing incomplete; index cleanup skipped for partial inventories."))
+            QMessageBox.warning(self.view, self.tr("lib.scan.warning", "Incomplete scan"), self.tr(key, "Indexing incomplete; unverified batches were not archived. Confirmed batches remain.")+'\n\n'+archived)
+
+    def _archived_summary(self, worker):
+        return self.tr('lib.scan.archived_count', 'Identities confirmed offline: {count}. Curation and history are retained.').format(count=getattr(worker, 'archived_count', 0))
 
     def _get_active_paths(self):
         """La página confirmada completa, nunca un prefijo oculto."""
@@ -1212,7 +1217,9 @@ class LibrarianModule(BaseModule):
             return
         try:
             if self._reindex_thread.outcome != InventoryStatus.COMPLETE:
-                self.lbl_status.setText(self.tr("lib.scan.incomplete", "Indexing incomplete; index cleanup skipped for partial inventories."))
+                self.lbl_status.setText(self.tr("lib.scan.incomplete", "Indexing incomplete; unverified batches were not archived. Confirmed batches remain.")+' '+self._archived_summary(self._reindex_thread))
+            else:
+                self.lbl_status.setText(self._archived_summary(self._reindex_thread))
             self.refresh_ui()
         except Exception as e:
             log.warning(f"Refresh tras re-index dirigido falló: {e}")
