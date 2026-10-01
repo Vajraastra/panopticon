@@ -871,6 +871,10 @@ class LibraryRepository:
         from core.duplicate_restore import restore
         return restore(self.conn,copy_id,normalize=self._normalize_path,**kwargs)
 
+    def approve_duplicate_purge(self,approved,**kwargs):
+        from core.duplicate_purge import approve
+        return approve(self.conn,approved,normalize=self._normalize_path,**kwargs)
+
     def archive_copy(self, copy_id, **kwargs):
         from core.library_versions import archive
         return archive(self.conn, copy_id, **kwargs)

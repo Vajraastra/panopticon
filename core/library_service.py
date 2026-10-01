@@ -60,6 +60,7 @@ WRITES = frozenset({
     'archive_copy', 'make_copy_online',
     'archive_duplicate_copies',
     'restore_duplicate_copy',
+    'approve_duplicate_purge',
     'prepare_duplicate_search',
     'prepare_phash_registry', 'store_phash_batch',
 })
