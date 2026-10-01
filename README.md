@@ -18,7 +18,6 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 | **Duplicate Finder** | Reviews exact SHA-256 duplicates with curation priority and recoverable retirement; visual similarity stays review-only. |
 | **Format Scanner** | Analyzes the distribution of image formats across a collection for statistical review. |
 | **Image Optimizer** | Compresses and re-encodes images in batch. Supports AVIF, PNG (via oxipng), and standard formats. |
-| **Format Converter** | Converts between image formats in batch, including PSD and AVIF support. |
 | **Watermarker** | Batch watermarking with configurable position, opacity, and scale. Deliberately removes embedded generation metadata from public output files. |
 | **Metadata Hub** | Inspect and edit embedded metadata (EXIF, tags, captions) across your collection. |
 | **Dataset Tagger** | Auto-captions image folders with a local or online vision LLM plus a WD tagger, producing kohya-style `.txt` sidecars for training datasets (booru tags and natural language, per-model templates). |
@@ -41,7 +40,7 @@ the database. Close the owner before running a tool that needs its own writer.
 This protection coordinates current versions; older instances or direct SQLite tools
 require separate coordination. Hard link aliases of the database require manual review.
 
-Cropper, Image Optimizer and Format Converter can preserve embedded generation
+Cropper and Image Optimizer can preserve embedded generation
 metadata in their outputs through the shared metadata layer. Watermarker deliberately
 removes it for public distribution. Central curation and `.txt` captions remain
 separate; exporting metadata does not merge native copy identities.
@@ -473,7 +472,7 @@ Backups remain available after success and are not automatically deleted.
 
 ### Metadata in transformed outputs
 
-Cropper, Image Optimizer and Format Converter stamp and verify a temporary output
+Cropper and Image Optimizer stamp and verify a temporary output
 before publication. PNG, JPEG and WebP metadata updates preserve the encoded image
 data; AVIF receives its metadata in the initial encoding, avoiding a second pass.
 Unicode prompts, generation settings, raw workflows, tags and ratings round-trip
@@ -507,8 +506,13 @@ between registrations and refreshes after external commits or other writes, with
 complete fallback above cache limits. No read transaction remains open between images.
 Cropper protects existing destinations even for explicitly chosen save paths. Its
 worker registers indexed recrops through this contract; external sources remain
-unregistered. Format Converter is excluded from further Native integration following
-its deprecation decision; operational retirement is pending.
+unregistered.
+
+Format Converter is retired from module discovery and cannot be opened through
+the application loader. Existing converted files remain untouched. Its legacy
+implementation stays in Git for compatibility and historical tests; shared
+metadata and image codecs used by active tools remain available. This retirement
+does not imply that every training pipeline supports every image format.
 
 The shared stamping API requires `prepared=True`, meaning a private temporary
 output owned by its producer. It does not authorize editing an indexed original.

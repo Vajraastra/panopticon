@@ -37,7 +37,7 @@ core/            base_module · mod_loader · event_bus · paths · theme(_manag
   components/    widgets compartidos: standard_layout · thumbnail · tag_widgets
   metadata/      extractor · stamper · verifier · batch_verifier · bundle
   ai/            helpers de descarga de modelos
-modules/         un módulo por carpeta (13 hoy); se descubren solos
+modules/         un módulo por carpeta (12 activos); se descubren solos
 third_party/     cherry_dl vendorizado, motor canónico (ver VENDORED.md)
 scripts/         utilidades autónomas de una sola vez (p.ej. merge_patreon.py)
 locales/         en.json · es.json
@@ -74,7 +74,8 @@ carpeta sola: no hay que registrar nada en el core.
 
 1. **Los módulos nunca se importan entre sí.** Se comunican por `EventBus` o por
    `load_image_set`. Si un widget se necesita en dos módulos, se mueve a `core/components/` — no
-   se importa del vecino. El servicio central de datos vive en `core/`: los módulos
+   se importa del vecino. Format Converter está retirado: `core/mod_loader.py` lo excluye de descubrimiento/carga;
+   su código legacy y salidas se conservan. El servicio central de datos vive en `core/`: los módulos
    usan su fachada o `context["data_service"]`; nunca reciben conexiones SQLite.
 2. **Nunca modificar el archivo original.** La salida va a `CachePaths.get_tool_cache("mi_tool")`
    o a una carpeta nueva. Al terminar un proceso, abrir la carpeta con `CachePaths.open_folder()`.

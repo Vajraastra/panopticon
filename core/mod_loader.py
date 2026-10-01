@@ -7,6 +7,10 @@ from core.base_module import BaseModule
 
 log = logging.getLogger(__name__)
 
+# Retired product tools remain in Git for historical tests and existing output
+# compatibility. Never import or instantiate them through the application loader.
+RETIRED_MODULES = frozenset({'format_converter'})
+
 class ModuleLoader:
     """
     Encargado del descubrimiento y carga dinámica de módulos.
@@ -27,7 +31,7 @@ class ModuleLoader:
         
         folders = [f for f in os.listdir(self.modules_dir) 
                    if os.path.isdir(os.path.join(self.modules_dir, f)) 
-                   and not f.startswith("__")]
+                   and not f.startswith("__") and f not in RETIRED_MODULES]
         return folders
 
     def load_module(self, module_name, context=None):
@@ -38,6 +42,9 @@ class ModuleLoader:
         :param context: Diccionario de servicios (Theme, EventBus) para inyectar vía on_load.
         :return: Instancia del módulo cargado o None si falla.
         """
+        if module_name in RETIRED_MODULES:
+            log.info("Module %s is retired", module_name)
+            return None
         if module_name in self.loaded_modules:
             return self.loaded_modules[module_name]
 
