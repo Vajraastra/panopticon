@@ -59,7 +59,12 @@ class LibraryReader(QObject):
         self._threads = {thread for thread in self._threads if thread.is_alive()}
         self._thread = threading.Thread(target=run, name='PanopticonRead', daemon=True)
         self._threads.add(self._thread)
-        self._thread.start()
+        try:
+            self._thread.start()
+        except Exception as exc:
+            self._threads.discard(self._thread)
+            self._thread = None
+            self._delivered.emit(ticket, None, exc)
 
     @Slot(int, object, object)
     def _receive(self, ticket, value, error):

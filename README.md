@@ -72,7 +72,15 @@ current edit once on close, as before. Grid replacement cancels stale thumbnails
 without GUI waits, retaining at most one decoder and the latest pending set.
 Requests or inference already in progress finish in their worker; no force kill.
 Refinement proposals belong to the captured image/text/architecture, and changing
-that context discards the proposal. Other module shutdown handlers remain under audit.
+that context discards the proposal. Auxiliary copy-version/curation/recovery dialogs also defer close, accept/reject
+and Escape until their native readers finish. Librarian includes its own and its
+dialogs' readers in shutdown readiness, so admitted copy/curation actions finish
+before the central writer closes. Recognizer waits for its Native reader and
+recognition workers before closing profile admission, then waits for accepted
+profile work and SQLite cleanup. Profile blocking joins remain CLI/test teardown.
+Native reader startup failures deliver a terminal error instead of leaving busy
+controls stranded. Remaining module error/admission paths and live usage remain
+under audit.
 
 Cropper and Image Optimizer can preserve embedded generation
 metadata in their outputs through the shared metadata layer. Watermarker deliberately

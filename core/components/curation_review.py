@@ -3,6 +3,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QAbstractItemView, QPlainTextEdit, QHeaderView)
 from core.library_async import LibraryReader
+from core.components.reader_dialog import ReaderDialog
 from core.curation_review import CurationReviewTasks
 from core.curation_apply import CurationApplyTasks
 
@@ -27,7 +28,7 @@ _ERROR_DEFAULTS = {
 }
 
 
-class CurationReviewDialog(QDialog):
+class CurationReviewDialog(ReaderDialog):
     curation_restored = Signal(str)
 
     def __init__(self, db_path, folder, translate, theme, parent=None, service=None):
@@ -273,10 +274,3 @@ class CurationReviewDialog(QDialog):
                 'Restored exported curation for {path}. Review restarted.').format(path=path))
             self.curation_restored.emit(path)
             self.restart()
-
-    def closeEvent(self, event):
-        self._closed = True
-        self.reader.close()
-        if self.apply_reader is not None:
-            self.apply_reader.close()
-        super().closeEvent(event)

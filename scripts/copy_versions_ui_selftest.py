@@ -369,7 +369,7 @@ class IntegrationQt(helpers.Fixture):
         module.load_folder_paths('C:/another')
         self.assertIs(module._versions_dialog, first)
         first.reject()
-        self.assertIsNone(module._versions_dialog)
+        self.assertTrue(helpers.pump(lambda: module._versions_dialog is None))
         self.assertTrue(first._closed)
         module.review_copy_versions()
         self.assertIsNot(module._versions_dialog, first)

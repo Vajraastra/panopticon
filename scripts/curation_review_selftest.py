@@ -165,11 +165,13 @@ class ReviewQt(helpers.Fixture):
             module.on_unload()
             self.assertLess(time.monotonic() - before, .1)
             self.assertTrue(reader._cancel.is_set())
-            self.assertIsNone(module._review_dialog)
+            self.assertIs(module._review_dialog, dialog)
+            self.assertFalse(module.shutdown_ready())
             release.set()
             reader._thread.join(3)
             self.assertFalse(reader._thread.is_alive())
-            QApplication.processEvents()
+            self.assertTrue(helpers.pump(lambda: module._review_dialog is None))
+            self.assertTrue(module.shutdown_ready())
 
     def test_one_window_captured_folder_and_reopen_after_close(self):
         module, dialog, _ = self.open_review(2)
@@ -181,7 +183,7 @@ class ReviewQt(helpers.Fixture):
         self.assertTrue(helpers.pump(lambda: module._browse_ready))
         self.assertEqual(dialog.folder, self.folder.as_posix())
         dialog.close()
-        self.assertIsNone(module._review_dialog)
+        self.assertTrue(helpers.pump(lambda: module._review_dialog is None))
         module.review_folder_curation()
         new = module._review_dialog
         self.dialogs.append((new, new.reader))

@@ -902,9 +902,13 @@ class LibrarianModule(BaseModule):
             eb.unsubscribe('library_changed', self._on_library_changed)
 
     def shutdown_ready(self):
-        return (not hasattr(self, 'folder_archive') or self.folder_archive.shutdown_ready()) and all(
-            worker is None or not worker.isRunning() for worker in
-            (self.indexer_thread, self.backfill_thread, self._reindex_thread))
+        readers = self.findChildren(LibraryReader)
+        if self.view is not None:
+            readers += self.view.findChildren(LibraryReader)
+        return ((not hasattr(self, 'folder_archive') or self.folder_archive.shutdown_ready())
+                and all(reader.shutdown_ready() for reader in readers)
+                and all(worker is None or not worker.isRunning() for worker in
+                        (self.indexer_thread, self.backfill_thread, self._reindex_thread)))
 
     def _can_write_folder(self):
         if self._closed or self._folder_write is not None:

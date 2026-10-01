@@ -3,6 +3,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView)
 from core.library_async import LibraryReader
+from core.components.reader_dialog import ReaderDialog
 from core.curation_recovery_tasks import CurationRecoveryTasks
 
 _ERRORS = {
@@ -17,7 +18,7 @@ _ERRORS = {
 }
 
 
-class CurationRecoveryDialog(QDialog):
+class CurationRecoveryDialog(ReaderDialog):
     def __init__(self, folder, translate, theme=None, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_DeleteOnClose)
@@ -141,8 +142,3 @@ class CurationRecoveryDialog(QDialog):
             self.quarantine_button.setEnabled(True)
             self.status.setText(self.tr_text('lib.recovery.ready',
                 'Review all {count} listed resources before choosing quarantine.').format(count=len(value['files'])))
-
-    def closeEvent(self, event):
-        self._closed = True
-        self.reader.close()
-        super().closeEvent(event)

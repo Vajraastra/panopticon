@@ -5,10 +5,11 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QAbstractItemView, QPlainTextEdit, QHeaderView, QComboBox)
 from core.library_async import LibraryReader
+from core.components.reader_dialog import ReaderDialog
 from core.copy_version_tasks import CopyVersionTasks
 
 
-class CopyVersionsDialog(QDialog):
+class CopyVersionsDialog(ReaderDialog):
     copies_changed = Signal()
 
     def __init__(self, service, translate, theme=None, parent=None):
@@ -219,12 +220,3 @@ class CopyVersionsDialog(QDialog):
             self.action_status.setText(self.text('done', 'Copy {id} updated. Catalog restarted.').format(id=value['copy_id']))
             self.copies_changed.emit()
             self.restart()
-
-    def _shutdown(self, *_):
-        self._closed = True
-        for reader in (self.reader, self.details_reader, self.action_reader):
-            reader.close()
-
-    def closeEvent(self, event):
-        self._shutdown()
-        super().closeEvent(event)

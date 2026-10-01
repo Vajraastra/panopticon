@@ -196,6 +196,9 @@ class ProfileService:
             if conn is not None:
                 conn.close()
 
+    def shutdown_ready(self):
+        return self._thread is None or not self._thread.is_alive()
+
     def close(self, wait=False):
         with self._lock:
             self._closed = True

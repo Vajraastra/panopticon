@@ -746,7 +746,17 @@ class CharacterRecognitionView(QWidget):
                 else:worker.is_running = False
 
     def shutdown_ready(self):
-        return all(worker is None or not worker.isRunning() for worker in (self.worker,self.auto_worker))
+        workers_ready = all(worker is None or not worker.isRunning()
+                            for worker in (self.worker, self.auto_worker))
+        if not workers_ready or not self._reader.shutdown_ready():
+            return False
+        if self._closed:
+            # Recognition workers may still need their admitted profile snapshot.
+            # Close admission only after those native workers finish, then wait
+            # for every accepted profile transaction and SQLite cleanup.
+            self.profile_db.service.close()
+        return self.profile_db.service.shutdown_ready()
+
 
     @Slot(str, object, object, str, object, float, object)
     def on_image_processed(self, path, cv_img, embedding, suggestion, bbox, confidence, binding=None):
