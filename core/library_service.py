@@ -24,6 +24,8 @@ from core.paths import ProjectPaths
 
 log = logging.getLogger(__name__)
 READS = frozenset({
+    'get_metadata_edit_state', 'get_generation_history_status', 'get_generation_history_page',
+    'get_metadata_path_status',
     'get_known_files_in_folder', 'get_files_recursive', 'get_watched_folders',
     'get_folder_count', 'get_folder_preview', 'search_by_terms', 'get_file_id',
     'get_tags_for_file', 'search_files_paginated', 'get_folders_paginated',
@@ -46,6 +48,9 @@ READS = frozenset({
 # Agrupar puede recorrer toda la DB aun con LIMIT. Acotar duración y permitir
 # cancelación sin mantener indefinidamente un lector que retenga el WAL.
 READ_BUDGET_SECONDS = {
+    'get_metadata_edit_state': 10,
+    'get_metadata_path_status': 10,
+    'get_generation_history_page': 10,
     'get_curation_snapshot': 10,
     'get_folder_archive_preview': 10,
     'get_duplicate_snapshot': 10,
@@ -57,6 +62,7 @@ READ_BUDGET_SECONDS = {
     'get_phash_states': 10,
 }
 WRITES = frozenset({
+    'prepare_generation_history', 'approve_metadata_edit', 'commit_metadata_edit',
     'register_files_minimal', 'update_file_metadata', 'remove_files',
     'archive_missing_copies',
     'add_watched_folder', 'remove_watched_folder', 'add_tag_to_file',

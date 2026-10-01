@@ -836,6 +836,34 @@ class LibraryRepository:
         from core.library_versions import state
         return state(self.conn, copy_id)
 
+    def get_metadata_edit_state(self, path):
+        from core.generation_history import edit_state
+        return edit_state(self.conn, path, normalize=self._normalize_path)
+
+    def get_generation_history_status(self):
+        from core.generation_history import status
+        return status(self.conn)
+
+    def get_metadata_path_status(self, path):
+        from core.generation_history import path_status
+        return path_status(self.conn, path, normalize=self._normalize_path)
+
+    def get_generation_history_page(self, copy_id, **kwargs):
+        from core.generation_history import page
+        return page(self.conn, copy_id, **kwargs)
+
+    def prepare_generation_history(self):
+        from core.generation_history import prepare
+        return prepare(self.conn)
+
+    def approve_metadata_edit(self, copy_id, **kwargs):
+        from core.generation_history import approve
+        return approve(self.conn, copy_id, **kwargs)
+
+    def commit_metadata_edit(self, copy_id, **kwargs):
+        from core.generation_history import commit
+        return commit(self.conn, copy_id, update_fts=self._fts_sync_file, **kwargs)
+
     def get_duplicate_snapshot(self, paths):
         from core.duplicate_snapshot import snapshot
         return snapshot(self.conn, paths, self._normalize_path)

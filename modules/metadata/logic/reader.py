@@ -4,9 +4,11 @@ import os
 import re
 import datetime
 import logging
+import zlib
 from PIL import Image
 
 log = logging.getLogger(__name__)
+MAX_METADATA_BYTES = 256 * 1024
 
 class UniversalParser:
     """
@@ -58,28 +60,62 @@ class UniversalParser:
                 sig = f.read(8)
                 if sig != b'\x89PNG\r\n\x1a\n':
                     return {"error": "Invalid PNG"}
-                
+                total = chunks = 0
+                size = os.fstat(f.fileno()).st_size
                 while True:
                     length_bin = f.read(4)
                     if not length_bin: break
+                    chunks += 1
+                    if len(length_bin) != 4 or chunks > 100000:
+                        raise ValueError('Invalid PNG chunks')
                     length = struct.unpack('>I', length_bin)[0]
                     chunk_type = f.read(4)
+                    if len(chunk_type) != 4 or f.tell()+length+4 > size:
+                        raise ValueError('Truncated PNG')
+                    if chunk_type not in (b'tEXt', b'iTXt', b'zTXt'):
+                        f.seek(length+4, 1)  # No materializar IDAT ni chunks ajenos.
+                        if chunk_type == b'IEND': break
+                        continue
+                    if length > MAX_METADATA_BYTES or total+length > MAX_METADATA_BYTES:
+                        raise ValueError('Metadata exceeds review limit')
                     data = f.read(length)
                     f.read(4) # CRC
-                    
+                    total += length
                     # Chunks comunes donde las IAs guardan información de generación
                     if chunk_type == b'tEXt':
                         parts = data.split(b'\x00', 1)
                         if len(parts) == 2:
                             metadata[parts[0].decode('latin-1', errors='ignore')] = parts[1].decode('latin-1', errors='ignore')
                     elif chunk_type == b'iTXt':
-                        parts = data.split(b'\x00', 5)
-                        if len(parts) >= 6:
-                            metadata[parts[0].decode('utf-8', errors='ignore')] = parts[5].decode('utf-8', errors='ignore')
+                        key, rest = data.split(b'\x00', 1)
+                        flag, method = rest[:2]
+                        language, translated, text = rest[2:].split(b'\x00', 2)
+                        if flag not in (0, 1) or method != 0:
+                            raise ValueError('Unsupported PNG text encoding')
+                        if flag:
+                            text = UniversalParser._inflate(text)
+                            total += len(text)
+                        metadata[key.decode('latin-1')] = text.decode('utf-8')
+                    elif chunk_type == b'zTXt':
+                        key, rest = data.split(b'\x00', 1)
+                        if rest[0] != 0: raise ValueError('Unsupported PNG text encoding')
+                        text = UniversalParser._inflate(rest[1:])
+                        total += len(text)
+                        metadata[key.decode('latin-1')] = text.decode('latin-1')
+                    if total > MAX_METADATA_BYTES:
+                        raise ValueError('Metadata exceeds review limit')
             
             return UniversalParser._extract_prompts(metadata)
         except Exception as e:
             return {"error": str(e)}
+
+    @staticmethod
+    def _inflate(data):
+        decoder = zlib.decompressobj()
+        text = decoder.decompress(data, MAX_METADATA_BYTES+1)
+        if len(text) > MAX_METADATA_BYTES or not decoder.eof or decoder.unconsumed_tail or decoder.unused_data:
+            raise ValueError('Compressed metadata exceeds review limit')
+        return text
 
     @staticmethod
     def _parse_jpeg(path):
@@ -94,6 +130,8 @@ class UniversalParser:
                         user_comment = exif[0x9286]
                         # Handle bytes vs string
                         if isinstance(user_comment, bytes):
+                            if user_comment.startswith((b'ASCII\x00\x00\x00', b'UNICODE\x00')):
+                                user_comment = user_comment[8:]
                             user_comment = user_comment.decode('utf-8', errors='ignore')
                         metadata["parameters"] = user_comment
                     
@@ -108,67 +146,44 @@ class UniversalParser:
                 # Also check for XMP data (some tools embed there)
                 if hasattr(img, 'info') and 'xmp' in img.info:
                     metadata["xmp"] = img.info['xmp']
-                    
+            if "parameters" not in metadata and 'xmp' in metadata:
+                return UniversalParser._xmp_prompts(metadata['xmp'])
             return UniversalParser._extract_prompts(metadata)
         except Exception as e:
             return {"error": str(e)}
 
     @staticmethod
     def _parse_avif(path):
-        """
-        Lee XMP embebido en AVIF (esquema pan:data de Panopticon).
-        - 'a1111_parameters' presente: re-ruta por el parser A1111 (fidelidad completa).
-        - 'comfyui_prompt' presente: re-ruta por el parser ComfyUI (grafo JSON).
-        - Fallback: campos normalizados (AVIF nativo o convertido pre-fix).
-        """
+        """XMP Panopticon acotado; misma interpretación que WebP."""
         try:
-            with Image.open(path) as img:
-                if not (hasattr(img, 'info') and 'xmp' in img.info):
-                    return {}
-                xmp = img.info['xmp']
-                if isinstance(xmp, bytes):
-                    xmp = xmp.decode('utf-8', errors='ignore')
+            with Image.open(path) as image:
+                xmp = image.info.get('xmp')
+                if xmp is None: return {}
+                return UniversalParser._xmp_prompts(xmp)
+        except Exception as exc:
+            return {'error': str(exc)}
 
-            # CDATA (archivos nuevos) con fallback sin CDATA (archivos viejos)
-            match = re.search(
-                r'<pan:data><!\[CDATA\[(.*?)\]\]></pan:data>', xmp, re.DOTALL
-            )
-            if not match:
-                match = re.search(r'<pan:data>(.*?)</pan:data>', xmp, re.DOTALL)
-            if not match:
-                return {}
-
-            pan_data = json.loads(match.group(1))
-
-            # --- Ruta A1111 / Forge: máxima fidelidad via raw ---
-            if "a1111_parameters" in pan_data:
-                return UniversalParser._extract_prompts(
-                    {"parameters": pan_data["a1111_parameters"]}
-                )
-
-            # --- Ruta ComfyUI: grafo JSON original ---
-            if "comfyui_prompt" in pan_data:
-                return UniversalParser._extract_prompts(
-                    {"prompt": pan_data["comfyui_prompt"]}
-                )
-
-            # --- Fallback: campos normalizados ---
-            return {
-                "raw": pan_data,
-                "positive": pan_data.get("positive_prompt", ""),
-                "negative": pan_data.get("negative_prompt", ""),
-                "tool": pan_data.get("tool", "Unknown"),
-                "model": pan_data.get("model", "Unknown"),
-                "seed": pan_data.get("seed", "Unknown"),
-                "steps": pan_data.get("steps", "Unknown"),
-                "cfg": pan_data.get("cfg", "Unknown"),
-                "sampler": pan_data.get("sampler", "Unknown"),
-                "vae": pan_data.get("vae", "Unknown"),
-                "loras": pan_data.get("loras", []),
-            }
-
-        except Exception as e:
-            return {"error": str(e)}
+    @staticmethod
+    def _xmp_prompts(xmp):
+        if len(xmp) > MAX_METADATA_BYTES:
+            raise ValueError('Metadata exceeds review limit')
+        if isinstance(xmp, bytes): xmp = xmp.decode('utf-8')
+        match = re.search(r'<pan:data><!\[CDATA\[(.*?)\]\]></pan:data>', xmp, re.DOTALL)
+        if not match:
+            match = re.search(r'<pan:data>(.*?)</pan:data>', xmp, re.DOTALL)
+        if not match: return UniversalParser._extract_prompts({})
+        data = json.loads(match.group(1))
+        if not isinstance(data, dict): raise ValueError('Invalid generation metadata')
+        if 'a1111_parameters' in data:
+            return UniversalParser._extract_prompts({'parameters': data['a1111_parameters']})
+        if 'comfyui_prompt' in data:
+            return UniversalParser._extract_prompts({'prompt': data['comfyui_prompt']})
+        result = UniversalParser._extract_prompts({})
+        result['raw'] = data
+        for key, source in (('positive', 'positive_prompt'), ('negative', 'negative_prompt'),
+                            *[(key, key) for key in ('tool', 'model', 'seed', 'steps', 'cfg', 'sampler', 'vae', 'loras')]):
+            if source in data: result[key] = data[source]
+        return result
 
     @staticmethod
     def _extract_prompts(raw_metadata):

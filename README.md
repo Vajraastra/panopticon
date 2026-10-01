@@ -440,6 +440,34 @@ a smaller complete batch when needed. Changing folders or threshold consumes
 the captured report. Scopes follow stored native paths; this classification does
 not prove current physical bytes, aliases or complete curation.
 
+### Metadata Hub: editing and generation history
+
+Load an image and switch to **Editor mode** to replace its prompts. Clearing both
+fields removes embedded generation metadata. **Save changes** requires a currently
+indexed, writable original outside Cherry folders. Review the file and copy ID in
+the confirmation before updating it. Reading metadata and decoding previews run in
+a worker; the interface remains available for cancellation and coordinated closure.
+
+Before publishing an edit, Panopticon saves the complete original and a recovery
+journal under its `metadata_recovery` tool cache, outside watched collection roots.
+The same native copy keeps its tags, rating, sources and immutable original hash.
+Its current generation fields, current hash and search index update together with
+a history record containing the previous native and embedded generation data.
+**Generation history** shows earlier values in pages; the current curation remains
+separate. A perceptual hash from different bytes requires explicit recalculation.
+
+**Export copy** requires a fresh filename with the same extension, outside Cherry
+folders and without existing native path history. It does not update the source's
+native identity. JPEG edits preserve the compressed image stream; WebP output is
+lossless. AVIF output is re-encoded and can change pixels. Supported files are
+single-frame PNG, JPEG, WebP and AVIF, up to 256 MiB and 20 million pixels.
+
+Results distinguish file publication from a confirmed native update. A partial
+result requires review using its recovery journal and backup; there is no automatic
+disk rollback or atomic transaction spanning the file and SQLite. External editors
+can still race with revalidation. Reload the image before another operation.
+Backups remain available after success and are not automatically deleted.
+
 ## License
 
 Business Source License 1.1 — free for non-commercial use.  

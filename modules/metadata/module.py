@@ -3,22 +3,27 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxL
                                QSplitter, QFrame, QSizePolicy)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap, QPainter
+from shiboken6 import isValid
 from core.base_module import BaseModule
-from .logic.reader import UniversalParser
-from .logic.modifier import modify_metadata, get_export_path
+from core.theme_manager import ThemeManager
+from .logic.worker import MetadataWorker
+import json
 import os
 import logging
 
 log = logging.getLogger(__name__)
 
 _SUPPORTED_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.avif'}
+_LIVE_WORKERS = set()
 
 class ResponsiveImageLabel(QLabel):
     """A QLabel que muestra imágenes escaladas y acepta drag & drop de archivos."""
     files_dropped = Signal(list)  # emite lista de rutas válidas al soltar
 
-    def __init__(self, text="No Image Loaded", bg='#050505', border='#222222', accent='#00ffcc'):
+    def __init__(self, text="", bg=None, border=None, accent=None):
         super().__init__(text)
+        colors = ThemeManager.active().get_color
+        bg, border, accent = bg or colors('bg_main'), border or colors('border'), accent or colors('accent_main')
         self._bg = bg
         self._border = border
         self._accent = accent
@@ -28,28 +33,13 @@ class ResponsiveImageLabel(QLabel):
         self._pixmap = None
         self.setAcceptDrops(True)
 
-    def set_image(self, path):
-        if not path or not os.path.exists(path):
+    def set_image(self, image):
+        if image is None:
             self._pixmap = None
-            self.setText("No Image Loaded")
+            self.setText("")
             self.update()
             return
-
-        self._pixmap = QPixmap(path)
-
-        # Fallback Pillow para formatos que Qt no soporta nativamente (ej. AVIF)
-        if self._pixmap.isNull():
-            try:
-                from PIL import Image as PILImage
-                from PySide6.QtGui import QImage
-                pil_img = PILImage.open(path).convert("RGBA")
-                data = pil_img.tobytes("raw", "RGBA")
-                qimage = QImage(data, pil_img.width, pil_img.height,
-                                QImage.Format_RGBA8888)
-                self._pixmap = QPixmap.fromImage(qimage)
-            except Exception:
-                pass
-
+        self._pixmap = QPixmap.fromImage(image)
         self.setText("")
         self.update()
 
@@ -112,6 +102,31 @@ class MetadataModule(BaseModule):
         self.current_index = -1
         self.active_path = None
         self.current_mode = self.MODE_VIEWER
+        self._closed = self._busy = self._confirming = False
+        self._worker = None
+        self._workers = set()
+        self._token = 0
+        self._capture = None
+        self._pending_result = None
+        self._history_after = 0
+        self._history_more = False
+
+    def on_load(self, context=None):
+        super().on_load(context or {})
+        self._closed = False
+
+    def on_unload(self):
+        self._closed = True
+        self._token += 1
+        for worker in self._workers:
+            worker.stop()
+
+    def shutdown_ready(self):
+        return all(not worker.isRunning() for worker in self._workers)
+
+    def _color(self, key):
+        manager = self.context.get('theme_manager') or ThemeManager.active()
+        return manager.get_color(key)
 
     def get_view(self) -> QWidget:
         """Configura el Hub con una vista de carrusel y paneles de edición lateral."""
@@ -130,12 +145,13 @@ class MetadataModule(BaseModule):
         
         # Establece el modo inicial (solo lectura por defecto)
         self.set_mode(self.MODE_VIEWER)
+        self.view.destroyed.connect(self.on_unload)
         
         return self.view
 
     def _create_sidebar(self) -> QWidget:
         tm = self.context.get('theme_manager')
-        c = tm.get_color if tm else lambda k: '#000000'
+        c = self._color
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -191,9 +207,8 @@ class MetadataModule(BaseModule):
         self.btn_save = QPushButton(self.tr("meta.save", "💾 Save Changes"))
         self.btn_save.setToolTip(self.tr(
             "meta.save_tip",
-            "OVERWRITES the original file with your edits. It asks for confirmation, and "
-            "warns separately if you are about to leave it with no metadata: that erases "
-            "the «recipe» and cannot be undone."))
+            "Updates the displayed indexed copy after confirmation and verification. "
+            "Previous generation and a recovery backup remain available; Cherry originals are protected."))
         self.btn_save.setFixedHeight(40)
         self.btn_save.setCursor(Qt.PointingHandCursor)
         self.btn_save.clicked.connect(self.action_save_current)
@@ -225,6 +240,27 @@ class MetadataModule(BaseModule):
         """)
         layout.addWidget(self.btn_export)
 
+        self.btn_history = QPushButton(self.tr('tool.metadata.history', 'Generation history'))
+        self.btn_history.setToolTip(self.tr('tool.metadata.history_tip', 'Read the first two previous generations of this copy ID without changing the image or database.'))
+        self.btn_history.clicked.connect(lambda: self._read_history(False))
+        layout.addWidget(self.btn_history)
+        self.btn_history_next = QPushButton(self.tr('tool.metadata.history_next', 'Next history page'))
+        self.btn_history_next.setToolTip(self.tr('tool.metadata.history_next_tip', 'Replace the displayed history with up to two more records; no accumulated pages.'))
+        self.btn_history_next.clicked.connect(lambda: self._read_history(True))
+        layout.addWidget(self.btn_history_next)
+        self.btn_reload = QPushButton(self.tr('tool.metadata.reload', 'Reload current image'))
+        self.btn_reload.setToolTip(self.tr('tool.metadata.reload_tip', 'Read the file and native identity again; discard unsaved edits and old review evidence.'))
+        self.btn_reload.clicked.connect(self.display_current)
+        layout.addWidget(self.btn_reload)
+        self.btn_cancel = QPushButton(self.tr('tool.metadata.cancel', 'Cancel'))
+        self.btn_cancel.setToolTip(self.tr('tool.metadata.cancel_tip', 'Stop before publication. A file already published and an admitted database write finish; closing waits without blocking the interface.'))
+        self.btn_cancel.clicked.connect(self._cancel_job)
+        layout.addWidget(self.btn_cancel)
+        self.lbl_operation = QLabel()
+        self.lbl_operation.setTextFormat(Qt.PlainText)
+        self.lbl_operation.setWordWrap(True)
+        layout.addWidget(self.lbl_operation)
+
         layout.addStretch()
 
         lbl_info = QLabel(self.tr("meta.list", "IMAGE LIST"))
@@ -239,7 +275,7 @@ class MetadataModule(BaseModule):
 
     def _create_content(self) -> QWidget:
         tm = self.context.get('theme_manager')
-        c = tm.get_color if tm else lambda k: '#000000'
+        c = self._color
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -258,11 +294,12 @@ class MetadataModule(BaseModule):
         self.btn_open.setToolTip(self.tr(
             "meta.open_tip", "Loads one or more images to view or edit their metadata."))
         self.btn_open.clicked.connect(self.open_files_dialog)
-        self.btn_open.setStyleSheet(f"background: {c('bg_panel')}; color: {c('text_primary')}; padding: 8px 15px; border-radius: 5px; border: 1px solid {c('border')};")
+        self.btn_open.setStyleSheet(f"background: {c('bg_panel')}; color: {c('text_primary')}; padding: 8px 15px; border-radius: 5px; border: 1px solid {c('border_strong')};")
         top_bar.addWidget(self.btn_open)
         top_bar.addStretch()
 
         self.lbl_file_name = QLabel(self.tr("meta.no_file", "No file selected"))
+        self.lbl_file_name.setTextFormat(Qt.PlainText)
         self.lbl_file_name.setStyleSheet(f"color: {c('text_dim')}; font-family: Consolas;")
         top_bar.addWidget(self.lbl_file_name)
         viewer_layout.addLayout(top_bar)
@@ -276,7 +313,7 @@ class MetadataModule(BaseModule):
 
         # Carousel Controls
         carousel_layout = QHBoxLayout()
-        nav_style = f"padding: 10px; background: {c('bg_input')}; color: {c('text_secondary')}; border-radius: 5px; border: 1px solid {c('border')};"
+        nav_style = f"padding: 10px; background: {c('bg_input')}; color: {c('text_secondary')}; border-radius: 5px; border: 1px solid {c('border_strong')};"
         self.btn_prev = QPushButton(self.tr("meta.prev", "◀ Previous"))
         self.btn_prev.setToolTip(self.tr(
             "meta.prev_tip", "Previous of the loaded images. Unsaved changes are lost."))
@@ -307,6 +344,7 @@ class MetadataModule(BaseModule):
         editor_layout.addWidget(lbl_pos)
 
         self.txt_pos = QTextEdit()
+        self.txt_pos.setToolTip(self.tr('tool.metadata.positive_tip', 'Edit the positive prompt, up to 65,536 characters. Save affects the reviewed indexed copy; export requires a fresh path.'))
         self.txt_pos.setPlaceholderText(self.tr("meta.placeholder.pos", "Enter positive prompt..."))
         self.txt_pos.setStyleSheet(f"background: {c('bg_main')}; color: {c('text_primary')}; border: 1px solid {c('border')}; border-radius: 5px; font-family: Consolas;")
         editor_layout.addWidget(self.txt_pos, 2)
@@ -316,6 +354,7 @@ class MetadataModule(BaseModule):
         editor_layout.addWidget(lbl_neg)
 
         self.txt_neg = QTextEdit()
+        self.txt_neg.setToolTip(self.tr('tool.metadata.negative_tip', 'Edit the negative prompt. Leaving both prompts blank requests metadata cleaning after confirmation.'))
         self.txt_neg.setPlaceholderText(self.tr("meta.placeholder.neg", "Enter negative prompt..."))
         self.txt_neg.setStyleSheet(f"background: {c('bg_main')}; color: {c('text_primary')}; border: 1px solid {c('border')}; border-radius: 5px; font-family: Consolas;")
         editor_layout.addWidget(self.txt_neg, 1)
@@ -325,6 +364,7 @@ class MetadataModule(BaseModule):
         editor_layout.addWidget(lbl_tech)
 
         self.txt_tech = QTextEdit()
+        self.txt_tech.setToolTip(self.tr('tool.metadata.details_tip', 'Current file data or a bounded page of generation history. Native tags and manual rating are preserved separately.'))
         self.txt_tech.setReadOnly(True)
         self.txt_tech.setStyleSheet(f"background: {c('bg_main')}; color: {c('text_dim')}; border: none; font-size: 11px; font-family: Consolas;")
         editor_layout.addWidget(self.txt_tech, 2)
@@ -341,7 +381,7 @@ class MetadataModule(BaseModule):
         self.current_mode = mode
         is_edit = (mode == self.MODE_EDITOR)
         tm = self.context.get('theme_manager')
-        c = tm.get_color if tm else lambda k: '#000000'
+        c = self._color
 
         # Toggle read-only
         self.txt_pos.setReadOnly(not is_edit)
@@ -359,13 +399,14 @@ class MetadataModule(BaseModule):
             self.txt_pos.setStyleSheet(f"{base_style} color: {c('accent_main')}; border: 1px solid {c('accent_main')};")
             self.txt_neg.setStyleSheet(f"{base_style} color: {c('accent_warning')}; border: 1px solid {c('accent_warning')};")
         else:
-            self.txt_pos.setStyleSheet(f"{base_style} color: {c('text_primary')}; border: 1px solid {c('border')};")
-            self.txt_neg.setStyleSheet(f"{base_style} color: {c('text_primary')}; border: 1px solid {c('border')};")
+            self.txt_pos.setStyleSheet(f"{base_style} color: {c('text_primary')}; border: 1px solid {c('border_strong')};")
+            self.txt_neg.setStyleSheet(f"{base_style} color: {c('text_primary')}; border: 1px solid {c('border_strong')};")
+        self._controls()
 
     def _update_mode_styles(self):
         view_active = (self.current_mode == self.MODE_VIEWER)
         tm = self.context.get('theme_manager')
-        c = tm.get_color if tm else lambda k: '#000000'
+        c = self._color
 
         self.btn_mode_view.setChecked(view_active)
         self.btn_mode_edit.setChecked(not view_active)
@@ -378,7 +419,20 @@ class MetadataModule(BaseModule):
 
     def load_image_set(self, paths: list):
         """Standard integration from Librarian."""
-        if not paths: return
+        if not paths or self._closed or self._busy: return
+        if self.view is None: self.get_view()
+        if len(paths) > 100000:
+            self._notice('selection_limit', 'Select at most 100,000 image paths.', danger=True)
+            return
+        size = 0
+        for path in paths:
+            if not isinstance(path, str) or not path or len(path) > 4096:
+                self._notice('selection_limit', 'Select at most 100,000 image paths.', danger=True)
+                return
+            size += len(path.encode('utf-8'))+4
+            if size > 8*1024*1024:
+                self._notice('selection_bytes', 'Selected paths exceed the 8 MiB review limit.', danger=True)
+                return
         self.image_list = sorted(paths)
         self.current_index = 0
         self.display_current()
@@ -388,33 +442,24 @@ class MetadataModule(BaseModule):
         self.load_image_set(paths)
 
     def display_current(self):
+        if self._closed or self._busy: return
+        self._capture = None
+        self._history_after, self._history_more = 0, False
         if not (0 <= self.current_index < len(self.image_list)):
             self.active_path = None
             self.image_label.set_image(None)
             self.lbl_file_name.setText(self.tr("meta.no_file", "No file selected"))
             self.clear_fields()
+            self._controls()
             return
 
         self.active_path = self.image_list[self.current_index]
-        self.image_label.set_image(self.active_path)
+        self.image_label.set_image(None)
+        self.clear_fields()
         self.lbl_file_name.setText(os.path.basename(self.active_path))
         self.lbl_carousel_stats.setText(self.tr("meta.stats", "{current} / {total} images").format(current=self.current_index + 1, total=len(self.image_list)))
         
-        # Parse Metadata
-        result = UniversalParser.parse_image(self.active_path)
-        self.txt_pos.setPlainText(result.get("positive", ""))
-        self.txt_neg.setPlainText(result.get("negative", ""))
-        
-        # Tech details
-        tech = f"Tool: {result.get('tool', 'Unknown')}\n"
-        tech += f"Model: {result.get('model', '-')}\n"
-        tech += f"Sampler: {result.get('sampler', '-')} | Steps: {result.get('steps', '-')} | CFG: {result.get('cfg', '-')}\n"
-        tech += f"Size: {result.get('stats', {}).get('format', '-')} | {result.get('stats', {}).get('size', '-')}"
-        self.txt_tech.setPlainText(tech)
-
-        # Update Nav buttons
-        self.btn_prev.setEnabled(self.current_index > 0)
-        self.btn_next.setEnabled(self.current_index < len(self.image_list) - 1)
+        self._start('load', path=self.active_path)
 
     def clear_fields(self):
         self.txt_pos.clear()
@@ -422,74 +467,198 @@ class MetadataModule(BaseModule):
         self.txt_tech.clear()
 
     def go_prev(self):
+        if self._busy or self._confirming or self._closed: return
         if self.current_index > 0:
             self.current_index -= 1
             self.display_current()
 
     def go_next(self):
+        if self._busy or self._confirming or self._closed: return
         if self.current_index < len(self.image_list) - 1:
             self.current_index += 1
             self.display_current()
 
     def open_files_dialog(self):
+        if self._busy or self._confirming or self._closed: return
         files, _ = QFileDialog.getOpenFileNames(self.view, self.tr("opt.load_images", "Select Images"), "", "Images (*.png *.jpg *.jpeg *.webp *.avif)")
         if files:
             self.load_image_set(files)
 
 
     def action_save_current(self):
-        if not self.active_path: return
-        pos = self.txt_pos.toPlainText().strip()
-        neg = self.txt_neg.toPlainText().strip()
-
-        # Level 1: Borrar TODA la metadata — acción irreversible máxima
-        if not pos and not neg:
-            msg = self.tr("meta.warn.empty", "⚠️ IRREVERSIBLE ACTION DETECTED\n\nYou are about to save this image with ZERO metadata. This will permanently erase the prompts (the 'recipe') and AI generation data from the original file.\n\nThis cannot be undone. Are you absolutely sure?")
-            reply = QMessageBox.warning(
-                self.view,
-                self.tr("meta.warn.title", "⚠️ Dangerous Operation"),
-                msg,
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            if reply != QMessageBox.Yes:
-                return
-        else:
-            # Level 2: Sobreescribir el original con contenido editado
-            msg = self.tr("meta.warn.overwrite", "You are about to overwrite the ORIGINAL file with the edited metadata.\n\nIf you want to keep the original safe, use 'Export Copy' instead.\n\nContinue and overwrite?")
-            reply = QMessageBox.warning(
-                self.view,
-                self.tr("meta.warn.overwrite.title", "Overwrite Original?"),
-                msg,
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            if reply != QMessageBox.Yes:
-                return
-
-        combined = f"{pos}\nNegative prompt: {neg}" if (pos or neg) else None
-
-        success, msg = modify_metadata(self.active_path, self.active_path, metadata_text=combined)
-        if success:
-            QMessageBox.information(self.view, self.tr("common.success", "Success"), self.tr("meta.save.success", "Metadata updated successfully."))
-            self.display_current()
-        else:
-            QMessageBox.warning(self.view, self.tr("common.error", "Error"), msg)
+        captured = self._action_capture(require_native=True)
+        if captured is None: return
+        token, path, mode, capture, pos, neg = captured
+        self._confirming = True
+        self._controls()
+        box = QMessageBox(self.view)
+        box.setWindowTitle(self.tr('tool.metadata.confirm_title', 'Update indexed original?'))
+        box.setIcon(QMessageBox.Warning)
+        box.setTextFormat(Qt.PlainText)
+        box.setText(self.tr('tool.metadata.confirm_body',
+            'File: {path}\nCopy ID: {id}\n\n{action}\nPrevious generation and a recovery backup will be retained. '
+            'Native tags, rating and Cherry receipts are preserved. AVIF is re-encoded and may change pixels.\n\nUpdate this original?').format(
+                path=path, id=capture['native']['state']['file']['id'], action=self.tr(
+                    'tool.metadata.clean_action' if not pos.strip() and not neg.strip() else 'tool.metadata.edit_action',
+                    'Remove generation metadata from the file.' if not pos.strip() and not neg.strip() else 'Replace the file prompts with these edits.')))
+        box.setStandardButtons(QMessageBox.Save | QMessageBox.Cancel)
+        box.button(QMessageBox.Save).setText(self.tr('tool.metadata.confirm_save', 'Update original'))
+        box.button(QMessageBox.Save).setToolTip(self.tr('tool.metadata.confirm_save_tip', 'Verify and update this reviewed indexed copy, keeping generation history and a recovery backup.'))
+        box.button(QMessageBox.Cancel).setText(self.tr('tool.metadata.cancel', 'Cancel'))
+        box.button(QMessageBox.Cancel).setToolTip(self.tr('tool.metadata.confirm_cancel_tip', 'Close this confirmation without saving or changing the file.'))
+        box.setDefaultButton(QMessageBox.Cancel)
+        box.setEscapeButton(QMessageBox.Cancel)
+        reply = box.exec()
+        self._confirming = False
+        self._controls()
+        if reply == QMessageBox.Save and self._capture_unchanged(captured):
+            self._start('edit', captured=capture, positive=pos, negative=neg)
 
     def action_export_copy(self):
-        if not self.active_path: return
-        dest = QFileDialog.getSaveFileName(self.view, self.tr("meta.export.title", "Export Copy"), self.active_path, "Same as source (*.*)")[0]
-        if dest:
-            pos = self.txt_pos.toPlainText().strip()
-            neg = self.txt_neg.toPlainText().strip()
-            # Evitar inyectar "\nNegative prompt: " cuando ambos campos están vacíos
-            combined = f"{pos}\nNegative prompt: {neg}" if (pos or neg) else None
+        captured = self._action_capture()
+        if captured is None: return
+        token, path, mode, capture, pos, neg = captured
+        stem, extension = os.path.splitext(path)
+        self._confirming = True
+        self._controls()
+        dest = QFileDialog.getSaveFileName(self.view, self.tr('meta.export.title', 'Export Copy'),
+            stem+'_metadata'+extension, self.tr('tool.metadata.same_format', 'Source format (*{ext})').format(ext=extension))[0]
+        self._confirming = False
+        self._controls()
+        if dest and self._capture_unchanged(captured):
+            self._start('edit', captured=capture, positive=pos, negative=neg, destination=dest)
 
-            success, msg = modify_metadata(self.active_path, dest, metadata_text=combined)
-            if success:
-                QMessageBox.information(self.view, self.tr("common.success", "Success"), self.tr("meta.export.success", "Exported to:\n{dest}").format(dest=dest))
+    def _action_capture(self, require_native=False):
+        if self._closed or self._busy or self._confirming or not self.active_path or self._capture is None:
+            return None
+        if self.current_mode != self.MODE_EDITOR or self.context.get('data_service') is None:
+            return None
+        if require_native and not self._capture.get('editable_original'):
+            return None
+        pos, neg = self.txt_pos.toPlainText(), self.txt_neg.toPlainText()
+        if len(pos) > 65536 or len(neg) > 65536:
+            self._notice('prompt_limit', 'Each prompt is limited to 65,536 characters.', danger=True)
+            return None
+        return self._token, self.active_path, self.current_mode, self._capture, pos, neg
+
+    def _capture_unchanged(self, captured):
+        return not self._closed and not self._busy and self.view is not None and isValid(self.view) and captured == (
+            self._token, self.active_path, self.current_mode, self._capture,
+            self.txt_pos.toPlainText(), self.txt_neg.toPlainText())
+
+    def _cancel_job(self):
+        if self._worker is not None: self._worker.stop()
+
+    def _start(self, operation, **arguments):
+        if self._closed or self._busy or self._worker is not None: return
+        self._token += 1
+        self._busy = True
+        self._pending_result = None
+        worker = MetadataWorker(self.context.get('data_service'), self.context.get('metadata_journal_root'),
+            operation, self._token, **arguments)
+        self._worker = worker
+        self._workers.add(worker)
+        _LIVE_WORKERS.add(worker)
+        worker.finished_signal.connect(self._receive)
+        worker.finished.connect(self._worker_finished)
+        worker.finished.connect(lambda worker=worker: (_LIVE_WORKERS.discard(worker), worker.deleteLater()))
+        self._notice('working', 'Reading or verifying metadata…')
+        self._controls()
+        worker.start()
+
+    def _receive(self, token, operation, result):
+        if token == self._token and not self._closed:
+            self._pending_result = token, operation, result
+
+    def _worker_finished(self):
+        worker = self.sender()
+        self._workers.discard(worker)
+        if worker is not self._worker: return
+        self._worker = None
+        self._busy = False
+        pending, self._pending_result = self._pending_result, None
+        if self._closed or self.view is None or not isValid(self.view): return
+        if pending is not None and pending[0] == self._token:
+            _, operation, result = pending
+            if result['status'] == 'complete':
+                if operation == 'load':
+                    self._capture = {key: value for key, value in result.items() if key != 'image'}
+                    self.image_label.set_image(result['image'])
+                    meta = result['metadata']
+                    self.txt_pos.setPlainText(str(meta.get('positive', '')))
+                    self.txt_neg.setPlainText(str(meta.get('negative', '')))
+                    fields = {key: meta.get(key, '') for key in ('tool', 'model', 'sampler', 'steps', 'cfg', 'seed')}
+                    fields.update(meta.get('stats', {}))
+                    self.txt_tech.setPlainText(json.dumps(fields, ensure_ascii=False, indent=2))
+                    if result.get('native'):
+                        if result.get('editable_original'):
+                            self._notice('ready', 'File and indexed copy loaded. Unsaved edits remain local.')
+                        else:
+                            self._notice('protected', 'This original requires review or is protected. You can read history or export to a fresh path.', danger=True)
+                    else:
+                        self._notice('external', 'This path has no reviewed active native identity. Export to a fresh path; index or review the copy before editing the original.', danger=True)
+                elif operation == 'history':
+                    self._history_after, self._history_more = result['next_after_id'], result['has_more']
+                    self.txt_tech.setPlainText(result['text'])
+                    self._notice('history_ready', 'Previous generations for this copy ID; current curation remains separate.')
+                elif operation == 'edit':
+                    self._capture = None  # No reusar evidencia anterior al cambio físico.
+                    self._history_more = False
+                    self._notice('saved', 'Verified file saved. Reload the current image before another edit.')
+                    self.txt_tech.setPlainText(self.tr('tool.metadata.receipt', 'Output: {dest}\nRecovery journal: {journal}').format(
+                        dest=result['destination'], journal=result['journal']))
             else:
-                QMessageBox.warning(self.view, self.tr("common.error", "Error"), msg)
+                if operation in ('load', 'edit'):
+                    self._capture = None
+                    self._history_more = False
+                if result['status'] == 'partial':
+                    self._notice('partial', 'The file was published, but the operation needs review. Do not repeat the save; inspect the recovery journal.', danger=True)
+                else:
+                    self._notice('failed', 'The operation could not complete. Review the details or reload the image.', danger=True)
+                self.txt_tech.setPlainText(self.tr('tool.metadata.failure_details', 'Reason: {reason}\nRecovery journal: {journal}').format(
+                    reason=result.get('error', ''), journal=result.get('journal', '')))
+                if operation == 'edit':
+                    self.txt_tech.append(self.tr('tool.metadata.effect_details', 'File published: {published}\nNative commit confirmed: {committed}').format(
+                        published=self.tr('tool.metadata.yes', 'Yes') if result.get('published') else self.tr('tool.metadata.no', 'No'),
+                        committed=self.tr('tool.metadata.yes', 'Yes') if result.get('native_committed') else self.tr('tool.metadata.no', 'No')))
+        self._controls()
+
+    def _read_history(self, next_page=False):
+        if self._closed or self._busy or self._confirming or not self._capture or not self._capture.get('native'): return
+        if next_page and not self._history_more: return
+        self._start('history', copy_id=self._capture['native']['state']['file']['id'],
+            after_id=self._history_after if next_page else 0, labels={key: self.tr('tool.metadata.'+key, default) for key, default in (
+                ('history_record', 'Record {id} — {date}'), ('history_native', 'Previous generation in the database'),
+                ('history_observed', 'Generation read from the previous file'), ('history_empty', 'No generation history recorded.'),
+                ('field_tool', 'Tool'), ('field_model', 'Model'), ('field_positive', 'Positive prompt'),
+                ('field_negative', 'Negative prompt'), ('field_seed', 'Seed'), ('field_width', 'Width'),
+                ('field_height', 'Height'), ('field_sampler', 'Sampler'), ('field_steps', 'Steps'),
+                ('field_cfg', 'CFG'), ('field_vae', 'VAE'), ('field_loras', 'LoRAs'))})
+
+    def _notice(self, key, default, *, danger=False):
+        if self._closed or not hasattr(self, 'lbl_operation') or not isValid(self.lbl_operation): return
+        self.lbl_operation.setText(self.tr('tool.metadata.'+key, default))
+        self.lbl_operation.setStyleSheet('color: '+self._color('accent_warning' if danger else 'text_secondary')+';')
+
+    def _controls(self):
+        if self._closed or self.view is None or not isValid(self.view): return
+        idle = not self._busy and not self._confirming
+        loaded = self._capture is not None
+        indexed = loaded and self._capture.get('native') is not None
+        editing = self.current_mode == self.MODE_EDITOR
+        service = self.context.get('data_service') is not None
+        for control in (self.btn_mode_view, self.btn_mode_edit, self.btn_open, self.image_label):
+            control.setEnabled(idle)
+        self.btn_prev.setEnabled(idle and self.current_index > 0)
+        self.btn_next.setEnabled(idle and self.current_index < len(self.image_list)-1)
+        self.btn_save.setEnabled(idle and editing and indexed and service and self._capture.get('editable_original', False))
+        self.btn_export.setEnabled(idle and editing and loaded and service)
+        self.btn_reload.setEnabled(idle and self.active_path is not None)
+        self.btn_history.setEnabled(idle and indexed and service)
+        self.btn_history_next.setEnabled(idle and indexed and service and self._history_more)
+        self.btn_cancel.setEnabled(self._busy)
+        self.txt_pos.setReadOnly(not (idle and editing and loaded))
+        self.txt_neg.setReadOnly(not (idle and editing and loaded))
 
     def run_headless(self, paths: list = None):
         """Carga una lista de imágenes en modo programático (desde Librarian u otros módulos)."""
