@@ -59,6 +59,8 @@ class GUI(prior.Review):
             self.assertTrue(self.module.retirement_worker.wait(3000))  # Sólo fixture, I/O liberado.
         if self.module.native_worker is not None:
             self.assertTrue(self.module.native_worker.wait(3000))
+        if self.module.phash_worker is not None:
+            self.assertTrue(self.module.phash_worker.wait(3000))
         self.assertTrue(pump(lambda: not _LIVE_WORKERS))
         if isValid(self.view):
             self.view.close()

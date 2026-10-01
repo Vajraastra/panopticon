@@ -258,9 +258,33 @@ groups contain at most 256 copies. Watched-folder validation admits at most 256 
 Limits or inventory errors disable retirement instead of publishing a discardable
 partial result. **Visual similarity** admits at most 2,000 images and 10 million pixels
 per image, with four workers and bounded pair comparison. It never authorizes retirement
-and does not persist pHash. Persistent pHash remains pending and will run as a
-separate explicit phase on
-selected folders, independently of SHA-256 backfill.
+and performs no implicit cache writes. It can reuse previously saved pHash only after
+checking current SHA-256; absent or unproven cache uses fresh decoding for review.
+
+### Explicit perceptual hash phase
+
+Select **pHash by folders (save)**, enter 1–32 separate absolute indexed folders,
+and press **Calculate and save pHash**. This phase is independent of SHA-256 backfill.
+Images without a known native SHA are reported and require that separate phase first.
+Choosing folders or changing budgets never starts calculation automatically.
+
+The worker checks current bytes against the effective native SHA, with file identity
+checks before and after processing. Decoding is surrounded by two SHA reads from the
+same unbuffered handle. It saves derived hashes in native batches of at most 64,
+preserving curation, generation metadata and all portable Cherry databases/receipts.
+The evidence registry is prepared only by this explicit phase; ordinary reads and
+startup do not create it. Cache evidence includes native copy ID, SHA and algorithm
+library versions. Legacy values, changed content, offline copies or changed algorithm
+versions cannot be reused. Even valid cache reuse reads current SHA before skipping
+decoding. External changes after verification still require a subsequent check.
+
+Adjust limits up to 100,000 known images per run and 10 million decoded pixels per
+image. An initial image limit rejects the whole scope before preparation. Unknown
+hashes, unreadable files, mismatches and oversized images are reported; at most 20
+issue samples are shown. Confirmed batches survive later errors or cancellation.
+The stored count includes only acknowledged commits. Dashboard closure waits without
+blocking the event loop for accepted writes before closing the catalog. This phase
+uses CPU workers and never authorizes retirement based on similarity.
 
 ### Folder overlap and pair classification
 
