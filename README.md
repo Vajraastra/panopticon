@@ -821,8 +821,9 @@ every commit. Librarian retains externally supplied selections and protects an
 active handoff/export; reduced native results clamp to the last available page.
 The initial token is captured before first reads, so commits during view creation
 are not missed. Owners stop their timers and discard pending notices on closure.
-Viewer curation refreshes without rereading image files; physical preview/cache
-version invalidation and other consumers still need integration.
+Viewer curation refreshes without rereading image files. Physical publication
+refresh and Gallery thumbnail source validation are described below; other
+consumers still need integration.
 
 This is eventual invalidation, not a durable log, receipt, approval fingerprint or
 frozen DB revision attached to a read result. A busy writer/read/export can delay
@@ -896,7 +897,13 @@ curation, observations and hash backfill retain image caches. Gallery clears its
 cache on that hint, while worker stat validation detects other changed sources.
 Old cache epochs cannot repopulate cleared entries. This is not a content hash,
 durable publication proof or defense against external edits preserving all stat
-fields. Viewer physical reloads and other consumers still need integration.
+fields. An open viewer also follows this physical hint and asynchronously
+reloads its current preview, file metadata and fullscreen after busy readers or
+accepted curation edits settle. It retains Native curation, unfinished tag input
+and navigation; multiple notices during a slow preview coalesce to the latest.
+Local tags/ratings do not decode files again. Unknown external commits can reload
+unaffected images conservatively; file edits without a Native notice are checked
+on later navigation, not by a filesystem watcher. Other consumers remain open.
 `scripts/thumbnail_version_selftest.py` verifies private image/cache/window cases.
 
 ## License

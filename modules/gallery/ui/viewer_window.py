@@ -148,6 +148,7 @@ class AdvancedViewer(QDialog):
         self.timer.timeout.connect(self.next_image)
         self.db = DatabaseManager(service=service)
         initial_revision = self.db.service.revision_snapshot()
+        self._preview_revision = self.db.service.preview_revision_snapshot()
         self._closed = False
         self._curation_ready = False
         self._registered_id = None
@@ -336,7 +337,11 @@ class AdvancedViewer(QDialog):
     def _on_native_revision(self, revision):
         if self._closed or not self.paths:
             return
-        self.load_tags(self.paths[self.current_idx])
+        preview_revision = self.db.service.preview_revision_snapshot()
+        if preview_revision != self._preview_revision:
+            self.load_current_image()
+        else:
+            self.load_tags(self.paths[self.current_idx])
         self.tag_completions.reload_page()
 
     def refresh_completer(self):
@@ -523,6 +528,7 @@ class AdvancedViewer(QDialog):
     def load_current_image(self):
         if self._closed or not self.paths: return
         path = self.paths[self.current_idx]
+        self._preview_revision = self.db.service.preview_revision_snapshot()
         self._preview_ready = False
         self._preview_path, self._preview_image = path, None
         self._file_tags, self._file_rating = (), 0
