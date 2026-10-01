@@ -26,6 +26,7 @@ Reglas de uso:
 """
 
 from __future__ import annotations
+from core.native_threads import start_worker, native_done, owner_threads_ready
 
 import asyncio
 from concurrent.futures import Future, InvalidStateError
@@ -33,7 +34,7 @@ import logging
 import threading
 from typing import Any, Coroutine, Optional
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QTimer, QObject, QThread, Signal
 
 log = logging.getLogger(__name__)
 
@@ -139,7 +140,7 @@ class CherryRuntime(QObject):
             _LIVE_THREADS.add(thread)
             thread.finished.connect(lambda: _LIVE_THREADS.discard(thread))
             thread.finished.connect(lambda: self._stopped(thread))
-            thread.start()
+            start_worker(thread, self)
         if not thread.wait_ready():
             log.error("cherry: el event loop no arrancó en %.0fs",_START_TIMEOUT)
             self.request_stop()  # Keep the owner retained; never quit/lose a live thread.
@@ -151,6 +152,9 @@ class CherryRuntime(QObject):
         return True
 
     def _stopped(self,thread):
+        if not native_done(thread):
+            QTimer.singleShot(25, self, lambda: self._stopped(thread))
+            return
         _LIVE_THREADS.discard(thread)
         if self._thread is thread:
             self._thread = None
@@ -176,7 +180,7 @@ class CherryRuntime(QObject):
 
     def shutdown_ready(self):
         thread = self._thread
-        return thread is None or not thread.isRunning()
+        return owner_threads_ready(self) and native_done(thread)
 
     def stop(self,timeout: float = _STOP_TIMEOUT) -> None:
         """Blocking compatibility API; GUI uses request_stop/readiness instead.

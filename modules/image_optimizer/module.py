@@ -1,3 +1,4 @@
+from core.native_threads import start_worker, native_done, owner_threads_ready
 import os
 import logging
 import copy
@@ -190,7 +191,7 @@ class ImageOptimizerModule(BaseModule):
             self.worker.stop()
 
     def shutdown_ready(self):
-        return self.worker is None or not self.worker.isRunning()
+        return owner_threads_ready(self) and native_done(self.worker)
 
     def get_view(self) -> QWidget:
         if self.view:
@@ -496,7 +497,7 @@ class ImageOptimizerModule(BaseModule):
         self.worker.finished_signal.connect(self._on_finished)
         _LIVE_WORKERS.add(self.worker)
         self.worker.finished.connect(lambda worker=self.worker: _LIVE_WORKERS.discard(worker))
-        self.worker.start()
+        start_worker(self.worker, self)
 
     def _on_progress(self, value):
         if not self._closed:

@@ -1,4 +1,5 @@
 """Confirmación por alcance capturado; el worker termina antes de abrir el modal."""
+from core.native_threads import start_worker, native_done, owner_threads_ready
 import weakref
 from PySide6.QtCore import QObject, Slot, Qt
 from PySide6.QtWidgets import QMessageBox
@@ -47,7 +48,7 @@ class FolderArchiveController(QObject):
             retain_worker(worker)
             worker.finished_signal.connect(self._received)
             worker.finished.connect(self._finished)
-            worker.start()
+            start_worker(worker, self)
         except Exception as exc:
             if self.worker is not None and not self.worker.isRunning():
                 _LIVE_WORKERS.discard(self.worker)
@@ -154,4 +155,4 @@ class FolderArchiveController(QObject):
             self.worker.stop()
 
     def shutdown_ready(self):
-        return self.worker is None or not self.worker.isRunning()
+        return owner_threads_ready(self) and native_done(self.worker)

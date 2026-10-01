@@ -1,4 +1,5 @@
 """GUI-owned lifetimes for Tagger workers and their auxiliary windows."""
+from core.native_threads import start_worker, native_done, owner_threads_ready
 from functools import partial
 
 from PySide6.QtCore import QObject, QTimer, Qt, Slot
@@ -33,7 +34,7 @@ class WorkerScope(QObject):
         _LIVE_SCOPES.add(self)
         worker.finished.connect(self._finished, Qt.QueuedConnection)
         try:
-            worker.start()
+            start_worker(worker, self)
         except Exception:
             self._completed.add(worker)
             self._reap()
@@ -48,7 +49,7 @@ class WorkerScope(QObject):
         for worker, attribute in tuple(self.workers.items()):
             if not self.closed and worker not in self._completed:
                 continue
-            if worker.isRunning():
+            if not native_done(worker):
                 continue
             del self.workers[worker]
             self._completed.discard(worker)
@@ -100,7 +101,7 @@ class WorkerViewLifecycle:
             dialog.reject()
 
     def shutdown_ready(self):
-        return self._workers.ready()
+        return owner_threads_ready(self) and self._workers.ready()
 
     def _retry_close(self, callback):
         if self._close_poll_pending:

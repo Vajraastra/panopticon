@@ -2,6 +2,7 @@
 import sys
 import os
 import logging
+from core.native_threads import native_threads_ready
 import traceback
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QStackedWidget,
@@ -589,6 +590,13 @@ class MainWindow(QMainWindow):
                     self._shutdown_retry_scheduled = True
                     QTimer.singleShot(50, self._retry_close)
                 return
+        if not native_threads_ready():
+            event.ignore()
+            self.statusBar().showMessage(self.tr('app.shutdown_wait', 'Finishing accepted work before closing…'))
+            if not self._shutdown_retry_scheduled:
+                self._shutdown_retry_scheduled = True
+                QTimer.singleShot(50, self._retry_close)
+            return
         request_close_library_services(permanent=True)
         if not library_services_shutdown_ready():
             event.ignore()

@@ -1,3 +1,4 @@
+from core.native_threads import start_worker, native_done, owner_threads_ready
 import logging
 import os
 import traceback
@@ -746,9 +747,10 @@ class CharacterRecognitionView(QWidget):
                 else:worker.is_running = False
 
     def shutdown_ready(self):
-        workers_ready = all(worker is None or not worker.isRunning()
+        workers_ready = all(worker is None or native_done(worker)
                             for worker in (self.worker, self.auto_worker))
-        if not workers_ready or not self._reader.shutdown_ready():
+        if (not owner_threads_ready(self) or not workers_ready
+                or not self._reader.shutdown_ready()):
             return False
         if self._closed:
             # Recognition workers may still need their admitted profile snapshot.
@@ -1048,7 +1050,7 @@ class CharacterRecognitionView(QWidget):
         self.worker.finished.connect(self._on_worker_stopped)
         self.worker.paused = True
         self.worker.request_next()
-        self.worker.start()
+        start_worker(self.worker, self)
 
     @Slot()
     def _on_worker_stopped(self):
@@ -1146,7 +1148,7 @@ class CharacterRecognitionView(QWidget):
         self.auto_worker.error.connect(self.on_auto_error)
         self.auto_worker.bindings_ready.connect(self._on_auto_bindings)
         self.auto_worker.finished.connect(self._on_auto_stopped)
-        self.auto_worker.start()
+        start_worker(self.auto_worker, self)
 
     @Slot(object)
     def _on_auto_bindings(self, bindings):

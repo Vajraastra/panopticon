@@ -1,4 +1,5 @@
 """Revisión de duplicados; preferencias por curación y retiro recuperable explícito."""
+from core.native_threads import start_worker, native_done, owner_threads_ready
 from dataclasses import asdict
 from copy import deepcopy
 import json
@@ -386,7 +387,7 @@ class DuplicateFinderModule(BaseModule):
         worker.phase.connect(self._phase)
         worker.finished_signal.connect(self.on_scan_finished)
         self._controls()
-        worker.start()
+        start_worker(worker, self)
 
     @Slot(str)
     def _phase(self, phase):
@@ -553,7 +554,7 @@ class DuplicateFinderModule(BaseModule):
         worker.finished.connect(lambda worker=worker: _LIVE_WORKERS.discard(worker))
         worker.finished.connect(self._retirement_finished)
         worker.finished_signal.connect(self._retired)
-        worker.start()
+        start_worker(worker, self)
 
     @Slot(int, object, object)
     def _retired(self, ticket, result, error):
@@ -597,7 +598,7 @@ class DuplicateFinderModule(BaseModule):
         worker.deleteLater()
 
     def shutdown_ready(self):
-        return all(worker is None or not worker.isRunning()
+        return owner_threads_ready(self) and all(worker is None or native_done(worker)
                    for worker in (self.worker, self.retirement_worker, self.native_worker,self.phash_worker,self.recovery_review_worker,self.recovery_restore_worker,self.recovery_purge_worker))
 
     def _db_selected(self):
@@ -640,7 +641,7 @@ class DuplicateFinderModule(BaseModule):
         if operation=='get_folder_overlap':
             self.status.setText(self.text('overlap_working','Comparing stored hash sets and classifying folder pairs…'))
         self._controls()
-        worker.start()
+        start_worker(worker, self)
 
     @Slot(dict)
     def _native_received(self,result):
@@ -717,7 +718,7 @@ class DuplicateFinderModule(BaseModule):
         worker.phase.connect(self._phase)
         worker.finished_signal.connect(self.on_scan_finished)
         self._controls()
-        worker.start()
+        start_worker(worker, self)
 
     def _purge_idle(self):
         return (not self._closed and self.combo_mode.currentIndex()==5 and not self._busy and not self._acting
@@ -776,7 +777,7 @@ class DuplicateFinderModule(BaseModule):
         worker.finished.connect(lambda worker=worker:_LIVE_WORKERS.discard(worker))
         worker.finished.connect(self._recovery_purge_finished)
         worker.finished_signal.connect(self._recovery_purge_received)
-        self._controls();worker.start()
+        self._controls();start_worker(worker, self)
 
     @Slot(dict)
     def _recovery_purge_received(self,result):
@@ -849,7 +850,7 @@ class DuplicateFinderModule(BaseModule):
         worker.finished.connect(lambda worker=worker:_LIVE_WORKERS.discard(worker))
         worker.finished.connect(self._recovery_restore_finished)
         worker.finished_signal.connect(self._recovery_restored)
-        self._controls();worker.start()
+        self._controls();start_worker(worker, self)
 
     @Slot(dict)
     def _recovery_restored(self,result):
@@ -903,7 +904,7 @@ class DuplicateFinderModule(BaseModule):
         worker.finished_signal.connect(self._recovery_review_received)
         worker.progress.connect(self._recovery_review_progress)
         self._controls()
-        worker.start()
+        start_worker(worker, self)
 
     @Slot(int,int,str)
     def _recovery_review_progress(self,current,total,path):
@@ -957,7 +958,7 @@ class DuplicateFinderModule(BaseModule):
         worker.finished_signal.connect(self._phash_received)
         worker.progress.connect(self._phash_progress)
         self._controls()
-        worker.start()
+        start_worker(worker, self)
 
     @Slot(int,int,str)
     def _phash_progress(self,current,total,path):

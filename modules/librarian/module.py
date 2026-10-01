@@ -1,3 +1,5 @@
+from core.native_threads import start_worker, native_done, owner_threads_ready
+from shiboken6 import isValid
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
                                QListWidget, QFileDialog, QMessageBox, QProgressBar, QFrame,
                                QLineEdit, QDialog, QCompleter, QScrollArea, QGridLayout, QComboBox)
@@ -903,11 +905,11 @@ class LibrarianModule(BaseModule):
 
     def shutdown_ready(self):
         readers = self.findChildren(LibraryReader)
-        if self.view is not None:
+        if self.view is not None and isValid(self.view):
             readers += self.view.findChildren(LibraryReader)
-        return ((not hasattr(self, 'folder_archive') or self.folder_archive.shutdown_ready())
+        return owner_threads_ready(self) and ((not hasattr(self, 'folder_archive') or self.folder_archive.shutdown_ready())
                 and all(reader.shutdown_ready() for reader in readers)
-                and all(worker is None or not worker.isRunning() for worker in
+                and all(worker is None or native_done(worker) for worker in
                         (self.indexer_thread, self.backfill_thread, self._reindex_thread)))
 
     def _can_write_folder(self):
@@ -961,6 +963,8 @@ class LibrarianModule(BaseModule):
             return
         _, operation, path = self._folder_write
         self._folder_write = None
+        if self.view is None or not isValid(self.view):
+            return
         self._update_export_controls()
         self.btn_add.setEnabled(True)
         self.btn_remove.setEnabled(True)
@@ -1041,7 +1045,7 @@ class LibrarianModule(BaseModule):
         self.indexer_thread.progress_signal.connect(self.update_progress_text)
         self.indexer_thread.count_signal.connect(self.update_progress_bar)
         self.indexer_thread.finished_signal.connect(self.scan_finished)
-        self.indexer_thread.start()
+        start_worker(self.indexer_thread, self)
 
     def toggle_backfill(self):
         """Backfill de hash_original (M3). Excluyente con el indexer: ambos
@@ -1069,7 +1073,7 @@ class LibrarianModule(BaseModule):
             self.backfill_thread.progress_signal.connect(self.update_progress_text)
             self.backfill_thread.count_signal.connect(self.update_progress_bar)
             self.backfill_thread.finished_signal.connect(self.backfill_finished)
-            self.backfill_thread.start()
+            start_worker(self.backfill_thread, self)
 
     def backfill_finished(self, hashed, failed):
         if self._closed:
@@ -1227,7 +1231,7 @@ class LibrarianModule(BaseModule):
         self._reindex_thread = IndexerWorker(self.db, folders, deep_clean=True, translate=self.tr)
         retain_worker(self._reindex_thread)
         self._reindex_thread.finished_signal.connect(self._quiet_reindex_finished)
-        self._reindex_thread.start()
+        start_worker(self._reindex_thread, self)
 
     def _quiet_reindex_finished(self):
         """Refresca la vista tras el re-index dirigido, sin diálogos."""

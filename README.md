@@ -79,7 +79,16 @@ before the central writer closes. Recognizer waits for its Native reader and
 recognition workers before closing profile admission, then waits for accepted
 profile work and SQLite cleanup. Profile blocking joins remain CLI/test teardown.
 Native reader startup failures deliver a terminal error instead of leaving busy
-controls stranded. Remaining module error/admission paths and live usage remain
+controls stranded.
+Active QThreads now register before start and retain their owners until a
+nonblocking `wait(0)` succeeds, including deferred Qt/native cleanup after
+`finished`. Dashboard checks this registry before closing Native, even when an
+older result handler cleared its worker field. A requested `deleteLater` is
+deferred while cleanup runs and completed on the creator thread only after join;
+no GUI join or thread termination. Tagger's direct-close scopes and Cherry's
+stopped notification also wait for the final join. Qt documents this distinction:
+https://doc.qt.io/qt-6.8/qthread.html#isRunning
+ Remaining module error/admission paths and live usage remain
 under audit.
 
 Cropper and Image Optimizer can preserve embedded generation

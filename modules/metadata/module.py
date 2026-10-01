@@ -1,3 +1,4 @@
+from core.native_threads import start_worker, native_done, owner_threads_ready
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
                                QFileDialog, QMessageBox, QTextEdit, QApplication,
                                QSplitter, QFrame, QSizePolicy)
@@ -122,7 +123,7 @@ class MetadataModule(BaseModule):
             worker.stop()
 
     def shutdown_ready(self):
-        return all(not worker.isRunning() for worker in self._workers)
+        return owner_threads_ready(self) and all(native_done(worker) for worker in self._workers)
 
     def _color(self, key):
         manager = self.context.get('theme_manager') or ThemeManager.active()
@@ -564,7 +565,7 @@ class MetadataModule(BaseModule):
         worker.finished.connect(lambda worker=worker: (_LIVE_WORKERS.discard(worker), worker.deleteLater()))
         self._notice('working', 'Reading or verifying metadata…')
         self._controls()
-        worker.start()
+        start_worker(worker, self)
 
     def _receive(self, token, operation, result):
         if token == self._token and not self._closed:

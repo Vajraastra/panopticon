@@ -1,3 +1,4 @@
+from core.native_threads import start_worker, native_done, owner_threads_ready
 import os
 import html
 import re
@@ -97,7 +98,7 @@ class CropperModule(BaseModule):
             self.worker.stop()
 
     def shutdown_ready(self):
-        return self.worker is None or not self.worker.isRunning()
+        return owner_threads_ready(self) and native_done(self.worker)
 
     def get_view(self) -> QWidget:
         if self.view:
@@ -428,7 +429,7 @@ class CropperModule(BaseModule):
             self._saving = True
             self.btn_save.setEnabled(False)
             self.btn_save.setText(self.tr("tool.cropper.saving", "Saving…"))
-            self.worker.start()
+            start_worker(self.worker, self)
         except Exception as error:
             self._on_crop_finished(dict(error=str(error), source_destination=False,
                                        cancelled=False, path=None))

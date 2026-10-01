@@ -1,3 +1,4 @@
+from core.native_threads import start_worker, native_done, owner_threads_ready
 import os
 import html
 import threading
@@ -67,7 +68,7 @@ class FormatScannerModule(BaseModule):
         if self.worker is not None: self.worker.stop()
 
     def shutdown_ready(self):
-        return self.worker is None or not self.worker.isRunning()
+        return owner_threads_ready(self) and native_done(self.worker)
 
     def get_view(self) -> QWidget:
         if self.view:
@@ -142,7 +143,7 @@ class FormatScannerModule(BaseModule):
         self.worker.finished.connect(self._on_worker_stopped)
         self.worker.log.connect(self._on_log)
         self.worker.finished_signal.connect(self.on_finished)
-        self.worker.start()
+        start_worker(self.worker, self)
 
     def _on_log(self,message):
         if not self._closed: self.txt_log.append(html.escape('> '+message))
