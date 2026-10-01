@@ -938,6 +938,9 @@ curation retains coverage while match rows read current ratings. Readers validat
 owned clock/table/index/trigger definitions before cache use; incomplete old
 preparations work uncached until another explicit backed-up prepare. These APIs
 do not automatically route legacy mutations or register new files. No aggregate filesystem/SQLite snapshot or hard I/O deadline is claimed. Unknown/offline rows remain unresolved.
+Librarian exposes explicit path preparation and paginated review; it can check
+one image spelling and open retained-copy histories without merging IDs. Stop
+keeps confirmed evidence; closing waits for actual reader completion.
 Existing lookup/registration/prefix behavior is still legacy; connecting those
 consumers and validating the real migration remain open. Folder spelling and portable Cherry data remain preserved.
 [Windows supports case rules per directory](https://learn.microsoft.com/en-us/windows/wsl/case-sensitivity).

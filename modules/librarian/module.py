@@ -16,6 +16,7 @@ from core.curation_tasks import CurationExportTasks
 from core.components.curation_review import CurationReviewDialog
 from core.components.curation_recovery import CurationRecoveryDialog
 from core.components.copy_versions import CopyVersionsDialog
+from core.components.path_identity_review import PathIdentityReviewDialog
 from .logic.indexer import IndexerWorker
 from .logic.hash_backfill import HashBackfillWorker
 from .ui.folder_archive import FolderArchiveController, retain_worker
@@ -72,6 +73,9 @@ class LibrarianModule(BaseModule):
         self._review_dialog = None
         self._recovery_dialog = None
         self._versions_dialog = None
+        self._identity_dialog = None
+        self._path_identity_busy = False
+        self._path_identity_controls = []
         self.current_folder_path = None
         self._closed = False
         self._browse_ready = False
@@ -228,6 +232,11 @@ class LibrarianModule(BaseModule):
             f"background-color: {c('bg_input')}; color: {c('text_primary')}; border: 1px solid {c('border_strong')}; padding: 6px;")
         self.btn_recover_curation.clicked.connect(self.recover_folder_curation)
         layout.addWidget(self.btn_recover_curation)
+        self.btn_path_identity = QPushButton(self.tr('lib.identity.open', 'Review path identities…'))
+        self.btn_path_identity.setToolTip(self.tr('lib.identity.open_tip',
+            'Prepare Windows naming evidence and review conflicting copy IDs. Preserves names, files, curation and portable folders.'))
+        self.btn_path_identity.clicked.connect(self.review_path_identities)
+        layout.addWidget(self.btn_path_identity)
         self.btn_copy_versions = QPushButton(self.tr('lib.versions.open', 'Copy versions and offline catalog…'))
         self.btn_copy_versions.setToolTip(self.tr('lib.versions.open_tip',
             'Review stored copies by ID, preserve an active copy offline or verify a file before making it available.'))
@@ -670,6 +679,42 @@ class LibrarianModule(BaseModule):
     def _review_closed(self):
         self._review_dialog = None
 
+    def review_path_identities(self):
+        if self._closed:
+            return
+        if self._identity_dialog is None:
+            self._identity_dialog = PathIdentityReviewDialog(self.db.service, self.tr,
+                self.context.get('theme_manager'), self.view, can_prepare=self._can_write_folder)
+            self._identity_dialog.finished.connect(lambda _: self._identity_closed())
+            self._identity_dialog.busy_changed.connect(self._identity_busy_changed)
+            self._identity_dialog.review_copies_requested.connect(self.review_copy_versions)
+        self._identity_dialog.show()
+        self._identity_dialog.raise_()
+        self._identity_dialog.activateWindow()
+
+    def _identity_busy_changed(self, busy):
+        self._path_identity_busy = busy
+        if self._closed:
+            return
+        if busy:
+            self._path_identity_controls = []
+            for name in ('btn_add', 'btn_remove', 'btn_scan', 'btn_sync', 'btn_backfill'):
+                button = getattr(self, name, None)
+                if button is not None:
+                    self._path_identity_controls.append((button, button.isEnabled()))
+                    button.setEnabled(False)
+        else:
+            for button, enabled in self._path_identity_controls:
+                if isValid(button):
+                    button.setEnabled(enabled)
+            self._path_identity_controls = []
+            if self._auto_scan_pending:
+                self._auto_scan_timer.start(500)
+
+    def _identity_closed(self):
+        self._identity_dialog = None
+        self._identity_busy_changed(False)
+
     def review_copy_versions(self):
         if self._closed:
             return
@@ -791,7 +836,7 @@ class LibrarianModule(BaseModule):
         self._request_selection()
 
     def _revision_busy(self):
-        return (self.overview_reader._active or self.browse_reader._active or
+        return (self._path_identity_busy or self.overview_reader._active or self.browse_reader._active or
                 self.tag_completions.busy or self._handoff is not None or
                 self._exporting is not None or self._folder_write is not None)
 
@@ -918,6 +963,8 @@ class LibrarianModule(BaseModule):
             self._recovery_dialog.close()
         if self._versions_dialog is not None:
             self._versions_dialog.close()
+        if self._identity_dialog is not None:
+            self._identity_dialog.close()
         for name in ('overview_reader', 'browse_reader', 'scan_reader', 'handoff_reader', 'export_reader'):
             reader = getattr(self, name, None)
             if reader:
@@ -940,7 +987,7 @@ class LibrarianModule(BaseModule):
                         (self.indexer_thread, self.backfill_thread, self._reindex_thread)))
 
     def _can_write_folder(self):
-        if self._closed or self._folder_write is not None:
+        if self._closed or self._folder_write is not None or self._path_identity_busy:
             return False
         # Un inventario en curso podría volver a registrar lo que se acaba de quitar.
         busy = self._scan_request is not None or any(
@@ -1015,6 +1062,8 @@ class LibrarianModule(BaseModule):
             self._auto_scan_timer.start(500)
 
     def toggle_scan(self, sync_only=False, auto=False):
+        if self._path_identity_busy:
+            return
         if self._closed:
             return
         if self.indexer_thread and self.indexer_thread.isRunning():
@@ -1042,7 +1091,7 @@ class LibrarianModule(BaseModule):
         if error is not None:
             self._read_error(self.lbl_status, error)
             return
-        if (self._folder_write is not None or
+        if (self._path_identity_busy or self._folder_write is not None or
                 (self.indexer_thread and self.indexer_thread.isRunning()) or
                 (self.backfill_thread and self.backfill_thread.isRunning())):
             return
@@ -1075,6 +1124,8 @@ class LibrarianModule(BaseModule):
         start_worker(self.indexer_thread, self)
 
     def toggle_backfill(self):
+        if self._path_identity_busy:
+            return
         """Backfill de hash_original (M3). Excluyente con el indexer: ambos
         escriben en files y compartir la barra de progreso sería ambiguo."""
         if self._closed or self._folder_write is not None:
@@ -1242,7 +1293,7 @@ class LibrarianModule(BaseModule):
         if self._closed:
             return
         # No interferir con un escaneo manual ni con otro re-index en curso.
-        busy = self._folder_write is not None or \
+        busy = self._path_identity_busy or self._folder_write is not None or \
                (self.indexer_thread and self.indexer_thread.isRunning()) or \
                (self._reindex_thread and self._reindex_thread.isRunning())
         if busy:

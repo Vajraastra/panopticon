@@ -28,7 +28,7 @@ from core.paths import ProjectPaths
 log = logging.getLogger(__name__)
 READS = frozenset({
     'get_path_identity_status', 'get_path_identity_matches', 'get_path_identity_resolution',
-    'get_path_identity_records',
+    'get_path_identity_records', 'get_path_identity_review_page',
     'get_metadata_edit_history_record', 'get_metadata_edit_state', 'get_metadata_edit_receipt', 'get_generation_history_status', 'get_generation_history_page',
     'get_metadata_path_status', 'get_derived_copies_status', 'get_derived_copy_receipt',
     'get_inventory_page', 'get_known_files_in_folder', 'get_files_recursive', 'get_watched_folders',

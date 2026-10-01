@@ -317,6 +317,10 @@ class LibraryRepository:
 
     # --- Discovery / Existence ---
 
+    def get_path_identity_review_page(self, **kwargs):
+        from core.path_identity_review import page
+        return page(self.conn, **kwargs)
+
     def get_path_identity_resolution(self, canonical):
         from core.path_identity_registry import resolution
         return resolution(self.conn, canonical, self._path_coverage_cache)
