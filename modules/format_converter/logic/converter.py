@@ -148,7 +148,7 @@ def convert_single(source_path: str | Path,
         # Extract metadata from source
         source_bundle = None
         if preserve_metadata:
-            source_bundle = MetadataExtractor.extract(source_path)
+            source_bundle = MetadataExtractor.extract(source_path, strict=True)
         
         # Load and convert image
         with Image.open(source_path) as original:
@@ -205,6 +205,9 @@ def convert_single(source_path: str | Path,
                 img.close()
                 img = converted
 
+        if target_format.upper() == "AVIF" and source_bundle and source_bundle.is_valid():
+            save_kwargs.update(MetadataStamper.encoder_options(source_bundle))
+
         # Save converted image
         img.save(str(temporary), **save_kwargs)
 
@@ -215,7 +218,8 @@ def convert_single(source_path: str | Path,
         
         # Transfer metadata
         if preserve_metadata and source_bundle and source_bundle.is_valid():
-            result.metadata_preserved = MetadataStamper.stamp(temporary, source_bundle)
+            result.metadata_preserved = (MetadataStamper.verify_prepared(temporary, source_bundle)
+                if target_format.upper() == "AVIF" else MetadataStamper.stamp(temporary, source_bundle, prepared=True))
             if not result.metadata_preserved:
                 raise RuntimeError("Metadata could not be preserved; output was not published")
         
@@ -373,7 +377,7 @@ def verify_batch_conversion(report: BatchConversionReport,
         if result.success:
             verifier.add_pair(result.source_path, result.output_path)
     
-    return verifier.verify_all(progress_callback=progress_callback)
+    return verifier.verify_all(progress_callback=progress_callback, auto_repair=False)
 
 
 def scan_folder_for_conversion(folder: str | Path,

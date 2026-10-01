@@ -65,23 +65,8 @@ def crop_image(source_path, selection_norm, output_path=None,
     os.close(fd)
     temporary = Path(temporary)
     try:
-        source_bundle = MetadataExtractor.extract(source_path) if preserve_metadata else None
+        source_bundle = MetadataExtractor.extract(source_path, strict=True) if preserve_metadata else None
         check_cancelled()
-        with Image.open(source_path) as img:
-            w, h = img.size
-            left = max(0, min(int(selection_norm.x() * w), w - 1))
-            top = max(0, min(int(selection_norm.y() * h), h - 1))
-            right = max(left + 1, min(int(selection_norm.right() * w), w))
-            bottom = max(top + 1, min(int(selection_norm.bottom() * h), h))
-            with img.crop((left, top, right, bottom)) as cropped:
-                ext = output_path.suffix.lower()
-                if ext in ['.jpg', '.jpeg']:
-                    cropped.save(str(temporary), quality=95, subsampling=0)
-                elif ext == '.webp':
-                    cropped.save(str(temporary), quality=95)
-                else:
-                    cropped.save(str(temporary))
-
         # Retain the existing additive export policy; CF5/CF6b define authority separately.
         bundle = None
         if preserve_metadata and source_bundle and source_bundle.is_valid():
@@ -92,7 +77,29 @@ def crop_image(source_path, selection_norm, output_path=None,
             bundle = source_bundle
         elif tags or rating:
             bundle = MetadataBundle(tags=tags or [], rating=rating)
-        if bundle is not None and not MetadataStamper.stamp(temporary, bundle):
+        with Image.open(source_path) as img:
+            w, h = img.size
+            left = max(0, min(int(selection_norm.x() * w), w - 1))
+            top = max(0, min(int(selection_norm.y() * h), h - 1))
+            right = max(left + 1, min(int(selection_norm.right() * w), w))
+            bottom = max(top + 1, min(int(selection_norm.bottom() * h), h))
+            with img.crop((left, top, right, bottom)) as cropped:
+                ext = output_path.suffix.lower()
+                if ext in ['.jpg', '.jpeg']:
+                    cropped.save(str(temporary), quality=95, subsampling=0)
+                elif ext == '.avif':
+                    options = MetadataStamper.encoder_options(bundle) if bundle is not None else {}
+                    cropped.save(str(temporary), quality=95, **options)
+                elif ext == '.webp':
+                    cropped.save(str(temporary), quality=95)
+                else:
+                    cropped.save(str(temporary))
+
+        confirmed = True
+        if bundle is not None:
+            confirmed = (MetadataStamper.verify_prepared(temporary, bundle) if output_path.suffix.lower() == '.avif'
+                         else MetadataStamper.stamp(temporary, bundle, prepared=True))
+        if confirmed is not True:
             raise OSError('Metadata stamping failed')
         check_cancelled()
         _check_destination(source_path, output_path)

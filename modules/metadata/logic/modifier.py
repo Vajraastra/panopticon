@@ -46,18 +46,18 @@ def modify_metadata(source_path, output_path, metadata_text=None):
                 # Leer pan:data existente para preservar tags/rating/quality
                 existing = {}
                 if hasattr(img, 'info') and 'xmp' in img.info:
-                    import re
+                    import xml.etree.ElementTree as ET
+                    from core.metadata.output_stamp import PAN, MAX_METADATA
                     xmp_raw = img.info['xmp']
                     if isinstance(xmp_raw, bytes):
                         xmp_raw = xmp_raw.decode('utf-8', errors='ignore')
-                    m = re.search(r'<pan:data><!\[CDATA\[(.*?)\]\]></pan:data>',
-                                  xmp_raw, re.DOTALL)
-                    if not m:
-                        m = re.search(r'<pan:data>(.*?)</pan:data>',
-                                      xmp_raw, re.DOTALL)
-                    if m:
+                    if len(xmp_raw.encode('utf-8')) > MAX_METADATA or '<!DOCTYPE' in xmp_raw or '<!ENTITY' in xmp_raw:
+                        raise ValueError('Invalid existing Panopticon XMP')
+                    nodes = list(ET.fromstring(xmp_raw).iter(PAN))
+                    if len(nodes) > 1: raise ValueError('Ambiguous existing Panopticon XMP')
+                    if nodes:
                         try:
-                            existing = json.loads(m.group(1))
+                            existing = json.loads(nodes[0].text)
                         except json.JSONDecodeError as exc:
                             raise ValueError('Invalid existing Panopticon XMP') from exc
 

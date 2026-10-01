@@ -58,7 +58,7 @@ class MetadataBundle:
         Verifica si el bundle tiene datos esenciales.
         Un bundle es válido si tiene al menos prompts O tags.
         """
-        return bool(self.positive_prompt or self.tags)
+        return bool(self.has_prompts() or self.has_panopticon_data() or self.has_generation_params() or self.raw)
     
     def has_prompts(self) -> bool:
         """Verifica si tiene datos de generación de IA."""

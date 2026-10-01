@@ -3,10 +3,14 @@ Image Optimizer Logic - Refactored v2
 Usa el nuevo sistema de metadata centralizado.
 """
 import os
+import hashlib
+import tempfile
 from pathlib import Path
 from PIL import Image, PngImagePlugin
 
 from core.paths import CachePaths
+from core.output_paths import safe_path, path_variants
+from core.metadata.output_stamp import MAX_FILE
 from core.metadata import MetadataExtractor, MetadataStamper, MetadataBundle
 
 
@@ -95,6 +99,8 @@ def resize_image(image, max_side=None, width=None, height=None, lock_aspect=True
     else:
         return image
 
+    if min(new_w, new_h) < 1 or max(new_w, new_h) > 32768 or new_w*new_h > 20_000_000:
+        raise ValueError('optimizer_resize_limit')
     return image.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
 
@@ -106,7 +112,7 @@ def optimize_image(source_path, output_path,
                    resize_height=None,
                    lock_aspect=True,
                    preserve_metadata=True,
-                   tags=None, rating=0):
+                   tags=None, rating=0, service=None, cancel_event=None):
     """
     Complete optimization pipeline with new metadata system.
     
@@ -134,22 +140,51 @@ def optimize_image(source_path, output_path,
     """
     source_path = Path(source_path)
     output_path = Path(output_path)
-    
+    temporary, img = None, None
+
+    def cancelled():
+        if cancel_event is not None and cancel_event.is_set(): raise ValueError('optimizer_cancelled')
+
+    def signature(path):
+        info = path.stat(follow_symlinks=False)
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+    def digest(path):
+        value, total = hashlib.sha256(), 0
+        with open(path, 'rb') as source:
+            while block := source.read(1024*1024):
+                cancelled()
+                total += len(block)
+                if total > MAX_FILE: raise ValueError('optimizer_file_limit')
+                value.update(block)
+        return value.digest()
+
+    def destination(*, check_native=True):
+        output = safe_path(output_path, exists=False, portable=True)
+        if os.path.normcase(str(source_path)) == os.path.normcase(str(output)) or os.path.lexists(output):
+            raise ValueError('optimizer_requires_new_output')
+        if check_native and service is not None and service.read('get_metadata_path_status', path_variants(output, output_path),
+                                               cancel_event=cancel_event)['occupied']:
+            raise ValueError('optimizer_output_has_native_history')
+        return output
+
     try:
-        # 1. Extract metadata from source
-        source_bundle = None
-        if preserve_metadata:
-            source_bundle = MetadataExtractor.extract(source_path)
-        
-        # 2. Load image
+        cancelled()
+        source_path = safe_path(source_path)
+        before, source_digest = signature(source_path), digest(source_path)
+        source_bundle = MetadataExtractor.extract(source_path, strict=True) if preserve_metadata else None
         img = Image.open(source_path)
+        if img.width*img.height > 20_000_000 or getattr(img, 'n_frames', 1) != 1:
+            raise ValueError('optimizer_image_limit')
         original_format = img.format
-        
+
         # 3. Resize if needed
         if max_side or resize_width or resize_height:
-            img = resize_image(img, max_side=max_side, 
+            resized = resize_image(img, max_side=max_side,
                              width=resize_width, height=resize_height, 
                              lock_aspect=lock_aspect)
+            if resized is not img: img.close()
+            img = resized
         
         # 4. Determine output format
         target_format = format_override.upper() if format_override else original_format
@@ -191,29 +226,46 @@ def optimize_image(source_path, output_path,
             if img.mode == "P":
                 img = img.convert("RGBA")
 
-        # 7. Save image (without metadata first)
-        img.save(str(output_path), **save_kwargs)
-        img.close()
-        
-        # 8. Transfer metadata from source to output
+        # Metadata queda verificada en el temporal; jamás publicar para estampar después.
+        bundle = None
         if preserve_metadata and source_bundle and source_bundle.is_valid():
-            # Add any new tags/rating
-            if tags:
-                source_bundle.tags = list(set(source_bundle.tags + tags))
-            if rating:
-                source_bundle.rating = rating
-            
-            # Stamp to output
-            MetadataStamper.stamp(output_path, source_bundle)
-        
+            if tags: source_bundle.tags = list(dict.fromkeys(source_bundle.tags + list(tags)))
+            if rating: source_bundle.rating = rating
+            bundle = source_bundle
         elif tags or rating:
-            # No source metadata, but user wants to add tags
-            new_bundle = MetadataBundle(tags=tags or [], rating=rating)
-            MetadataStamper.stamp(output_path, new_bundle)
-        
+            bundle = MetadataBundle(tags=list(tags or []), rating=rating)
+        output_path = destination(check_native=False)
+        fd, name = tempfile.mkstemp(prefix='.panopticon-optimize-', suffix=target_ext, dir=output_path.parent)
+        os.close(fd)
+        temporary = Path(name)
+        if target_format == 'AVIF' and bundle is not None:
+            save_kwargs.update(MetadataStamper.encoder_options(bundle))
+        img.save(str(temporary), **save_kwargs)
+        img.close()
+        img = None
+        if bundle is not None:
+            confirmed = (MetadataStamper.verify_prepared(temporary, bundle) if target_format == 'AVIF'
+                         else MetadataStamper.stamp(temporary, bundle, prepared=True))
+            if confirmed is not True: raise ValueError('optimizer_metadata_not_preserved')
+        with Image.open(temporary) as verified:
+            if verified.width*verified.height > 20_000_000: raise ValueError('optimizer_image_limit')
+            verified.load()
+        with open(temporary, 'r+b') as prepared: os.fsync(prepared.fileno())
+        cancelled()
+        if signature(source_path) != before or digest(source_path) != source_digest:
+            raise ValueError('optimizer_source_changed')
+        destination()
+        new_size = temporary.stat().st_size
+        if new_size > MAX_FILE: raise ValueError('optimizer_file_limit')
+        cancelled()
+        if os.name == 'nt': os.rename(temporary, output_path)
+        else:
+            os.link(temporary, output_path)
+            temporary.unlink()
+        temporary = None
+
         # 9. Calculate stats
-        orig_size = source_path.stat().st_size
-        new_size = output_path.stat().st_size
+        orig_size = before[2]
         
         return {
             "success": True,
@@ -223,11 +275,14 @@ def optimize_image(source_path, output_path,
             "saved_bytes": orig_size - new_size,
             "saved_percent": ((orig_size - new_size) / orig_size) * 100 if orig_size > 0 else 0,
             "format_changed": target_format != original_format,
-            "metadata_preserved": preserve_metadata and source_bundle is not None
+            "metadata_preserved": bundle is not None
         }
     
     except Exception as e:
         return {"success": False, "error": str(e)}
+    finally:
+        if img is not None: img.close()
+        if temporary is not None: temporary.unlink(missing_ok=True)
 
 
 def get_export_path(source_path, export_dir=None, suffix=""):
@@ -249,12 +304,13 @@ def get_export_path(source_path, export_dir=None, suffix=""):
         export_dir.mkdir(parents=True, exist_ok=True)
     
     source_path = Path(source_path)
-    filename = source_path.name
+    key = hashlib.sha256(os.path.normcase(str(source_path.resolve())).encode("utf-8")).hexdigest()[:16]
+    filename = f"{source_path.stem[:140]}--{key}{source_path.suffix}"
     
     if suffix:
         stem = source_path.stem
         ext = source_path.suffix
-        filename = f"{stem}{suffix}{ext}"
+        filename = f"{stem[:140]}{suffix}--{key}{ext}"
     
     return export_dir / filename
 
@@ -281,7 +337,7 @@ def batch_optimize(files, output_dir=None, **kwargs):
     
     for i, source in enumerate(files):
         source = Path(source)
-        output = output_dir / source.name
+        output = get_export_path(source, export_dir=output_dir)
         
         result = optimize_image(str(source), str(output), **kwargs)
         result["source_path"] = str(source)

@@ -257,7 +257,7 @@ class BatchVerifier:
         self.pairs.append((Path(original), Path(copy)))
     
     def verify_all(self, progress_callback: Optional[Callable[[int, int], None]] = None,
-                   auto_repair: bool = True) -> BatchVerificationReport:
+                   auto_repair: bool = False) -> BatchVerificationReport:
         """
         Verifica todos los pares encontrados.
         
@@ -352,7 +352,7 @@ class BatchVerifier:
                 
                 # Reparación falló
                 result.status = "FAILED"
-                result.error = verification.error or "Repair failed"
+                result.error = transfer_result.error or verification.error or "Repair failed"
             else:
                 result.status = "FAILED" if verification.status == "FAIL" else "OK"
                 result.error = verification.error

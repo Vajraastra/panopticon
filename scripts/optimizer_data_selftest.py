@@ -337,13 +337,25 @@ class OptimizerData(helpers.Fixture):
         result = self.run_worker(self.worker([str(source)]))
         self.assertEqual(result['success'], 1)
         self.assertEqual(source.read_bytes(), original)
-        output = Path(self.settings()['export_path']) / 'source.png'
+        output = product.get_export_path(source, export_dir=self.settings()['export_path'])
         self.assertTrue(output.exists())
         from core.metadata import MetadataExtractor
         bundle = MetadataExtractor.extract(output)
         self.assertIn('alpha', bundle.tags)
         self.assertEqual(bundle.rating, 3)
         self.assertEqual(self.service.read('get_library_overview')['count'], 1)
+
+    def test_failed_outputs_visible_without_html_from_path(self):
+        module = self.view(['C:/<b>name</b>.png'])
+        with patch.object(product, 'optimize_image', return_value=dict(success=False, error='metadata fixture')), \
+                patch.object(QMessageBox, 'information') as info:
+            self.start(module)
+            self.assertTrue(helpers.pump(lambda: info.called))
+            module.worker.wait(3000)
+        message = info.call_args.args[2]
+        self.assertIn('Failed: 1', message)
+        self.assertIn('metadata fixture', message)
+        self.assertIn('&lt;b&gt;name&lt;/b&gt;', message)
 
 
 if __name__ == '__main__':

@@ -19,7 +19,7 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 | **Format Scanner** | Analyzes the distribution of image formats across a collection for statistical review. |
 | **Image Optimizer** | Compresses and re-encodes images in batch. Supports AVIF, PNG (via oxipng), and standard formats. |
 | **Format Converter** | Converts between image formats in batch, including PSD and AVIF support. |
-| **Watermarker** | Batch watermarking with configurable position, opacity, and scale. Preserves original metadata in output files via StampLib. |
+| **Watermarker** | Batch watermarking with configurable position, opacity, and scale. Deliberately removes embedded generation metadata from public output files. |
 | **Metadata Hub** | Inspect and edit embedded metadata (EXIF, tags, captions) across your collection. |
 | **Dataset Tagger** | Auto-captions image folders with a local or online vision LLM plus a WD tagger, producing kohya-style `.txt` sidecars for training datasets (booru tags and natural language, per-model templates). |
 | **Pickler** | Manual culling tool — quickly keep or discard images with two error-proof modes, wired into the Librarian for directed re-indexing. |
@@ -41,7 +41,10 @@ the database. Close the owner before running a tool that needs its own writer.
 This protection coordinates current versions; older instances or direct SQLite tools
 require separate coordination. Hard link aliases of the database require manual review.
 
-Every module that transforms files uses `StampLib` to embed original metadata into the output, so no provenance is lost.
+Cropper, Image Optimizer and Format Converter can preserve embedded generation
+metadata in their outputs through the shared metadata layer. Watermarker deliberately
+removes it for public distribution. Central curation and `.txt` captions remain
+separate; exporting metadata does not merge native copy identities.
 
 ---
 
@@ -467,6 +470,31 @@ result requires review using its recovery journal and backup; there is no automa
 disk rollback or atomic transaction spanning the file and SQLite. External editors
 can still race with revalidation. Reload the image before another operation.
 Backups remain available after success and are not automatically deleted.
+
+### Metadata in transformed outputs
+
+Cropper, Image Optimizer and Format Converter stamp and verify a temporary output
+before publication. PNG, JPEG and WebP metadata updates preserve the encoded image
+data; AVIF receives its metadata in the initial encoding, avoiding a second pass.
+Unicode prompts, generation settings, raw workflows, tags and ratings round-trip
+through the shared payload. Ambiguous or oversized metadata requires review and
+does not count as a successful preserved output.
+
+Image Optimizer uses stable names derived from each source path to distinguish
+equal basenames. It requires a fresh destination outside Cherry folders and, when
+using the application's data service, rejects active or offline native path history.
+It verifies metadata, source stability and destination availability before
+publication; failed outputs and cancellation are included in the result summary.
+This does not reserve paths against other programs or atomically register outputs
+in SQLite. Registration of derived outputs remains a separate pending integration.
+
+The shared stamping API requires `prepared=True`, meaning a private temporary
+output owned by its producer. It does not authorize editing an indexed original.
+Use Metadata Hub's reviewed operation for such edits. Batch conversion verification
+is read-only and no longer repairs published files automatically. AVIF producers
+use `encoder_options` before saving and `verify_prepared` afterward.
+Prepared stamping accepts single-frame images up to 256 MiB and 20 million pixels,
+with at most 256 KiB of shared metadata; JPEG EXIF also has its segment size limit.
 
 ## License
 

@@ -43,117 +43,27 @@ def _webp_is_lossless(path) -> bool:
 
 
 class StampLib:
-    """
-    Librería estática para la persistencia de metadatos de Panopticon.
-    Permite 'estampar' etiquetas y ratings en archivos físicos sin dañar
-    los metadatos de IA (Stable Diffusion / ComfyUI).
-    """
-    
-    @staticmethod
-    def get_payload_json(tags: list = None, rating: int = 0) -> str:
-        """Genera el string JSON estandarizado de Panopticon."""
-        tags = tags or []
-        payload = {
-            "tags": tags,
-            "rating": rating,
-            "software": "Panopticon"
-        }
-        return json.dumps(payload)
+    """Curación embebida en una salida temporal; nunca edita originales Native."""
 
     @staticmethod
-    def stamp_file(path: str, tags: list = None, rating: int = 0):
-        """
-        Incrusta metadatos de Panopticon en el archivo de imagen.
-        """
-        if not os.path.exists(path):
+    def get_payload_json(tags=None, rating=0):
+        from .bundle import MetadataBundle
+        from .output_stamp import payload, _json
+        return _json(payload(MetadataBundle(tags=tags or [], rating=rating)))
+
+    @staticmethod
+    def stamp_file(path, tags=None, rating=0, *, prepared=False):
+        if not prepared:
+            log.error("StampLib requires a prepared output; indexed originals need Metadata Hub")
             return False
-            
-        json_payload = StampLib.get_payload_json(tags, rating)
-        
+        from .extractor import MetadataExtractor
         try:
-            ext = os.path.splitext(path)[1].lower()
-            if ext == '.png':
-                return StampLib._stamp_png(path, json_payload)
-            elif ext in ('.jpg', '.jpeg'):
-                return StampLib._stamp_jpeg(path, json_payload)
-            elif ext == '.webp':
-                return StampLib._stamp_webp(path, json_payload)
-            elif ext == '.avif':
-                return StampLib._stamp_avif(path, json_payload)
+            bundle = MetadataExtractor.extract(path, strict=True)
+            bundle.tags, bundle.rating = list(tags or []), rating
+            return MetadataStamper.stamp(path, bundle, prepared=True)
+        except Exception as exc:
+            log.error("Invalid prepared curation output %s: %s", path, exc)
             return False
-        except Exception as e:
-            log.error("Error estampando %s: %s", path, e)
-            return False
-
-    @staticmethod
-    def _stamp_png(path, json_payload):
-        img = Image.open(path)
-        existing_info = img.info
-        
-        # Preservar todo (incluyendo parameters de A1111)
-        new_info = PngImagePlugin.PngInfo()
-        for k, v in existing_info.items():
-            if isinstance(k, str) and isinstance(v, (str, bytes)):
-                 new_info.add_text(k, str(v))
-        
-        # Añadir nuestro payload
-        new_info.add_text("panopticon_data", json_payload)
-
-        _atomic_save(img, path, pnginfo=new_info)
-        img.close()
-        return True
-
-    @staticmethod
-    def _stamp_jpeg(path, json_payload):
-        img = Image.open(path)
-        
-        # Strategy: Use getexif() but ensure we write it back correctly
-        exif = img.getexif()
-        
-        # 0x9286 is UserComment. 
-        # Structure: First 8 bytes = encoding (ASCII\0\0\0 or UNICODE\0)
-        # We will use ASCII prefix for simplicity as our JSON is standard
-        prefix = b'ASCII\x00\x00\x00'
-        payload_bytes = prefix + json_payload.encode('utf-8')
-        
-        exif[0x9286] = payload_bytes
-
-        _atomic_save(img, path, exif=exif, quality=95, optimize=True)
-        img.close()
-        return True
-
-    @staticmethod
-    def _stamp_webp(path, json_payload):
-        lossless = _webp_is_lossless(path)
-        img = Image.open(path)
-        xmp = (
-            '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
-            '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
-            '<rdf:Description rdf:about="" xmlns:pan="http://panopticon/ns/">'
-            f'<pan:data><![CDATA[{json_payload}]]></pan:data>'
-            '</rdf:Description></rdf:RDF></x:xmpmeta>'
-        )
-        if lossless:
-            _atomic_save(img, path, "WEBP", lossless=True, quality=80, method=6,
-                         exact=True, xmp=xmp.encode('utf-8'))
-        else:
-            _atomic_save(img, path, "WEBP", quality=95, xmp=xmp.encode('utf-8'))
-        img.close()
-        return True
-
-    @staticmethod
-    def _stamp_avif(path, json_payload):
-        img = Image.open(path)
-        xmp = (
-            '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
-            '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
-            '<rdf:Description rdf:about="" xmlns:pan="http://panopticon/ns/">'
-            f'<pan:data><![CDATA[{json_payload}]]></pan:data>'
-            '</rdf:Description></rdf:RDF></x:xmpmeta>'
-        )
-        _atomic_save(img, path, "AVIF", xmp=xmp.encode('utf-8'))
-        img.close()
-        return True
 
 
 # =============================================================================
@@ -172,7 +82,7 @@ class TransferResult:
     source_path: str
     dest_path: str
     error: Optional[str] = None
-    metadata_preserved: bool = True
+    metadata_preserved: bool = False
 
 
 class MetadataStamper:
@@ -185,15 +95,15 @@ class MetadataStamper:
     
     Uso:
         # Transferir metadata de original a copia
-        result = MetadataStamper.transfer("original.png", "copy.png")
+        result = MetadataStamper.transfer("original.png", "prepared.png", prepared=True)
         
         # Escribir bundle completo
-        MetadataStamper.stamp("image.png", bundle)
+        MetadataStamper.stamp("prepared.png", bundle, prepared=True)
     """
     
     @classmethod
     def transfer(cls, source: str | Path, dest: str | Path, 
-                 verify: bool = False) -> TransferResult:
+                 verify: bool = True, *, prepared: bool = False) -> TransferResult:
         """
         Transfiere metadata de archivo fuente a destino.
         
@@ -223,10 +133,14 @@ class MetadataStamper:
         if not dest.exists():
             result.error = f"Destination file not found: {dest}"
             return result
+
+        if source.resolve() == dest.resolve() or os.path.samefile(source, dest):
+            result.error = "Transfer destination must differ from source"
+            return result
         
         try:
             # Extraer metadata del original
-            bundle = MetadataExtractor.extract(source)
+            bundle = MetadataExtractor.extract(source, strict=True)
             
             if not bundle.is_valid():
                 # No hay metadata que transferir, pero no es error
@@ -235,13 +149,13 @@ class MetadataStamper:
                 return result
             
             # Escribir al destino
-            success = cls.stamp(dest, bundle)
+            success = cls.stamp(dest, bundle, prepared=prepared)
             
             if success:
                 result.success = True
                 result.metadata_preserved = True
             else:
-                result.error = "Failed to stamp metadata to destination"
+                result.error = "Published files require a reviewed Metadata Hub edit; prepare a new output before stamping"
             
             return result
         
@@ -250,223 +164,33 @@ class MetadataStamper:
             return result
     
     @classmethod
-    def stamp(cls, path: str | Path, bundle) -> bool:
+    def stamp(cls, path, bundle, *, prepared=False):
+        """Verificar y estampar una salida temporal antes de publicar.
+
+        prepared es un contrato del productor, no autorización para modificar
+        un original indexado. No abre DB ni puede sincronizar una fila Native.
+        AVIF recibe encoder_options antes del primer save; nunca recodificar aquí.
         """
-        Escribe un MetadataBundle completo a un archivo.
-        Preserva metadata existente de AI y añade/actualiza datos de Panopticon.
-        
-        Args:
-            path: Ruta al archivo
-            bundle: MetadataBundle con los datos a escribir
-        
-        Returns:
-            True si exitoso
-        """
-        path = Path(path)
-        ext = path.suffix.lower()
-        
-        try:
-            if ext == '.png':
-                return cls._stamp_png_bundle(path, bundle)
-            elif ext in ('.jpg', '.jpeg'):
-                return cls._stamp_jpeg_bundle(path, bundle)
-            elif ext == '.webp':
-                return cls._stamp_webp_bundle(path, bundle)
-            elif ext == '.avif':
-                return cls._stamp_avif_bundle(path, bundle)
-            else:
-                return False
-        except Exception as e:
-            log.error("Error estampando %s: %s", path, e)
+        if not prepared:
+            log.error("Stamp requires a prepared output; published originals need Metadata Hub")
             return False
-    
-    @classmethod
-    def _stamp_png_bundle(cls, path: Path, bundle) -> bool:
-        """Escribe bundle a PNG preservando metadata existente."""
-        img = Image.open(path)
-        existing_info = img.info
-        
-        new_info = PngImagePlugin.PngInfo()
-        
-        # Preservar metadata existente (prompts de A1111, etc.)
-        for k, v in existing_info.items():
-            if isinstance(k, str) and isinstance(v, (str, bytes)):
-                new_info.add_text(k, str(v))
-        
-        # Añadir/actualizar datos de Panopticon
-        panopticon_data = {
-            "tags": bundle.tags,
-            "rating": bundle.rating,
-            "quality_score": bundle.quality_score,
-            "software": "Panopticon"
-        }
-        new_info.add_text("panopticon_data", json.dumps(panopticon_data))
-        
-        # Preserve ComfyUI Workflows (if present in source)
-        if "workflow" in bundle.raw:
-            new_info.add_text("workflow", bundle.raw["workflow"])
-        if "prompt" in bundle.raw:
-            new_info.add_text("prompt", bundle.raw["prompt"])
-        
-        # Si tenemos el string original de parámetros (preserve fidelity), úsalo
-        if "parameters" in bundle.raw:
-            new_info.add_text("parameters", bundle.raw["parameters"])
-        
-        # Si no, reconstruir desde campos (fallback) — solo si no hay workflow ComfyUI
-        elif (bundle.positive_prompt and "parameters" not in existing_info
-              and "workflow" not in bundle.raw and "prompt" not in bundle.raw):
-            params = bundle.positive_prompt
-            if bundle.negative_prompt:
-                params += f"\nNegative prompt: {bundle.negative_prompt}"
-            if bundle.steps:
-                params += f"\nSteps: {bundle.steps}"
-                if bundle.sampler:
-                    params += f", Sampler: {bundle.sampler}"
-                if bundle.cfg:
-                    params += f", CFG scale: {bundle.cfg}"
-                if bundle.seed:
-                    params += f", Seed: {bundle.seed}"
-                if bundle.model:
-                    params += f", Model: {bundle.model}"
-            new_info.add_text("parameters", params)
-        
-        _atomic_save(img, path, pnginfo=new_info)
-        img.close()
-        return True
-    
-    @classmethod
-    def _stamp_jpeg_bundle(cls, path: Path, bundle) -> bool:
-        """Escribe bundle a JPEG."""
-        img = Image.open(path)
-        exif = img.getexif()
-        
-        # 1. Panopticon Data -> ImageDescription (0x010e)
-        # Esto separa nuestros datos de los prompts de A1111 (UserComment)
-        panopticon_data = {
-            "tags": bundle.tags,
-            "rating": bundle.rating,
-            "quality_score": bundle.quality_score,
-            "software": "Panopticon"
-        }
-        json_payload = json.dumps(panopticon_data)
-        
-        # 0x010e is ImageDescription
-        exif[0x010e] = json_payload.encode('utf-8')
-        
-        # 2. A1111 Prompts -> UserComment (0x9286)
-        # Solo escribir si no existe, o si queremos reconstruirlo.
-        # Preferimos preservar el existente si el bundle tiene raw['parameters']
-        prefix = b'ASCII\x00\x00\x00'
-        
-        if "parameters" in bundle.raw:
-             # Preserve fidelity
-             exif[0x9286] = prefix + bundle.raw["parameters"].encode('utf-8')
-             
-        elif bundle.positive_prompt and 0x9286 not in exif:
-             # Reconstruct
-             params = bundle.positive_prompt
-             if bundle.negative_prompt:
-                 params += f"\nNegative prompt: {bundle.negative_prompt}"
-             if bundle.steps:
-                 params += f"\nSteps: {bundle.steps}"
-                 # ... (simplificado, usar lógica completa si se requiere)
-                 if bundle.model:
-                     params += f", Model: {bundle.model}"
-             
-             exif[0x9286] = prefix + params.encode('utf-8')
-        
-        _atomic_save(img, path, exif=exif, quality=95, optimize=True)
-        img.close()
-        return True
-    
-    @classmethod
-    def _stamp_webp_bundle(cls, path: Path, bundle) -> bool:
-        """Escribe bundle a WebP usando XMP."""
-        img = Image.open(path)
-        
-        # 1. Prepare XMP (Panopticon Schema)
-        panopticon_data = {
-            "tags": bundle.tags,
-            "rating": bundle.rating,
-            "quality_score": bundle.quality_score,
-            "positive_prompt": bundle.positive_prompt,
-            "negative_prompt": bundle.negative_prompt,
-            "model": bundle.model,
-            "seed": bundle.seed,
-            "steps": bundle.steps,
-            "cfg": bundle.cfg,
-            "sampler": bundle.sampler,
-            "tool": bundle.tool,
-            "software": "Panopticon"
-        }
-        
-        # Preservar raw original para round-trip fiel (A1111 params, ComfyUI workflow)
-        if bundle.raw.get("parameters"):
-            panopticon_data["raw_parameters"] = bundle.raw["parameters"]
-        if bundle.raw.get("workflow"):
-            panopticon_data["raw_workflow"] = bundle.raw["workflow"]
-        if bundle.raw.get("prompt"):
-            panopticon_data["raw_prompt"] = bundle.raw["prompt"]
-
-        json_payload = json.dumps(panopticon_data)
-        xmp = (
-            '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
-            '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
-            '<rdf:Description rdf:about="" xmlns:pan="http://panopticon/ns/">'
-            f'<pan:data><![CDATA[{json_payload}]]></pan:data>'
-            '</rdf:Description></rdf:RDF></x:xmpmeta>'
-        )
-        if _webp_is_lossless(path):
-            _atomic_save(img, path, "WEBP", lossless=True, quality=80, method=6,
-                         exact=True, xmp=xmp.encode('utf-8'))
-        else:
-            _atomic_save(img, path, "WEBP", quality=95, xmp=xmp.encode('utf-8'))
-        img.close()
-        return True
+        try:
+            from .output_stamp import stamp_prepared
+            return stamp_prepared(path, bundle)
+        except Exception as exc:
+            log.error("Error stamping prepared output %s: %s", path, exc)
+            return False
 
     @classmethod
-    def _stamp_avif_bundle(cls, path: Path, bundle) -> bool:
-        """Escribe bundle a AVIF usando XMP.
-        Preserva el raw original según el formato fuente para que el reader
-        pueda re-rutar por el parser correcto (A1111 o ComfyUI).
-        """
-        img = Image.open(path)
+    def encoder_options(cls, bundle, *, existing_xmp=None):
+        """XMP AVIF para incluir en su primera codificación, sin segunda pasada."""
+        from .output_stamp import payload, xmp_payload
+        return dict(xmp=xmp_payload(existing_xmp, payload(bundle)))
 
-        panopticon_data = {
-            "tags": bundle.tags,
-            "rating": bundle.rating,
-            "quality_score": bundle.quality_score,
-            "positive_prompt": bundle.positive_prompt,
-            "negative_prompt": bundle.negative_prompt,
-            "model": bundle.model,
-            "seed": bundle.seed,
-            "steps": bundle.steps,
-            "cfg": bundle.cfg,
-            "sampler": bundle.sampler,
-            "tool": bundle.tool,
-            "software": "Panopticon"
-        }
-
-        # Preservar raw del formato fuente para fidelidad de lectura
-        if "ComfyUI" in (bundle.tool or ""):
-            if "prompt" in bundle.raw:
-                panopticon_data["comfyui_prompt"] = bundle.raw["prompt"]
-            if "workflow" in bundle.raw:
-                panopticon_data["comfyui_workflow"] = bundle.raw["workflow"]
-        elif "parameters" in bundle.raw:
-            panopticon_data["a1111_parameters"] = bundle.raw["parameters"]
-
-        json_payload = json.dumps(panopticon_data)
-        xmp = (
-            '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
-            '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
-            '<rdf:Description rdf:about="" xmlns:pan="http://panopticon/ns/">'
-            f'<pan:data><![CDATA[{json_payload}]]></pan:data>'
-            '</rdf:Description></rdf:RDF></x:xmpmeta>'
-        )
-        _atomic_save(img, path, "AVIF", quality=95, xmp=xmp.encode('utf-8'))
-        img.close()
-        return True
+    @classmethod
+    def verify_prepared(cls, path, bundle):
+        from .output_stamp import payload, verify
+        return verify(path, payload(bundle))
 
     @classmethod
     def strip_metadata(cls, path: str | Path) -> bool:

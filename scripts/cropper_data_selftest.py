@@ -282,7 +282,7 @@ class CropperData(helpers.Fixture):
 
     def test_actual_png_metadata_dimensions_source_and_db_unchanged(self):
         self.register(self.source)
-        MetadataStamper.stamp(self.source, MetadataBundle(tags=['embedded'], positive_prompt='fixture prompt'))
+        MetadataStamper.stamp(self.source, MetadataBundle(tags=['embedded'], positive_prompt='fixture prompt'), prepared=True)
         self.service.submit('edit_curation', self.source, add_tags=['central'], rating=4).result(3)
         before = Path(self.source).read_bytes()
         result = self.run_worker(self.worker())
@@ -362,12 +362,12 @@ class CropperData(helpers.Fixture):
         Path(self.output).write_bytes(b'existing destination')
         before = Path(self.source).read_bytes()
         real_stamp = MetadataStamper.stamp
-        def stamp(path, bundle):
+        def stamp(path, bundle, **kwargs):
             self.assertEqual(Path(self.output).read_bytes(), b'existing destination')
             self.assertEqual(Path(self.source).read_bytes(), before)
             with Image.open(path) as image:
                 self.assertEqual(image.size, (50, 40))
-            return real_stamp(path, bundle)
+            return real_stamp(path, bundle, **kwargs)
         with patch.object(MetadataStamper, 'stamp', side_effect=stamp):
             logic.crop_image(self.source, QRectF(0, 0, .5, .5), self.output, tags=['alpha'], rating=3)
         self.assertEqual(MetadataExtractor.extract(self.output).tags, ['alpha'])

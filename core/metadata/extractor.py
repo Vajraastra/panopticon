@@ -35,7 +35,7 @@ class MetadataExtractor:
     SUPPORTED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.avif'}
     
     @classmethod
-    def extract(cls, path: str | Path) -> MetadataBundle:
+    def extract(cls, path: str | Path, *, strict=False) -> MetadataBundle:
         """
         Extrae metadata de cualquier formato de imagen soportado.
         
@@ -46,7 +46,13 @@ class MetadataExtractor:
             MetadataBundle con toda la metadata encontrada
         """
         path = Path(path)
-        
+        if strict:
+            raw, source_format = cls._strict_raw(path)
+            result = cls._parse_raw_metadata(raw, source_format)
+            from .output_stamp import payload
+            payload(result)
+            return result
+
         if not path.exists():
             return MetadataBundle()
         
@@ -64,6 +70,45 @@ class MetadataExtractor:
             return MetadataBundle()
     
     @classmethod
+    def _strict_raw(cls, path):
+        from .output_stamp import MAX_FILE, MAX_METADATA, read_png, PAN
+        import xml.etree.ElementTree as ET
+        if not path.is_file() or path.stat().st_size > MAX_FILE:
+            raise ValueError('metadata_source_requires_review')
+        extension = path.suffix.lower()
+        if extension not in cls.SUPPORTED_EXTENSIONS: raise ValueError('metadata_unsupported_format')
+        raw = read_png(path) if extension == '.png' else {}
+        with Image.open(path) as image:
+            expected = {'.png': 'PNG', '.jpg': 'JPEG', '.jpeg': 'JPEG', '.webp': 'WEBP', '.avif': 'AVIF'}
+            if image.format != expected[extension]: raise ValueError('metadata_format_mismatch')
+            if getattr(image, 'n_frames', 1) != 1 or image.width*image.height > 20_000_000:
+                raise ValueError('metadata_image_limit')
+            source_format = image.format
+            xmp = image.info.get('xmp')
+            if xmp:
+                if isinstance(xmp, str): xmp = xmp.encode('utf-8')
+                if len(xmp) > MAX_METADATA or b'<!DOCTYPE' in xmp or b'<!ENTITY' in xmp:
+                    raise ValueError('metadata_xmp_requires_review')
+                nodes = list(ET.fromstring(xmp).iter(PAN))
+                if len(nodes) > 1: raise ValueError('metadata_xmp_ambiguous')
+                if nodes: raw['panopticon_data'] = nodes[0].text
+                raw['xmp_raw'] = xmp.decode('utf-8')
+            exif = image.getexif()
+            comment = exif.get(0x9286)
+            if comment is not None:
+                if isinstance(comment, bytes):
+                    if comment.startswith((b'ASCII\x00\x00\x00', b'UNICODE\x00')): comment = comment[8:]
+                    comment = comment.decode('utf-8')
+                raw.setdefault('parameters', comment)
+            description = exif.get(0x010e)
+            if isinstance(description, bytes): description = description.decode('utf-8')
+            if isinstance(description, str) and description.lstrip().startswith('{') and '"tags"' in description:
+                raw['panopticon_data'] = description.rstrip('\x00')
+        if 'panopticon_data' in raw:
+            if not isinstance(json.loads(raw['panopticon_data']), dict): raise ValueError('metadata_invalid_payload')
+        return raw, source_format
+
+    @classmethod
     def extract_png(cls, path: str | Path) -> MetadataBundle:
         """
         Extrae metadata de archivos PNG.
@@ -73,35 +118,9 @@ class MetadataExtractor:
         raw_metadata = {}
         
         try:
-            with open(path, 'rb') as f:
-                sig = f.read(8)
-                if sig != b'\x89PNG\r\n\x1a\n':
-                    return MetadataBundle(source_format="PNG")
-                
-                while True:
-                    length_bin = f.read(4)
-                    if not length_bin:
-                        break
-                    
-                    length = struct.unpack('>I', length_bin)[0]
-                    chunk_type = f.read(4)
-                    data = f.read(length)
-                    f.read(4)  # CRC
-                    
-                    if chunk_type == b'tEXt':
-                        parts = data.split(b'\x00', 1)
-                        if len(parts) == 2:
-                            key = parts[0].decode('latin-1', errors='ignore')
-                            value = parts[1].decode('latin-1', errors='ignore')
-                            raw_metadata[key] = value
-                    
-                    elif chunk_type == b'iTXt':
-                        parts = data.split(b'\x00', 5)
-                        if len(parts) >= 6:
-                            key = parts[0].decode('utf-8', errors='ignore')
-                            value = parts[5].decode('utf-8', errors='ignore')
-                            raw_metadata[key] = value
-            
+            from .output_stamp import read_png
+            raw_metadata = read_png(path)
+
             return cls._parse_raw_metadata(raw_metadata, "PNG")
         
         except Exception as e:
@@ -226,26 +245,20 @@ class MetadataExtractor:
         """Extrae datos de Panopticon desde XMP."""
         result = {}
         
-        # Look for pan:data tag — support both CDATA wrapper and raw JSON
-        match = re.search(r'<pan:data><!\[CDATA\[(.*?)\]\]></pan:data>', xmp, re.DOTALL)
-        if not match:
-            match = re.search(r'<pan:data>(.+?)</pan:data>', xmp, re.DOTALL)
-        if match:
-            try:
-                json_str = match.group(1)
-                # Return raw JSON string so _parse_raw_metadata can extract all fields
-                result['panopticon_data'] = json_str
+        from .output_stamp import PAN, MAX_METADATA
+        import xml.etree.ElementTree as ET
+        if len(xmp.encode('utf-8')) > MAX_METADATA or '<!DOCTYPE' in xmp or '<!ENTITY' in xmp:
+            raise ValueError('metadata_xmp_requires_review')
+        tree = ET.fromstring(xmp)
+        nodes = list(tree.iter(PAN))
+        if len(nodes) > 1: raise ValueError('metadata_xmp_ambiguous')
+        if nodes:
+            data = json.loads(nodes[0].text)
+            result['panopticon_data'] = nodes[0].text
+            for key, target in (('tags', 'panopticon_tags'), ('rating', 'panopticon_rating'),
+                                ('quality_score', 'panopticon_quality')):
+                if key in data: result[target] = data[key]
 
-                data = json.loads(json_str)
-                if 'tags' in data:
-                    result['panopticon_tags'] = data['tags']
-                if 'rating' in data:
-                    result['panopticon_rating'] = data['rating']
-                if 'quality_score' in data:
-                    result['panopticon_quality'] = data['quality_score']
-            except json.JSONDecodeError:
-                pass
-        
         return result
     
     @classmethod
@@ -313,6 +326,10 @@ class MetadataExtractor:
                     bundle.sampler = pan_data["sampler"]
                 if "tool" in pan_data:
                     bundle.tool = pan_data["tool"]
+
+                if "vae" in pan_data: bundle.vae = pan_data["vae"]
+                if "loras" in pan_data: bundle.loras = pan_data["loras"]
+                if "raw_generation" in pan_data: bundle.raw.update(pan_data["raw_generation"])
 
                 # Restaurar raw original para round-trip fiel (A1111, ComfyUI)
                 if "raw_parameters" in pan_data:

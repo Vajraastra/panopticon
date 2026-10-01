@@ -168,11 +168,13 @@ class UniversalParser:
         if len(xmp) > MAX_METADATA_BYTES:
             raise ValueError('Metadata exceeds review limit')
         if isinstance(xmp, bytes): xmp = xmp.decode('utf-8')
-        match = re.search(r'<pan:data><!\[CDATA\[(.*?)\]\]></pan:data>', xmp, re.DOTALL)
-        if not match:
-            match = re.search(r'<pan:data>(.*?)</pan:data>', xmp, re.DOTALL)
-        if not match: return UniversalParser._extract_prompts({})
-        data = json.loads(match.group(1))
+        import xml.etree.ElementTree as ET
+        from core.metadata.output_stamp import PAN
+        if '<!DOCTYPE' in xmp or '<!ENTITY' in xmp: raise ValueError('Invalid generation metadata')
+        nodes = list(ET.fromstring(xmp).iter(PAN))
+        if len(nodes) > 1: raise ValueError('Ambiguous generation metadata')
+        if not nodes: return UniversalParser._extract_prompts({})
+        data = json.loads(nodes[0].text)
         if not isinstance(data, dict): raise ValueError('Invalid generation metadata')
         if 'a1111_parameters' in data:
             return UniversalParser._extract_prompts({'parameters': data['a1111_parameters']})

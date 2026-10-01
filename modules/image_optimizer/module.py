@@ -2,6 +2,7 @@ import os
 import logging
 import copy
 import threading
+from html import escape
 from pathlib import Path
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
                                QCheckBox, QSpinBox, QFileDialog, QProgressBar, QMessageBox,
@@ -94,7 +95,7 @@ class OptimizerWorker(QThread):
 
     def run(self):
         stats = dict(success=0, failed=0, saved_bytes=0, processed=0,
-                     data_error=None, cancelled=False)
+                     data_error=None, cancelled=False, failures=[])
         # Cada bloque comparte una transacción RO; no retener mapas de todo el lote.
         for offset in range(0, len(self.queue), 256):
             if self.cancel_event.is_set():
@@ -122,16 +123,21 @@ class OptimizerWorker(QThread):
                         max_side=self.settings['max_side'],
                         preserve_metadata=self.settings['preserve_meta'],
                         tags=list(row['tags']) if row['id'] is not None else [],
-                        rating=row['rating'] if row['id'] is not None else 0
+                        rating=row['rating'] if row['id'] is not None else 0,
+                        service=self.service, cancel_event=self.cancel_event
                     )
                     if result['success']:
                         stats['success'] += 1
                         stats['saved_bytes'] += result['saved_bytes']
                     else:
                         stats['failed'] += 1
+                        if len(stats['failures']) < 20:
+                            stats['failures'].append((str(path)[:1024], str(result.get('error', 'Unknown error'))[:1000]))
                 except Exception as exc:
                     logging.warning('[ImageOptimizer] Failed to process %s: %s', path, exc)
                     stats['failed'] += 1
+                    if len(stats['failures']) < 20:
+                        stats['failures'].append((str(path)[:1024], str(exc)[:1000]))
                 stats['processed'] += 1
                 self.progress.emit(stats['processed'])
         stats['cancelled'] = self.cancel_event.is_set()
@@ -487,11 +493,20 @@ class ImageOptimizerModule(BaseModule):
         QMessageBox.information(
             self.view,
             self.tr("opt.done", "Done"),
-            self.tr("opt.stats", "Processed {total} images.\nSaved: {saved} MB").format(
-                total=stats['success'] + stats['failed'],
+            '<p>'+escape(self.tr("tool.image_optimizer.result_stats",
+                    "Successful: {success}. Failed: {failed}. Cancelled: {cancelled}.\nSaved: {saved} MB.").format(
+                success=stats['success'], failed=stats['failed'],
+                cancelled=self.tr('tool.image_optimizer.yes', 'Yes') if stats['cancelled'] else self.tr('tool.image_optimizer.no', 'No'),
                 saved=f"{stats['saved_bytes'] / 1024 / 1024:.2f}"
-            )
+            ) + self._failure_details(stats)).replace('\n', '<br/>')+'</p>'
         )
+
+    def _failure_details(self, stats):
+        failures = stats.get('failures', [])
+        if not failures: return ''
+        # Mostrar una muestra acotada; el resultado nunca llama éxito a una falla.
+        return '\n\n'+self.tr('tool.image_optimizer.failure_details',
+            'Failed outputs (up to 20):')+'\n'+'\n'.join(f'{path}: {reason}' for path, reason in failures)
 
     def load_image_set(self, paths: list):
         """Standard interface for receiving image sets from Librarian."""
