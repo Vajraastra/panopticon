@@ -51,7 +51,7 @@ class CropperData(helpers.Fixture):
 
     def view(self):
         module = product.CropperModule()
-        module.on_load(dict(data_service=self.service, theme_manager=ThemeManager()))
+        module.on_load(dict(data_service=self.service, theme_manager=ThemeManager(), derived_journal_root=self.root/'journals'))
         module.get_view()
         module.load_image(self.source)
         self.modules.append(module)
@@ -63,7 +63,7 @@ class CropperData(helpers.Fixture):
 
     def worker(self, source=None, rect=None):
         worker = product.CropWorker(source or self.source, rect or QRectF(.1, .2, .5, .5),
-                                    self.output, self.service)
+                                    self.output, self.service, self.root/'journals')
         self.workers.append(worker)
         return worker
 
@@ -79,14 +79,14 @@ class CropperData(helpers.Fixture):
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
         real = LibraryRepository.get_curation_snapshot
-        def blocked(repo, paths):
+        def blocked(repo, paths, **kwargs):
             entered.set()
             if not release.wait(3):
                 raise TimeoutError('fixture release')
-            return real(repo, paths)
+            return real(repo, paths, **kwargs)
         return entered, release, blocked
 
-    def test_snapshot_two_selects_off_gui_and_connection_closed_before_encode(self):
+    def test_snapshot_full_revision_off_gui_and_connection_closed_before_encode(self):
         self.register(self.source)
         self.service.submit('edit_curation', self.source, add_tags=['alpha'], rating=3).result(3)
         from core import library_service
@@ -110,7 +110,7 @@ class CropperData(helpers.Fixture):
                 patch.object(product, 'crop_image', side_effect=crop):
             result = self.run_worker(self.worker())
         self.assertIsNone(result['error'])
-        self.assertEqual(sum(s.lstrip().upper().startswith('SELECT') for s in statements), 2)
+        self.assertEqual(sum(s.lstrip().upper().startswith('SELECT') for s in statements), 3)
         self.assertNotEqual(threads[0], threading.get_ident())
 
     def test_snapshot_keeps_tags_rating_pair_during_concurrent_commit(self):
@@ -294,7 +294,7 @@ class CropperData(helpers.Fixture):
         self.assertEqual(bundle.rating, 4)
         self.assertEqual(bundle.positive_prompt, 'fixture prompt')
         self.assertEqual(Path(self.source).read_bytes(), before)
-        self.assertEqual(self.service.read('count_files'), 1)
+        self.assertEqual(self.service.read('count_files'), 2)
         self.assertFalse(list(self.root.glob('.panopticon-crop-*')))
 
     def test_same_source_and_case_alias_rejected(self):
@@ -312,41 +312,39 @@ class CropperData(helpers.Fixture):
         self.assertEqual(Path(self.source).read_bytes(), before)
         self.assertEqual(Path(self.output).read_bytes(), before)
 
-    def test_false_stamp_keeps_existing_destination_and_cleans_temp(self):
+    def test_existing_destination_is_never_replaced(self):
         Path(self.output).write_bytes(b'existing destination')
-        with patch.object(MetadataStamper, 'stamp', return_value=False):
-            with self.assertRaisesRegex(OSError, 'stamping'):
-                logic.crop_image(self.source, QRectF(0, 0, .5, .5), self.output, tags=['alpha'])
-        self.assertEqual(Path(self.output).read_bytes(), b'existing destination')
+        with self.assertRaisesRegex(ValueError,'new_output'):
+            logic.crop_image(self.source,QRectF(0,0,.5,.5),self.output)
+        self.assertEqual(Path(self.output).read_bytes(),b'existing destination')
         self.assertFalse(list(self.root.glob('.panopticon-crop-*')))
 
-    def test_encode_failure_keeps_destination_and_cleans_temp(self):
-        Path(self.output).write_bytes(b'existing destination')
-        with patch.object(Image.Image, 'save', side_effect=OSError('disk full')):
-            with self.assertRaisesRegex(OSError, 'disk full'):
-                logic.crop_image(self.source, QRectF(0, 0, .5, .5), self.output)
-        self.assertEqual(Path(self.output).read_bytes(), b'existing destination')
+    def test_encode_failure_keeps_source_and_cleans_temp(self):
+        before=Path(self.source).read_bytes()
+        with patch.object(Image.Image,'save',side_effect=OSError('disk full')):
+            with self.assertRaisesRegex(OSError,'disk full'):
+                logic.crop_image(self.source,QRectF(0,0,.5,.5),self.output)
+        self.assertFalse(Path(self.output).exists())
+        self.assertEqual(Path(self.source).read_bytes(),before)
         self.assertFalse(list(self.root.glob('.panopticon-crop-*')))
 
-    def test_publish_failure_keeps_destination_and_cleans_temp(self):
-        Path(self.output).write_bytes(b'existing destination')
-        with patch.object(logic.os, 'replace', side_effect=PermissionError('locked destination')):
-            with self.assertRaisesRegex(PermissionError, 'locked destination'):
-                logic.crop_image(self.source, QRectF(0, 0, .5, .5), self.output)
-        self.assertEqual(Path(self.output).read_bytes(), b'existing destination')
+    def test_publish_failure_cleans_temp_without_output(self):
+        with patch.object(logic.os,'rename',side_effect=PermissionError('locked destination')):
+            with self.assertRaisesRegex(PermissionError,'locked destination'):
+                logic.crop_image(self.source,QRectF(0,0,.5,.5),self.output)
+        self.assertFalse(Path(self.output).exists())
         self.assertFalse(list(self.root.glob('.panopticon-crop-*')))
 
-    def test_cancel_after_encode_discards_temp_and_preserves_destination(self):
-        Path(self.output).write_bytes(b'existing destination')
-        event = threading.Event()
-        real_save = Image.Image.save
-        def save(*args, **kwargs):
-            real_save(*args, **kwargs)
+    def test_cancel_after_encode_discards_temp(self):
+        event=threading.Event()
+        real_save=Image.Image.save
+        def save(*args,**kwargs):
+            real_save(*args,**kwargs)
             event.set()
-        with patch.object(Image.Image, 'save', side_effect=save, autospec=True):
+        with patch.object(Image.Image,'save',side_effect=save,autospec=True):
             with self.assertRaises(logic.CropCancelled):
-                logic.crop_image(self.source, QRectF(0, 0, .5, .5), self.output, cancel_event=event)
-        self.assertEqual(Path(self.output).read_bytes(), b'existing destination')
+                logic.crop_image(self.source,QRectF(0,0,.5,.5),self.output,cancel_event=event)
+        self.assertFalse(Path(self.output).exists())
         self.assertFalse(list(self.root.glob('.panopticon-crop-*')))
 
     def test_source_guard_has_actionable_ui_error_no_success(self):
@@ -359,11 +357,10 @@ class CropperData(helpers.Fixture):
         self.assertTrue(module.btn_save.isEnabled())
 
     def test_destination_published_only_after_complete_metadata(self):
-        Path(self.output).write_bytes(b'existing destination')
         before = Path(self.source).read_bytes()
         real_stamp = MetadataStamper.stamp
         def stamp(path, bundle, **kwargs):
-            self.assertEqual(Path(self.output).read_bytes(), b'existing destination')
+            self.assertFalse(Path(self.output).exists())
             self.assertEqual(Path(self.source).read_bytes(), before)
             with Image.open(path) as image:
                 self.assertEqual(image.size, (50, 40))
@@ -410,6 +407,52 @@ class CropperData(helpers.Fixture):
         self.assertEqual((bundle.tags, bundle.rating), (['central'], 3))
         self.assertEqual(Path(self.source).read_bytes(), before)
         self.assertFalse(list(self.root.glob('.panopticon-crop-*')))
+
+
+    def test_indexed_worker_prepares_once_and_registers_without_redundant_ro_scan(self):
+        self.register(self.source)
+        statements=[]
+        from core import library_service
+        real_open=library_service.open_reader
+        def reader(path):
+            conn=real_open(path)
+            conn.set_trace_callback(statements.append)
+            return conn
+        with patch.object(library_service,'open_reader',reader), patch.object(self.service,'submit',wraps=self.service.submit) as submit:
+            result=self.run_worker(self.worker())
+        self.assertIsNone(result['error'],result)
+        self.assertTrue(result['native_registered'])
+        self.assertEqual(sum(call.args[0]=='prepare_derived_copies' for call in submit.call_args_list),1)
+        self.assertFalse(any('substr(path,1,4097) FROM files' in sql for sql in statements))
+        self.assertEqual(self.service.read('count_files'),2)
+        self.assertTrue(self.service.read('check_fts')['consistent'])
+
+    def test_partial_is_visible_even_with_cancelled_flag_and_html_is_escaped(self):
+        module=self.view()
+        result=dict(path='<output>',error='<failure>',cancelled=True,source_destination=False,
+                    published=True,native_registered=True,journal='<journal>')
+        with patch.object(QMessageBox,'warning') as warning, patch.object(QMessageBox,'information') as done:
+            module._on_crop_finished(result)
+        message=warning.call_args.args[2]
+        self.assertIn('&lt;output&gt;',message)
+        self.assertIn('&lt;journal&gt;',message)
+        self.assertIn('do not repeat',message)
+        done.assert_not_called()
+        self.open_folder.assert_not_called()
+
+    def test_worker_retained_until_native_finish_and_shutdown_readiness(self):
+        module=self.view()
+        entered,release,blocked=self.block_snapshot()
+        with patch.object(LibraryRepository,'get_curation_snapshot',blocked):
+            self.start(module)
+            self.assertTrue(entered.wait(1))
+            self.assertIn(module.worker,product._LIVE_WORKERS)
+            module.on_unload()
+            self.assertFalse(module.shutdown_ready())
+            release.set()
+            self.assertTrue(module.worker.wait(3000))
+            self.assertTrue(helpers.pump(lambda: module.worker not in product._LIVE_WORKERS))
+        self.assertTrue(module.shutdown_ready())
 
 
 if __name__ == '__main__':

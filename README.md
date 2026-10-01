@@ -480,10 +480,10 @@ Unicode prompts, generation settings, raw workflows, tags and ratings round-trip
 through the shared payload. Ambiguous or oversized metadata requires review and
 does not count as a successful preserved output.
 
-Image Optimizer uses stable names derived from each source path to distinguish
+Image Optimizer and Cropper use stable cache names derived from each source path to distinguish
 equal basenames. It requires a fresh destination outside Cherry folders and rejects
 active or offline native path history when using the application's data service.
-For indexed sources, its application batch captures the source ID and full revision,
+For indexed sources, their application workers capture the source ID and full revision,
 prepares the additive receipt schema once, and verifies its own output bytes and
 generation data. A recovery journal is flushed before non-overwriting publication;
 approval and final registration recheck the source revision and native destination.
@@ -505,8 +505,10 @@ and the bounded read-only destination check. The indexed flow uses owner approva
 without a redundant per-image RO scan. The owner reuses bounded destination keys
 between registrations and refreshes after external commits or other writes, with
 complete fallback above cache limits. No read transaction remains open between images.
-Cropper and Format Converter still need connection to the derivative contract;
-their current outputs are not automatically registered.
+Cropper protects existing destinations even for explicitly chosen save paths. Its
+worker registers indexed recrops through this contract; external sources remain
+unregistered. Format Converter is excluded from further Native integration following
+its deprecation decision; operational retirement is pending.
 
 The shared stamping API requires `prepared=True`, meaning a private temporary
 output owned by its producer. It does not authorize editing an indexed original.

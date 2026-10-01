@@ -1,4 +1,5 @@
 import os
+import html
 import re
 import logging
 import threading
@@ -12,9 +13,13 @@ from PySide6.QtGui import QIcon, QAction, QColor, QStandardItem
 from core.base_module import BaseModule
 from core.theme import Theme
 from core.paths import CachePaths
+from core.curation_bindings import valid as valid_binding
+from core.derived_publication import write
 from core.components.standard_layout import StandardToolLayout
 from modules.cropper.logic.cropper_widget import ImageCropperWidget
 from modules.cropper.logic.cropper_logic import crop_image, CropCancelled, SourceDestinationError
+
+_LIVE_WORKERS = set()
 
 # Combo indices (fixed positions)
 AR_FREE   = 0
@@ -25,12 +30,13 @@ AR_CUSTOM = 1
 class CropWorker(QThread):
     finished_signal = Signal(dict)
 
-    def __init__(self, source, selection, destination, service):
+    def __init__(self, source, selection, destination, service, journal_root=None):
         super().__init__()
         self.source = str(source)
         self.selection = QRectF(selection)
         self.destination = str(destination)
         self.service = service
+        self.journal_root = journal_root
         self.cancel_event = threading.Event()
 
     def stop(self):
@@ -42,17 +48,24 @@ class CropWorker(QThread):
             if self.cancel_event.is_set():
                 raise CropCancelled()
             rows = self.service.read('get_curation_snapshot', [self.source],
-                                     cancel_event=self.cancel_event)
+                                     include_revision=True, cancel_event=self.cancel_event)
             if len(rows) != 1:
                 raise ValueError('Incomplete curation snapshot')
             row = rows[0]
+            if not valid_binding(row, os.path.normpath(self.source).replace('\\','/')):
+                raise ValueError('Invalid source binding')
             if self.cancel_event.is_set():
                 raise CropCancelled()
-            result['path'] = crop_image(
+            if row['id'] is not None:
+                write(self.service,'prepare_derived_copies',event=self.cancel_event)
+            details = crop_image(
                 self.source, self.selection, self.destination,
                 tags=list(row['tags']) if row['id'] is not None else [],
                 rating=row['rating'] if row['id'] is not None else 0,
-                cancel_event=self.cancel_event)
+                cancel_event=self.cancel_event,source_snapshot=row,native_service=self.service,
+                journal_root=self.journal_root,return_details=True)
+            if isinstance(details,dict): result.update(details)
+            else: result['path'] = details
         except CropCancelled:
             result['cancelled'] = True
         except Exception as error:
@@ -82,6 +95,9 @@ class CropperModule(BaseModule):
         self._closed = True
         if self.worker is not None and self.worker.isRunning():
             self.worker.stop()
+
+    def shutdown_ready(self):
+        return self.worker is None or not self.worker.isRunning()
 
     def get_view(self) -> QWidget:
         if self.view:
@@ -405,7 +421,9 @@ class CropperModule(BaseModule):
         try:
             from core.database_manager import DatabaseManager
             service = DatabaseManager(service=self.context.get('data_service')).service
-            self.worker = CropWorker(source, selection, save_path, service)
+            self.worker = CropWorker(source, selection, save_path, service, self.context.get('derived_journal_root'))
+            _LIVE_WORKERS.add(self.worker)
+            self.worker.finished.connect(lambda worker=self.worker: _LIVE_WORKERS.discard(worker))
             self.worker.finished_signal.connect(self._on_crop_finished)
             self._saving = True
             self.btn_save.setEnabled(False)
@@ -421,7 +439,7 @@ class CropperModule(BaseModule):
         self._saving = False
         self.btn_save.setEnabled(True)
         self.btn_save.setText(self.tr("crop.save", "💾 Save Crop"))
-        if result['cancelled']:
+        if result['cancelled'] and not result.get('published'):
             return
         if result['error'] is not None:
             reason = result['error'] or self.tr("common.error", "Error")
@@ -429,10 +447,17 @@ class CropperModule(BaseModule):
                                "Choose a different destination: the source image must be preserved.")
                        if result['source_destination'] else
                        self.tr("tool.cropper.save_error", "Crop was not saved: {reason}").format(reason=reason))
-            QMessageBox.warning(self.view, self.tr("common.error", "Error"), message)
+            if result.get('published'):
+                message = self.tr('tool.cropper.partial',
+                    'The crop was published to {path}, but completion failed: {reason}. Keep it for review; do not repeat the export blindly.').format(path=result['path'],reason=reason)
+                if result.get('journal'):
+                    message += '\n'+self.tr('tool.cropper.journal','Recovery journal: {path}').format(path=result['journal'])
+            QMessageBox.warning(self.view, self.tr("common.error", "Error"), html.escape(message))
         else:
             QMessageBox.information(self.view, self.tr("opt.done", "Done"),
-                                    self.tr("crop.saved", "Saved to {path}").format(path=result['path']))
+                                    html.escape(self.tr("crop.saved", "Saved to {path}").format(path=result['path'])+'\n'+
+                                        (self.tr('tool.cropper.registered','Registered as an independent library copy.') if result.get('native_registered')
+                                         else self.tr('tool.cropper.unregistered','External source: exported without library registration.'))))
             if not self._closed:
                 CachePaths.open_folder(os.path.dirname(os.path.abspath(result['path'])))
 
