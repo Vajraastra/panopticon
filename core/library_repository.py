@@ -316,6 +316,10 @@ class LibraryRepository:
 
     # --- Discovery / Existence ---
 
+    def get_path_identity_resolution(self, canonical):
+        from core.path_identity_registry import resolution
+        return resolution(self.conn, canonical)
+
     def prepare_path_identity(self):
         from core.path_identity_registry import prepare
         return prepare(self.conn)

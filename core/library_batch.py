@@ -27,10 +27,21 @@ def commit_batch(service, operation, records, cancel_event):
         raise BatchCancelled('observation_batch_cancelled')
     if not records:
         return True
+    return _commit(service, operation, (records,), cancel_event)
+
+
+def commit_control(service, operation, cancel_event):
+    """Explicit idempotent schema preparation with the same FIFO admission."""
+    if operation != 'prepare_path_identity':
+        raise ValueError('unsupported_control_command')
+    return _commit(service, operation, (), cancel_event)
+
+
+def _commit(service, operation, args, cancel_event):
     while True:
         if cancel_event.is_set():
             raise BatchCancelled('observation_batch_cancelled')
-        future = service.submit(operation, records)
+        future = service.submit(operation, *args)
         try:
             while True:
                 if cancel_event.is_set() and future.cancel():

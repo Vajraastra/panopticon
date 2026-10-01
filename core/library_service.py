@@ -27,7 +27,7 @@ from core.paths import ProjectPaths
 
 log = logging.getLogger(__name__)
 READS = frozenset({
-    'get_path_identity_status', 'get_path_identity_matches',
+    'get_path_identity_status', 'get_path_identity_matches', 'get_path_identity_resolution',
     'get_path_identity_records',
     'get_metadata_edit_history_record', 'get_metadata_edit_state', 'get_metadata_edit_receipt', 'get_generation_history_status', 'get_generation_history_page',
     'get_metadata_path_status', 'get_derived_copies_status', 'get_derived_copy_receipt',
@@ -337,6 +337,16 @@ class LibraryService:
                 except Full:
                     future.set_exception(LibraryQueueFull(operation))
         return future
+
+    def backfill_path_identity(self, **kwargs):
+        """Explicit worker operation, bounded pages and confirmed progress."""
+        from core.library_path_migration import backfill
+        return backfill(self, **kwargs)
+
+    def resolve_path_identity(self, path, *, cancel_event=None):
+        """Worker-only Windows lookup and conservative Native review result."""
+        from core.library_path_migration import resolve
+        return resolve(self, path, cancel_event=cancel_event)
 
     def publish_path_identity_page(self, page, *, cancel_event=None):
         """Worker-only: recheck physical evidence before bounded FIFO SQL CAS."""

@@ -96,7 +96,8 @@ def store(conn, values):
 
 def status(conn):
     if not prepared(conn):
-        return dict(prepared=False, total=0, pending=0, unresolved=0, conflict_groups=0)
+        total = conn.execute('SELECT COUNT(*) FROM files').fetchone()[0]
+        return dict(prepared=False, total=total, pending=total, unresolved=0, conflict_groups=0)
     row = conn.execute('SELECT COUNT(*), SUM(CASE WHEN r.file_id IS NULL OR '
         'r.stored_path!=f.path COLLATE BINARY OR r.is_offline!=f.is_offline THEN 1 ELSE 0 END), '
         "SUM(CASE WHEN f.is_offline=0 AND r.status!='resolved' THEN 1 ELSE 0 END) "
@@ -122,3 +123,24 @@ def matches(conn, canonical, *, limit=100):
     if len(rows) > limit:
         raise ReadResultError('path_identity_matches_too_large')
     return dict(canonical=canonical, records=rows, ambiguous=len(rows)>1)
+
+
+def resolution(conn, canonical):
+    coverage = status(conn)
+    result = dict(canonical=local_path(canonical), records=[], file_id=None, coverage=coverage)
+    if not coverage['prepared']:
+        result['status'] = 'not_prepared'
+        return result
+    result.update(matches(conn, canonical))
+    if coverage['pending']:
+        result['status'] = 'incomplete'
+    elif coverage['unresolved']:
+        result['status'] = 'unresolved'
+    elif result['ambiguous']:
+        result['status'] = 'ambiguous'
+    elif not result['records']:
+        result['status'] = 'missing'
+    else:
+        result['status'] = 'unique'
+        result['file_id'] = result['records'][0][0]
+    return result

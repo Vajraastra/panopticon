@@ -922,7 +922,15 @@ This is preparation, not authority to merge/delete. Explicit Native
 `publish_path_identity_page()` rechecks disk evidence before ≤100-row FIFO SQL
 CAS. Existing paths, IDs, curation, history and FTS are unchanged. The nonunique
 canonical index keeps conflicting IDs for review; no record wins automatically.
-Status/match APIs are bounded diagnostics. Unknown/offline rows remain unresolved.
+Status/match APIs are bounded diagnostics.
+Explicit worker `backfill_path_identity()` processes all rows within its fixed
+initial ID boundary in ≤100-row batches, counts confirmed commits, and cancels
+between probes/admissions. It preserves previous confirmed evidence on failure;
+a new explicit pass safely rechecks it. `resolve_path_identity()` asks Windows
+before its SQL snapshot. It selects a unique ID only when coverage is complete
+and no online rows are unresolved; collisions/incomplete/offline remain review
+results. These APIs do not automatically route legacy mutations or register new
+files. No aggregate filesystem/SQLite snapshot or hard I/O deadline is claimed. Unknown/offline rows remain unresolved.
 Existing lookup/registration/prefix behavior is still legacy; connecting those
 consumers and validating the real migration remain open. Folder spelling and portable Cherry data remain preserved.
 [Windows supports case rules per directory](https://learn.microsoft.com/en-us/windows/wsl/case-sensitivity).
