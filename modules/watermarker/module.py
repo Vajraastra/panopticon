@@ -1,16 +1,18 @@
 import os
 import logging
-import tempfile
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
                                QScrollArea, QFrame, QFileDialog, QMessageBox, QProgressBar,
                                QComboBox, QSlider, QSizePolicy, QGridLayout)
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QPixmap, QImage, QPainter
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, Slot
+from PySide6.QtGui import QPixmap
+from shiboken6 import isValid
 
 from core.base_module import BaseModule
 from core.theme import Theme
 from core.components.standard_layout import StandardToolLayout
-from .logic.watermarker import process_image as watermark_image, get_export_path as watermark_export_path
+from .logic.worker import WatermarkWorker
+from core.native_threads import start_worker, native_done, owner_threads_ready
+from core.paths import CachePaths
 
 
 class WatermarkerModule(BaseModule):
@@ -26,6 +28,18 @@ class WatermarkerModule(BaseModule):
         self.watermark_asset = None
         self.logo_asset = None
         self.last_dir = os.path.expanduser("~")
+        self.context = {}
+        self._closed = False
+        self._worker = None
+        self._worker_result = None
+        self._preview_generation = 0
+        self._preview_pending = None
+        self._save_pending = None
+        self._save_dialog_open = False
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(80)
+        self._preview_timer.timeout.connect(self._launch_next)
 
     def get_view(self) -> QWidget:
         if self.view:
@@ -40,6 +54,11 @@ class WatermarkerModule(BaseModule):
             theme_manager=self.context.get('theme_manager'),
             event_bus=self.context.get('event_bus')
         )
+        self.view.destroyed.connect(self._view_destroyed)
+        self._sync_save_control()
+        if self.source_image:
+            self.lbl_image_status.setText(os.path.basename(self.source_image))
+            self.generate_preview()
         return self.view
 
     def _create_sidebar(self) -> QWidget:
@@ -161,7 +180,9 @@ class WatermarkerModule(BaseModule):
         self.combo_logo_pos = QComboBox()
         self.combo_logo_pos.setToolTip(self.tr(
             "wm.logo_pos_tip", "Corner where the logo is placed."))
-        self.combo_logo_pos.addItems(["Top-Right", "Top-Left", "Bottom-Right", "Bottom-Left"])
+        self.combo_logo_pos.addItems([self.tr('wm.position.'+key, label) for key,label in
+            (('top_right','Top-Right'), ('top_left','Top-Left'),
+             ('bottom_right','Bottom-Right'), ('bottom_left','Bottom-Left'))])
         self.combo_logo_pos.setStyleSheet(Theme.get_input_style(self.accent_color))
         self.combo_logo_pos.currentIndexChanged.connect(self.generate_preview)
         layout.addWidget(self.combo_logo_pos)
@@ -223,49 +244,58 @@ class WatermarkerModule(BaseModule):
     # ------------------------------------------------------------------ #
 
     def load_source_image(self):
+        if not self._alive():
+            return
         path, _ = QFileDialog.getOpenFileName(
             self.view,
             self.tr("common.select_image", "Select Image"),
             self.last_dir,
             "Images (*.png *.jpg *.jpeg *.webp *.avif)"
         )
-        if path:
+        if path and self._alive():
             self.source_image = path
             self.lbl_image_status.setText(os.path.basename(path))
             self.last_dir = os.path.dirname(path)
             self.generate_preview()
 
     def load_watermark_asset(self):
+        if not self._alive():
+            return
         path, _ = QFileDialog.getOpenFileName(
             self.view,
             self.tr("wm.load_wm", "Select Watermark"),
             self.last_dir,
             "Images (*.png *.jpg *.svg)"
         )
-        if path:
+        if path and self._alive():
             self.watermark_asset = path
             self.lbl_watermark_status.setText(os.path.basename(path))
             self.generate_preview()
 
     def load_logo_asset(self):
+        if not self._alive():
+            return
         path, _ = QFileDialog.getOpenFileName(
             self.view,
             self.tr("wm.load_logo", "Select Logo"),
             self.last_dir,
             "Images (*.png *.jpg *.svg)"
         )
-        if path:
+        if path and self._alive():
             self.logo_asset = path
             self.lbl_logo_status.setText(os.path.basename(path))
             self.generate_preview()
 
     def _drag_enter(self, event):
-        if event.mimeData().hasUrls():
+        if self._alive() and event.mimeData().hasUrls():
             event.accept()
         else:
             event.ignore()
 
     def _drop(self, event):
+        if not self._alive():
+            event.ignore()
+            return
         paths = [url.toLocalFile() for url in event.mimeData().urls()]
         image_paths = [p for p in paths if p.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.avif'))]
         if image_paths:
@@ -273,95 +303,160 @@ class WatermarkerModule(BaseModule):
             self.lbl_image_status.setText(os.path.basename(self.source_image))
             self.generate_preview()
 
+    def _alive(self):
+        return not self._closed and self.view is not None and isValid(self.view)
+
+    def _options(self):
+        return dict(source_path=self.source_image, watermark_path=self.watermark_asset,
+            logo_path=self.logo_asset, wm_angle=self.combo_angle.currentIndex()*45,
+            wm_scale=self.slider_scale.value()/100.0, wm_opacity=self.slider_opacity.value()/100.0,
+            logo_position=('top-right','top-left','bottom-right','bottom-left')[self.combo_logo_pos.currentIndex()],
+            logo_size=self.slider_logo_size.value())
+
+    def _sync_save_control(self):
+        if not self._alive():
+            return
+        busy = self._save_dialog_open or self._save_pending is not None or (
+            self._worker is not None and self._worker.operation == 'save')
+        self.btn_save.setEnabled(bool(self.source_image and (self.watermark_asset or self.logo_asset)) and not busy)
+        self.btn_save.setText(self.tr('wm.saving_copy','Saving copy…') if self._save_pending is not None or (
+            self._worker is not None and self._worker.operation == 'save')
+            else self.tr('common.save_copy','💾 SAVE COPY'))
+
     def generate_preview(self):
-        if not self.source_image:
+        if not self._alive() or not self.source_image:
             return
+        self._preview_generation += 1
+        size = (max(1,min(1600,self.lbl_preview.width())), max(1,min(1200,self.lbl_preview.height())))
+        self._preview_pending = (self._preview_generation, self._options(), size)
+        self.lbl_preview.clear()
+        self.lbl_preview.setText(self.tr('wm.preview_busy','Generating preview…'))
+        if self._worker is not None and self._worker.operation == 'preview':
+            self._worker.stop()
+        self._sync_save_control()
+        self._preview_timer.start()
 
-        if not self.watermark_asset and not self.logo_asset:
-            pix = QPixmap(self.source_image)
-            self.lbl_preview.setPixmap(
-                pix.scaled(self.lbl_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            )
+    @Slot()
+    def _launch_next(self):
+        if not self._alive() or self._worker is not None:
             return
-
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            tmp_path = tmp.name
-        os.unlink(tmp_path)
-
-        success, msg = watermark_image(
-            self.source_image, tmp_path,
-            watermark_path=self.watermark_asset,
-            logo_path=self.logo_asset,
-            wm_angle=int(self.combo_angle.currentText().replace("°", "")),
-            wm_scale=self.slider_scale.value() / 100.0,
-            wm_opacity=self.slider_opacity.value() / 100.0,
-            logo_position=self.combo_logo_pos.currentText().lower(),
-            logo_size=self.slider_logo_size.value()
-        )
-
-        if success:
-            pix = QPixmap(tmp_path)
-            self.lbl_preview.setPixmap(
-                pix.scaled(self.lbl_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            )
-
+        if self._save_pending is not None:
+            options, output = self._save_pending
+            self._save_pending = None
+            worker = WatermarkWorker('save', options, output=output,
+                                     service=(self.context or {}).get('data_service'))
+        elif self._preview_pending is not None and not self._preview_timer.isActive():
+            generation, options, size = self._preview_pending
+            self._preview_pending = None
+            worker = WatermarkWorker('preview', options, generation=generation, preview_size=size)
+        else:
+            return
+        self._worker, self._worker_result = worker, None
+        worker.finished_signal.connect(self._received, Qt.QueuedConnection)
+        worker.finished.connect(self._finished, Qt.QueuedConnection)
+        self._sync_save_control()
         try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+            start_worker(worker, self)
+        except Exception as error:
+            self._worker_result = dict(operation=worker.operation, generation=worker.generation,
+                output=worker.output, success=False, cancelled=False, image=None, error=str(error))
+            worker.stop()
+            self._reap(worker)
+
+    @Slot(dict)
+    def _received(self, result):
+        if self.sender() is self._worker:
+            self._worker_result = result
+
+    @Slot()
+    def _finished(self):
+        if self.sender() is self._worker:
+            self._reap(self._worker)
+
+    def _reap(self, worker):
+        if worker is not self._worker:
+            return
+        if not native_done(worker):
+            QTimer.singleShot(25, self, lambda: self._reap(worker))
+            return
+        result, self._worker_result = self._worker_result, None
+        self._worker = None
+        worker.deleteLater()
+        if not self._alive():
+            return
+        self._sync_save_control()
+        result = result or dict(success=False, cancelled=False, error='watermarker_result_missing', image=None)
+        if worker.operation == 'preview':
+            if worker.generation == self._preview_generation and not result['cancelled']:
+                if result['success']:
+                    self.lbl_preview.setPixmap(QPixmap.fromImage(result['image']))
+                else:
+                    self.lbl_preview.clear()
+                    self.lbl_preview.setText(self.tr('wm.preview_failed','Preview failed: {reason}')
+                                             .format(reason=str(result['error'])[:1024]))
+        elif not result['cancelled']:
+            if result['success']:
+                QMessageBox.information(self.view, self.tr('common.success','Saved'),
+                    self.tr('wm.msg.saved','Image saved successfully to:\n{path}').format(path=worker.output))
+                if self._alive():
+                    CachePaths.open_folder(os.path.dirname(os.path.abspath(worker.output)))
+            else:
+                QMessageBox.warning(self.view, self.tr('common.error','Error'),
+                    self.tr('wm.save_failed_detail','Could not save the copy: {reason}')
+                    .format(reason=str(result['error'])[:1024]))
+        self._launch_next()
 
     def save_copy(self):
+        if not self._alive() or self._save_dialog_open or self._save_pending is not None or (
+                self._worker is not None and self._worker.operation == 'save'):
+            return
         if not self.source_image:
-            QMessageBox.warning(
-                self.view,
-                self.tr("common.error", "No Image"),
-                self.tr("wm.msg.no_img", "Please load an image first.")
-            )
+            QMessageBox.warning(self.view, self.tr('common.error','No Image'),
+                                self.tr('wm.msg.no_img','Please load an image first.'))
             return
-
         if not self.watermark_asset and not self.logo_asset:
-            QMessageBox.warning(
-                self.view,
-                self.tr("common.error", "No Assets"),
-                self.tr("wm.msg.no_assets", "Please load a watermark or logo.")
-            )
+            QMessageBox.warning(self.view, self.tr('common.error','No Assets'),
+                                self.tr('wm.msg.no_assets','Please load a watermark or logo.'))
             return
-
-        out_path, _ = QFileDialog.getSaveFileName(
-            self.view,
-            self.tr("common.save_copy", "Save Watermarked Image"),
-            self.last_dir,
-            "Images (*.png *.jpg *.jpeg *.webp *.avif)"
-        )
-        if not out_path:
+        options = self._options()
+        self._save_dialog_open = True
+        self._sync_save_control()
+        try:
+            output, _ = QFileDialog.getSaveFileName(self.view,
+                self.tr('common.save_copy','Save Watermarked Image'), self.last_dir,
+                self.tr('wm.image_filter','Images (*.png *.jpg *.jpeg *.webp *.avif)'),
+                options=QFileDialog.DontConfirmOverwrite)
+        finally:
+            self._save_dialog_open = False
+            self._sync_save_control()
+        if not self._alive() or not output:
             return
+        if options != self._options():
+            QMessageBox.warning(self.view, self.tr('common.error','Error'),
+                self.tr('wm.selection_changed','The image or settings changed while choosing a destination. Review them and save again.'))
+            return
+        self._save_pending = (options, output)
+        self.generate_preview()  # Refresh after the prioritized save, including a cancelled preview.
+        self._launch_next()
 
-        success, msg = watermark_image(
-            self.source_image, out_path,
-            watermark_path=self.watermark_asset,
-            logo_path=self.logo_asset,
-            wm_angle=int(self.combo_angle.currentText().replace("°", "")),
-            wm_scale=self.slider_scale.value() / 100.0,
-            wm_opacity=self.slider_opacity.value() / 100.0,
-            logo_position=self.combo_logo_pos.currentText().lower(),
-            logo_size=self.slider_logo_size.value(),
-            native_service=(self.context or {}).get('data_service')
-        )
+    def _view_destroyed(self):
+        self.view = None
+        self.on_unload()
 
-        if success:
-            QMessageBox.information(
-                self.view,
-                self.tr("common.success", "Saved"),
-                self.tr("wm.msg.saved", "Image saved successfully to:\n{path}").format(path=out_path)
-            )
-        else:
-            QMessageBox.warning(
-                self.view,
-                self.tr("common.error", "Error"),
-                f"{self.tr('wm.msg.save_failed', 'Failed to save image')}: {msg}"
-            )
+    def on_unload(self):
+        self._closed = True
+        self._preview_generation += 1
+        self._preview_pending = self._save_pending = None
+        self._preview_timer.stop()
+        if self._worker is not None:
+            self._worker.stop()
+
+    def shutdown_ready(self):
+        return owner_threads_ready(self) and native_done(self._worker)
 
     def load_image_set(self, paths: list):
+        if self._closed:
+            return
         if paths:
             self.source_image = paths[0]
             if hasattr(self, 'lbl_image_status'):

@@ -566,7 +566,13 @@ are protected. Missing/changed assets abort publication; source and assets
 stay untouched. Embedded metadata is deliberately removed; these copies
 do not inherit Native curation or register automatically as dataset derivatives.
 Inputs are limited to 256 MiB, one frame and 20 million pixels; pattern work
-is bounded. The GUI preview/save worker migration is a separate next step.
+is bounded. Preview decoding/rendering and saving share one worker, with one
+latest pending preview and one explicit save. GUI updates use detached QImage
+results; save takes priority after cancelling the active preview. The save
+dialog revalidates its image/settings, existing destinations are rejected,
+and a successful save opens its output folder. Closing cancels before
+publication and retains the worker through final native cleanup. A copy
+already published stays on disk.
 
 Format Converter is retired from module discovery and cannot be opened through
 the application loader. Existing converted files remain untouched. Its legacy

@@ -1673,5 +1673,15 @@
   "tool.metadata.field_cfg": "CFG",
   "tool.metadata.field_vae": "VAE",
   "tool.metadata.field_loras": "LoRAs",
-  "tool.metadata.protected": "This original requires review or is protected. You can read history or export to a fresh path."
+  "tool.metadata.protected": "This original requires review or is protected. You can read history or export to a fresh path.",
+  "wm.position.top_right": "Top-Right",
+  "wm.position.top_left": "Top-Left",
+  "wm.position.bottom_right": "Bottom-Right",
+  "wm.position.bottom_left": "Bottom-Left",
+  "wm.preview_busy": "Generating preview…",
+  "wm.preview_failed": "Preview failed: {reason}",
+  "wm.save_failed_detail": "Could not save the copy: {reason}",
+  "wm.selection_changed": "The image or settings changed while choosing a destination. Review them and save again.",
+  "wm.image_filter": "Images (*.png *.jpg *.jpeg *.webp *.avif)",
+  "wm.saving_copy": "Saving copy…"
 }

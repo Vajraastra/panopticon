@@ -1673,5 +1673,15 @@
   "tool.metadata.field_cfg": "CFG",
   "tool.metadata.field_vae": "VAE",
   "tool.metadata.field_loras": "LoRAs",
-  "tool.metadata.protected": "Este original necesita revisión o está protegido. Puedes consultar su historial o exportar a una ruta nueva."
+  "tool.metadata.protected": "Este original necesita revisión o está protegido. Puedes consultar su historial o exportar a una ruta nueva.",
+  "wm.position.top_right": "Superior derecha",
+  "wm.position.top_left": "Superior izquierda",
+  "wm.position.bottom_right": "Inferior derecha",
+  "wm.position.bottom_left": "Inferior izquierda",
+  "wm.preview_busy": "Generando vista previa…",
+  "wm.preview_failed": "Falló la vista previa: {reason}",
+  "wm.save_failed_detail": "No se pudo guardar la copia: {reason}",
+  "wm.selection_changed": "La imagen o los ajustes cambiaron al elegir el destino. Revísalos y vuelve a guardar.",
+  "wm.image_filter": "Imágenes (*.png *.jpg *.jpeg *.webp *.avif)",
+  "wm.saving_copy": "Guardando copia…"
 }
