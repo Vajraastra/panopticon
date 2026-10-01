@@ -934,7 +934,11 @@ clock: file inserts/deletes, changed path/offline bindings and registry writes
 advance it even through other SQLite clients; rollback does not. Only coherent
 query-only snapshots without dirty reads may populate shared coverage, because
 rolled-back epoch numbers can later be reused. Ordinary
-curation retains coverage while match rows read current ratings. Readers validate
+curation retains coverage while match rows read current ratings. Producer
+destination guards recognize only the exact verified Native clock triggers,
+retaining their warm path cache; foreign/altered/temporary triggers still force
+a complete refresh before another approval. Offline and collision safeguards
+remain unchanged. Readers validate
 owned clock/table/index/trigger definitions before cache use; incomplete old
 preparations work uncached until another explicit backed-up prepare. These APIs
 do not automatically route legacy mutations or register new files. No aggregate filesystem/SQLite snapshot or hard I/O deadline is claimed. Unknown/offline rows remain unresolved.

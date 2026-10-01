@@ -59,10 +59,31 @@ class DerivedPaths:
         check()
         return value
 
+    def _unknown_triggers(self):
+        # Temporary/foreign guards may rewrite other file paths. Native identity
+        # guards only advance their own SQL clock; validate their exact DDL.
+        if self.conn.execute("SELECT 1 FROM sqlite_temp_master WHERE type='trigger' LIMIT 1").fetchone():
+            return True
+        from core.path_identity_clock import SQL, token
+        native = False
+        cursor = self.conn.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'")
+        try:
+            for name, statement in cursor:
+                if SQL.get(name) != statement:
+                    return True
+                native = True
+        finally:
+            cursor.close()
+        if native:
+            try:
+                return token(self.conn) is None
+            except ValueError:
+                return True
+        return False
+
     def inserted(self, path):
         # Triggers ajenos pueden cambiar otras rutas: no inferir sus efectos.
-        if self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' "
-                             "UNION ALL SELECT 1 FROM sqlite_temp_master WHERE type='trigger' LIMIT 1").fetchone():
+        if self._unknown_triggers():
             self.clear()
             return
         if self.version is None:
