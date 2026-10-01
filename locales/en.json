@@ -1,4 +1,12 @@
 {
+  "data.tags.previous": "◀",
+  "data.tags.next": "▶",
+  "data.tags.previous_tip": "Return to the previous page of matching tags.",
+  "data.tags.next_tip": "Read the next page of matching tags; no images are changed.",
+  "data.tags.loading": "Loading tags…",
+  "data.tags.page": "Page {page}: {count} tags",
+  "data.tags.error": "Could not read tags.",
+  "data.tags.suggestions_tip": "Suggestions show up to 200 literal matches. Keep typing to narrow them; any tag can still be entered manually.",
   "tool.producer_recovery.backup_preview": "Review original backup purge",
   "tool.producer_recovery.backup_preview_tip": "Verify one original backup and its history, current file and exclusive Windows handle. This preview deletes nothing.",
   "tool.producer_recovery.backup_purge": "Permanently delete reviewed backup",

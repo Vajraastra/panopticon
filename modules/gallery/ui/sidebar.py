@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QLineEdit, QPushBut
 from PySide6.QtCore import Qt, Signal
 from core.locale_manager import LocaleManager
 from core.library_async import LibraryReader
+from core.components.tag_vocabulary import TagVocabulary
 import logging
 from core.components.tag_widgets import FlowLayout, TagChip # widget compartido en core (Regla #3)
 
@@ -17,7 +18,6 @@ class GallerySidebar(QWidget):
         self.state = state
         self.engine = query_engine
         self.reader = LibraryReader(self.engine.db.service, self)
-        self.reader.result.connect(self.on_tags_loaded)
         
         self.init_ui()
         self.setup_completer()
@@ -127,7 +127,9 @@ class GallerySidebar(QWidget):
         self.state.filter_changed.connect(self.refresh_chips)
         
     def setup_completer(self):
-        self.reader.request('get_all_tags')
+        self.tag_completions = TagVocabulary(self.engine.db.service, self.txt_search, self, reader=self.reader)
+        self.tag_completions.failed.connect(lambda error: self.on_tags_loaded(0, [], error))
+        self.tag_completions.refresh()
 
     def on_tags_loaded(self, ticket, tags, error):
         if error is not None:
@@ -135,14 +137,8 @@ class GallerySidebar(QWidget):
             self.txt_search.setToolTip(LocaleManager().tr(
                 'gallery.db.tags_error', 'Tag suggestions could not be loaded; search is still available.'))
             return
-        if tags:
-            comp = QCompleter(tags, self.txt_search)
-            comp.setCaseSensitivity(Qt.CaseInsensitive)
-            comp.setFilterMode(Qt.MatchContains)
-            self.txt_search.setCompleter(comp)
-
     def shutdown(self):
-        self.reader.close()
+        self.tag_completions.close()
             
     def on_search_submit(self):
         text = self.txt_search.text().strip()

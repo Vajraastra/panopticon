@@ -121,7 +121,7 @@ class LibrarianQt(helpers.Fixture):
         return module
 
     def ready(self, module):
-        self.assertTrue(helpers.pump(lambda: module._overview_ready and module._browse_ready))
+        self.assertTrue(helpers.pump(lambda: module._overview_ready and module._browse_ready and not module.tag_completions.busy))
 
     def block(self, operation, match=lambda kwargs: True):
         entered, release = threading.Event(), threading.Event()
@@ -151,7 +151,9 @@ class LibrarianQt(helpers.Fixture):
             self.assertTrue(helpers.pump(lambda: tick))
             release.set()
             self.ready(module)
-        self.assertEqual([name for name, _ in calls], ['get_library_overview'])
+        self.assertEqual([name for name, _ in calls].count('get_library_overview'), 1)
+        self.assertTrue(any(name == 'get_tags_page' for name, _ in calls))
+        self.assertFalse(any(name == 'get_all_tags' for name, _ in calls))
         self.assertEqual(module.completer_model.stringList(), ['alpha'])
         self.assertEqual(module.tag_list.item(0).text(), 'alpha')
         self.assertIn('1', module.lbl_stats.text())

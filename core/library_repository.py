@@ -808,6 +808,10 @@ class LibraryRepository:
             log.warning("[DB] VACUUM error: %s", e)
             return False
 
+    def get_tags_page(self, **kwargs):
+        from core.library_tags import page
+        return page(self.conn, **kwargs)
+
     def get_all_tags(self):
         cursor = self.conn.cursor()
         cursor.execute("SELECT name FROM tags ORDER BY name")
@@ -819,10 +823,12 @@ class LibraryRepository:
         r = cursor.fetchone()
         return r[0] if r else 0
 
-    def get_library_overview(self):
+    def get_library_overview(self, *, include_tags=True):
         """Carpetas, conteo y vocabulario en el snapshot RO del servicio."""
+        if type(include_tags) is not bool:
+            raise ValueError('invalid_overview_options')
         return dict(folders=self.get_watched_folders(), count=self.count_files(),
-                    tags=self.get_all_tags())
+                    tags=self.get_all_tags() if include_tags else [])
 
     def get_library_selection(self, *, terms=(), folder=None, limit=10000):
         """Conteo completo y muestra acotada; no accede al sistema de archivos."""

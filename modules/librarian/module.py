@@ -10,6 +10,7 @@ from core.components.thumbnail import ClickableThumbnail
 from core.components.tag_widgets import FlowLayout, TagChip
 from core.database_manager import DatabaseManager
 from core.library_async import LibraryReader, LibraryWriter
+from core.components.tag_vocabulary import TagVocabulary, TagPageBar
 from core.curation_tasks import CurationExportTasks
 from core.components.curation_review import CurationReviewDialog
 from core.components.curation_recovery import CurationRecoveryDialog
@@ -255,6 +256,8 @@ class LibrarianModule(BaseModule):
         """)
         self.tag_list.itemClicked.connect(self._on_tag_item_clicked)
         layout.addWidget(self.tag_list)
+        self.tag_pager = TagPageBar()
+        layout.addWidget(self.tag_pager)
 
         # Stats at bottom of sidebar
         layout.addStretch()
@@ -506,12 +509,13 @@ class LibrarianModule(BaseModule):
         return container
 
     def setup_completer(self):
-        """Initializes the QCompleter for the tag input."""
-        self.completer_model = QStringListModel([])
-        self.completer = QCompleter(self.completer_model)
-        self.completer.setCaseSensitivity(Qt.CaseInsensitive)
-        self.completer.setFilterMode(Qt.MatchContains) # Allow matching 'lee' in 'Zoe Lee'
-        self.input_search.setCompleter(self.completer)
+        self.tag_completions = TagVocabulary(self.db.service, self.input_search, self)
+        self.completer_model = self.tag_completions.model
+        self.completer = self.tag_completions.completer
+        self.tag_pager.bind(self.tag_completions)
+        self.tag_completions.busy_changed.connect(lambda busy: self.tag_list.clear() if busy else None)
+        self.tag_completions.changed.connect(lambda value: self.tag_list.addItems(value['names']))
+        self.tag_completions.refresh()
 
     def add_tag_from_input(self):
         text = self.input_search.text().strip()
@@ -784,7 +788,8 @@ class LibrarianModule(BaseModule):
 
     def update_global_stats(self):
         if not self._closed and self.view:
-            self.overview_reader.request('get_library_overview')
+            self.overview_reader.request('get_library_overview', include_tags=False)
+            self.tag_completions.refresh()
 
     def refresh_ui(self):
         if self._closed or not self.view:
@@ -861,9 +866,6 @@ class LibrarianModule(BaseModule):
         elif self.current_folder_path:
             self.current_folder_path = None
             self.refresh_current_view()
-        self.tag_list.clear()
-        self.tag_list.addItems(value['tags'])
-        self.completer_model.setStringList(value['tags'])
         self.lbl_stats.setText(self.tr('lib.stats.global', 'Indexed Files: {count} | Watched Folders: {total}')
                                .format(count=value['count'], total=len(value['folders'])))
         if self._auto_scan_pending:
@@ -876,6 +878,8 @@ class LibrarianModule(BaseModule):
 
     def on_unload(self):
         self._closed = True
+        if hasattr(self, 'tag_completions'):
+            self.tag_completions.close()
         if hasattr(self, 'folder_archive'):
             self.folder_archive.close()
         for worker in (self.indexer_thread, self.backfill_thread, self._reindex_thread):

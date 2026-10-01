@@ -30,7 +30,7 @@ READS = frozenset({
     'get_inventory_page', 'get_known_files_in_folder', 'get_files_recursive', 'get_watched_folders',
     'get_folder_count', 'get_folder_preview', 'search_by_terms', 'get_file_id',
     'get_tags_for_file', 'search_files_paginated', 'get_folders_paginated',
-    'count_files_missing_hash', 'get_files_missing_hash', 'get_all_tags',
+    'count_files_missing_hash', 'get_files_missing_hash', 'get_tags_page', 'get_all_tags',
     'get_file_rating', 'count_files', 'get_curation_snapshot', 'get_curation_restore_state',
     'get_library_overview', 'get_library_selection', 'get_library_page',
     'resolve_library_selection', 'check_fts',

@@ -178,7 +178,7 @@ class CurationQt(Fixture):
             view = self.viewer([path])
             self.assertTrue(pump(lambda: view._curation_ready))
             self.assertTrue(pump(lambda: not view.tags_reader._active))
-        self.assertEqual({op for op, _ in calls}, {'get_curation_snapshot', 'get_all_tags'})
+        self.assertEqual({op for op, _ in calls}, {'get_curation_snapshot', 'get_tags_page'})
         self.assertTrue(all(thread != main for _, thread in calls))
         self.assertEqual(view._current_rating, 0)
         self.assertEqual(view.tags_layout.count(), 0)

@@ -740,8 +740,18 @@ count oversized responses without retaining their content. Cancellation and
 deadlines retain priority over a response-size error.
 
 This bounds the accumulated response, not total process RAM or a temporary cell
-already decoded by SQLite. Full legacy APIs, tag vocabulary/overview and other
-response contracts still need consumer migration and bounded responses.
+already decoded by SQLite. Other full legacy APIs still need consumer migration
+and bounded responses.
+
+Gallery sidebar/viewer and Librarian now read tag suggestions in pages of at most
+200. Matching uses Unicode casefold and literal containment, including `%` and
+`_`. Librarian provides previous/next navigation through matching vocabulary;
+statistics read counts/folders without materializing every tag. Suggestions are
+optional hints: users can still type any tag manually. Typing invalidates previous
+results immediately and debounces new requests by 150 ms. Readers keep one active
+request and the latest pending request, discard stale results and close with their
+owner. Pages use binary-name cursors and independent snapshots; they do not freeze
+the vocabulary across edits. Legacy full-vocabulary APIs retain compatibility.
 
 Librarian missing-file reconciliation reads native inventory by copy ID in pages
 of at most 256. It captures an upper ID at the start, excluding later IDs created

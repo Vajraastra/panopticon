@@ -5,6 +5,7 @@ from PySide6.QtGui import QPixmap, QKeySequence, QAction, QMouseEvent
 from core.components.tag_widgets import FlowLayout, TagChip
 from core.database_manager import DatabaseManager
 from core.library_async import LibraryReader, LibraryWriter
+from core.components.tag_vocabulary import TagVocabulary
 from core.locale_manager import LocaleManager
 from core.metadata.extractor import MetadataExtractor
 import os
@@ -158,7 +159,6 @@ class AdvancedViewer(QDialog):
         self.curation_reader = LibraryReader(self.db.service, self)
         self.tags_reader = LibraryReader(self.db.service, self)
         self.curation_reader.result.connect(self.on_curation_result)
-        self.tags_reader.result.connect(self.on_tags_result)
         
         # Diseño Principal
         layout = QHBoxLayout(self)
@@ -342,19 +342,17 @@ class AdvancedViewer(QDialog):
         self.update_edit_controls()
         self.load_current_image()
         
-        # Setup Autocomplete with dynamic model
-        from PySide6.QtCore import QStringListModel
-        self.completer_model = QStringListModel([], self)
-        self.completer = QCompleter(self.completer_model, self)
-        self.completer.setCaseSensitivity(Qt.CaseInsensitive)
-        self.completer.setFilterMode(Qt.MatchContains)
-        self.input_tag.setCompleter(self.completer)
+        self.tag_completions = TagVocabulary(self.db.service, self.input_tag, self, reader=self.tags_reader)
+        self.completer_model = self.tag_completions.model
+        self.completer = self.tag_completions.completer
+        self.tag_completions.changed.connect(lambda value: self.on_tags_result(0, value['names'], None))
+        self.tag_completions.failed.connect(lambda error: self.on_tags_result(0, [], error))
         self.refresh_completer()
-        
+
     def refresh_completer(self):
         """Updates the autocomplete suggestions with the latest tags from DB."""
         if not self._closed:
-            self.tags_reader.request('get_all_tags')
+            self.tag_completions.refresh()
 
     def on_tags_result(self, ticket, value, error):
         if error is None:
@@ -369,7 +367,7 @@ class AdvancedViewer(QDialog):
         self._closed = True
         self.timer.stop()
         self.curation_reader.close()
-        self.tags_reader.close()
+        self.tag_completions.close()
         if self._pending_edit is None:
             self.writer.close()
 

@@ -1,4 +1,12 @@
 {
+  "data.tags.previous": "◀",
+  "data.tags.next": "▶",
+  "data.tags.previous_tip": "Volver a la página anterior de etiquetas coincidentes.",
+  "data.tags.next_tip": "Leer la siguiente página de etiquetas coincidentes; no modifica imágenes.",
+  "data.tags.loading": "Cargando etiquetas…",
+  "data.tags.page": "Página {page}: {count} etiquetas",
+  "data.tags.error": "No se pudieron leer las etiquetas.",
+  "data.tags.suggestions_tip": "Las sugerencias muestran hasta 200 coincidencias literales. Sigue escribiendo para acotarlas; puedes introducir cualquier etiqueta manualmente.",
   "tool.producer_recovery.backup_preview": "Revisar purga de respaldo original",
   "tool.producer_recovery.backup_preview_tip": "Verifica un respaldo original, su historial, el archivo actual y el handle exclusivo de Windows. La vista previa no elimina nada.",
   "tool.producer_recovery.backup_purge": "Eliminar definitivamente el respaldo revisado",
