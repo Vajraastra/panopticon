@@ -136,6 +136,51 @@ def receipt(conn, operation_id):
         recorded_at=recorded))
 
 
+
+def historical_record(conn, operation_id):
+    """One bounded history record by its unique operation; no DDL or pagination."""
+    value = receipt(conn, operation_id)
+    if value['receipt'] is None:
+        return dict(prepared=value['prepared'], record=None)
+    row = conn.execute(f'SELECT length(cast(previous_json AS blob)), '
+                       f'CASE WHEN length(cast(previous_json AS blob))<=? THEN previous_json END '
+                       f'FROM {NAME} WHERE operation_id=?', (MAX_RECORD, operation_id)).fetchone()
+    if row is None or type(row[0]) is not int or not 0 < row[0] <= MAX_RECORD or not isinstance(row[1],str):
+        raise ValueError('generation_history_record_payload_limit')
+    import json
+    def pairs(values):
+        result = {}
+        for key, item in values:
+            if key in result:
+                raise ValueError('generation_history_invalid_previous')
+            result[key] = item
+        return result
+    def nonfinite(_):
+        raise ValueError('generation_history_invalid_previous')
+    previous = json.loads(row[1], object_pairs_hook=pairs, parse_constant=nonfinite)
+    if (not isinstance(previous,dict) or set(previous)!={'native','observed'} or
+            not isinstance(previous['native'],dict) or
+            set(previous['native'])!=set((*COLUMNS,'hash_original','hash_mod')) or
+            not isinstance(previous['observed'],dict) or set(previous['observed'])-OBSERVED or
+            any(not isinstance(item,str) or len(item)>65536 or '\x00' in item for item in previous['observed'].values())):
+        raise ValueError('generation_history_invalid_previous')
+    native = previous['native']
+    for column in COLUMNS[:2]:
+        if native[column] is not None and (type(native[column]) is not int or not 0 <= native[column] <= 32768):
+            raise ValueError('generation_history_invalid_previous')
+    for column in (*COLUMNS[2:],'hash_original','hash_mod'):
+        item = native[column]
+        if item is not None and (not isinstance(item,str) or len(item)>65536 or '\x00' in item):
+            raise ValueError('generation_history_invalid_previous')
+    for column in ('hash_original','hash_mod'):
+        if native[column] is not None and not SHA.fullmatch(native[column].lower()):
+            raise ValueError('generation_history_invalid_previous')
+    record = dict(**value['receipt'], previous=previous)
+    if len(encode(record))>MAX_RECORD+4096:
+        raise ValueError('generation_history_record_payload_limit')
+    return dict(prepared=True, record=record)
+
+
 def _request(copy_id, expected_fingerprint, operation_id, source_digest, result_digest,
              generation, observation, source_generation):
     _id(copy_id)

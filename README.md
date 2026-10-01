@@ -592,7 +592,25 @@ Hashing, image verification and Native admission run in one retained worker.
 Closing cancels before admission and waits without blocking the GUI for accepted
 work and final native thread cleanup. The dashboard closes its Native owner only
 after this worker exits. Producer images, backups and journals remain untouched.
-Retained-backup management and live concurrent Windows validation remain open.
+Original Metadata Hub backups are retained until an explicit, per-operation
+purge is reviewed and confirmed. The backend verifies the current online copy's
+bytes and generation, its unchanged identity/curation revision, the selected
+backup's bytes, and its complete historical generation record and matching
+receipt. Earlier-operation backups can be reviewed after a later verified edit;
+this preserves all intervening history and the current file. Unknown or pending
+history, changed evidence, indexed/documented backups, hard links and portable or
+watched recovery folders require review and cannot be purged.
+
+On Windows, open handles pin the current file and exclusively pin the selected
+backup through approval and deletion by handle. The Native owner approves current
+revision/history/scope without deleting or updating any Native rows. Separate,
+immutable prepared/approved/complete evidence records never overwrite earlier
+records or the producer journal. A lost approval reply prevents deletion; queued
+approval can be cancelled and admitted approval drains. Cancellation before the
+delete mark preserves the backup; once marked, completion records the actual
+deletion even if the final evidence write fails. No cleanup is automatic and
+there is no joint filesystem/SQLite transaction. GUI purge controls and live
+concurrent Windows validation remain open.
 
 ### Metadata in transformed outputs
 

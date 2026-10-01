@@ -90,6 +90,10 @@ carpeta sola: no hay que registrar nada en el core.
    definitivo sólo del archivo verificado en recuperación, con la copia conservada
    protegida; conserva IDs offline/curación/diarios/recibos. Nunca automático, por
    posición o pHash.
+   Metadata Hub conserva el respaldo previo hasta una purga definitiva manual por
+   operación (David, 2026-10-01): vista previa actual, archivo conservado verificado,
+   historial/recibo y confirmación explícita. Nunca purga automática; preservar
+   identidad/curación/historial/recibos/diario productor y evidencia de la purga.
 3. **Lo pesado va en un `QThread`.** Inferencia, hashing, recorrido de disco: nunca en el hilo
    de la GUI. La señal de fin se llama `finished_signal`, **no** `finished` (sombrearía la señal
    nativa de `QThread`). Poner siempre un guard `isRunning()` contra doble inicio.

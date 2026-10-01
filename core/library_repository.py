@@ -860,6 +860,14 @@ class LibraryRepository:
         from core.generation_history import receipt
         return receipt(self.conn, operation_id)
 
+    def get_metadata_edit_history_record(self, operation_id):
+        from core.generation_history import historical_record
+        return historical_record(self.conn, operation_id)
+
+    def approve_metadata_backup_purge(self, copy_id, **kwargs):
+        from core.metadata_backup_policy import approve
+        return approve(self.conn, copy_id, normalize=self._normalize_path, **kwargs)
+
     def get_generation_history_page(self, copy_id, **kwargs):
         from core.generation_history import page
         return page(self.conn, copy_id, **kwargs)
