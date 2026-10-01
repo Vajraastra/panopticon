@@ -9,7 +9,7 @@ class LibraryMetrics:
         self._lock = threading.Lock()
         self._values = dict(capacity=capacity, accepting=True, queued=0, active=None,
             high_water=0, accepted=0, committed=0, failed=0, cancelled=0,
-            rejected_full=0, rejected_closed=0, reads_active=0, reads_completed=0,
+            rejected_full=0, rejected_closed=0, rejected_payload=0, reads_active=0, reads_completed=0,
             reads_failed=0, reads_cancelled=0, reads_rejected_closed=0,
             queue_wait_count=0, queue_wait_seconds=0.0, queue_wait_max_seconds=0.0,
             write_count=0, write_seconds=0.0, write_max_seconds=0.0,
@@ -32,6 +32,14 @@ class LibraryMetrics:
             self._values['accepted'] += 1
             self._values['queued'] += 1
             self._values['high_water'] = max(self._values['high_water'], self._values['queued'])
+
+    def reject_full(self):
+        with self._lock:
+            self._values['rejected_full'] += 1
+
+    def reject_payload(self):
+        with self._lock:
+            self._values['rejected_payload'] += 1
 
     def reject_closed(self, *, read=False):
         with self._lock:

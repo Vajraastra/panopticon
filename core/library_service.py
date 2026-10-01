@@ -4,7 +4,6 @@ submit() entrega un Future sin esperar a SQLite. La fachada antigua conserva
 llamadas síncronas hasta migrar las vistas a entrega asíncrona por Qt.
 """
 import atexit
-import copy
 import logging
 import os
 import sqlite3
@@ -17,6 +16,7 @@ from queue import Queue, Full, Empty
 
 from core.library_connections import open_reader
 from core.library_metrics import LibraryMetrics
+from core.library_payload import snapshot as snapshot_write_payload
 from core.library_repository import LibraryRepository
 from core.library_writer_guard import writer_guard
 from core.library_versions_schema import backup_database, migrate as migrate_versions, upgrade_table, ready as versions_ready
@@ -274,8 +274,24 @@ class LibraryService:
         if operation not in WRITES:
             raise ValueError(f'Unknown write: {operation}')
         future = Future()
-        # El productor no puede cambiar el lote mientras espera su turno.
-        command = future, operation, copy.deepcopy(args), copy.deepcopy(kwargs), time.perf_counter()
+        # Reject closed/full admission before copying any producer data.
+        with self._admission:
+            if self._closed:
+                self._metrics.reject_closed()
+                future.set_exception(LibraryError(operation, 'service_closed'))
+                return future
+            if self._queue.full():
+                self._metrics.reject_full()
+                future.set_exception(LibraryError(operation, 'queue_full'))
+                return future
+        try:
+            saved_args, saved_kwargs = snapshot_write_payload(args, kwargs)
+        except ValueError as exc:
+            self._metrics.reject_payload()
+            future.set_exception(LibraryError(operation, str(exc)))
+            return future
+        command = future, operation, saved_args, saved_kwargs, time.perf_counter()
+        # Another producer or shutdown can win during the bounded snapshot.
         with self._admission:
             if self._closed:
                 self._metrics.reject_closed()

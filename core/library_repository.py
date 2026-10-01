@@ -513,6 +513,28 @@ class LibraryRepository:
         """, (file_id,))
         return [row[0] for row in cursor.fetchall()]
 
+    def _require_tag_capacity(self, file_id, added, removed=()):
+        from core.library_payload import MAX_TAGS_PER_FILE
+        if not added:
+            return  # Legacy oversized curation can still be reduced or rated.
+        marks = ','.join('?' for _ in added)
+        present = {row[0] for row in self.conn.execute(
+            'SELECT t.name FROM file_tags ft JOIN tags t ON t.id=ft.tag_id '
+            f'WHERE ft.file_id=? AND t.name IN ({marks})', (file_id, *added))}
+        new_count = len(set(added) - present)
+        if not new_count:
+            return
+        count = self.conn.execute('SELECT count(*) FROM file_tags WHERE file_id=?',
+                                  (file_id,)).fetchone()[0]
+        if removed:
+            marks = ','.join('?' for _ in removed)
+            count -= self.conn.execute(
+                'SELECT count(*) FROM file_tags ft JOIN tags t ON t.id=ft.tag_id '
+                f'WHERE ft.file_id=? AND t.name IN ({marks})',
+                (file_id, *removed)).fetchone()[0]
+        if count + new_count > MAX_TAGS_PER_FILE:
+            raise ValueError('curation_tag_limit_exceeded')
+
     def edit_curation(self, path, *, add_tags=(), remove_tags=(), rating=None,
                       expected_copy_id=None, expected_fingerprint=None):
         """Delta acotado sobre una fila existente; el servicio confirma todo o nada.
@@ -526,7 +548,10 @@ class LibraryRepository:
                 raise ValueError('invalid_tags')
             if any(not isinstance(t, str) or not t.strip() or len(t) > 256 for t in tags):
                 raise ValueError('invalid_tags')
-            return tuple(dict.fromkeys(t.strip().lower() for t in tags))
+            result = tuple(dict.fromkeys(t.strip().lower() for t in tags))
+            if any(len(tag) > 256 for tag in result):
+                raise ValueError('invalid_tags')
+            return result
         added, removed = normalized(add_tags), normalized(remove_tags)
         if len(add_tags) + len(remove_tags) > 256:
             raise ValueError('invalid_tags')
@@ -552,6 +577,7 @@ class LibraryRepository:
         if row is None:
             raise ValueError('file_not_registered')
         file_id = row[0]
+        self._require_tag_capacity(file_id, added, removed)
         changed_tags = False
         if added:
             self.conn.executemany("INSERT OR IGNORE INTO tags(name,category) VALUES(?,'manual')",
@@ -578,8 +604,13 @@ class LibraryRepository:
     def add_tag_to_file(self, path, tag_name, file_data=None):
         """Adds a tag to a file. Creates file record and tag if not exists."""
 
+        from core.library_payload import MAX_TAG_CHARS
+        if not isinstance(tag_name, str) or len(tag_name) > MAX_TAG_CHARS:
+            raise ValueError('invalid_tags')
         self._require_unversioned_path(self._normalize_path(path))
         tag_name = tag_name.lower().strip()
+        if len(tag_name) > MAX_TAG_CHARS:
+            raise ValueError('invalid_tags')
         if not tag_name:
             return False
         file_id = self.get_file_id(path)
@@ -589,6 +620,7 @@ class LibraryRepository:
             file_id = self.get_file_id(path)
         if not file_id:
             return False
+        self._require_tag_capacity(file_id, (tag_name,))
         cursor = self.conn.cursor()
         tag_name = tag_name.lower().strip()
         if not tag_name: return False

@@ -704,6 +704,20 @@ A legacy timestamp without full-history coverage triggers a complete scan.
 Previously incorrect frontiers with coverage already marked require review
 and an explicit Rescan; this update does not inspect or reset real profiles.
 
+Native write admission copies only bounded plain data: an estimated 4 MiB per
+request, 1 MiB per string/bytes/path field, 65,536 visited values, 10,000 items
+per container and nesting depth 16. Requests exceeding these bounds fail as
+whole requests; no prefix is written. Producers must submit deliberate batches.
+Closed/full services reject before copying. Custom object hooks and cyclic
+payloads are rejected. Metrics count rejected payloads without storing content.
+
+New curation stays within 256 tags per copy and 256 characters per normalized
+tag, matching portable restoration. The writer checks the resulting total
+inside the same transaction, including replacement deltas and queued writers.
+Old oversized curation remains stored and can be reduced or rated; no tags are
+automatically removed. Unicode lowercase expansion is checked before storage.
+Read input/output limits, write scheduling and live WAL pressure remain open.
+
 ## License
 
 Business Source License 1.1 — free for non-commercial use.  
