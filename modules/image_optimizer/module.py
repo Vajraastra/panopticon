@@ -12,6 +12,8 @@ from PySide6.QtCore import Qt, QThread, Signal, QSize
 from PySide6.QtGui import QPixmap, QIcon, QPalette, QColor
 
 from core.base_module import BaseModule
+from core.curation_bindings import valid as valid_binding
+from core.derived_publication import write as native_write
 from core.theme import Theme
 from core.components.standard_layout import StandardToolLayout
 from .logic.optimizer import optimize_image, analyze_image, get_export_path
@@ -20,6 +22,8 @@ IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.avif'}
 
 # Resize combo: index → max_side px (None = keep original, missing key = custom spinbox)
 RESIZE_SIDES = {0: None, 1: 1024, 2: 2048}
+
+_LIVE_WORKERS = set()
 
 
 class DropFrame(QFrame):
@@ -99,12 +103,13 @@ class OptimizerWorker(QThread):
                 stats = self._process(destinations)
         except Exception as exc:
             stats = dict(success=0, failed=0, saved_bytes=0, processed=0,
-                         data_error=str(exc), cancelled=self.cancel_event.is_set(), failures=[])
+                         data_error=str(exc), cancelled=self.cancel_event.is_set(), failures=[], registered=0, unregistered=0, partial=0)
         self.finished_signal.emit(stats)
 
     def _process(self, destinations):
         stats = dict(success=0, failed=0, saved_bytes=0, processed=0,
-                     data_error=None, cancelled=False, failures=[])
+                     data_error=None, cancelled=False, failures=[], registered=0, unregistered=0, partial=0)
+        prepared = False
         # Cada bloque comparte una transacción RO; no retener mapas de todo el lote.
         for offset in range(0, len(self.queue), 256):
             if self.cancel_event.is_set():
@@ -112,9 +117,15 @@ class OptimizerWorker(QThread):
             batch = self.queue[offset:offset + 256]
             try:
                 rows = self.service.read('get_curation_snapshot', batch,
-                                         cancel_event=self.cancel_event)
+                                         cancel_event=self.cancel_event, include_revision=True)
                 if len(rows) != len(batch):
                     raise ValueError('Incomplete curation snapshot')
+                if any(not valid_binding(row, os.path.normpath(str(path)).replace('\\', '/'))
+                       for path, row in zip(batch, rows)):
+                    raise ValueError('Invalid source identity snapshot')
+                if not prepared and any(row['id'] is not None for row in rows):
+                    native_write(self.service, 'prepare_derived_copies', event=self.cancel_event)
+                    prepared = True
             except Exception as exc:
                 if not self.cancel_event.is_set():
                     logging.warning('[ImageOptimizer] Curation read failed: %s', exc)
@@ -133,20 +144,27 @@ class OptimizerWorker(QThread):
                         preserve_metadata=self.settings['preserve_meta'],
                         tags=list(row['tags']) if row['id'] is not None else [],
                         rating=row['rating'] if row['id'] is not None else 0,
-                        service=destinations, cancel_event=self.cancel_event
+                        service=destinations, cancel_event=self.cancel_event,
+                        source_snapshot=row, native_service=self.service,
+                        journal_root=self.settings.get("journal_root")
                     )
+                    if result.get('native_registered'): stats['registered'] += 1
                     if result['success']:
                         stats['success'] += 1
                         stats['saved_bytes'] += result['saved_bytes']
+                        if not result.get('native_registered'): stats['unregistered'] += 1
                     else:
                         stats['failed'] += 1
+                        if result.get('published'): stats['partial'] += 1
                         if len(stats['failures']) < 20:
-                            stats['failures'].append((str(path)[:1024], str(result.get('error', 'Unknown error'))[:1000]))
+                            stats['failures'].append((str(path)[:1024], str(result.get('error', 'Unknown error'))[:1000],
+                                bool(result.get('published')), str(result.get('journal', ''))[:4096],
+                                str(result.get('output_path', ''))[:4096]))
                 except Exception as exc:
                     logging.warning('[ImageOptimizer] Failed to process %s: %s', path, exc)
                     stats['failed'] += 1
                     if len(stats['failures']) < 20:
-                        stats['failures'].append((str(path)[:1024], str(exc)[:1000]))
+                        stats['failures'].append((str(path)[:1024], str(exc)[:1000], False, "", ""))
                 stats['processed'] += 1
                 self.progress.emit(stats['processed'])
         stats['cancelled'] = self.cancel_event.is_set()
@@ -457,7 +475,8 @@ class ImageOptimizerModule(BaseModule):
             "quality": 90,
             "max_side": max_side,
             "preserve_meta": self.chk_meta.isChecked(),
-            "export_path": export_path
+            "export_path": export_path,
+            "journal_root": self.context.get("derived_journal_root")
         }
 
         from core.database_manager import DatabaseManager
@@ -472,6 +491,8 @@ class ImageOptimizerModule(BaseModule):
         self.worker = OptimizerWorker(self.queue, settings, service)
         self.worker.progress.connect(self._on_progress)
         self.worker.finished_signal.connect(self._on_finished)
+        _LIVE_WORKERS.add(self.worker)
+        self.worker.finished.connect(lambda worker=self.worker: _LIVE_WORKERS.discard(worker))
         self.worker.start()
 
     def _on_progress(self, value):
@@ -507,15 +528,29 @@ class ImageOptimizerModule(BaseModule):
                 success=stats['success'], failed=stats['failed'],
                 cancelled=self.tr('tool.image_optimizer.yes', 'Yes') if stats['cancelled'] else self.tr('tool.image_optimizer.no', 'No'),
                 saved=f"{stats['saved_bytes'] / 1024 / 1024:.2f}"
-            ) + self._failure_details(stats)).replace('\n', '<br/>')+'</p>'
+            ) + self._native_details(stats) + self._failure_details(stats)).replace('\n', '<br/>')+'</p>'
         )
 
     def _failure_details(self, stats):
         failures = stats.get('failures', [])
         if not failures: return ''
         # Mostrar una muestra acotada; el resultado nunca llama éxito a una falla.
+        lines = []
+        for path, reason, published, journal, output in failures:
+            lines.append(f'{path}: {reason}')
+            if published:
+                lines.append(self.tr('tool.image_optimizer.partial_output',
+                    'Published output needing review: {output}. Do not repeat the export.').format(output=output))
+            if journal:
+                lines.append(self.tr('tool.image_optimizer.journal', 'Recovery journal: {journal}').format(journal=journal))
         return '\n\n'+self.tr('tool.image_optimizer.failure_details',
-            'Failed outputs (up to 20):')+'\n'+'\n'.join(f'{path}: {reason}' for path, reason in failures)
+            'Failed outputs (up to 20):')+'\n'+'\n'.join(lines)
+
+    def _native_details(self, stats):
+        return '\n'+self.tr('tool.image_optimizer.native_stats',
+            'Registered copies: {registered}. Exports without registration: {unregistered}. '
+            'Published outputs needing review: {partial}.').format(
+                registered=stats.get('registered', 0), unregistered=stats.get('unregistered', 0), partial=stats.get('partial', 0))
 
     def load_image_set(self, paths: list):
         """Standard interface for receiving image sets from Librarian."""

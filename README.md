@@ -481,24 +481,32 @@ through the shared payload. Ambiguous or oversized metadata requires review and
 does not count as a successful preserved output.
 
 Image Optimizer uses stable names derived from each source path to distinguish
-equal basenames. It requires a fresh destination outside Cherry folders and, when
-using the application's data service, rejects active or offline native path history.
-Its batch worker reuses a bounded read-only path lookup and refreshes it when
-SQLite reports a commit, including changes from other writers. If the catalog
-exceeds its cache limits, it uses the complete compatibility lookup instead.
-No read transaction remains open between images. It verifies metadata, source
-stability and destination availability before publication; failed outputs and
-cancellation are included in the result summary.
-This does not reserve paths against other programs or atomically register outputs
-in SQLite. Registration of derived outputs remains a separate pending integration.
+equal basenames. It requires a fresh destination outside Cherry folders and rejects
+active or offline native path history when using the application's data service.
+For indexed sources, its application batch captures the source ID and full revision,
+prepares the additive receipt schema once, and verifies its own output bytes and
+generation data. A recovery journal is flushed before non-overwriting publication;
+approval and final registration recheck the source revision and native destination.
+The new copy has its own ID and SHA-256, generation data, FTS entry and historical
+receipt. It starts without central tags/rating, pHash or Cherry origin/receipts;
+preserved embedded metadata remains separate from central curation.
 
-Native derivative registration now has a separate database contract for a new
-copy with its own SHA-256 and generation data, linked to the reviewed source copy.
-It preserves a receipt for safe retries without inheriting central curation or
-Cherry download records. Integration with Optimizer, Cropper and Format Converter
-is still pending; their current outputs are not automatically registered.
-The database owner reuses bounded destination keys between derivative approvals
-and registrations, refreshing them after external commits or other writes.
+If publication succeeds but registration, receipt confirmation or journal completion
+fails, the result reports an output needing review and its journal path. It keeps
+the file and does not automatically retry or delete it. After publication, cancellation
+waits for native confirmation in the worker. The journal lives in `derived_recovery`
+under the configured cache, outside watched/Cherry folders. Keep it for manual review;
+a ready-to-publish journal after interruption does not establish whether a file was
+published. Receipt acknowledgement establishes a historical commit, not current
+availability. Disk publication and SQLite registration are separate operations.
+
+External sources without a native ID retain export without automatic registration
+and the bounded read-only destination check. The indexed flow uses owner approvals
+without a redundant per-image RO scan. The owner reuses bounded destination keys
+between registrations and refreshes after external commits or other writes, with
+complete fallback above cache limits. No read transaction remains open between images.
+Cropper and Format Converter still need connection to the derivative contract;
+their current outputs are not automatically registered.
 
 The shared stamping API requires `prepared=True`, meaning a private temporary
 output owned by its producer. It does not authorize editing an indexed original.

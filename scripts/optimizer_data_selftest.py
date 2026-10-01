@@ -47,7 +47,7 @@ class OptimizerData(helpers.Fixture):
 
     def settings(self):
         return dict(format=None, quality=90, max_side=None, preserve_meta=True,
-                    export_path=str(Path(self.temp.name) / 'output'))
+                    export_path=str(Path(self.temp.name) / 'output'), journal_root=str(Path(self.temp.name)/'journals'))
 
     def worker(self, paths, settings=None):
         worker = product.OptimizerWorker(paths, settings or self.settings(), self.service)
@@ -78,14 +78,14 @@ class OptimizerData(helpers.Fixture):
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
         real = LibraryRepository.get_curation_snapshot
-        def blocked(repo, paths):
+        def blocked(repo, paths, **kwargs):
             entered.set()
             if not release.wait(3):
                 raise TimeoutError('fixture release')
-            return real(repo, paths)
+            return real(repo, paths, **kwargs)
         return entered, release, blocked
 
-    def test_thousand_paths_use_four_reads_eight_selects_off_gui(self):
+    def test_thousand_paths_use_four_revision_reads_twelve_selects_off_gui(self):
         paths = [f'C:/fixture/{i}.png' for i in range(1000)]
         self.register(*paths)
         from core import library_service
@@ -105,7 +105,7 @@ class OptimizerData(helpers.Fixture):
                 patch.object(product, 'optimize_image', side_effect=optimized) as export:
             result = self.run_worker(worker)
         self.assertEqual(batches, [256, 256, 256, 232])
-        self.assertEqual(sum(s.lstrip().upper().startswith('SELECT') for s in sql), 8)
+        self.assertEqual(sum(s.lstrip().upper().startswith('SELECT') for s in sql), 12)
         self.assertTrue(all(t != threading.get_ident() for t in threads))
         self.assertEqual((export.call_count, result['processed']), (1000, 1000))
 
@@ -127,10 +127,34 @@ class OptimizerData(helpers.Fixture):
             return conn
         with patch.object(library_service, 'open_reader', reader):
             result = self.run_worker(self.worker(paths))
-        self.assertEqual((result['success'], result['failed']), (4, 0))
-        self.assertEqual(sum(s.startswith('SELECT substr(path,1,4097)') for s in statements), 1)
+        self.assertEqual((result['success'], result['failed']), (4, 0), result)
+        self.assertEqual(sum(s.startswith('SELECT substr(path,1,4097) FROM files') for s in statements), 0)
         self.assertTrue(all(t != threading.get_ident() for t in threads))
         self.assertEqual(len(list(Path(self.settings()['export_path']).glob('*.png'))), 4)
+
+    def test_indexed_batch_reuses_owner_keys_and_prepares_only_once(self):
+        from PIL import Image
+        from core.derived_paths import DerivedPaths
+        paths = [str(Path(self.temp.name)/f'{i}.png') for i in range(4)]
+        for path in paths:
+            with Image.new('RGB', (12, 12), 'green') as image: image.save(path)
+        self.register(*paths)
+        statements, operations = [], []
+        occupied, submit = DerivedPaths.occupied, self.service.submit
+        def trace(cache, *args):
+            cache.conn.set_trace_callback(statements.append)
+            return occupied(cache, *args)
+        def write(operation, *args, **kwargs):
+            operations.append(operation)
+            return submit(operation, *args, **kwargs)
+        with patch.object(DerivedPaths, 'occupied', trace), patch.object(self.service, 'submit', side_effect=write):
+            result = self.run_worker(self.worker(paths))
+        self.assertEqual((result['success'], result['registered']), (4, 4), result)
+        self.assertEqual(operations.count('prepare_derived_copies'), 1)
+        self.assertEqual(sum(s.startswith('SELECT substr(path,1,4097) FROM files') for s in statements), 1)
+        self.assertEqual(operations.count('approve_derived_copy'), 4)
+        self.assertEqual(operations.count('register_derived_copy'), 4)
+        self.assertTrue(self.service.read('check_fts')['consistent'])
 
     def test_native_path_added_between_outputs_prevents_second_publication(self):
         from PIL import Image
@@ -231,11 +255,11 @@ class OptimizerData(helpers.Fixture):
         module = self.view(paths)
         real = LibraryRepository.get_curation_snapshot
         calls = []
-        def read(repo, batch):
+        def read(repo, batch, **kwargs):
             calls.append(batch)
             if len(calls) == 2:
                 raise RuntimeError('second block fixture')
-            return real(repo, batch)
+            return real(repo, batch, **kwargs)
         with patch.object(LibraryRepository, 'get_curation_snapshot', read), \
                 patch.object(product, 'optimize_image', side_effect=optimized) as export, \
                 patch.object(QMessageBox, 'warning') as warning:
@@ -299,7 +323,7 @@ class OptimizerData(helpers.Fixture):
         module = self.view(['C:/old.png'])
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
-        def fail(repo, paths):
+        def fail(repo, paths, **kwargs):
             entered.set()
             self.assertTrue(release.wait(3))
             raise RuntimeError('fixture')
@@ -383,7 +407,7 @@ class OptimizerData(helpers.Fixture):
                 dialog.assert_not_called()
             self.assertTrue(helpers.pump(lambda: info.called))
 
-    def test_real_png_output_preserves_original_bytes_and_database(self):
+    def test_real_png_output_preserves_original_and_registers_clean_new_copy(self):
         from PIL import Image
         source = Path(self.temp.name) / 'source.png'
         Image.new('RGB', (16, 16), 'green').save(source)
@@ -391,7 +415,7 @@ class OptimizerData(helpers.Fixture):
         self.register(str(source))
         self.service.submit('edit_curation', str(source), add_tags=['alpha'], rating=3).result(3)
         result = self.run_worker(self.worker([str(source)]))
-        self.assertEqual(result['success'], 1)
+        self.assertEqual(result['success'], 1, result)
         self.assertEqual(source.read_bytes(), original)
         output = product.get_export_path(source, export_dir=self.settings()['export_path'])
         self.assertTrue(output.exists())
@@ -399,7 +423,7 @@ class OptimizerData(helpers.Fixture):
         bundle = MetadataExtractor.extract(output)
         self.assertIn('alpha', bundle.tags)
         self.assertEqual(bundle.rating, 3)
-        self.assertEqual(self.service.read('get_library_overview')['count'], 1)
+        self.assertEqual(self.service.read('get_library_overview')['count'], 2)
 
     def test_failed_outputs_visible_without_html_from_path(self):
         module = self.view(['C:/<b>name</b>.png'])
@@ -412,6 +436,40 @@ class OptimizerData(helpers.Fixture):
         self.assertIn('Failed: 1', message)
         self.assertIn('metadata fixture', message)
         self.assertIn('&lt;b&gt;name&lt;/b&gt;', message)
+
+    def test_partial_output_and_journal_are_visible_escaped_and_not_reported_as_success(self):
+        module = self.view(['C:/source.png'])
+        result = dict(success=False, published=True, native_registered=True,
+            error='Native fixture', output_path='C:/<b>output</b>.png', journal='C:/<i>journal</i>.json')
+        with patch.object(product, 'optimize_image', return_value=result), patch.object(QMessageBox, 'information') as info:
+            self.start(module)
+            self.assertTrue(helpers.pump(lambda: info.called))
+            self.assertTrue(module.worker.wait(3000))
+        message = info.call_args.args[2]
+        self.assertIn('Successful: 0', message)
+        self.assertIn('Registered copies: 1', message)
+        self.assertIn('needing review: 1', message)
+        self.assertIn('Do not repeat the export', message)
+        self.assertIn('&lt;b&gt;output&lt;/b&gt;', message)
+        self.assertIn('&lt;i&gt;journal&lt;/i&gt;', message)
+
+    def test_worker_is_retained_until_native_finished_after_unload(self):
+        module = self.view(['C:/source.png'])
+        entered, release = threading.Event(), threading.Event()
+        self.releases.append(release)
+        def export(*args, **kwargs):
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return optimized()
+        with patch.object(product, 'optimize_image', side_effect=export):
+            self.start(module)
+            self.assertTrue(entered.wait(1))
+            worker = module.worker
+            module.on_unload()
+            self.assertIn(worker, product._LIVE_WORKERS)
+            release.set()
+            self.assertTrue(worker.wait(3000))
+            self.assertTrue(helpers.pump(lambda: worker not in product._LIVE_WORKERS))
 
 
 if __name__ == '__main__':

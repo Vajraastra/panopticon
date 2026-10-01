@@ -9,6 +9,7 @@ from pathlib import Path
 from PIL import Image, PngImagePlugin
 
 from core.paths import CachePaths
+from core.derived_publication import DerivedPublication
 from core.output_paths import safe_path, path_variants
 from core.metadata.output_stamp import MAX_FILE
 from core.metadata import MetadataExtractor, MetadataStamper, MetadataBundle
@@ -112,7 +113,8 @@ def optimize_image(source_path, output_path,
                    resize_height=None,
                    lock_aspect=True,
                    preserve_metadata=True,
-                   tags=None, rating=0, service=None, cancel_event=None):
+                   tags=None, rating=0, service=None, cancel_event=None,
+                   source_snapshot=None, native_service=None, journal_root=None):
     """
     Complete optimization pipeline with new metadata system.
     
@@ -134,13 +136,21 @@ def optimize_image(source_path, output_path,
         preserve_metadata: Transfer AI prompts/tags
         tags: Additional Panopticon tags to add
         rating: Panopticon rating to add
+        source_snapshot: Captured native ID/path/full revision; absence retains export only
+        native_service: Writer facade with explicitly prepared derivative schema
+        journal_root: Recovery directory outside watched and Cherry folders
     
     Returns:
-        dict with success status, paths, and size stats
+        dict with publication/registration status, journal, paths and size stats;
+        success=False with published=True requires review, never blind retry/deletion
     """
     source_path = Path(source_path)
     output_path = Path(output_path)
     temporary, img = None, None
+    publication, published = None, False
+    indexed = source_snapshot is not None and source_snapshot.get("id") is not None
+    if indexed and native_service is None:
+        return dict(success=False, error="derived_native_service_required", published=False, native_registered=False)
 
     def cancelled():
         if cancel_event is not None and cancel_event.is_set(): raise ValueError('optimizer_cancelled')
@@ -149,11 +159,11 @@ def optimize_image(source_path, output_path,
         info = path.stat(follow_symlinks=False)
         return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
-    def digest(path):
+    def digest(path, *, honour_cancel=True):
         value, total = hashlib.sha256(), 0
         with open(path, 'rb') as source:
             while block := source.read(1024*1024):
-                cancelled()
+                if honour_cancel: cancelled()
                 total += len(block)
                 if total > MAX_FILE: raise ValueError('optimizer_file_limit')
                 value.update(block)
@@ -249,26 +259,72 @@ def optimize_image(source_path, output_path,
             if confirmed is not True: raise ValueError('optimizer_metadata_not_preserved')
         with Image.open(temporary) as verified:
             if verified.width*verified.height > 20_000_000: raise ValueError('optimizer_image_limit')
+            dimensions = verified.size
             verified.load()
         with open(temporary, 'r+b') as prepared: os.fsync(prepared.fileno())
         cancelled()
         if signature(source_path) != before or digest(source_path) != source_digest:
             raise ValueError('optimizer_source_changed')
-        destination()
         new_size = temporary.stat().st_size
         if new_size > MAX_FILE: raise ValueError('optimizer_file_limit')
+        result_identity, result_digest = signature(temporary), digest(temporary)
+        if signature(temporary) != result_identity: raise ValueError('optimizer_prepared_file_changed')
+        if indexed:
+            if safe_path(source_snapshot['path']) != source_path:
+                raise ValueError('optimizer_source_identity_path_changed')
+            observed = MetadataExtractor.extract(temporary, strict=True)
+            generation = dict(width=dimensions[0], height=dimensions[1], tool=observed.tool,
+                model=observed.model, positive=observed.positive_prompt,
+                negative=observed.negative_prompt, seed=str(observed.seed))
+            request = dict(expected_fingerprint=source_snapshot['fingerprint'],
+                source_path=source_snapshot['path'], path=str(output_path),
+                destination_paths=path_variants(output_path, output_path), producer='image_optimizer',
+                source_digest=source_digest.hex(), result_digest=result_digest.hex(),
+                generation=generation, observation=dict(filename=output_path.name,
+                    size=new_size, created=temporary.stat().st_ctime))
+            publication = DerivedPublication(native_service, source_snapshot['id'], request, journal_root=journal_root)
+            publication.ready(before, result_identity, temporary, cancel_event)
+        # La aprobación Native no reserva ni congela el disco: repetir guardas físicas.
+        cancelled()
+        if safe_path(source_path) != source_path or signature(source_path) != before or digest(source_path) != source_digest:
+            raise ValueError('optimizer_source_changed')
+        if signature(temporary) != result_identity or digest(temporary) != result_digest:
+            raise ValueError('optimizer_prepared_file_changed')
+        if publication is not None: publication.scope(cancel_event)
+        destination(check_native=not indexed)
         cancelled()
         if os.name == 'nt': os.rename(temporary, output_path)
         else:
             os.link(temporary, output_path)
+            published = True  # El link ya publicó incluso si unlink falla.
             temporary.unlink()
         temporary = None
+        published = True
+        # No cancelar hashing/ack después del efecto físico. Un fallo es parcial.
+        if indexed:
+            safe_path(output_path, portable=True)
+            final_identity = signature(output_path)
+            if digest(output_path, honour_cancel=False) != result_digest or signature(output_path) != final_identity:
+                raise ValueError('optimizer_published_file_changed')
+            if signature(source_path) != before or digest(source_path, honour_cancel=False) != source_digest:
+                raise ValueError('optimizer_source_changed')
+            info = output_path.stat()
+            publication.register(dict(filename=output_path.name, size=info.st_size, created=info.st_ctime), final_identity)
+            if (signature(output_path) != final_identity or digest(output_path, honour_cancel=False) != result_digest
+                    or signature(output_path) != final_identity):
+                raise ValueError('optimizer_published_file_changed')
+            publication.complete()
 
         # 9. Calculate stats
         orig_size = before[2]
         
         return {
             "success": True,
+            "published": True,
+            "status": "complete",
+            "native_registered": publication.native_registered if publication else False,
+            "copy_id": publication.receipt["copy_id"] if publication and publication.receipt else None,
+            "journal": str(publication.path) if publication and publication.path else "",
             "output_path": str(output_path),
             "original_size": orig_size,
             "new_size": new_size,
@@ -279,10 +335,17 @@ def optimize_image(source_path, output_path,
         }
     
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        error = str(e)[:1000]
+        if publication is not None: publication.failed(error, published)
+        return dict(success=False, error=error, status='partial' if published else 'error',
+            published=published, native_registered=publication.native_registered if publication else False,
+            journal=str(publication.path) if publication and publication.path else '',
+            output_path=str(output_path) if published else '')
     finally:
         if img is not None: img.close()
-        if temporary is not None: temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            try: temporary.unlink(missing_ok=True)
+            except OSError: pass
 
 
 def get_export_path(source_path, export_dir=None, suffix=""):
