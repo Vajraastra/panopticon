@@ -23,6 +23,7 @@ class CaptionWorker(QThread):
     progress = Signal(int, int, str)   # done, total, filename actual
     image_done = Signal(str, str)      # image_path, caption final (último formato escrito)
     error = Signal(str, str)           # image_path, mensaje
+    batch_failed = Signal(str)       # fatal batch failure, before terminal counts
     finished_all = Signal(int, int)    # procesadas, saltadas
 
     def __init__(self, provider, model, source_folder, template_keys,
@@ -62,6 +63,17 @@ class CaptionWorker(QThread):
         self._cancel = True
 
     def run(self):
+        self._processed = self._skipped = 0
+        try:
+            self._run_batch()
+        except Exception as exc:
+            log.exception("Caption batch failed")
+            self.error.emit("", str(exc))
+            self.batch_failed.emit(str(exc))
+        finally:
+            self.finished_all.emit(self._processed, self._skipped)
+
+    def _run_batch(self):
         # 1. lista de imágenes
         try:
             if self._images is not None:
@@ -70,7 +82,7 @@ class CaptionWorker(QThread):
                 images = [str(p) for p in sidecar.list_images(self.source_folder, self.recursive)]
         except Exception as e:  # noqa: BLE001
             self.error.emit("", f"No se pudieron listar imágenes: {e}")
-            self.finished_all.emit(0, 0)
+            self.batch_failed.emit(str(e))
             return
 
         # 2. preparar plantilla + carpeta de salida por cada formato objetivo
@@ -88,7 +100,7 @@ class CaptionWorker(QThread):
                 prepared.append((tmpl, out, prompt, prov, mname))
         except Exception as e:  # noqa: BLE001
             self.error.emit("", f"No se pudo preparar la salida: {e}")
-            self.finished_all.emit(0, 0)
+            self.batch_failed.emit(str(e))
             return
 
         total = len(images)
@@ -119,10 +131,11 @@ class CaptionWorker(QThread):
 
             if wrote_any:
                 processed += 1
+                self._processed = processed
             else:
                 skipped += 1
+                self._skipped = skipped
 
-        self.finished_all.emit(processed, skipped)
 
     def _caption_with_retry(self, img, prompt, provider=None, model=None):
         provider = provider or self.provider

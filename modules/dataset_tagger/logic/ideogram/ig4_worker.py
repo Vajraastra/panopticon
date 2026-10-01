@@ -50,6 +50,7 @@ class Ig4Worker(QThread):
     image_done = Signal(str, str)        # image_path, json_path exportado
     warnings = Signal(str, list)         # image_path, lista de warnings del validador
     error = Signal(str, str)             # image_path, mensaje
+    batch_failed = Signal(str)
     finished_all = Signal(int, int)      # exportadas, saltadas
 
     def __init__(self, provider, model, jobs, *, prompt_hld, prompt_background,
@@ -92,7 +93,14 @@ class Ig4Worker(QThread):
         # Dataset de ESTILO con inferencia VLM: un solo estilo para todo el set.
         # Se infiere una vez (de la primera imagen) y se propaga a cada doc.
         if self.infer_style and not self.style_per_image and self.jobs:
-            self._shared_style = self._infer_shared_style()
+            try:
+                self._shared_style = self._infer_shared_style()
+            except Exception as exc:
+                log.exception("ig4: shared style failed")
+                self.error.emit("", str(exc))
+                self.batch_failed.emit(str(exc))
+                self.finished_all.emit(0, 0)
+                return
         for i, (image_path, pano_path) in enumerate(self.jobs, 1):
             if self._cancel:
                 break

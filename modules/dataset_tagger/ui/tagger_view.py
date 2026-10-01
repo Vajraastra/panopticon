@@ -15,6 +15,8 @@ Reglas obligatorias respetadas aquí:
 import logging
 from pathlib import Path
 
+from .worker_lifecycle import WorkerViewLifecycle
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QLineEdit, QPlainTextEdit, QCheckBox, QSpinBox,
@@ -131,13 +133,13 @@ class ConnectionWorker(QThread):
 
     def run(self):
         prov = OpenAICompatProvider(self.base_url, self.api_key or None, timeout=8)
-        ok, msg = prov.test_connection()
         models = []
-        if ok:
-            try:
+        try:
+            ok, msg = prov.test_connection()
+            if ok and not self.isInterruptionRequested():
                 models = prov.list_models()
-            except Exception as e:  # noqa: BLE001
-                ok, msg = False, str(e)
+        except Exception as e:  # noqa: BLE001
+            ok, msg = False, str(e)
         self.result.emit(ok, msg, models)
 
 
@@ -194,11 +196,12 @@ class ToggleSwitch(QCheckBox):
         p.end()
 
 
-class DatasetTaggerView(QWidget):
+class DatasetTaggerView(WorkerViewLifecycle, QWidget):
     """Vista del Dataset Tagger: configuración + cola + ejecución."""
 
     def __init__(self, context):
         super().__init__()
+        self._init_worker_lifecycle()
         self.context = context
 
         # estado del origen
@@ -209,10 +212,12 @@ class DatasetTaggerView(QWidget):
         self._discovery = None
         self._conn = None
         self._caption = None
+        self._batch_failure = None
         self._ig4 = None           # worker del captioner Ideogram 4
         self._autobatch = None     # worker de pre-detección de cajas por lote
         self._bbox_editor = None   # ventana del editor de cajas (modal)
         self._review = None
+        self._editors = []
         self._wd_dl = None         # worker de descarga del modelo WD
         self._last_output = None   # (carpeta, as_tag) del último dataset generado
 
@@ -893,6 +898,8 @@ class DatasetTaggerView(QWidget):
             self.btn_wd_download.setEnabled(True)
 
     def _download_wd(self):
+        if self._closing:
+            return
         key = self.combo_wd_tagger.currentData()
         if not key or self._wd_dl is not None:
             return
@@ -900,14 +907,13 @@ class DatasetTaggerView(QWidget):
         self.lbl_wd_status.setText(self._tr("tagger.wd.downloading", "Downloading…"))
         self.lbl_wd_status.setStyleSheet("font-size: 11px;")
         self._wd_dl = WDDownloadWorker(key)
-        self._wd_dl.progress.connect(
+        self._workers.connect(self._wd_dl, self._wd_dl.progress,
             lambda f: self.lbl_wd_status.setText(
                 self._tr("tagger.wd.downloading_file", "Downloading {0}…").format(f)))
-        self._wd_dl.done.connect(self._on_wd_downloaded)
-        self._wd_dl.start()
+        self._workers.connect(self._wd_dl, self._wd_dl.done, self._on_wd_downloaded)
+        self._workers.start(self._wd_dl, "_wd_dl")
 
     def _on_wd_downloaded(self, ok, msg):
-        self._wd_dl = None
         if ok:
             self._refresh_wd_status()
         else:
@@ -972,6 +978,8 @@ class DatasetTaggerView(QWidget):
             self._set_source_images(imgs)
 
     def _set_source_folder(self, folder):
+        if self._closing:
+            return
         self._source_folder = folder
         self._images = None
         self.lbl_source.setText(self._tr("tagger.source_folder", "Folder: {0} ({1} images)")
@@ -981,6 +989,8 @@ class DatasetTaggerView(QWidget):
         self._update_run_enabled()
 
     def _set_source_images(self, imgs):
+        if self._closing:
+            return
         self._images = list(imgs)
         # carpeta de origen para nombrar la salida = carpeta del primer archivo
         self._source_folder = str(Path(imgs[0]).parent)
@@ -1025,11 +1035,13 @@ class DatasetTaggerView(QWidget):
 
     # -- descubrimiento / conexión -------------------------------------------
     def _discover(self):
+        if self._closing or self._discovery is not None:
+            return
         self.btn_discover.setEnabled(False)
         self.status.setText(self._tr("tagger.discovering", "Scanning local endpoints…"))
         self._discovery = DiscoveryWorker()
-        self._discovery.result.connect(self._on_discovered)
-        self._discovery.start()
+        self._workers.connect(self._discovery, self._discovery.result, self._on_discovered)
+        self._workers.start(self._discovery, "_discovery")
 
     def _on_discovered(self, found):
         self.btn_discover.setEnabled(True)
@@ -1044,12 +1056,14 @@ class DatasetTaggerView(QWidget):
                             .format(best["label"], best["base_url"]))
 
     def _test_connection(self):
+        if self._closing or self._conn is not None:
+            return
         self.btn_test.setEnabled(False)
         self.status.setText(self._tr("tagger.testing", "Testing connection…"))
         self._conn = ConnectionWorker(self.edit_endpoint.text().strip(),
                                       self.edit_apikey.text().strip())
-        self._conn.result.connect(self._on_tested)
-        self._conn.start()
+        self._workers.connect(self._conn, self._conn.result, self._on_tested)
+        self._workers.start(self._conn, "_conn")
 
     def _on_tested(self, ok, msg, models):
         self.btn_test.setEnabled(True)
@@ -1119,6 +1133,8 @@ class DatasetTaggerView(QWidget):
     # -- pre-detección de cajas por lote (YOLO) ------------------------------
     def _run_ig4_autobatch(self):
         """Lanza la pre-detección YOLO sobre todo el set en un hilo aparte."""
+        if self._closing or any(w is not None for w in (self._caption, self._ig4, self._autobatch)):
+            return
         if self._autobatch is not None and self._autobatch.isRunning():
             return
         images = self._ig4_all_images()
@@ -1137,20 +1153,19 @@ class DatasetTaggerView(QWidget):
             }
         from ..logic.ideogram.autobox import AutoBoxBatchWorker
         self._autobatch = AutoBoxBatchWorker(images, out_dir, style_defaults)
-        self._autobatch.progress.connect(self._on_autobatch_progress)
-        self._autobatch.finished_ok.connect(self._on_autobatch_done)
-        self._autobatch.failed.connect(self._on_autobatch_failed)
+        self._workers.connect(self._autobatch, self._autobatch.progress, self._on_autobatch_progress)
+        self._workers.connect(self._autobatch, self._autobatch.finished_ok, self._on_autobatch_done)
+        self._workers.connect(self._autobatch, self._autobatch.failed, self._on_autobatch_failed)
         self.ig4_batch_detect.setEnabled(False)
         self.btn_cancel.setEnabled(True)
         self._update_run_enabled()
-        self._autobatch.start()
+        self._workers.start(self._autobatch, "_autobatch")
 
     def _on_autobatch_progress(self, done, total, name):
         self.status.setText(self._tr(
             "ig4.batch_progress", "Detecting boxes… {0}/{1}: {2}").format(done, total, name))
 
     def _on_autobatch_done(self, created, skipped):
-        self._autobatch = None
         self.ig4_batch_detect.setEnabled(True)
         self.btn_cancel.setEnabled(False)
         self.status.setText(self._tr(
@@ -1160,7 +1175,6 @@ class DatasetTaggerView(QWidget):
         self._update_run_enabled()
 
     def _on_autobatch_failed(self, msg):
-        self._autobatch = None
         self.ig4_batch_detect.setEnabled(True)
         self.btn_cancel.setEnabled(False)
         self.status.setText(self._tr("ig4.batch_err", "Detection error: {0}").format(msg))
@@ -1180,6 +1194,8 @@ class DatasetTaggerView(QWidget):
         return missing
 
     def _update_run_enabled(self):
+        if self._closing:
+            return
         busy = (self._caption is not None or self._ig4 is not None
                 or self._autobatch is not None)
         if self._mode() == MODE_IDEOGRAM4:
@@ -1205,6 +1221,8 @@ class DatasetTaggerView(QWidget):
         self.btn_run.setEnabled(True)
 
     def _run(self):
+        if self._closing or any(w is not None for w in (self._caption, self._ig4, self._autobatch)):
+            return
         if self._mode() == MODE_IDEOGRAM4:
             self._run_ideogram()
             return
@@ -1251,6 +1269,7 @@ class DatasetTaggerView(QWidget):
                     general_threshold=preset.general_threshold,
                     character_threshold=preset.character_threshold)
 
+        self._batch_failure = None
         self._caption = CaptionWorker(
             provider=provider,
             model=model,
@@ -1267,10 +1286,11 @@ class DatasetTaggerView(QWidget):
             model_names=model_names,
             nsfw=self.switch_content.isChecked(),
         )
-        self._caption.progress.connect(self._on_progress)
-        self._caption.error.connect(self._on_error)
-        self._caption.finished_all.connect(self._on_finished)
-        self._caption.start()
+        self._workers.connect(self._caption, self._caption.progress, self._on_progress)
+        self._workers.connect(self._caption, self._caption.error, self._on_error)
+        self._workers.connect(self._caption, self._caption.batch_failed, self._on_batch_failed)
+        self._workers.connect(self._caption, self._caption.finished_all, self._on_finished)
+        self._workers.start(self._caption, "_caption")
 
         self.progress.setVisible(True)
         self.progress.setValue(0)
@@ -1288,9 +1308,14 @@ class DatasetTaggerView(QWidget):
         name = Path(path).name if path else "?"
         self.status.setText(self._tr("tagger.err", "Error on {0}: {1}").format(name, msg))
 
+    def _on_batch_failed(self, message):
+        self._batch_failure = message
+        self._on_error("", message)
+
     def _on_finished(self, processed, skipped):
         self.btn_cancel.setEnabled(False)
-        self._caption = None
+        if self._batch_failure is not None:
+            return
         self.status.setText(self._tr(
             "tagger.done", "Done — {0} processed, {1} skipped.").format(processed, skipped))
         self._update_run_enabled()
@@ -1309,6 +1334,8 @@ class DatasetTaggerView(QWidget):
 
     # -- ejecución del captioner Ideogram 4 ----------------------------------
     def _run_ideogram(self):
+        if self._closing or any(w is not None for w in (self._caption, self._ig4, self._autobatch)):
+            return
         jobs = self._ig4_jobs()
         model = self.combo_endpoint_model.currentData()
         if not (jobs and model):
@@ -1330,7 +1357,7 @@ class DatasetTaggerView(QWidget):
                              "drawing, or in each box editor, or enable 'Infer set "
                              "style'. Continue and skip them?").format(missing),
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-                if ret != QMessageBox.Yes:
+                if self._closing or ret != QMessageBox.Yes:
                     return
         from ..logic.templates import with_content_mode
         from ..logic.ideogram.ig4_worker import Ig4Worker
@@ -1338,6 +1365,7 @@ class DatasetTaggerView(QWidget):
             self.edit_endpoint.text().strip(),
             self.edit_apikey.text().strip() or None, model=model, timeout=180)
         nsfw = self.switch_content.isChecked()
+        self._batch_failure = None
         self._ig4 = Ig4Worker(
             provider, model, jobs,
             prompt_hld=with_content_mode(self.ig4_prompt_hld["editor"].toPlainText().strip(), nsfw),
@@ -1352,13 +1380,14 @@ class DatasetTaggerView(QWidget):
         # crops temporales fallidos; solo marcamos en rojo las imágenes reales.
         self._ig4_job_imgs = {str(Path(img)) for img, _ in jobs}
         self.grid.refresh_preprocess()      # limpia marcas de error de corridas previas
-        self._ig4.progress.connect(self._on_progress)
-        self._ig4.error.connect(self._on_error)
-        self._ig4.error.connect(self._on_ig4_error)
-        self._ig4.image_done.connect(self._on_ig4_image_done)
-        self._ig4.warnings.connect(self._on_ig4_warnings)
-        self._ig4.finished_all.connect(self._on_ig4_finished)
-        self._ig4.start()
+        self._workers.connect(self._ig4, self._ig4.progress, self._on_progress)
+        self._workers.connect(self._ig4, self._ig4.error, self._on_error)
+        self._workers.connect(self._ig4, self._ig4.error, self._on_ig4_error)
+        self._workers.connect(self._ig4, self._ig4.image_done, self._on_ig4_image_done)
+        self._workers.connect(self._ig4, self._ig4.warnings, self._on_ig4_warnings)
+        self._workers.connect(self._ig4, self._ig4.batch_failed, self._on_batch_failed)
+        self._workers.connect(self._ig4, self._ig4.finished_all, self._on_ig4_finished)
+        self._workers.start(self._ig4, "_ig4")
         self.progress.setVisible(True)
         self.progress.setValue(0)
         self.btn_run.setEnabled(False)
@@ -1383,7 +1412,8 @@ class DatasetTaggerView(QWidget):
 
     def _on_ig4_finished(self, exported, skipped):
         self.btn_cancel.setEnabled(False)
-        self._ig4 = None
+        if self._batch_failure is not None:
+            return
         self.status.setText(self._tr("ig4.done", "Done — {0} exported, {1} skipped.")
                             .format(exported, skipped))
         self._update_run_enabled()
@@ -1413,11 +1443,15 @@ class DatasetTaggerView(QWidget):
 
     def _open_review(self):
         """Abre el editor de captions sobre el último dataset o una carpeta a elegir."""
+        if self._closing:
+            return
         from .review_view import ReviewView
         folder, as_tag = (self._last_output or (None, True))
         self._review = ReviewView(self.context, folder=folder, as_tag=as_tag,
                                   model_key=self._review_model_hint(),
                                   **self._llm_config())
+        self._retain_editor(self._review)
+        self._review.setParent(self, Qt.Window)
         self._review.show()
         self._review.raise_()
 
@@ -1429,6 +1463,8 @@ class DatasetTaggerView(QWidget):
             self._edit_caption(image_path)
 
     def _open_bbox_editor(self, image_path):
+        if self._closing:
+            return
         """Abre el editor de bboxes para una imagen, creando/cargando su
         .pano.json en <set>_ideogram4_json/drafts/ (subcarpeta de borradores)."""
         if not self._source_folder:
@@ -1457,11 +1493,16 @@ class DatasetTaggerView(QWidget):
         except ValueError as e:
             self.status.setText(str(e))
             return
+        self._retain_editor(self._bbox_editor)
         self._bbox_editor.exec()           # modal; al cerrar, el .pano.json quedó guardado
+        if self._closing:
+            return
         self.grid.refresh_preprocess()     # marca la imagen recién preprocesada
         self._update_run_enabled()         # pudo aparecer un nuevo .pano.json
 
     def _edit_caption(self, image_path):
+        if self._closing:
+            return
         """Doble clic en una imagen del grid: abre el editor de captions sobre su
         carpeta, preseleccionando ese .txt para revisarlo/corregirlo."""
         from .review_view import ReviewView
@@ -1473,6 +1514,8 @@ class DatasetTaggerView(QWidget):
                                   as_tag=as_tag, select=image_path,
                                   model_key=self._review_model_hint(),
                                   **self._llm_config())
+        self._retain_editor(self._review)
+        self._review.setParent(self, Qt.Window)
         self._review.show()
         self._review.raise_()
 
@@ -1487,25 +1530,40 @@ class DatasetTaggerView(QWidget):
             self._autobatch.cancel()
             self.status.setText(self._tr("tagger.cancelling", "Cancelling…"))
 
-    def closeEvent(self, event):
-        # detiene workers vivos para no destruir un QThread en ejecución
-        try:
-            self.grid.stop()
-        except Exception:  # noqa: BLE001
-            pass
-        if self._wd_dl is not None:
-            self._wd_dl.wait(3000)
-        if self._ig4 is not None:
-            self._ig4.cancel()
-            self._ig4.wait(3000)
-        if self._autobatch is not None:
-            self._autobatch.cancel()
-            self._autobatch.wait(3000)
-        super().closeEvent(event)
+
+    def _retain_editor(self, editor):
+        for previous in tuple(self._editors):
+            if previous._closing and previous.shutdown_ready():
+                self._editors.remove(previous)
+                previous.deleteLater()
+        self._editors.append(editor)
+
+    def _worker_settled(self, attribute):
+        if attribute == "_discovery":
+            self.btn_discover.setEnabled(True)
+        elif attribute == "_conn":
+            self.btn_test.setEnabled(True)
+        elif attribute == "_wd_dl":
+            self._refresh_wd_status()
+        self._update_run_enabled()
+
+    def shutdown(self):
+        if self._closing:
+            return
+        super().shutdown()
+        self.grid.shutdown()
+        for editor in self._editors:
+            editor.close()
+
+    def shutdown_ready(self):
+        return (super().shutdown_ready() and self.grid.shutdown_ready()
+                and all(editor.shutdown_ready() for editor in self._editors))
 
     # -- integración con otros módulos (Fase 6) ------------------------------
     def load_images(self, paths):
         """Recibe un set de imágenes desde otros módulos vía load_image_set()."""
+        if self._closing:
+            return
         imgs = [str(p) for p in paths if Path(p).suffix.lower() in sidecar.IMAGE_EXTS]
         if imgs:
             self._set_source_images(imgs)

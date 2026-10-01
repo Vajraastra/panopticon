@@ -15,6 +15,8 @@ Respeta las reglas del framework:
 import logging
 from pathlib import Path
 
+from .worker_lifecycle import WorkerViewLifecycle
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QLabel, QStyle,
 )
@@ -76,7 +78,7 @@ class ThumbnailWorker(QThread):
                 self.ready.emit(p, img)
 
 
-class SourceGrid(QWidget):
+class SourceGrid(WorkerViewLifecycle, QWidget):
     """Rejilla de validación del set de origen (carpetas + imágenes)."""
 
     folder_activated = Signal(str)   # el usuario abrió una subcarpeta / subió un nivel
@@ -84,10 +86,13 @@ class SourceGrid(QWidget):
 
     def __init__(self, tr, accent, success, parent=None):
         super().__init__(parent)
+        self._init_worker_lifecycle()
         self._tr = tr                      # callable(key, default)
         self._accent = accent
         self._success = success
         self._worker = None
+        self._pending_thumbs = None
+        self._thumb_generation = 0
         self._items_by_path = {}           # path -> QListWidgetItem (para el thumb async)
         self._thumb_by_path = {}           # path -> QImage limpia (para re-pintar insignias)
         self._state_by_path = {}           # path -> ST_* (estado ig4; ausente = sin empezar)
@@ -130,6 +135,8 @@ class SourceGrid(QWidget):
         self._ig4_out_dir = Path(out_dir) if out_dir else None
 
     def show_folder(self, folder):
+        if self._closing:
+            return
         """Muestra subcarpetas + imágenes directas de `folder` (no recursivo:
         el grid es para navegar/validar; el alcance de procesado lo da el
         checkbox 'incluir subcarpetas')."""
@@ -166,6 +173,8 @@ class SourceGrid(QWidget):
 
     def show_images(self, images):
         """Muestra un set explícito de imágenes (modo 'imágenes sueltas')."""
+        if self._closing:
+            return
         self._reset()
         paths = [Path(p) for p in images]
         self._n_dirs = 0
@@ -174,6 +183,8 @@ class SourceGrid(QWidget):
         self._start_thumbs(paths)
 
     def refresh_preprocess(self):
+        if self._closing:
+            return
         """Re-evalúa el estado (borrador/exportado) de cada imagen desde el disco
         y actualiza insignias, tooltips y el resumen SIN re-decodificar miniaturas.
         Descarta marcas de error previas (vuelve a la verdad del disco). Se llama
@@ -214,11 +225,15 @@ class SourceGrid(QWidget):
         self._repaint_item(path, it)
 
     def stop(self):
-        """Cancela el worker (llamar al cerrar / reemplazar el set)."""
+        """Invalidate results and cancel without waiting on the GUI."""
+        self._thumb_generation += 1
+        self._pending_thumbs = None
         if self._worker:
             self._worker.cancel()
-            self._worker.wait(1500)
-            self._worker = None
+
+    def shutdown(self):
+        self.stop()
+        super().shutdown()
 
     # -- internos -------------------------------------------------------------
     def _reset(self):
@@ -330,12 +345,25 @@ class SourceGrid(QWidget):
         self.summary.setText(tpl.format(n_imgs, drawn, done, self._n_dirs))
 
     def _start_thumbs(self, images):
-        paths = [str(p) for p in images[:MAX_ITEMS]]
-        if not paths:
+        if self._closing:
             return
+        self.stop()
+        paths = [str(p) for p in images[:MAX_ITEMS]]
+        self._pending_thumbs = paths
+        if self._worker is None:
+            self._worker_settled("_worker")
+
+    def _worker_settled(self, attribute):
+        paths = self._pending_thumbs
+        self._pending_thumbs = None
+        if not paths or self._closing:
+            return
+        generation = self._thumb_generation
         self._worker = ThumbnailWorker(paths)
-        self._worker.ready.connect(self._on_thumb)
-        self._worker.start()
+        self._workers.connect(self._worker, self._worker.ready,
+                              lambda path, image: self._on_thumb(path, image)
+                              if generation == self._thumb_generation else None)
+        self._workers.start(self._worker, "_worker")
 
     def _on_thumb(self, path, image):
         it = self._items_by_path.get(path)

@@ -64,7 +64,15 @@ a cancelled Future alone does not establish completion. Already accepted short
 queries/mutations drain. The runtime stays retained until native completion and
 cannot restart through late callbacks. A timeout in the blocking compatibility
 API reports unfinished work and keeps ownership; it never terminates the thread.
-Dataset Tagger shutdown coordination remains pending.
+Dataset Tagger retains discovery, connection, model download, caption, detection,
+tag database and refinement workers until native completion. Its auxiliary editors
+also defer close, accept/reject and Escape while workers finish; late results cannot
+apply edits or reopen output folders during shutdown. Caption review saves its
+current edit once on close, as before. Grid replacement cancels stale thumbnails
+without GUI waits, retaining at most one decoder and the latest pending set.
+Requests or inference already in progress finish in their worker; no force kill.
+Refinement proposals belong to the captured image/text/architecture, and changing
+that context discards the proposal. Other module shutdown handlers remain under audit.
 
 Cropper and Image Optimizer can preserve embedded generation
 metadata in their outputs through the shared metadata layer. Watermarker deliberately

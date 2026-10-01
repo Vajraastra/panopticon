@@ -21,6 +21,7 @@ class DatasetTaggerModule(BaseModule):
         # Fallback; la vista sincroniza el acento con la paleta global (theme).
         self.accent_color = "#bd93f9"
         self.view = None
+        self._closed = False
 
     def get_view(self) -> QWidget:
         """Construcción perezosa de la interfaz."""
@@ -35,5 +36,13 @@ class DatasetTaggerModule(BaseModule):
 
     def load_image_set(self, paths: list):
         """Interfaz estándar para recibir imágenes desde otros módulos (Fase 6)."""
-        if self.view:
+        if not self._closed and self.view:
             self.view.load_images(paths)
+
+    def on_unload(self):
+        self._closed = True
+        if self.view is not None:
+            self.view.shutdown()
+
+    def shutdown_ready(self):
+        return self.view is None or self.view.shutdown_ready()

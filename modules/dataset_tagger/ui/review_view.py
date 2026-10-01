@@ -12,6 +12,8 @@ Solo toca los .txt de la carpeta de salida; nunca las imágenes originales.
 import logging
 from pathlib import Path
 
+from .worker_lifecycle import WorkerViewLifecycle
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QPlainTextEdit, QListWidget, QListWidgetItem, QSplitter, QFrame, QCheckBox,
@@ -30,12 +32,13 @@ from .refine_dialog import RefineProposalDialog
 log = logging.getLogger(__name__)
 
 
-class ReviewView(QWidget):
+class ReviewView(WorkerViewLifecycle, QWidget):
     """Editor de sidecars de un dataset. Ventana de nivel superior."""
 
     def __init__(self, context, folder=None, as_tag=True, select=None, model_key=None,
                  endpoint="", api_key=None, vlm_model=None):
         super().__init__()
+        self._init_worker_lifecycle()
         self.context = context
         self.folder = str(folder) if folder else None
         self._current = None  # Path del .txt en edición
@@ -45,6 +48,7 @@ class ReviewView(QWidget):
         # el grupo de quality tags. El usuario puede cambiarla en el combo.
         self._model_key = model_key
         self._tagdb_worker = None
+        self._tagdb_requested = None
         # Config del LLM para la sugerencia de prosa (Fase 2). Llega del tagger:
         # mismo endpoint/modelo VLM que usó para capturar. Sin esto, el botón
         # "Sugerir" queda deshabilitado.
@@ -136,7 +140,9 @@ class ReviewView(QWidget):
 
     # -- sugerencia de prosa (LLM, a demanda) ---------------------------------
     def _on_suggest(self):
-        if self._refine_worker and self._refine_worker.isRunning():
+        if self._closing:
+            return
+        if self._refine_worker is not None:
             return
         text = self.editor.toPlainText().strip()
         if not text:
@@ -152,19 +158,27 @@ class ReviewView(QWidget):
                                         model=self._vlm_model, timeout=120)
         self.btn_suggest.setEnabled(False)
         self.status.setText(self._tr("review.suggest.working", "Asking the LLM…"))
+        self._refine_snapshot = self._suggestion_state()
         self._refine_worker = refine.RefineWorker(
             provider, self._vlm_model, text, structure=structure,
             label=label, image_path=image)
-        self._refine_worker.ready.connect(self._on_refine_ready)
-        self._refine_worker.failed.connect(self._on_refine_failed)
-        self._refine_worker.start()
+        self._workers.connect(self._refine_worker, self._refine_worker.ready, self._on_refine_ready)
+        self._workers.connect(self._refine_worker, self._refine_worker.failed, self._on_refine_failed)
+        self._workers.start(self._refine_worker, "_refine_worker")
+
+    def _suggestion_state(self):
+        return (self._current, self.editor.toPlainText().strip(),
+                self.combo_arch.currentData())
 
     def _on_refine_ready(self, suggested):
         self.btn_suggest.setEnabled(True)
         self.status.setText("")
-        original = self.editor.toPlainText().strip()
+        if self._suggestion_state() != self._refine_snapshot:
+            return
+        original = self._refine_snapshot[1]
         dlg = RefineProposalDialog(original, suggested, tr=self._tr, parent=self)
-        if dlg.exec():
+        if (dlg.exec() and not self._closing
+                and self._suggestion_state() == self._refine_snapshot):
             final = dlg.result_text()
             if final:
                 self.editor.setPlainText(final)
@@ -175,6 +189,8 @@ class ReviewView(QWidget):
         self.status.setText(self._tr("review.suggest.error", "Suggestion failed: {0}").format(msg))
 
     def _start_tagdb_load(self, tmpl):
+        if self._closing:
+            return
         if not tmpl or not tmpl.tag_csv:
             self.lbl_tagdb.setText(self._tr("review.tagdb.none", "(no tag DB for this architecture)"))
             self.completer.set_csv("")
@@ -182,18 +198,22 @@ class ReviewView(QWidget):
         if tag_db.is_ready(tmpl.tag_csv):
             self._on_tagdb_ready(tmpl.tag_csv, 0)
             return
-        if self._tagdb_worker and self._tagdb_worker.isRunning():
+        if self._tagdb_worker is not None:
             return
         verb = (self._tr("review.tagdb.downloading", "Downloading tag DB…")
                 if not tag_db.is_present(tmpl.tag_csv)
                 else self._tr("review.tagdb.loading", "Loading tag DB…"))
         self.lbl_tagdb.setText(verb)
+        self._tagdb_requested = tmpl.tag_csv
         self._tagdb_worker = tag_db.TagDbWorker(tmpl.tag_csv, tmpl.tag_csv_url)
-        self._tagdb_worker.ready.connect(self._on_tagdb_ready)
-        self._tagdb_worker.failed.connect(self._on_tagdb_failed)
-        self._tagdb_worker.start()
+        self._workers.connect(self._tagdb_worker, self._tagdb_worker.ready, self._on_tagdb_ready)
+        self._workers.connect(self._tagdb_worker, self._tagdb_worker.failed, self._on_tagdb_failed)
+        self._workers.start(self._tagdb_worker, "_tagdb_worker")
 
     def _on_tagdb_ready(self, csv_name, _n):
+        tmpl = self._current_template()
+        if not tmpl or tmpl.tag_csv != csv_name:
+            return
         count = tag_db.tag_count(csv_name) or _n
         self.completer.set_csv(csv_name)
         self.completer.set_enabled(self.chk_as_tag.isChecked())
@@ -201,6 +221,9 @@ class ReviewView(QWidget):
                                .format(f"{count:,}"))
 
     def _on_tagdb_failed(self, _csv_name, msg):
+        tmpl = self._current_template()
+        if not tmpl or tmpl.tag_csv != _csv_name:
+            return
         self.completer.set_enabled(False)
         self.lbl_tagdb.setText(self._tr("review.tagdb.error", "Tag DB error: {0}").format(msg))
 
@@ -416,6 +439,8 @@ class ReviewView(QWidget):
             Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def _save_current(self):
+        if self._closing:
+            return
         if self._current is not None:
             tag_tools.write(self._current, self.editor.toPlainText())
 
@@ -452,10 +477,18 @@ class ReviewView(QWidget):
         n = tag_tools.apply_banned(self.folder, banned, as_tag=self._as_tag())
         self._after_bulk(n)
 
-    def closeEvent(self, event):
+
+    def _worker_settled(self, attribute):
+        if attribute == "_tagdb_worker":
+            tmpl = self._current_template()
+            if (self.chk_as_tag.isChecked() and tmpl
+                    and self._tagdb_requested != tmpl.tag_csv):
+                self._start_tagdb_load(tmpl)
+        elif attribute == "_refine_worker":
+            self.btn_suggest.setEnabled(bool(self._endpoint and self._vlm_model))
+
+    def shutdown(self):
+        if self._closing:
+            return
         self._save_current()
-        if self._tagdb_worker and self._tagdb_worker.isRunning():
-            self._tagdb_worker.wait(3000)
-        if self._refine_worker and self._refine_worker.isRunning():
-            self._refine_worker.wait(3000)
-        super().closeEvent(event)
+        super().shutdown()

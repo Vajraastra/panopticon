@@ -18,6 +18,8 @@ La normalización a 0–1000 ocurre solo al exportar (datamodel.to_canonical).
 import logging
 from pathlib import Path
 
+from .worker_lifecycle import WorkerViewLifecycle
+
 from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QThread
 from PySide6.QtGui import (
     QPixmap, QPen, QBrush, QColor, QFont, QPainter, QPainterPath,
@@ -400,13 +402,14 @@ class _AutoDetectWorker(QThread):
             self.failed.emit(str(exc))
 
 
-class BBoxEditor(QDialog):
+class BBoxEditor(WorkerViewLifecycle, QDialog):
     """Ventana de edición de un .pano.json para una imagen."""
 
     def __init__(self, image_path, pano_path, locale_manager=None,
                  style_defaults=None, images=None, out_dir=None,
                  endpoint="", api_key=None, vlm_model=None, parent=None):
         super().__init__(parent)
+        self._init_worker_lifecycle()
         self._lm = locale_manager
         self._style_defaults = style_defaults or {}
         self.image_path = Path(image_path)
@@ -651,14 +654,16 @@ class BBoxEditor(QDialog):
 
     def _go(self, delta):
         """Guarda la imagen actual (si tiene contenido) y salta `delta` posiciones."""
+        if self._closing:
+            return
         if not self._images:
             return
         new = self._index + delta
         if new < 0 or new >= len(self._images):
             return
-        if self._autodet is not None and self._autodet.isRunning():
+        if self._autodet is not None:
             return  # no cambiar de imagen con una detección en curso
-        if self._refine_worker is not None and self._refine_worker.isRunning():
+        if self._refine_worker is not None:
             return  # ni con una sugerencia de prosa en curso (aplicaría al campo viejo)
         # Guarda solo si hay algo (o ya había un .pano.json): no crea vacíos al hojear.
         self._collect_globals()
@@ -1079,7 +1084,9 @@ class BBoxEditor(QDialog):
         return row
 
     def _on_suggest(self, target_edit, structure, btn):
-        if self._refine_worker and self._refine_worker.isRunning():
+        if self._closing:
+            return
+        if self._refine_worker is not None:
             return
         text = target_edit.toPlainText().strip()
         if not text:
@@ -1091,6 +1098,8 @@ class BBoxEditor(QDialog):
         provider = OpenAICompatProvider(self._endpoint, self._api_key,
                                         model=self._vlm_model, timeout=120)
         self._refine_target = target_edit
+        self._refine_snapshot = (self.image_path, text,
+                                 self._list.currentRow())
         self._refine_btn = btn
         btn.setEnabled(False)
         self._refine_status.setText(self.tr("ig4.suggest_working", "Asking the LLM…"))
@@ -1098,9 +1107,9 @@ class BBoxEditor(QDialog):
         # crop y los globales del conjunto; el valor aquí es forma + traducción EN.
         self._refine_worker = refine.RefineWorker(
             provider, self._vlm_model, text, structure=structure, label=REFINE_LABEL)
-        self._refine_worker.ready.connect(self._on_refine_ready)
-        self._refine_worker.failed.connect(self._on_refine_failed)
-        self._refine_worker.start()
+        self._workers.connect(self._refine_worker, self._refine_worker.ready, self._on_refine_ready)
+        self._workers.connect(self._refine_worker, self._refine_worker.failed, self._on_refine_failed)
+        self._workers.start(self._refine_worker, "_refine_worker")
 
     def _on_refine_ready(self, suggested):
         if self._refine_btn:
@@ -1111,8 +1120,12 @@ class BBoxEditor(QDialog):
         if target is None:
             return
         original = target.toPlainText().strip()
+        if (self.image_path, original, self._list.currentRow()) != self._refine_snapshot:
+            return
         dlg = RefineProposalDialog(original, suggested, tr=self.tr, parent=self)
-        if dlg.exec():
+        if (dlg.exec() and not self._closing
+                and (self.image_path, target.toPlainText().strip(),
+                     self._list.currentRow()) == self._refine_snapshot):
             final = dlg.result_text()
             if final:
                 target.setPlainText(final)   # textChanged guarda desc; globales al cerrar
@@ -1235,15 +1248,17 @@ class BBoxEditor(QDialog):
     # ── auto-detección de cajas (YOLO) ──────────────────────────────────
     def _auto_detect(self):
         """Lanza la detección YOLO de la imagen actual en un hilo aparte."""
-        if self._autodet is not None and self._autodet.isRunning():
+        if self._closing:
+            return
+        if self._autodet is not None:
             return
         self._btn_autodet.setEnabled(False)
         self._btn_autodet.setText(self.tr("ig4.auto_detecting", "Detecting…"))
         self.setCursor(Qt.WaitCursor)
         self._autodet = _AutoDetectWorker(str(self.image_path), self)
-        self._autodet.done.connect(self._on_auto_detected)
-        self._autodet.failed.connect(self._on_auto_failed)
-        self._autodet.start()
+        self._workers.connect(self._autodet, self._autodet.done, self._on_auto_detected)
+        self._workers.connect(self._autodet, self._autodet.failed, self._on_auto_failed)
+        self._workers.start(self._autodet, "_autodet")
 
     def _restore_autodet_button(self):
         self.unsetCursor()
@@ -1359,6 +1374,8 @@ class BBoxEditor(QDialog):
 
     def _save_and_close(self):
         """Guarda y, si todo fue bien, cierra el editor (flujo de captura masiva)."""
+        if self._closing:
+            return
         if self._save():
             self.accept()
 
@@ -1366,12 +1383,3 @@ class BBoxEditor(QDialog):
         super().showEvent(event)
         # Ajustar la imagen al viewport la primera vez que se muestra.
         self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
-
-    def closeEvent(self, event):
-        # Espera a que termine la detección en curso (si la hay) para no destruir
-        # el QThread mientras corre.
-        if self._autodet is not None and self._autodet.isRunning():
-            self._autodet.wait()
-        if self._refine_worker is not None and self._refine_worker.isRunning():
-            self._refine_worker.wait(3000)
-        super().closeEvent(event)
