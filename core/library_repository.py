@@ -316,6 +316,10 @@ class LibraryRepository:
 
     # --- Discovery / Existence ---
 
+    def get_path_identity_records(self, **kwargs):
+        from core.library_path_identity import records
+        return records(self.conn, **kwargs)
+
     def get_inventory_page(self, folder_path, **kwargs):
         from core.library_inventory import page
         return page(self.conn, folder_path, folder_like=self._folder_like, **kwargs)

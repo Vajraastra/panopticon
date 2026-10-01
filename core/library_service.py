@@ -27,6 +27,7 @@ from core.paths import ProjectPaths
 
 log = logging.getLogger(__name__)
 READS = frozenset({
+    'get_path_identity_records',
     'get_metadata_edit_history_record', 'get_metadata_edit_state', 'get_metadata_edit_receipt', 'get_generation_history_status', 'get_generation_history_page',
     'get_metadata_path_status', 'get_derived_copies_status', 'get_derived_copy_receipt',
     'get_inventory_page', 'get_known_files_in_folder', 'get_files_recursive', 'get_watched_folders',
@@ -330,6 +331,11 @@ class LibraryService:
                 except Full:
                     future.set_exception(LibraryQueueFull(operation))
         return future
+
+    def inspect_path_identity_page(self, **kwargs):
+        """Worker-only preparation; filesystem probes run outside SQL snapshots."""
+        from core.library_path_identity import inspect_page
+        return inspect_page(self, **kwargs)
 
     def read(self, operation, *args, cancel_event=None, **kwargs):
         return self._read(operation, args, kwargs, cancel_event, lambda: open_reader(self.db_path))

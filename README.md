@@ -911,9 +911,14 @@ private Windows files: ASCII case variants can refer to one file but register
 two Native IDs with independent curation; Unicode folder aliases can disagree
 with legacy SQLite LIKE counts. Synthetic case-distinct paths also demonstrate
 that ASCII LIKE combines scopes regardless of filesystem rules. Tests preserve
-both histories when one spelling is archived. No canonicalization/migration is
-implemented yet; defining lookup and folder case policy precedes changing keys
-or prefix indexes. Folder spelling and portable Cherry data remain preserved.
+both histories when one spelling is archived. The filesystem-aware
+policy preserves spelling and separate copy histories. Worker-only
+`LibraryService.inspect_path_identity_page()` prepares at most100 observations
+per page, with a fixed initial ID boundary. Its SQL snapshot closes before
+Windows name probes. Offline/unavailable/reparse paths have no guessed key;
+hard links retain distinct opened names. Revision changes mark the preview stale.
+This is preparation, not a completed key migration or authority to merge/delete;
+existing lookup/prefix behavior is still legacy. Folder spelling and portable Cherry data remain preserved.
 [Windows supports case rules per directory](https://learn.microsoft.com/en-us/windows/wsl/case-sensitivity).
 
 ## License
