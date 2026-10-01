@@ -56,6 +56,8 @@ def _raw(path,event):
 
 def read_journal(name,event=None):
     if os.name!='nt':raise ValueError('duplicate_retirement_requires_windows')
+    if not isinstance(name,str) or not name or len(name)>4096 or '\x00' in name:
+        raise ValueError('invalid_duplicate_recovery_journal')
     path=Path(name)
     if (not isinstance(name,str) or len(name)>4096 or not path.is_absolute() or
             path.name!='journal.json' or not re.fullmatch('[0-9a-f]{32}',path.parent.name)):
@@ -73,8 +75,10 @@ def read_journal(name,event=None):
             not isinstance(value['digest'],str) or not SHA.fullmatch(value['digest'])):
         raise ValueError('invalid_duplicate_recovery_journal')
     _path(value['folder'])
-    if not isinstance(value['policy'],dict):raise ValueError('invalid_duplicate_recovery_journal')
-    DuplicatePolicy(**value['policy'])
+    if not isinstance(value['policy'],dict) or set(value['policy'])!=set(DuplicatePolicy.__dataclass_fields__):
+        raise ValueError('invalid_duplicate_recovery_journal')
+    try:DuplicatePolicy(**value['policy'])
+    except (ValueError,TypeError) as exc:raise ValueError('invalid_duplicate_recovery_journal') from exc
     copies,approved,moves,proofs=value['copies'],value['approved'],value['moves'],value['proofs']
     if (not isinstance(copies,list) or not 2<=len(copies)<=256 or not isinstance(approved,list) or len(approved)!=len(copies) or
             not isinstance(moves,list) or not 1<=len(moves)<len(copies) or not isinstance(proofs,dict)):
@@ -214,6 +218,7 @@ class RecoveryReview:
             result['complete']=True
             if len(encode(result))>MAX_REPORT:raise ValueError('duplicate_recovery_report_limit')
         except Exception as exc:
+            reason='duplicate_recovery_journal_unavailable' if isinstance(exc,OSError) else str(getattr(exc,'reason',exc))[:256]
             result.update(copies=[],moves=[],complete=False,verified_retired=0,review_required=True,
-                cancelled=event.is_set(),error=None if event.is_set() else str(getattr(exc,'reason',exc))[:256])
+                cancelled=event.is_set(),error=None if event.is_set() else reason)
         return result

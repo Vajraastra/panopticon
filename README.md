@@ -249,7 +249,7 @@ Each retirement group has a durable recovery journal. A partial failure is shown
 its journal and moved paths; it requires review before retrying. SQLite and file moves
 do not share an atomic transaction. Recovery moves do not free disk space. Automatic
 restore or permanent purge is not provided; retained bytes and complete native states
-remain available for deliberate recovery. Dashboard closure keeps the event loop and
+remain available for deliberate recovery. An explicit journal review is available below. Dashboard closure keeps the event loop and
 catalog alive until Duplicate Finder's accepted group or index construction finishes.
 
 Folder scans admit at most 100,000 files, 1,000 groups, 2,000 candidate copies and a
@@ -260,6 +260,32 @@ partial result. **Visual similarity** admits at most 2,000 images and 10 million
 per image, with four workers and bounded pair comparison. It never authorizes retirement
 and performs no implicit cache writes. It can reuse previously saved pHash only after
 checking current SHA-256; absent or unproven cache uses fresh decoding for review.
+
+### Review recovery journals
+
+Select **Recovery journal (review)** and paste or choose the `journal.json` shown
+after a retirement. Press **Review recovery journal** to inspect one complete group.
+Choosing a path does not start work. The worker validates journal structure and
+contained destinations, reads native IDs and active occupants in one bounded
+snapshot, then checks current SHA and file identity at original and recovery paths.
+It also checks retained copies and external documentation. Neither the native DB,
+the journal, image files nor Cherry catalogs are modified.
+
+Recorded phases and move statuses are shown separately from observed evidence:
+an interrupted process can leave them behind the actual commit or rename. The table
+distinguishes verified retirements, offline IDs whose source is still present,
+operations not admitted, and cases requiring review. Replaced files with identical
+SHA, changed native states, new occupants or unavailable paths remain pending.
+A missing path counts as absent only when its parent is accessible; a disconnected
+disk is not treated as proven loss. Select a copy to inspect IDs, both paths and
+the retained copies. These observations do not authorize a restore or purge.
+
+The review admits a journal up to 5 MiB, up to 256 native IDs, four file workers
+with batches of at most 64 jobs, a 2 MiB report and a 10-second native read budget.
+It rereads the journal before publishing evidence. Changes, limits, errors or
+cancellation discard the entire result. The interface remains responsive and
+dashboard closure waits for workers before closing the catalog. This is an
+inspection at a point in time, without a global filesystem/SQLite transaction.
 
 ### Explicit perceptual hash phase
 

@@ -19,6 +19,8 @@ from .logic.database_worker import DatabaseGroupReviewWorker, NativeDuplicateQue
 from .ui.overlap_panel import OverlapPanel
 from .ui.perceptual_panel import PerceptualPanel
 from .logic.perceptual_worker import PerceptualBackfillWorker
+from .logic.recovery_worker import RecoveryReviewWorker
+from .ui.recovery_panel import RecoveryPanel
 
 # Un QThread sin parent sigue vivo aunque se destruya la vista durante I/O.
 _LIVE_WORKERS = set()
@@ -38,6 +40,8 @@ class DuplicateFinderModule(BaseModule):
         self.native_worker = None
         self.phash_worker=None
         self._phash_busy=False
+        self.recovery_review_worker=None
+        self._recovery_busy=False
         self._native_busy = False
         self._db_prepared = None
         self._db_page, self._db_cursors, self._db_has_more = 0, [None], False
@@ -72,6 +76,7 @@ class DuplicateFinderModule(BaseModule):
         self.combo_mode.addItem(self.text('mode_database', 'Native library (exact groups)'))
         self.combo_mode.addItem(self.text('mode_overlap', 'Folder overlap (review only)'))
         self.combo_mode.addItem(self.text('mode_phash','pHash by folders (save)'))
+        self.combo_mode.addItem(self.text('mode_recovery_review','Recovery journal (review)'))
         self.combo_mode.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.combo_mode.setMinimumContentsLength(16)
         self.combo_mode.setToolTip(self.text('mode_tip', 'Exact content verifies current bytes and curation. Visual similarity only proposes groups for review.'))
@@ -158,6 +163,9 @@ class DuplicateFinderModule(BaseModule):
         self.phash_panel=PerceptualPanel(self.text,self.accent_color)
         self.phash_panel.changed.connect(self._configuration_changed)
         layout.addWidget(self.phash_panel,1)
+        self.recovery_panel=RecoveryPanel(self.text,self.accent_color,color)
+        self.recovery_panel.changed.connect(self._configuration_changed)
+        layout.addWidget(self.recovery_panel,1)
         layout.addWidget(self.tree, 3)
         navigation = QHBoxLayout()
         self.btn_previous = self._button('previous', 'Previous', lambda: self._navigate(-1))
@@ -243,11 +251,12 @@ class DuplicateFinderModule(BaseModule):
             not self.review['cancelled'] and not self.review['error'] and self.review['policy'] == asdict(self._policy()))
 
     def _controls(self):
-        idle = not self._closed and not self._busy and not self._acting and not self._native_busy and not self._phash_busy
+        idle = not self._closed and not self._busy and not self._acting and not self._native_busy and not self._phash_busy and not self._recovery_busy
         database = self.combo_mode.currentIndex()==2
         overlap = self.combo_mode.currentIndex()==3
         phash=self.combo_mode.currentIndex()==4
-        report_only=overlap or phash
+        recovery_review=self.combo_mode.currentIndex()==5
+        report_only=overlap or phash or recovery_review
         for control in (self.btn_run, self.btn_select, self.combo_mode, self.slider_thr, self.recovery, self.btn_recovery, *self.weights.values()):
             control.setEnabled(idle)
         self.threshold_container.setVisible(self.combo_mode.currentIndex() == 1)
@@ -262,18 +271,21 @@ class DuplicateFinderModule(BaseModule):
         self.overlap_panel.set_idle(idle)
         self.phash_panel.setVisible(phash)
         self.phash_panel.set_idle(idle)
+        self.recovery_panel.setVisible(recovery_review)
+        self.recovery_panel.set_idle(idle)
         for widget in (self.tree,self.details,self.action_status,self.btn_previous,self.btn_next,self.btn_open_group,self.page_status):
             widget.setVisible(not report_only)
         for widget in (self.recovery_label,self.recovery,self.btn_recovery,self.policy_note,self.btn_auto_select,self.btn_delete):
             widget.setVisible(not report_only)
-        self.btn_run.setText(self.text('phash_run','Calculate and save pHash') if phash else self.text('overlap_run','Compare folder pairs') if overlap else
+        self.btn_run.setText(self.text('recovery_review_run','Review recovery journal') if recovery_review else self.text('phash_run','Calculate and save pHash') if phash else self.text('overlap_run','Compare folder pairs') if overlap else
             self.text('db_search', 'Find native candidates') if database else self.text('run_scan','Start scan'))
-        self.btn_run.setToolTip(self.text('phash_run_tip','Run the separate explicit CPU phase on these folders. Checks bytes and saves derived evidence in batches; does not change curation, Cherry catalogs or images.') if phash else self.text('overlap_run_tip','Compare all pairs of selected folders by stored unique hashes and show coverage. No image reads, merges or retirement occur.') if overlap else
+        self.btn_run.setToolTip(self.text('recovery_review_run_tip','Inspect one complete retirement journal against current native identity, curation and file bytes outside the GUI thread. No writes, restore or purge occur.') if recovery_review else self.text('phash_run_tip','Run the separate explicit CPU phase on these folders. Checks bytes and saves derived evidence in batches; does not change curation, Cherry catalogs or images.') if phash else self.text('overlap_run_tip','Compare all pairs of selected folders by stored unique hashes and show coverage. No image reads, merges or retirement occur.') if overlap else
             self.text('db_search_tip', 'Read a page of stored-hash candidates. Physical bytes and curation still require group verification.') if database else self.text('run_scan_tip','Read current files and documented states. No database records or file bytes are changed by scanning.'))
         if overlap:self.btn_run.setEnabled(idle and 2<=len(self.overlap_panel.paths())<=32)
         if phash:self.btn_run.setEnabled(idle and 1<=len(self.phash_panel.paths())<=32)
+        if recovery_review:self.btn_run.setEnabled(idle and bool(self.recovery_panel.path()))
         self.lbl_thr_val.setText(self.text('value', 'Value: {value}').format(value=self.slider_thr.value()))
-        self.btn_cancel.setEnabled(not self._closed and (self._busy or self._acting or self._native_busy or self._phash_busy))
+        self.btn_cancel.setEnabled(not self._closed and (self._busy or self._acting or self._native_busy or self._phash_busy or self._recovery_busy))
         valid = idle and self._valid_review()
         self.btn_auto_select.setEnabled(bool(valid and any(report['remove'] for report in self.review['reports'].values())))
         self.btn_delete.setEnabled(bool(valid and self._checked_paths and (not database or self._db_prepared is True)))
@@ -293,18 +305,21 @@ class DuplicateFinderModule(BaseModule):
         self._token += 1
         self.overlap_panel.invalidate()
         self.phash_panel.invalidate()
+        self.recovery_panel.invalidate()
         self._checked_paths.clear()
         if self.review:
             self.status.setText(self.text('rescan_required', 'Options changed. Scan again before retiring files.'))
         if self.combo_mode.currentIndex()==4:
             self.status.setText(self.text('phash_scope_changed','Choose the explicit scope and run the pHash phase. Previous accepted batches remain stored.'))
+        if self.combo_mode.currentIndex()==5:
+            self.status.setText(self.text('recovery_review_changed','Choose a journal and request a fresh review. No changes are made automatically.'))
         self._render_page()
         self._controls()
         if self.combo_mode.currentIndex()==2 and self._db_prepared is None and not self._native_busy:
             self._native_request('get_duplicate_search_status')
 
     def select_folder(self):
-        if self._closed or self._busy or self._acting or self._native_busy or self._phash_busy:
+        if self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or self._recovery_busy:
             return
         folder = QFileDialog.getExistingDirectory(self.view, self.text('select_folder', 'Select folder'))
         if folder:
@@ -313,14 +328,17 @@ class DuplicateFinderModule(BaseModule):
             self._configuration_changed()
 
     def select_recovery(self):
-        if self._closed or self._busy or self._acting or self._native_busy or self._phash_busy:
+        if self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or self._recovery_busy:
             return
         folder = QFileDialog.getExistingDirectory(self.view, self.text('choose_recovery', 'Choose recovery folder'))
         if folder:
             self.recovery.setText(folder)
 
     def run_scan(self):
-        if self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or (self.worker is not None and self.worker.isRunning()):
+        if self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or self._recovery_busy or (self.worker is not None and self.worker.isRunning()):
+            return
+        if self.combo_mode.currentIndex()==5:
+            self._start_recovery_review()
             return
         if self.combo_mode.currentIndex()==4:
             self._start_phash()
@@ -567,10 +585,10 @@ class DuplicateFinderModule(BaseModule):
 
     def shutdown_ready(self):
         return all(worker is None or not worker.isRunning()
-                   for worker in (self.worker, self.retirement_worker, self.native_worker,self.phash_worker))
+                   for worker in (self.worker, self.retirement_worker, self.native_worker,self.phash_worker,self.recovery_review_worker))
 
     def _db_selected(self):
-        if self.view is None or self._closed or self._busy or self._acting or self._native_busy or self._phash_busy:
+        if self.view is None or self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or self._recovery_busy:
             return
         self._token += 1
         self.review,self._rows,self._checked_paths,self._page=None,[],set(),0
@@ -588,12 +606,13 @@ class DuplicateFinderModule(BaseModule):
             self._native_request('prepare_duplicate_search')
 
     def _native_request(self, operation, *, page=0, **arguments):
-        if (self._closed or self._busy or self._acting or self._native_busy or self._phash_busy
+        if (self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or self._recovery_busy
                 or (self.native_worker is not None and self.native_worker.isRunning())):
             return
         self._token+=1
         self.overlap_panel.invalidate()
         self.phash_panel.invalidate()
+        self.recovery_panel.invalidate()
         self.review,self._rows,self._checked_paths,self._page=None,[],set(),0
         self._render_page()
         self._native_busy=True
@@ -662,7 +681,7 @@ class DuplicateFinderModule(BaseModule):
         worker.deleteLater()
 
     def verify_database_group(self):
-        if (self._closed or self._busy or self._acting or self._native_busy or self._phash_busy
+        if (self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or self._recovery_busy
                 or self.combo_mode.currentIndex()!=2 or self.db_tree.currentItem() is None
                 or (self.worker is not None and self.worker.isRunning())):
             return
@@ -687,8 +706,61 @@ class DuplicateFinderModule(BaseModule):
         self._controls()
         worker.start()
 
+    def _start_recovery_review(self):
+        if (self.combo_mode.currentIndex()!=5 or self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or self._recovery_busy
+                or (self.recovery_review_worker is not None and self.recovery_review_worker.isRunning())):
+            return
+        if self.context.get('data_service') is None:
+            self.status.setText(self.text('recovery_review_service_required','The native library service is required to review IDs and curation.'))
+            return
+        self._token+=1
+        self._recovery_busy=True
+        self.review,self._rows,self._checked_paths,self._page=None,[],set(),0
+        self.recovery_panel.invalidate()
+        self._render_page()
+        self.progress.setRange(0,0)
+        self.progress.show()
+        self.status.setText(self.text('recovery_review_working','Checking journal, native identities and both file locations…'))
+        worker=RecoveryReviewWorker(self.context['data_service'],self.recovery_panel.path(),token=self._token)
+        self.recovery_review_worker=worker
+        _LIVE_WORKERS.add(worker)
+        worker.finished.connect(lambda worker=worker:_LIVE_WORKERS.discard(worker))
+        worker.finished.connect(self._recovery_review_finished)
+        worker.finished_signal.connect(self._recovery_review_received)
+        worker.progress.connect(self._recovery_review_progress)
+        self._controls()
+        worker.start()
+
+    @Slot(int,int,str)
+    def _recovery_review_progress(self,current,total,path):
+        worker=self.sender()
+        if not self._closed and worker is self.recovery_review_worker and worker.token==self._token:
+            self.progress.setRange(0,max(1,total));self.progress.setValue(current)
+
+    @Slot(dict)
+    def _recovery_review_received(self,result):
+        if self._closed or self.sender() is not self.recovery_review_worker or result['token']!=self._token:return
+        self.recovery_panel.show_result(result,self.reason)
+        if result['error']:
+            self.status.setText(self.text('recovery_review_failed','Journal review incomplete: {reason}').format(reason=self.reason(result['error'])))
+        elif result['cancelled']:
+            self.status.setText(self.text('recovery_review_cancelled','Journal review cancelled. No changes were made.'))
+        else:
+            self.status.setText(self.text('recovery_review_summary','Journal reviewed: {verified} verified retirements · {pending} requiring review. No changes were made.').format(
+                verified=result['verified_retired'],pending=len(result['moves'])-result['verified_retired']))
+
+    @Slot()
+    def _recovery_review_finished(self):
+        worker=self.sender()
+        if worker is self.recovery_review_worker:
+            self.recovery_review_worker=None
+            self._recovery_busy=False
+            if not self._closed:
+                self.progress.hide();self._controls()
+        worker.deleteLater()
+
     def _start_phash(self):
-        if self.combo_mode.currentIndex()!=4 or self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or (self.phash_worker is not None and self.phash_worker.isRunning()):
+        if self.combo_mode.currentIndex()!=4 or self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or self._recovery_busy or (self.phash_worker is not None and self.phash_worker.isRunning()):
             return
         if self.context.get('data_service') is None:
             self.status.setText(self.text('phash_service_required','The native library service is required to store pHash.'))
@@ -697,6 +769,7 @@ class DuplicateFinderModule(BaseModule):
         self._phash_busy=True
         self.review,self._rows,self._checked_paths,self._page=None,[],set(),0
         self.phash_panel.invalidate()
+        self.recovery_panel.invalidate()
         self._render_page()
         self.progress.setRange(0,0)
         self.progress.show()
@@ -755,6 +828,8 @@ class DuplicateFinderModule(BaseModule):
             self.native_worker.stop()
         if self.phash_worker is not None:
             self.phash_worker.stop()
+        if self.recovery_review_worker is not None:
+            self.recovery_review_worker.stop()
 
     def on_unload(self, *unused):
         self._closed = True
@@ -767,6 +842,8 @@ class DuplicateFinderModule(BaseModule):
             self.native_worker.stop()
         if self.phash_worker is not None:
             self.phash_worker.stop()
+        if self.recovery_review_worker is not None:
+            self.recovery_review_worker.stop()
 
     def run_headless(self, params, input_data):
         raise NotImplementedError('duplicate_review_requires_explicit_approval')
