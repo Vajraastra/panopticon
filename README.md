@@ -577,7 +577,22 @@ remain reviewable, and a historical acknowledgement never restores missing bytes
 Existing guards require manual review and are not automatically cleared. External
 file edits can still race with checks; post-commit review reports current state.
 For reconciliation, exit 0 means the action was recorded; inspect `current_status`
-separately. GUI integration and retained-backup management remain separate.
+separately.
+
+In the desktop dashboard, open **Recovery journals**, select one `journal.json`,
+then **Review current evidence**. The window shows current source/output/backup
+hashes, Native IDs, curation summary, revision checks and the historical receipt.
+Its explicit action distinguishes historical acknowledgement, export review,
+pending derived-copy registration and pending original metadata registration.
+It reuses the application's open Native writer; do not close the app for this GUI.
+Changed or conflicting evidence requires a fresh review. A successful action
+consumes that review and records current state separately from historical confirmation.
+
+Hashing, image verification and Native admission run in one retained worker.
+Closing cancels before admission and waits without blocking the GUI for accepted
+work and final native thread cleanup. The dashboard closes its Native owner only
+after this worker exits. Producer images, backups and journals remain untouched.
+Retained-backup management and live concurrent Windows validation remain open.
 
 ### Metadata in transformed outputs
 

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QSizePolicy)
 from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QIcon, QFont
+from shiboken6 import isValid
 
 # Core Imports
 from core.mod_loader import ModuleLoader
@@ -66,6 +67,7 @@ class MainWindow(QMainWindow):
 
         # 4. UI Initialization
         self.module_windows = {}
+        self._producer_recovery_dialog = None
         self._shutting_down = False
         self._shutdown_finished = False
         self._shutdown_retry_scheduled = False
@@ -147,6 +149,12 @@ class MainWindow(QMainWindow):
         """)
         btn_settings.clicked.connect(lambda: self.root_stack.setCurrentIndex(1))
         sb_layout.addWidget(btn_settings)
+        btn_recovery = QPushButton(self.tr('tool.producer_recovery.title', 'Recovery journals'))
+        btn_recovery.setMinimumHeight(45)
+        btn_recovery.setToolTip(self.tr('tool.producer_recovery.open_tip',
+            'Review one producer journal and explicitly reconcile verified Native evidence using the open library.'))
+        btn_recovery.clicked.connect(self.open_producer_recovery)
+        sb_layout.addWidget(btn_recovery)
         
         layout.addWidget(settings_bar)
         
@@ -564,6 +572,21 @@ class MainWindow(QMainWindow):
             self.raise_()
             self.activateWindow()
 
+    def open_producer_recovery(self):
+        if self._shutting_down:
+            return
+        dialog = self._producer_recovery_dialog
+        if dialog is not None and isValid(dialog):
+            if not dialog._closed:
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+            return
+        from core.components.producer_recovery import ProducerRecoveryDialog
+        dialog = ProducerRecoveryDialog(self.context['data_service'], self.tr, self)
+        self._producer_recovery_dialog = dialog
+        dialog.show()
+
     def closeEvent(self, event):
         """Cierre ordenado: cada módulo suelta lo suyo antes de que Qt destruya
         la ventana. Sin esto, un módulo con hilos propios (p.ej. el event loop
@@ -574,6 +597,10 @@ class MainWindow(QMainWindow):
             return
         if not self._shutting_down:
             self._shutting_down = True
+            dialog = self._producer_recovery_dialog
+            if dialog is not None and isValid(dialog):
+                dialog.request_shutdown()
+                dialog.close()
             for name, module in self.loaded_modules.items():
                 try:
                     module.on_unload()
