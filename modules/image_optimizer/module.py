@@ -94,6 +94,15 @@ class OptimizerWorker(QThread):
         self.cancel_event.set()
 
     def run(self):
+        try:
+            with self.service.metadata_destination_guard(cancel_event=self.cancel_event) as destinations:
+                stats = self._process(destinations)
+        except Exception as exc:
+            stats = dict(success=0, failed=0, saved_bytes=0, processed=0,
+                         data_error=str(exc), cancelled=self.cancel_event.is_set(), failures=[])
+        self.finished_signal.emit(stats)
+
+    def _process(self, destinations):
         stats = dict(success=0, failed=0, saved_bytes=0, processed=0,
                      data_error=None, cancelled=False, failures=[])
         # Cada bloque comparte una transacción RO; no retener mapas de todo el lote.
@@ -124,7 +133,7 @@ class OptimizerWorker(QThread):
                         preserve_metadata=self.settings['preserve_meta'],
                         tags=list(row['tags']) if row['id'] is not None else [],
                         rating=row['rating'] if row['id'] is not None else 0,
-                        service=self.service, cancel_event=self.cancel_event
+                        service=destinations, cancel_event=self.cancel_event
                     )
                     if result['success']:
                         stats['success'] += 1
@@ -141,7 +150,7 @@ class OptimizerWorker(QThread):
                 stats['processed'] += 1
                 self.progress.emit(stats['processed'])
         stats['cancelled'] = self.cancel_event.is_set()
-        self.finished_signal.emit(stats)
+        return stats
 
 
 class ImageOptimizerModule(BaseModule):

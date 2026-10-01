@@ -483,8 +483,12 @@ does not count as a successful preserved output.
 Image Optimizer uses stable names derived from each source path to distinguish
 equal basenames. It requires a fresh destination outside Cherry folders and, when
 using the application's data service, rejects active or offline native path history.
-It verifies metadata, source stability and destination availability before
-publication; failed outputs and cancellation are included in the result summary.
+Its batch worker reuses a bounded read-only path lookup and refreshes it when
+SQLite reports a commit, including changes from other writers. If the catalog
+exceeds its cache limits, it uses the complete compatibility lookup instead.
+No read transaction remains open between images. It verifies metadata, source
+stability and destination availability before publication; failed outputs and
+cancellation are included in the result summary.
 This does not reserve paths against other programs or atomically register outputs
 in SQLite. Registration of derived outputs remains a separate pending integration.
 

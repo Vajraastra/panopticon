@@ -11,7 +11,7 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import Future
-from contextlib import closing, ExitStack
+from contextlib import closing, ExitStack, contextmanager
 from pathlib import Path
 from queue import Queue, Full
 
@@ -316,6 +316,27 @@ class LibraryService:
             raise
         finally:
             self._metrics.finish_read(outcome, started)
+
+    @contextmanager
+    def metadata_destination_guard(self, *, cancel_event=None):
+        """Lector privado del lote; sin snapshot WAL retenido entre imágenes."""
+        from core.metadata_destinations import DestinationPaths
+        operation = 'get_metadata_path_status'
+        def check_open():
+            with self._admission:
+                if self._closed:
+                    self._metrics.reject_closed(read=True)
+                    raise LibraryError(operation, 'service_closed')
+        check_open()
+        with closing(open_reader(self.db_path)) as conn:
+            guard = DestinationPaths(conn, self.db_path,
+                normalize=LibraryRepository(conn)._normalize_path,
+                check_open=check_open, metrics=self._metrics,
+                error=LibraryError, cancel_event=cancel_event)
+            try:
+                yield guard
+            finally:
+                guard.close()
 
     def metrics_snapshot(self):
         """Contadores/timings locales, sin SQL, stat, payloads ni espera del dueño.

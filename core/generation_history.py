@@ -85,14 +85,19 @@ def edit_state(conn, path, *, normalize):
     return record
 
 
-def path_status(conn, path, *, normalize):
+def path_keys(path, *, normalize):
     paths = [path] if isinstance(path, str) else path
     if not isinstance(paths, (list, tuple)) or not 1 <= len(paths) <= 32 or any(
             not isinstance(value, str) or not value or len(value) > 4096 or '\x00' in value for value in paths):
         raise ValueError('invalid_metadata_path')
+    return tuple(normalize(value).casefold() for value in paths)
+
+
+def path_status(conn, path, *, normalize):
+    keys = path_keys(path, normalize=normalize)
     conn.create_function('metadata_casefold_v1', 1, lambda value: value.casefold() if isinstance(value, str) else None)
-    row = conn.execute('SELECT 1 FROM files WHERE metadata_casefold_v1(path) IN ('+','.join('?' for _ in paths)+') LIMIT 1',
-                       tuple(normalize(value).casefold() for value in paths)).fetchone()
+    row = conn.execute('SELECT 1 FROM files WHERE metadata_casefold_v1(path) IN ('+','.join('?' for _ in keys)+') LIMIT 1',
+                       keys).fetchone()
     return dict(occupied=row is not None)
 
 

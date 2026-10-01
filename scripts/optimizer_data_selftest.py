@@ -109,6 +109,62 @@ class OptimizerData(helpers.Fixture):
         self.assertTrue(all(t != threading.get_ident() for t in threads))
         self.assertEqual((export.call_count, result['processed']), (1000, 1000))
 
+    def test_real_outputs_share_destination_scan_across_worker_batch(self):
+        from PIL import Image
+        from core import library_service
+        paths = [str(Path(self.temp.name)/f'{i}.png') for i in range(4)]
+        for path in paths:
+            with Image.new('RGB', (12, 12), 'green') as image: image.save(path)
+        self.register(*paths)
+        statements, threads = [], []
+        real_open = library_service.open_reader
+        def reader(path):
+            conn = real_open(path)
+            def trace(sql):
+                statements.append(sql)
+                threads.append(threading.get_ident())
+            conn.set_trace_callback(trace)
+            return conn
+        with patch.object(library_service, 'open_reader', reader):
+            result = self.run_worker(self.worker(paths))
+        self.assertEqual((result['success'], result['failed']), (4, 0))
+        self.assertEqual(sum(s.startswith('SELECT substr(path,1,4097)') for s in statements), 1)
+        self.assertTrue(all(t != threading.get_ident() for t in threads))
+        self.assertEqual(len(list(Path(self.settings()['export_path']).glob('*.png'))), 4)
+
+    def test_native_path_added_between_outputs_prevents_second_publication(self):
+        from PIL import Image
+        paths = [str(Path(self.temp.name)/f'{i}.png') for i in range(2)]
+        for path in paths:
+            with Image.new('RGB', (12, 12), 'green') as image: image.save(path)
+        blocked = product.get_export_path(paths[1], export_dir=self.settings()['export_path'])
+        real = product.optimize_image
+        calls = []
+        def optimize(*args, **kwargs):
+            result = real(*args, **kwargs)
+            if not calls: self.register(str(blocked))
+            calls.append(result)
+            return result
+        with patch.object(product, 'optimize_image', side_effect=optimize):
+            result = self.run_worker(self.worker(paths))
+        self.assertEqual((result['success'], result['failed']), (1, 1))
+        self.assertIn('native_history', result['failures'][0][1])
+        self.assertFalse(Path(blocked).exists())
+        self.assertFalse(list(Path(self.settings()['export_path']).glob('.panopticon-*')))
+
+    def test_empty_worker_does_not_scan_catalog(self):
+        from core import library_service
+        statements = []
+        real = library_service.open_reader
+        def reader(path):
+            conn = real(path)
+            conn.set_trace_callback(statements.append)
+            return conn
+        with patch.object(library_service, 'open_reader', reader):
+            result = self.run_worker(self.worker([]))
+        self.assertEqual(result['processed'], 0)
+        self.assertFalse(any(s.startswith('SELECT') for s in statements))
+
     def test_tags_and_rating_share_transaction_during_commit(self):
         path = 'C:/fixture/a.png'
         self.register(path)
