@@ -115,6 +115,17 @@ Panopticon ships a self-contained, portable environment driven by `uv`.
 run.bat
 ```
 
+Windows setup serializes environment preparation with a project-local lock.
+It validates that Python starts and matches 3.13. A damaged/incompatible `venv`
+is moved to `venv.repair-<unique ID>` before creating its replacement; the old
+environment remains available for manual recovery. Linked environment/cache
+paths are rejected. Dependency installation uses a dedicated `.uv-launcher-cache`
+and an explicit 15-minute timeout per attempt, with at most three attempts. Before
+retrying, it removes orphaned `.tmp*` directories only inside that cache. Timed-out
+processes and their captured children are terminated and checked before retry.
+Failures pause the native batch launcher; the application starts only after setup
+succeeds, and its exit status is preserved. No CUDA migration is performed.
+
 **Linux (best-effort, untested):**
 
 ```bash

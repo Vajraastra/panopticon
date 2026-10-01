@@ -89,3 +89,8 @@ MODULE_DEVELOPMENT_BIBLE.md
 
 # Launcher secundario
 scanner.bat
+
+# Launcher-owned cache, lock and preserved damaged environments
+.uv-launcher-cache/
+.launcher.lock
+venv.repair-*/
