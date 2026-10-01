@@ -492,6 +492,12 @@ cancellation are included in the result summary.
 This does not reserve paths against other programs or atomically register outputs
 in SQLite. Registration of derived outputs remains a separate pending integration.
 
+Native derivative registration now has a separate database contract for a new
+copy with its own SHA-256 and generation data, linked to the reviewed source copy.
+It preserves a receipt for safe retries without inheriting central curation or
+Cherry download records. Integration with Optimizer, Cropper and Format Converter
+is still pending; their current outputs are not automatically registered.
+
 The shared stamping API requires `prepared=True`, meaning a private temporary
 output owned by its producer. It does not authorize editing an indexed original.
 Use Metadata Hub's reviewed operation for such edits. Batch conversion verification

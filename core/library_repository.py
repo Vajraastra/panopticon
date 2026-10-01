@@ -864,6 +864,27 @@ class LibraryRepository:
         from core.generation_history import commit
         return commit(self.conn, copy_id, update_fts=self._fts_sync_file, **kwargs)
 
+    def get_derived_copies_status(self):
+        from core.derived_copies import status
+        return status(self.conn)
+
+    def get_derived_copy_receipt(self, operation_id):
+        from core.derived_copies import receipt
+        return receipt(self.conn, operation_id)
+
+    def prepare_derived_copies(self):
+        from core.derived_copies import prepare
+        return prepare(self.conn)
+
+    def approve_derived_copy(self, copy_id, **kwargs):
+        from core.derived_copies import approve
+        return approve(self.conn, copy_id, normalize=self._normalize_path, **kwargs)
+
+    def register_derived_copy(self, copy_id, **kwargs):
+        from core.derived_copies import register
+        return register(self.conn, copy_id, normalize=self._normalize_path,
+                        update_fts=self._fts_sync_file, **kwargs)
+
     def get_duplicate_snapshot(self, paths):
         from core.duplicate_snapshot import snapshot
         return snapshot(self.conn, paths, self._normalize_path)
