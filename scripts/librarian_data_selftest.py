@@ -103,6 +103,7 @@ class LibrarianQt(helpers.Fixture):
             release.set()
         for module in self.modules:
             module.on_unload()
+            self.assertTrue(helpers.pump(module.shutdown_ready))
             for reader in (module.overview_reader, module.browse_reader, module.scan_reader, module.handoff_reader, module.export_reader):
                 if reader._thread:
                     reader._thread.join(3)
@@ -322,6 +323,7 @@ class LibrarianQt(helpers.Fixture):
             release.set()
             self.assertTrue(helpers.pump(lambda: module._scan_request is None))
             start.assert_not_called()
+            module.backfill_thread = None
 
     def test_auto_scan_is_scheduled_only_after_confirmed_overview_and_cancelled_on_unload(self):
         self.service.submit('add_watched_folder', 'C:/images').result(3)

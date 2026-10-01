@@ -369,6 +369,15 @@ class LibraryRepository:
             log.warning("[DB] remove_watched_folder error: %s", e)
             return False
 
+    def get_folder_archive_preview(self, folder):
+        from core.folder_archive import preview
+        return preview(self.conn,folder,normalize=self._normalize_path,folder_like=self._folder_like)
+
+    def archive_watched_folder_reviewed(self, folder, *, expected_fingerprint):
+        from core.folder_archive import archive
+        return archive(self.conn,folder,expected_fingerprint=expected_fingerprint,normalize=self._normalize_path,
+            folder_like=self._folder_like,remove=self.remove_watched_folder)
+
     def get_folder_count(self, folder_path):
         cursor = self.conn.cursor()
         query = self._folder_like(folder_path)

@@ -14,6 +14,7 @@ from core.components.curation_recovery import CurationRecoveryDialog
 from core.components.copy_versions import CopyVersionsDialog
 from .logic.indexer import IndexerWorker
 from .logic.hash_backfill import HashBackfillWorker
+from .ui.folder_archive import FolderArchiveController, retain_worker
 from core.inventory import InventoryStatus
 from core.theme import Theme
 import os
@@ -94,6 +95,7 @@ class LibrarianModule(BaseModule):
         self.scan_reader.result.connect(self._on_scan_folders)
         self.folder_writer = LibraryWriter(self.db.service, self)
         self.folder_writer.result.connect(self._on_folder_written)
+        self.folder_archive = FolderArchiveController(self)
 
     def get_view(self) -> QWidget:
         """Inicializa y retorna la vista principal del bibliotecario."""
@@ -113,6 +115,7 @@ class LibrarianModule(BaseModule):
             theme_manager=self.context.get('theme_manager'),
             event_bus=self.context.get('event_bus')
         )
+        self.view.destroyed.connect(self.folder_archive.close)
         
         self.setup_completer()
         self.refresh_ui()
@@ -127,7 +130,7 @@ class LibrarianModule(BaseModule):
     def _create_sidebar(self) -> QWidget:
         """Sidebar: Watched Folders Management"""
         tm = self.context.get('theme_manager')
-        c = tm.get_color if tm else lambda k: '#000000'
+        c = tm.get_color if tm else Theme._c
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -170,13 +173,13 @@ class LibrarianModule(BaseModule):
         self.btn_add.clicked.connect(self.add_folder)
         self.btn_add.setStyleSheet(f"background-color: {c('bg_input')}; color: {c('accent_main')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px;")
 
-        self.btn_remove = QPushButton(self.tr("lib.remove", "🗑️ Remove"))
+        self.btn_remove = QPushButton(self.tr("lib.remove", "Archive folder"))
         self.btn_remove.setToolTip(self.tr(
             "lib.remove_tip",
-            "Stops watching the folder and drops its files from the index. The files on "
-            "disk are NOT touched."))
+            "Previews indexed copies, then asks to stop watching and keep them offline. "
+            "Files and curation are retained."))
         self.btn_remove.clicked.connect(self.remove_folder)
-        self.btn_remove.setStyleSheet(f"background-color: {c('bg_input')}; color: {c('accent_warning')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px;")
+        self.btn_remove.setStyleSheet(f"background-color: {c('bg_input')}; color: {c('accent_warning')}; border: 1px solid {c('border_strong')}; border-radius: 4px; padding: 6px;")
 
         btn_layout.addWidget(self.btn_add)
         btn_layout.addWidget(self.btn_remove)
@@ -871,6 +874,11 @@ class LibrarianModule(BaseModule):
 
     def on_unload(self):
         self._closed = True
+        if hasattr(self, 'folder_archive'):
+            self.folder_archive.close()
+        for worker in (self.indexer_thread, self.backfill_thread, self._reindex_thread):
+            if worker and worker.isRunning():
+                worker.stop()
         if hasattr(self, 'folder_writer'):
             self.folder_writer.close()
         self._handoff = None
@@ -892,6 +900,11 @@ class LibrarianModule(BaseModule):
         eb = (self.context or {}).get('event_bus')
         if eb:
             eb.unsubscribe('library_changed', self._on_library_changed)
+
+    def shutdown_ready(self):
+        return (not hasattr(self, 'folder_archive') or self.folder_archive.shutdown_ready()) and all(
+            worker is None or not worker.isRunning() for worker in
+            (self.indexer_thread, self.backfill_thread, self._reindex_thread))
 
     def _can_write_folder(self):
         if self._closed or self._folder_write is not None:
@@ -919,12 +932,7 @@ class LibrarianModule(BaseModule):
         selected = self.folder_list.currentItem()
         if not selected:
             return
-        path = selected.text()
-        confirm = QMessageBox.question(self.view, self.tr("common.confirm", "Remove Folder"),
-                                       self.tr("lib.msg.remove_confirm", "Stop watching '{path}'?").format(path=path),
-                                       QMessageBox.Yes | QMessageBox.No)
-        if confirm == QMessageBox.Yes:
-            self._submit_folder_write('remove_watched_folder', path)
+        self.folder_archive.start(selected.text())
 
     def _submit_folder_write(self, operation, path):
         # Los diálogos ejecutan un event loop anidado: revalidar al salir.
@@ -952,7 +960,10 @@ class LibrarianModule(BaseModule):
         self._update_export_controls()
         self.btn_add.setEnabled(True)
         self.btn_remove.setEnabled(True)
-        if error is not None or value is not True:
+        if error == 'folder_archive_cancelled':
+            self.lbl_folder_write.setText(self.tr('lib.folder.archive_cancelled',
+                'Folder archival cancelled. No records changed.'))
+        elif error is not None or value is not True:
             reason = str(error) if error is not None else 'operation_failed'
             log.warning('Watched folder write failed: %s %s: %s', operation, path, reason)
             self.lbl_folder_write.setText(self.tr(
@@ -1022,6 +1033,7 @@ class LibrarianModule(BaseModule):
 
         # Una auditoría profunda reconcilia sólo inventarios completos.
         self.indexer_thread = IndexerWorker(self.db, folders, deep_clean=sync_only, translate=self.tr)
+        retain_worker(self.indexer_thread)
         self.indexer_thread.progress_signal.connect(self.update_progress_text)
         self.indexer_thread.count_signal.connect(self.update_progress_bar)
         self.indexer_thread.finished_signal.connect(self.scan_finished)
@@ -1049,6 +1061,7 @@ class LibrarianModule(BaseModule):
             self.progress_bar.setValue(0)
 
             self.backfill_thread = HashBackfillWorker(self.db, translate=self.tr)
+            retain_worker(self.backfill_thread)
             self.backfill_thread.progress_signal.connect(self.update_progress_text)
             self.backfill_thread.count_signal.connect(self.update_progress_bar)
             self.backfill_thread.finished_signal.connect(self.backfill_finished)
@@ -1208,6 +1221,7 @@ class LibrarianModule(BaseModule):
             return
         # deep_clean=True para reconciliar huérfanos (originales movidos) en esas carpetas.
         self._reindex_thread = IndexerWorker(self.db, folders, deep_clean=True, translate=self.tr)
+        retain_worker(self._reindex_thread)
         self._reindex_thread.finished_signal.connect(self._quiet_reindex_finished)
         self._reindex_thread.start()
 

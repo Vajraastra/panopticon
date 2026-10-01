@@ -197,6 +197,23 @@ deleted. Scan results show confirmed offline identities. Earlier confirmed batch
 if a later batch fails or cancellation occurs; admitted errors remain visible. Filesystem
 and SQLite observations do not form an atomic transaction.
 
+In Librarian, select a watched folder and choose **Archive folder**. A worker
+previews its indexed scope before a manual confirmation, with Cancel selected by default.
+It shows active, already offline and total identities, including subfolders and nested
+watched roots. The commit removes only the selected watched root and marks its active
+copies offline; nested watched roots remain registered. No file is deleted or moved.
+IDs, curation, generation, hashes, FTS and Cherry download receipts are preserved.
+The folder may be disconnected: this explicit catalog action requires no disk access.
+
+The confirmed scope is checked again inside the native owner transaction. Changes to
+members, paths, availability or watched roots require a new preview; newer curation is
+preserved. Checks are limited to one million identities, 10 seconds per preview and a
+30-second owner transaction. Exceeding a limit rejects the action, without accepting a
+partial scope. Only a confirmed commit reports success. Indexing and hashing in Librarian
+wait while it runs. Closing cancels before admission; an admitted command finishes in its
+retained worker without blocking Qt. Reactivation requires explicit copy-ID review.
+This does not pause Cherry downloads or coordinate every module's shutdown.
+
 Select **All copy versions** to review active copies too. Select an ID and read its
 complete stored state. **Keep offline** archives that identity without touching file
 bytes. **Verify and make available** computes the current SHA-256 in a worker. If it

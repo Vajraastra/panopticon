@@ -52,8 +52,11 @@ class FolderWrites(helpers.Fixture):
     def remove(self, module, path, answer=QMessageBox.Yes):
         module.folder_list.setCurrentRow(next(
             i for i in range(module.folder_list.count()) if module.folder_list.item(i).text() == path))
-        with patch.object(QMessageBox, 'question', return_value=answer):
+        with patch.object(module.folder_archive, 'confirm', return_value=answer == QMessageBox.Yes):
             module.remove_folder()
+            self.assertTrue(helpers.pump(lambda: module._folder_write is None or
+                (module.folder_archive.worker is not None and
+                 module.folder_archive.worker.operation == 'archive')))
 
     def test_add_keeps_qt_responsive_and_coalesces_duplicate_actions(self):
         module = self.view()
@@ -132,7 +135,7 @@ class FolderWrites(helpers.Fixture):
         with patch.object(LibraryRepository, 'remove_watched_folder', fail_after_delete):
             self.remove(module, 'C:/A')
             self.assertTrue(helpers.pump(lambda: module._folder_write is None))
-        self.assertIn('operation_failed', module.lbl_folder_write.text())
+        self.assertIn('folder_archive_commit_unconfirmed', module.lbl_folder_write.text())
         self.assertEqual(module.folder_list.count(), 1)
         self.assertEqual(self.service.read('get_watched_folders'), ['C:/A'])
         row = self.service.read('get_curation_snapshot', ['C:/A/a.png'])[0]
