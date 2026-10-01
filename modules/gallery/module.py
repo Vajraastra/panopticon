@@ -4,6 +4,7 @@ from PySide6.QtGui import QCursor
 from PySide6.QtCore import Signal
 
 from core.base_module import BaseModule
+from core.library_async import LibraryReader
 from .logic.state import GalleryState
 from .logic.query_engine import QueryEngine
 from .ui.view import GalleryView
@@ -26,6 +27,7 @@ class GalleryModule(BaseModule):
         self.view_widget = None
         self.state = None
         self.engine = None
+        self._closed = False
 
     def get_view(self) -> QWidget:
         if self.view_widget:
@@ -41,11 +43,12 @@ class GalleryModule(BaseModule):
         return self.view_widget
 
     def open_folder_dialog(self):
+        if self._closed: return
         folder = QFileDialog.getExistingDirectory(
             self.view_widget,
             self.tr("common.load_folder", "Open Folder to View")
         )
-        if not folder:
+        if not folder or self._closed:
             return
 
         valid_ext = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.avif'}
@@ -60,6 +63,7 @@ class GalleryModule(BaseModule):
 
     def load_image_set(self, paths: list):
         """Called by Librarian or other modules."""
+        if self._closed: return
         self.get_view()
         self.state.set_mode(
             self.state.VIEW_CUSTOM,
@@ -68,6 +72,7 @@ class GalleryModule(BaseModule):
         )
 
     def show_send_menu(self):
+        if self._closed: return
         menu = QMenu(self.view_widget)
         menu.setStyleSheet("""
             QMenu {
@@ -88,7 +93,7 @@ class GalleryModule(BaseModule):
         selected = menu.exec(QCursor.pos())
 
         paths = list(self.state.selected_paths)
-        if not paths:
+        if not paths or self._closed:
             return
 
         if selected == act_opt:
@@ -102,6 +107,16 @@ class GalleryModule(BaseModule):
         pass
 
     def on_unload(self):
+        self._closed = True
         if self.view_widget is not None:
+            from .ui.viewer_window import AdvancedViewer
+            for viewer in self.view_widget.findChildren(AdvancedViewer): viewer.close()
             self.view_widget.grid.shutdown()
             self.view_widget.sidebar.shutdown()
+            for reader in self.view_widget.findChildren(LibraryReader): reader.close()
+            self.view_widget.grid.loader.shutdown()
+
+    def shutdown_ready(self):
+        if self.view_widget is None: return True
+        return (all(reader.shutdown_ready() for reader in self.view_widget.findChildren(LibraryReader))
+                and self.view_widget.grid.loader.shutdown_ready())

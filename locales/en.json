@@ -1128,6 +1128,8 @@
     "tool.image_optimizer.no": "No",
     "tool.cropper.saving": "Saving…",
     "tool.cropper.save_error": "Crop was not saved: {reason}",
+    "tool.format_scanner.cancelled": "Scan cancelled; results are incomplete.",
+    "tool.format_scanner.error": "Scan incomplete: {reason}",
     "tool.cropper.partial": "The crop was published to {path}, but completion failed: {reason}. Keep it for review; do not repeat the export blindly.",
     "tool.cropper.journal": "Recovery journal: {path}",
     "tool.cropper.registered": "Registered as an independent library copy.",

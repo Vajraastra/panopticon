@@ -1128,6 +1128,8 @@
     "tool.image_optimizer.no": "No",
     "tool.cropper.saving": "Guardando…",
     "tool.cropper.save_error": "No se guardó el recorte: {reason}",
+    "tool.format_scanner.cancelled": "Recorrido cancelado; los resultados están incompletos.",
+    "tool.format_scanner.error": "Recorrido incompleto: {reason}",
     "tool.cropper.partial": "El recorte se publicó en {path}, pero no se pudo completar: {reason}. Consérvalo para revisión; no repitas la exportación a ciegas.",
     "tool.cropper.journal": "Diario de recuperación: {path}",
     "tool.cropper.registered": "Registrado como copia independiente en la biblioteca.",

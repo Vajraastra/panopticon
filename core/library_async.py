@@ -24,6 +24,7 @@ class LibraryReader(QObject):
         self._closed = False
         self._cancel = None
         self._thread = None
+        self._threads = set()
         self._delivered.connect(self._receive, Qt.QueuedConnection)
         self.destroyed.connect(lambda: self.close())
 
@@ -55,7 +56,9 @@ class LibraryReader(QObject):
             except RuntimeError:
                 pass  # El dueño Qt fue destruido; la conexión ya está cerrada.
 
+        self._threads = {thread for thread in self._threads if thread.is_alive()}
         self._thread = threading.Thread(target=run, name='PanopticonRead', daemon=True)
+        self._threads.add(self._thread)
         self._thread.start()
 
     @Slot(int, object, object)
@@ -78,6 +81,11 @@ class LibraryReader(QObject):
     def close(self):
         self._closed = True
         self.invalidate()
+
+    def shutdown_ready(self):
+        # A queued delivery is not native completion. Keep even a preceding
+        # reader whose delivery started a new request while its emit unwinds.
+        return all(not thread.is_alive() for thread in self._threads)
 
 
 class LibraryWriter(QObject):

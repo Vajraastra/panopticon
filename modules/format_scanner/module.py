@@ -1,8 +1,13 @@
 import os
+import html
+import threading
 from collections import Counter
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QFileDialog, QTextEdit, QProgressBar
 from PySide6.QtCore import QThread, Signal
 from core.base_module import BaseModule
+from core.theme import Theme
+
+_LIVE_WORKERS = set()
 from core.components.standard_layout import StandardToolLayout
 
 class ScannerWorker(QThread):
@@ -14,31 +19,34 @@ class ScannerWorker(QThread):
         super().__init__()
         self.root_path = root_path
         self.log_start_msg = log_start_msg
-        self.is_running = True
+        self.cancel_event = threading.Event()
+        self.outcome = None
+        self.error = ''
+
+    def stop(self):
+        self.cancel_event.set()
 
     def run(self):
-        stats = Counter()
-        self.log.emit(self.log_start_msg)
-
-        file_list = []
-        for root, _, files in os.walk(self.root_path):
-            if not self.is_running:
-                break
-            for f in files:
-                file_list.append(os.path.join(root, f))
-
-        total = len(file_list)
-        for i, path in enumerate(file_list):
-            if not self.is_running:
-                break
-            ext = os.path.splitext(path)[1].lower()
-            if ext in ('.png', '.jpg', '.jpeg', '.webp', '.avif', '.bmp', '.tiff', '.gif', '.ico'):
-                stats[ext] += 1
-
-            if i % 100 == 0:
-                self.progress.emit(i, total)
-
-        self.finished_signal.emit(dict(stats))
+        stats, count = Counter(), 0
+        self.outcome = 'complete'
+        def failed(error): raise error
+        try:
+            self.log.emit(self.log_start_msg)
+            # Stream filenames; no list proportional to the entire tree.
+            for root, _, files in os.walk(self.root_path, onerror=failed):
+                if self.cancel_event.is_set(): break
+                for filename in files:
+                    if self.cancel_event.is_set(): break
+                    ext = os.path.splitext(filename)[1].lower()
+                    if ext in ('.png','.jpg','.jpeg','.webp','.avif','.bmp','.tiff','.gif','.ico'):
+                        stats[ext] += 1
+                    count += 1
+                    if count % 100 == 0: self.progress.emit(count,0)
+            if self.cancel_event.is_set(): self.outcome = 'cancelled'
+        except Exception as error:
+            self.outcome,self.error = 'error',str(error)[:1000]
+        finally:
+            self.finished_signal.emit(dict(stats))
 
 
 class FormatScannerModule(BaseModule):
@@ -50,6 +58,16 @@ class FormatScannerModule(BaseModule):
         self.accent_color = "#f1fa8c"
         self.view = None
         self.worker = None
+        self._closed = False
+        self._dialog = False
+        self._scanning = False
+
+    def on_unload(self):
+        self._closed = True
+        if self.worker is not None: self.worker.stop()
+
+    def shutdown_ready(self):
+        return self.worker is None or not self.worker.isRunning()
 
     def get_view(self) -> QWidget:
         if self.view:
@@ -68,8 +86,8 @@ class FormatScannerModule(BaseModule):
 
     def _create_content(self) -> QWidget:
         theme = self.context.get('theme_manager') if hasattr(self, 'context') else None
-        bg = theme.get_color('bg_panel') if theme else "#111111"
-        fg = theme.get_color('text_primary') if theme else "#f8f8f2"
+        bg = theme.get_color('bg_panel') if theme else Theme.BG_PANEL
+        fg = theme.get_color('text_primary') if theme else Theme.TEXT_PRIMARY
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -92,7 +110,7 @@ class FormatScannerModule(BaseModule):
         layout = QVBoxLayout(container)
         layout.setSpacing(20)
 
-        btn_select = QPushButton(self.tr("fscanner.btn.select", "📂 Select Folder"))
+        self.btn_select = btn_select = QPushButton(self.tr("fscanner.btn.select", "📂 Select Folder"))
         btn_select.setToolTip(self.tr(
             "fscanner.select_tip",
             "Folder to analyse. It only counts formats and sizes to give you a report: it "
@@ -104,33 +122,42 @@ class FormatScannerModule(BaseModule):
         return container
 
     def start_scan(self):
-        # Guard anti doble-inicio: reasignar self.worker con el hilo anterior
-        # vivo provoca "QThread destroyed while thread is still running"
-        if self.worker and self.worker.isRunning():
-            return
-
-        path = QFileDialog.getExistingDirectory(
-            self.view,
-            self.tr("fscanner.dialog.title", "Select Folder for Statistics")
-        )
-        if not path:
-            return
-
+        if self._closed or self._dialog or self._scanning or (self.worker and self.worker.isRunning()): return
+        self._dialog = True
+        try:
+            path = QFileDialog.getExistingDirectory(self.view,self.tr("fscanner.dialog.title","Select Folder for Statistics"))
+        finally:
+            self._dialog = False
+        if not path or self._closed or self._scanning or (self.worker and self.worker.isRunning()): return
         self.txt_log.clear()
         self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
+        self.progress_bar.setRange(0,0)
+        self._scanning = True
+        self.btn_select.setEnabled(False)
 
         log_start = self.tr("fscanner.log.start", "Starting scan in: {path}").format(path=path)
         self.worker = ScannerWorker(path, log_start)
-        self.worker.progress.connect(
-            lambda a, t: self.progress_bar.setValue(int((a / t) * 100) if t > 0 else 0)
-        )
-        self.worker.log.connect(lambda m: self.txt_log.append(f"> {m}"))
+        _LIVE_WORKERS.add(self.worker)
+        self.worker.finished.connect(lambda worker=self.worker: _LIVE_WORKERS.discard(worker))
+        self.worker.finished.connect(self._on_worker_stopped)
+        self.worker.log.connect(self._on_log)
         self.worker.finished_signal.connect(self.on_finished)
         self.worker.start()
 
+    def _on_log(self,message):
+        if not self._closed: self.txt_log.append(html.escape('> '+message))
+
+    def _on_worker_stopped(self):
+        self._scanning = False
+        if not self._closed: self.btn_select.setEnabled(True)
+
     def on_finished(self, stats):
+        if self._closed or self.sender() is not self.worker: return
         self.progress_bar.setVisible(False)
+        if self.worker.outcome != 'complete':
+            reason = self.worker.error or self.tr('tool.format_scanner.cancelled','Scan cancelled; results are incomplete.')
+            self.txt_log.append(html.escape(self.tr('tool.format_scanner.error','Scan incomplete: {reason}').format(reason=reason)))
+            return
         self.txt_log.append(self.tr("fscanner.results.title", "\n--- STATISTICAL RESULTS ---"))
         total = sum(stats.values())
         if total == 0:

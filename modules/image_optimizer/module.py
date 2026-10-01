@@ -189,6 +189,9 @@ class ImageOptimizerModule(BaseModule):
         if self.worker is not None and self.worker.isRunning():
             self.worker.stop()
 
+    def shutdown_ready(self):
+        return self.worker is None or not self.worker.isRunning()
+
     def get_view(self) -> QWidget:
         if self.view:
             return self.view

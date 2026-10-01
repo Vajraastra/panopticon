@@ -49,6 +49,16 @@ command queue. Pending cancelled commands are skipped and failed transactions
 resolve their futures. Blocking `close()` remains available for CLI/tests.
 This writer guarantee does not yet cover every module's own shutdown handler.
 
+Gallery closes its viewers/readers and rejects new inputs during shutdown. It
+waits for actual reader completion and its own thumbnail pool; queued thumbnails
+are cleared without touching other tools' pools. A decode already in progress
+finishes in its worker. Optimizer also reports native worker readiness, including
+accepted derivative registration and receipt confirmation after cancellation.
+Format Scanner counts files as a stream, supports cooperative cancellation and
+always emits a terminal result. Interrupted or failed scans are not presented as
+complete reports. Closing keeps its worker retained until native completion.
+Cherry and Dataset Tagger shutdown coordination remains pending.
+
 Cropper and Image Optimizer can preserve embedded generation
 metadata in their outputs through the shared metadata layer. Watermarker deliberately
 removes it for public distribution. Central curation and `.txt` captions remain
