@@ -830,6 +830,14 @@ notification. External commits still require valid schema/FTS; monitoring does n
 repair their integrity. FIFO scheduling remains unchanged. Other consumer caches,
 write scheduling and live WAL pressure remain open.
 
+`scripts/library_scheduling_selftest.py` verifies ordering on temporary Native
+databases. A reviewed restore followed by an interactive tag edit succeeds in
+FIFO order; executing the edit first correctly rejects the restore because its
+reviewed state changed. Two ratings on one copy also depend on order. Ratings on
+distinct copies commute in that fixture; this does not establish independence
+for global tags, registration, lifecycle or maintenance operations. These are
+policy evidence tests, not a priority scheduler. The writer still uses FIFO.
+
 ## License
 
 Business Source License 1.1 — free for non-commercial use.  
