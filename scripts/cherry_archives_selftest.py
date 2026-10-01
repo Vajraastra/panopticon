@@ -489,6 +489,7 @@ def ui_test():
             check(view._btn_download.isEnabled(), 'cancel restores download controls')
     finally:
         view.shutdown()
+        wait_until(view._runtime.shutdown_ready)
         view.close()
         app.processEvents()
     print(f'Archives + UI: {checks} checks passed')

@@ -635,7 +635,7 @@ class CherryView(QWidget):
             self._maintenance_future.cancel()
         if self._queue.is_running:
             self._queue.cancel()
-        self._runtime.stop()
+        self._runtime.request_stop()
 
     # ── Carga de datos ────────────────────────────────────────────────────
     def refresh(self) -> None:

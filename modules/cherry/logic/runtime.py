@@ -28,6 +28,7 @@ Reglas de uso:
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future, InvalidStateError
 import logging
 import threading
 from typing import Any, Coroutine, Optional
@@ -40,7 +41,7 @@ log = logging.getLogger(__name__)
 _START_TIMEOUT = 10.0
 # Margen para que el loop drene sus tasks al parar.
 _STOP_TIMEOUT = 6.0
-_DRAIN_TIMEOUT = 4.0
+_LIVE_THREADS = set()
 
 
 class _LoopThread(QThread):
@@ -51,6 +52,9 @@ class _LoopThread(QThread):
         super().__init__()
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self._ready = threading.Event()
+        self._stop_requested = threading.Event()
+        self.jobs = set()
+        self._shutdown_task = None
 
     def wait_ready(self, timeout: float = _START_TIMEOUT) -> bool:
         return self._ready.wait(timeout)
@@ -60,6 +64,7 @@ class _LoopThread(QThread):
         asyncio.set_event_loop(loop)
         self.loop = loop
         self._ready.set()
+        if self._stop_requested.is_set(): loop.call_soon(self.begin_stop)
         try:
             loop.run_forever()
         finally:
@@ -70,32 +75,30 @@ class _LoopThread(QThread):
                 loop.close()
                 self.loop = None
 
+    def begin_stop(self):
+        if self._shutdown_task is None:
+            self._shutdown_task = self.loop.create_task(self._finish_admitted())
+
+    async def _finish_admitted(self):
+        # Cancellation acknowledgement of concurrent Future is not task cleanup.
+        # Track actual admitted tasks, including cancellation handlers and hashes.
+        if self.jobs:
+            await asyncio.gather(*tuple(self.jobs), return_exceptions=True)
+        self.loop.stop()
+
     @staticmethod
     def _drain(loop: asyncio.AbstractEventLoop) -> None:
-        """Cancela lo que quede vivo y deja cerrar a los async generators.
+        """Finish residual cleanup and executor work; never kill/abandon writes.
 
-        Sin esto, cerrar el loop con tasks pendientes deja sockets abiertos y
-        `DownloadEngine` (que es un async context manager) nunca ejecuta su
-        `__aexit__`.
+        Normal shutdown first waits for admitted jobs. Only their residual
+        background tasks are cancelled here, once, and fully awaited.
         """
-        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
-        for task in pending:
-            task.cancel()
+        pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+        for task in pending: task.cancel()
         if pending:
-            _, stubborn = loop.run_until_complete(
-                asyncio.wait(pending, timeout=_DRAIN_TIMEOUT)
-            )
-            if stubborn:
-                log.error(
-                    "cherry: %d task(s) no cerraron en %.0fs; se abandona el drenaje",
-                    len(stubborn), _DRAIN_TIMEOUT,
-                )
-        try:
-            loop.run_until_complete(asyncio.wait_for(
-                loop.shutdown_asyncgens(), timeout=1.0,
-            ))
-        except asyncio.TimeoutError:
-            log.warning("cherry: los generadores async no cerraron en 1s")
+            loop.run_until_complete(asyncio.gather(*pending,return_exceptions=True))
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.run_until_complete(loop.shutdown_default_executor())
 
 
 class CherryRuntime(QObject):
@@ -112,6 +115,8 @@ class CherryRuntime(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._thread: Optional[_LoopThread] = None
+        self._closing = False
+        self._lifecycle = threading.Lock()
 
     # ── ciclo de vida ───────────────────────────────────────────────────────
 
@@ -125,57 +130,115 @@ class CherryRuntime(QObject):
         return self._thread.loop if self._thread else None
 
     def start(self) -> bool:
-        """Arranca el loop. Idempotente: llamarlo dos veces no crea dos hilos
-        (guard anti doble-inicio del contrato de módulos, regla #3)."""
-        if self.is_running:
-            return True
-        if self._thread is not None and self._thread.isRunning():
-            return True  # arrancando ahora mismo en otro punto del código
-
-        thread = _LoopThread()
-        thread.start()
+        """Start once; permanent shutdown cannot be reversed by late UI callbacks."""
+        with self._lifecycle:
+            if self._closing: return False
+            if self._thread is not None and self._thread.isRunning(): return True
+            thread = _LoopThread()
+            self._thread = thread
+            _LIVE_THREADS.add(thread)
+            thread.finished.connect(lambda: _LIVE_THREADS.discard(thread))
+            thread.finished.connect(lambda: self._stopped(thread))
+            thread.start()
         if not thread.wait_ready():
-            log.error("cherry: el event loop no arrancó en %.0fs", _START_TIMEOUT)
-            thread.quit()
+            log.error("cherry: el event loop no arrancó en %.0fs",_START_TIMEOUT)
+            self.request_stop()  # Keep the owner retained; never quit/lose a live thread.
             return False
-        self._thread = thread
-        log.info("cherry: event loop asyncio listo en %s", thread)
+        with self._lifecycle:
+            if self._closing: return False
+        log.info("cherry: event loop asyncio listo en %s",thread)
         self.started_signal.emit()
         return True
 
-    def stop(self, timeout: float = _STOP_TIMEOUT) -> None:
-        """Para el loop y espera al hilo. Seguro de llamar sin haber arrancado.
+    def _stopped(self,thread):
+        _LIVE_THREADS.discard(thread)
+        if self._thread is thread:
+            self._thread = None
+            log.info("cherry: event loop asyncio detenido")
+            self.stopped_signal.emit()
 
-        Es lo que se invoca al cerrar la app: `run_forever` retorna, el `finally`
-        del hilo cancela lo pendiente y cierra el loop.
+    def request_stop(self):
+        """Close submission without waiting; caller cancels its download/maintenance.
+
+        Actual tasks finish cleanup before loop/executor shutdown. Accepted short
+        mutations and queries drain naturally. No timeout means forced termination.
+        """
+        with self._lifecycle:
+            if self._closing: return
+            self._closing = True
+            thread = self._thread
+            if thread is None: return
+            thread._stop_requested.set()
+            loop = thread.loop
+            if loop is not None and not loop.is_closed():
+                try: loop.call_soon_threadsafe(thread.begin_stop)
+                except RuntimeError: pass  # Native cleanup is already in progress.
+
+    def shutdown_ready(self):
+        thread = self._thread
+        return thread is None or not thread.isRunning()
+
+    def stop(self,timeout: float = _STOP_TIMEOUT) -> None:
+        """Blocking compatibility API; GUI uses request_stop/readiness instead.
+
+        An expired wait preserves the live owner and raises. It never calls
+        terminate or claims that tasks/connections have finished.
         """
         thread = self._thread
-        if thread is None:
-            return
-        loop = thread.loop
-        if loop is not None and not loop.is_closed():
-            loop.call_soon_threadsafe(loop.stop)
-        if not thread.wait(int(timeout * 1000)):
-            log.warning("cherry: el hilo del loop no terminó en %.0fs", timeout)
-            thread.terminate()
-            thread.wait(1000)
-        self._thread = None
-        log.info("cherry: event loop asyncio detenido")
-        self.stopped_signal.emit()
+        if thread is not None and QThread.currentThread() is thread:
+            raise RuntimeError('Cannot wait for Cherry runtime from its loop')
+        self.request_stop()
+        if thread is not None and not thread.wait(int(timeout*1000)):
+            raise TimeoutError('Cherry runtime is still finishing admitted work')
+        if thread is not None: self._stopped(thread)
 
     # ── entrega de trabajo ──────────────────────────────────────────────────
 
-    def submit(self, coro: Coroutine[Any, Any, Any]):
-        """Encola una corrutina en el loop y devuelve un `concurrent.futures.Future`.
+    def submit(self,coro: Coroutine[Any,Any,Any]):
+        """Admit an owned task and return its concurrent Future.
 
-        Levanta `RuntimeError` si el loop no está corriendo — y cierra la
-        corrutina para no dejar el clásico "coroutine was never awaited".
+        Unlike a cancelled Future, the actual task remains tracked until its
+        finally blocks finish. Schedule admission and shutdown under one lock.
         """
-        loop = self.loop
-        if loop is None or loop.is_closed():
-            coro.close()
-            raise RuntimeError("El runtime de cherry-dl no está corriendo.")
-        return asyncio.run_coroutine_threadsafe(coro, loop)
+        with self._lifecycle:
+            thread,loop = self._thread,self.loop
+            if self._closing or loop is None or loop.is_closed():
+                coro.close()
+                raise RuntimeError("El runtime de cherry-dl no admite trabajo.")
+            future = Future()
+            def admit():
+                if future.cancelled():
+                    coro.close()
+                    return
+                try: task = loop.create_task(coro)
+                except BaseException as error:
+                    coro.close()
+                    if not future.done(): future.set_exception(error)
+                    return
+                thread.jobs.add(task)
+                def cancel(result):
+                    if result.cancelled() and not task.done():
+                        try: loop.call_soon_threadsafe(task.cancel)
+                        except RuntimeError: pass
+                future.add_done_callback(cancel)
+                def completed(task):
+                    thread.jobs.discard(task)
+                    if task.cancelled():
+                        future.cancel()
+                    else:
+                        error = task.exception()
+                        try:
+                            if not future.done():
+                                if error is not None: future.set_exception(error)
+                                else: future.set_result(task.result())
+                        except InvalidStateError:
+                            if not future.cancelled(): raise
+                task.add_done_callback(completed)
+            try: loop.call_soon_threadsafe(admit)
+            except RuntimeError:
+                coro.close()
+                raise
+            return future
 
     def run_sync(self, coro: Coroutine[Any, Any, Any], timeout: float = 30.0):
         """Atajo para lecturas cortas de `index.db`: encola y espera.

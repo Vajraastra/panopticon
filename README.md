@@ -57,7 +57,14 @@ accepted derivative registration and receipt confirmation after cancellation.
 Format Scanner counts files as a stream, supports cooperative cancellation and
 always emits a terminal result. Interrupted or failed scans are not presented as
 complete reports. Closing keeps its worker retained until native completion.
-Cherry and Dataset Tagger shutdown coordination remains pending.
+Cherry now cancels its active download/maintenance through their existing
+cooperative cleanup and closes runtime admission without waiting on the GUI.
+Actual admitted tasks finish before the loop, async generators and executor close;
+a cancelled Future alone does not establish completion. Already accepted short
+queries/mutations drain. The runtime stays retained until native completion and
+cannot restart through late callbacks. A timeout in the blocking compatibility
+API reports unfinished work and keeps ownership; it never terminates the thread.
+Dataset Tagger shutdown coordination remains pending.
 
 Cropper and Image Optimizer can preserve embedded generation
 metadata in their outputs through the shared metadata layer. Watermarker deliberately

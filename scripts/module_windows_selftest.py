@@ -120,6 +120,10 @@ class ModuleWindows(unittest.TestCase):
         self.assertIs(self.main.module_windows[cherry.name], cw)
         self.assertTrue(cw.isVisible())
         self.main.close()
+        for _ in range(150):
+            if self.main._shutdown_finished: break
+            QTest.qWait(20)
+        self.assertTrue(self.main._shutdown_finished)
         self.assertFalse(cw.isVisible())
         self.assertFalse(cherry.runtime.is_running)
         self.assertEqual(self.a.unloads, 1)

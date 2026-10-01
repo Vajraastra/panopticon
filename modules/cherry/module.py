@@ -43,4 +43,7 @@ class CherryModule(BaseModule):
         if self.view is not None:
             self.view.shutdown()
         else:
-            self.runtime.stop()
+            self.runtime.request_stop()
+
+    def shutdown_ready(self):
+        return self.runtime.shutdown_ready()
