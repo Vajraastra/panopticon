@@ -1,8 +1,12 @@
 import os
 import logging
+import threading
 from PySide6.QtCore import QThread, Signal
 from core.catalog_reader import is_cherry_catalog, read_image_files, get_artist_info
 from core.inventory import InventoryResult, InventoryStatus, directory_identity, directory_chain_identity
+
+from core.inventory_candidates import InventoryCandidates, IdentityCache, pages, InventoryCancelled
+from core.library_service import LibraryError
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +24,7 @@ class IndexerWorker(QThread):
         self.folders = folders
         self.deep_clean = deep_clean
         self.is_running = True
+        self._inventory_cancel = threading.Event()
         self.batch_size = 100
         self.tr = translate or (lambda key, default: default)
         self.outcome = InventoryStatus.COMPLETE
@@ -84,88 +89,92 @@ class IndexerWorker(QThread):
 
     def stop(self):
         self.is_running = False
+        self._inventory_cancel.set()
 
     def _reconcile_missing(self, folder, result):
-        # Un catálogo puede ir detrás del disco: una omisión no demuestra un borrado.
+        # Una omisión de catálogo no demuestra ausencia. Leer todas las páginas
+        # antes de archivar; retener el ID inicial en un temporal, no otro set DB.
         try:
             identity = directory_identity(folder)
             if identity != result.root_identity:
                 result.fail(InventoryStatus.UNAVAILABLE, "La raíz cambió antes de limpiar")
                 return
-            candidates = set(self.db.get_known_files_in_folder(folder)) - result.paths
-            missing = []
-            parents = {}
-            for path in candidates:
+            discovered = result.paths
+            parents = IdentityCache(lambda parent: directory_chain_identity(parent))
+            with InventoryCandidates() as missing, self.db.inventory_reader(cancel_event=self._inventory_cancel) as reader:
+                for batch in pages(reader, folder, lambda: not self.is_running, self._inventory_cancel):
+                    for copy_id, path in batch:
+                        if not self.is_running:
+                            result.fail(InventoryStatus.CANCELLED)
+                            return
+                        if path in discovered:
+                            continue
+                        try:
+                            os.lstat(path)
+                        except FileNotFoundError:
+                            parent = os.path.dirname(path)
+                            before = parents.read(parent)
+                            try:
+                                os.lstat(path)
+                            except FileNotFoundError:
+                                pass
+                            else:
+                                continue
+                            missing.add(copy_id, path, before)
+                        except OSError as exc:
+                            result.fail(InventoryStatus.ERROR, exc)
+                            return
+                if directory_identity(folder) != identity:
+                    result.fail(InventoryStatus.UNAVAILABLE, "La raíz cambió antes de limpiar")
+                    return
+                # Validar cada padre y la integridad/completitud del temporal
+                # antes del primer UPDATE. El cache tiene como máximo256 entradas.
+                parents = IdentityCache(lambda parent: directory_chain_identity(parent))
+                for block in missing.blocks():
+                    for _, path, dev, ino in block:
+                        if not self.is_running:
+                            result.fail(InventoryStatus.CANCELLED)
+                            return
+                        if parents.read(os.path.dirname(path)) != (dev, ino):
+                            result.fail(InventoryStatus.UNAVAILABLE, 'La carpeta padre cambió antes de limpiar')
+                            return
                 if not self.is_running:
                     result.fail(InventoryStatus.CANCELLED)
                     return
-                try:
-                    os.lstat(path)
-                except FileNotFoundError:
-                    # ENOENT también ocurre por padre inaccesible/desconectado;
-                    # no convertirlo en ausencia confirmada por una raíz sana.
-                    parent = os.path.dirname(path)
-                    if parent not in parents:
-                        parents[parent] = directory_chain_identity(parent)
-                    # La carpeta pudo cambiar mientras verificábamos acceso.
-                    try:
-                        os.lstat(path)
-                    except FileNotFoundError:
-                        pass
-                    else:
-                        continue
-                    missing.append(path)
-                except OSError as exc:
-                    result.fail(InventoryStatus.ERROR, exc)
-                    return
-            if directory_identity(folder) != identity:
-                result.fail(InventoryStatus.UNAVAILABLE, "La raíz cambió antes de limpiar")
-                return
-            for parent, before in parents.items():
-                if not self.is_running:
-                    result.fail(InventoryStatus.CANCELLED)
-                    return
-                if directory_chain_identity(parent) != before:
-                    result.fail(InventoryStatus.UNAVAILABLE, 'La carpeta padre cambió antes de limpiar')
-                    return
-            if not self.is_running:
-                result.fail(InventoryStatus.CANCELLED)
-                return
-            if missing:
-                self._progress("lib.scan.cleanup", "Reviewing {count} missing candidates for archival by copy ID...", count=len(missing))
-                if not self.is_running:
-                    result.fail(InventoryStatus.CANCELLED)
-                    return
-                # Leer la versión antes de verificar ausencia de nuevo. El owner
-                # compara IDs/estado completo: nunca archivar por la ruta sola.
-                missing.sort()
-                for start in range(0, len(missing), 256):
+                if missing.count:
+                    self._progress("lib.scan.cleanup", "Reviewing {count} missing candidates for archival by copy ID...", count=missing.count)
+                for records in missing.blocks():
                     if not self.is_running:
                         result.fail(InventoryStatus.CANCELLED)
                         return
-                    block = missing[start:start+256]
+                    block = [record[1] for record in records]
                     current = self.db.get_duplicate_snapshot(block)
                     if (not isinstance(current, list) or len(current) != len(block) or
                             [copy.get('path') for copy in current] != block or
-                            any(copy['state'] is None for copy in current)):
+                            any(copy['state'] is None or copy['state']['file']['id'] != record[0]
+                                for copy, record in zip(current, records))):
                         result.fail(InventoryStatus.ERROR, 'Cambió la identidad del inventario')
                         return
-                    approved, touched = [], set()
-                    for copy in current:
+                    approved, touched = [], {}
+                    for copy, record in zip(current, records):
                         if not self.is_running:
                             result.fail(InventoryStatus.CANCELLED)
                             return
                         try:
                             os.lstat(copy['path'])
                         except FileNotFoundError:
-                            touched.add(os.path.dirname(copy['path']))
-                            approved.append(dict(path=copy['path'], copy_id=copy['state']['file']['id'],
-                                fingerprint=copy['fingerprint']))
+                            parent = os.path.dirname(copy['path'])
+                            before = tuple(record[2:])
+                            if parent in touched and touched[parent] != before:
+                                result.fail(InventoryStatus.UNAVAILABLE, 'La carpeta padre cambió antes de archivar')
+                                return
+                            touched[parent] = before
+                            approved.append(dict(path=copy['path'], copy_id=record[0], fingerprint=copy['fingerprint']))
                         except OSError as exc:
                             result.fail(InventoryStatus.UNAVAILABLE, exc)
                             return
                     if directory_identity(folder) != identity or any(
-                            directory_chain_identity(parent) != parents[parent] for parent in touched):
+                            directory_chain_identity(parent) != before for parent, before in touched.items()):
                         result.fail(InventoryStatus.UNAVAILABLE, 'La carpeta cambió antes de archivar el lote')
                         return
                     if not self.is_running:
@@ -177,6 +186,11 @@ class IndexerWorker(QThread):
                             result.fail(InventoryStatus.ERROR, 'No se pudo confirmar el archivado por ID')
                             return
                         self.archived_count += len(approved)
+        except InventoryCancelled:
+            result.fail(InventoryStatus.CANCELLED)
+        except LibraryError as exc:
+            result.fail(InventoryStatus.CANCELLED if exc.reason == 'cancelled' and not self.is_running
+                        else InventoryStatus.ERROR, exc)
         except OSError as exc:
             result.fail(InventoryStatus.UNAVAILABLE, exc)
 

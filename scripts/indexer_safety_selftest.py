@@ -247,12 +247,13 @@ class IndexerSafety(unittest.TestCase):
     def test_disconnect_while_checking_candidates_blocks_sweep(self):
         missing = self.folder / 'gone.png'
         before = self.seed(missing)
-        known = self.db.get_known_files_in_folder
-        def disconnect(folder):
-            paths = known(folder)
+        known = self.db.get_inventory_page
+        def disconnect(folder, **kwargs):
+            page = known(folder, **kwargs)
             self.folder.rename(self.root / 'offline')
-            return paths
-        with patch.object(self.db, 'get_known_files_in_folder', disconnect):
+            return page
+        from core.library_inventory import InventoryReader
+        with patch.object(InventoryReader, 'get_inventory_page', lambda reader, *args, **kwargs: disconnect(*args, **kwargs)):
             worker = self.run_worker()
         self.assertEqual(worker.outcome, Status.UNAVAILABLE)
         self.assert_preserved(missing, before)

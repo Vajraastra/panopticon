@@ -729,7 +729,7 @@ use queued error delivery without opening SQL or starting another thread, while
 the existing one-active/latest-pending behavior remains. Old tickets and closed
 owners discard late results.
 
-Path pages, previews and hash-backfill batches require exact integer limits from
+Legacy path pages, previews and hash-backfill batches require exact integer limits from
 1 to 10,000 and nonnegative SQLite integer offsets/cursors. Negative LIMIT can no
 longer turn a paginated request into an unrestricted query. These responses and
 Librarian selections accumulate rows incrementally within an 8 MiB estimated
@@ -740,8 +740,30 @@ count oversized responses without retaining their content. Cancellation and
 deadlines retain priority over a response-size error.
 
 This bounds the accumulated response, not total process RAM or a temporary cell
-already decoded by SQLite. Complete legacy inventories, tag vocabulary/overview
-and other response contracts still need bounded APIs and consumer migration.
+already decoded by SQLite. Full legacy APIs, tag vocabulary/overview and other
+response contracts still need consumer migration and bounded responses.
+
+Librarian missing-file reconciliation reads native inventory by copy ID in pages
+of at most 256. It captures an upper ID at the start, excluding later IDs created
+by the central writer from that sweep. Each page has its own snapshot; this is
+not a frozen snapshot across pages. A private reader stays in the worker's thread
+and ends its transaction after every page, before filesystem work. The service
+retains input/result limits, per-page deadlines, cancellation and read metrics.
+Readers reject use from another thread or after their scope closes.
+
+Missing candidates retain their initial copy ID and accessible parent identity in
+an automatically closed temporary file, capped at 256 MiB. All pages, temporary
+record counts/bytes/SHA and parent identities are checked before the first archive.
+The parent cache and review blocks are limited to 256. A failed/cancelled read or
+temporary-file limit cannot authorize a partial inventory. The current copy must
+still have its initial ID; a replacement at the same path requires another scan.
+Fresh state fingerprints, absence and directory identity are checked again before
+each existing writer transaction. Confirmed earlier batches remain if a later
+archive fails or is cancelled. This moves records offline without deleting files,
+curation, history or Cherry receipts. The temporary is not a recovery journal.
+The disk discovery result remains in memory, and filesystem/SQLite checks are
+not atomic. Legacy full-inventory API compatibility remains available.
+
 Write scheduling, cross-view invalidation and live WAL pressure remain open.
 
 ## License

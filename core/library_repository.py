@@ -316,6 +316,10 @@ class LibraryRepository:
 
     # --- Discovery / Existence ---
 
+    def get_inventory_page(self, folder_path, **kwargs):
+        from core.library_inventory import page
+        return page(self.conn, folder_path, folder_like=self._folder_like, **kwargs)
+
     def get_known_files_in_folder(self, folder_path):
         """Returns set of normalized paths for files known in a specific folder (recursive)."""
         cursor = self.conn.cursor()

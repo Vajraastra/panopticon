@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 READS = frozenset({
     'get_metadata_edit_history_record', 'get_metadata_edit_state', 'get_metadata_edit_receipt', 'get_generation_history_status', 'get_generation_history_page',
     'get_metadata_path_status', 'get_derived_copies_status', 'get_derived_copy_receipt',
-    'get_known_files_in_folder', 'get_files_recursive', 'get_watched_folders',
+    'get_inventory_page', 'get_known_files_in_folder', 'get_files_recursive', 'get_watched_folders',
     'get_folder_count', 'get_folder_preview', 'search_by_terms', 'get_file_id',
     'get_tags_for_file', 'search_files_paginated', 'get_folders_paginated',
     'count_files_missing_hash', 'get_files_missing_hash', 'get_all_tags',
@@ -306,6 +306,9 @@ class LibraryService:
         return future
 
     def read(self, operation, *args, cancel_event=None, **kwargs):
+        return self._read(operation, args, kwargs, cancel_event, lambda: open_reader(self.db_path))
+
+    def _read(self, operation, args, kwargs, cancel_event, reader_factory):
         if operation not in READS:
             raise ValueError(f'Unknown read: {operation}')
         with self._admission:
@@ -333,7 +336,7 @@ class LibraryService:
                 self._metrics.reject_payload(read=True)
                 raise LibraryError(operation, str(exc)) from exc
             check()
-            with closing(open_reader(self.db_path)) as conn:
+            with closing(reader_factory()) as conn:
                 def interrupt():
                     nonlocal timed_out
                     timed_out = time.monotonic() >= deadline
@@ -377,6 +380,24 @@ class LibraryService:
             raise
         finally:
             self._metrics.finish_read(outcome, started)
+
+    @contextmanager
+    def inventory_reader(self, *, cancel_event=None):
+        """Un lector del worker, sin transacción retenida entre páginas."""
+        from core.library_inventory import InventoryReader
+        operation = 'get_inventory_page'
+        with self._admission:
+            if self._closed:
+                self._metrics.reject_closed(read=True)
+                raise LibraryError(operation, 'service_closed')
+        if cancel_event is not None and cancel_event.is_set():
+            raise LibraryError(operation, 'cancelled')
+        with closing(open_reader(self.db_path)) as conn:
+            reader = InventoryReader(self, conn, cancel_event)
+            try:
+                yield reader
+            finally:
+                reader.close()
 
     @contextmanager
     def metadata_destination_guard(self, *, cancel_event=None):

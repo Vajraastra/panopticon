@@ -12,6 +12,9 @@ class DatabaseManager:
         self.service = service or get_library_service(db_path)
         self.db_path = self.service.db_path
 
+    def inventory_reader(self, *, cancel_event=None):
+        return self.service.inventory_reader(cancel_event=cancel_event)
+
     def __getattr__(self, name):
         if name in READS:
             return lambda *args, **kwargs: self.service.read(name, *args, **kwargs)
