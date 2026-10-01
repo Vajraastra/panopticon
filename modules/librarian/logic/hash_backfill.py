@@ -12,8 +12,10 @@ intento o para la limpieza de huérfanos del indexer.
 
 import hashlib
 import logging
+import threading
 from PySide6.QtCore import QThread, Signal
 from core.inventory import InventoryStatus
+from core.library_batch import BatchCancelled, MAX_BATCH_ROWS
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ class HashBackfillWorker(QThread):
         self.db         = db_manager
         self.batch_size = batch_size
         self.is_running = True
+        self._cancel = threading.Event()
         self.tr = translate or (lambda key, default: default)
         self.outcome = InventoryStatus.COMPLETE
 
@@ -64,12 +67,17 @@ class HashBackfillWorker(QThread):
                     except OSError as exc:
                         failed += 1
                         log.warning("[Backfill] Ilegible: %s (%s)", path, exc)
-                if pending:
-                    if not self.db.set_hash_original_bulk(pending):
+                if not pending:
+                    self.count_signal.emit(done + failed, total)
+                while pending and self.is_running:
+                    block = pending[:MAX_BATCH_ROWS]
+                    if not self.db.set_hash_original_bulk(block, cancel_event=self._cancel):
                         raise RuntimeError('Hash batch was not committed')
-                    done += len(pending)
-                    pending = []
-                self.count_signal.emit(done + failed, total)
+                    done += len(block)
+                    del pending[:len(block)]
+                    self.count_signal.emit(done + failed, total)
+        except BatchCancelled:
+            self.outcome = InventoryStatus.CANCELLED
         except Exception:
             failed += len(pending)
             self.outcome = InventoryStatus.ERROR
@@ -86,3 +94,4 @@ class HashBackfillWorker(QThread):
 
     def stop(self):
         self.is_running = False
+        self._cancel.set()

@@ -828,7 +828,7 @@ This is eventual invalidation, not a durable log, receipt, approval fingerprint 
 frozen DB revision attached to a read result. A busy writer/read/export can delay
 notification. External commits still require valid schema/FTS; monitoring does not
 repair their integrity. FIFO scheduling remains unchanged. Other consumer caches,
-write scheduling and live WAL pressure remain open.
+physical cache invalidation and live WAL pressure remain open.
 
 `scripts/library_scheduling_selftest.py` verifies ordering on temporary Native
 databases. A reviewed restore followed by an interactive tag edit succeeds in
@@ -837,6 +837,19 @@ reviewed state changed. Two ratings on one copy also depend on order. Ratings on
 distinct copies commute in that fixture; this does not establish independence
 for global tags, registration, lifecycle or maintenance operations. These are
 policy evidence tests, not a priority scheduler. The writer still uses FIFO.
+
+Native keeps global FIFO for accepted writes. Librarian observation/hash producers
+submit at most 100 records per write and wait for confirmation before submitting
+the next. This is a conservative row bound, not a measured universal optimum or
+a cap on SQL duration. Hash reads can still contain more than one write batch.
+With `cancel_event`, the worker facade waits under queue pressure and retries only
+`LibraryQueueFull`, which specifically means no command was admitted. Command,
+payload and shutdown failures are not retried. Stop cancels queued work where
+possible; already running writes settle and remain included in confirmed counts.
+The legacy facade without that option remains atomic and does not silently split
+requests. Whole discovery memory, active transactions and long maintenance remain
+separate work; FIFO does not guarantee an immediate rating under sustained load.
+`scripts/library_batch_selftest.py` exercises private admission and cancellation.
 
 ## License
 

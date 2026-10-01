@@ -29,6 +29,18 @@ class DatabaseManager:
             log.warning('[DB] %s', exc)
             return False
 
+    def register_files_minimal(self, records, *, cancel_event=None):
+        if cancel_event is None:
+            return self._write('register_files_minimal', records)
+        from core.library_batch import commit_batch
+        return commit_batch(self.service, 'register_files_minimal', records, cancel_event)
+
+    def set_hash_original_bulk(self, records, *, cancel_event=None):
+        if cancel_event is None:
+            return self._write('set_hash_original_bulk', records)
+        from core.library_batch import commit_batch
+        return commit_batch(self.service, 'set_hash_original_bulk', records, cancel_event)
+
     def add_tag_to_file(self, path, tag_name):
         # Stat fuera de la transacción. Registro perezoso + tag + FTS son atómicos.
         file_data = None

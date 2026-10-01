@@ -93,6 +93,12 @@ class LibraryError(RuntimeError):
         super().__init__(f'{operation}: {reason}')
 
 
+class LibraryQueueFull(LibraryError):
+    """Admission failed; no command entered FIFO or started SQL."""
+    def __init__(self, operation):
+        super().__init__(operation, 'queue_full')
+
+
 def require_ready_schema(conn):
     """Apertura estricta: no crear/migrar ni aceptar un marker desconocido."""
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='panopticon_schema'").fetchone():
@@ -293,7 +299,7 @@ class LibraryService:
                 return future
             if self._queue.full():
                 self._metrics.reject_full()
-                future.set_exception(LibraryError(operation, 'queue_full'))
+                future.set_exception(LibraryQueueFull(operation))
                 return future
         try:
             saved_args, saved_kwargs = snapshot_write_payload(args, kwargs)
@@ -311,7 +317,7 @@ class LibraryService:
                 try:
                     self._metrics.enqueue(self._queue, command)
                 except Full:
-                    future.set_exception(LibraryError(operation, 'queue_full'))
+                    future.set_exception(LibraryQueueFull(operation))
         return future
 
     def read(self, operation, *args, cancel_event=None, **kwargs):

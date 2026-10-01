@@ -7,6 +7,7 @@ from core.inventory import InventoryResult, InventoryStatus, directory_identity,
 
 from core.inventory_candidates import InventoryCandidates, IdentityCache, pages, InventoryCancelled
 from core.library_service import LibraryError
+from core.library_batch import BatchCancelled, MAX_BATCH_ROWS
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,9 @@ class IndexerWorker(QThread):
         total_found = 0
         try:
             self._progress("lib.scan.start", "Starting indexer...")
+            if type(self.batch_size) is not int or self.batch_size < 1:
+                raise ValueError('invalid_indexer_batch_size')
+            batch_size = min(self.batch_size, MAX_BATCH_ROWS)
             extensions = ('.png', '.jpg', '.jpeg', '.webp', '.avif')
             for folder in self.folders:
                 if not self.is_running:
@@ -47,12 +51,12 @@ class IndexerWorker(QThread):
                 self._progress("lib.scan.folder", "Scanning: {folder}", folder=folder)
                 result = self._discover_tree(folder, extensions)
                 try:
-                    for i in range(0, len(result.files), self.batch_size):
+                    for i in range(0, len(result.files), batch_size):
                         if not self.is_running:
                             result.fail(InventoryStatus.CANCELLED)
                             break
-                        batch = result.files[i:i + self.batch_size]
-                        if not self.db.register_files_minimal(batch):
+                        batch = result.files[i:i + batch_size]
+                        if not self.db.register_files_minimal(batch, cancel_event=self._inventory_cancel):
                             result.fail(InventoryStatus.ERROR, "No se pudo confirmar el lote")
                             break
                         total_found += len(batch)
@@ -61,6 +65,8 @@ class IndexerWorker(QThread):
                         result.fail(InventoryStatus.CANCELLED)
                     if self.deep_clean and result.complete:
                         self._reconcile_missing(folder, result)
+                except BatchCancelled:
+                    result.fail(InventoryStatus.CANCELLED)
                 except Exception as exc:
                     log.exception("[Indexer] No se pudo indexar %s", folder)
                     result.fail(InventoryStatus.ERROR, exc)
