@@ -14,16 +14,11 @@ from core.duplicate_policy import DuplicatePolicy, recommend
 from core.duplicate_snapshot import encode
 from .exact_review import _probe
 from .file_guards import plain_chain as _plain_chain, documented as _documented
+from .recovery_storage import write_journal
 
 
 def _write_journal(job, value):
-    temporary = job/('journal-'+uuid.uuid4().hex+'.tmp')
-    raw = encode(value)
-    with temporary.open('xb') as stream:
-        stream.write(raw)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, job/'journal.json')
+    write_journal(job/'journal.json',value)
 
 
 class DuplicateRetirementTasks:

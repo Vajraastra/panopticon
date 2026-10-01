@@ -59,6 +59,7 @@ WRITES = frozenset({
     'rebuild_fts', 'repair_fts', 'vacuum_database', 'edit_curation', 'restore_curation', 'register_curation_copy', 'adopt_curation_identity',
     'archive_copy', 'make_copy_online',
     'archive_duplicate_copies',
+    'restore_duplicate_copy',
     'prepare_duplicate_search',
     'prepare_phash_registry', 'store_phash_batch',
 })
