@@ -553,7 +553,31 @@ this observation; it is not a reservation against external editors.
 
 Exit 0 means a stable report was produced, including cases still requiring manual
 review. Exit 1 means concurrent changes; exit 2 means inspection failed.
-Reconciliation, GUI integration and retained-backup management remain separate.
+After inspecting the report, explicit reconciliation requires its exact fingerprint.
+Close the application's Native writer before using the CLI:
+
+```bat
+venv\Scripts\python.exe scripts\producer_journal.py --db "panopticon.db" --journal "cache\derived_recovery\<operation-id>\journal.json" --reconcile --expected-review-fingerprint "<review_fingerprint>"
+```
+
+This opens an existing ready Native database without migration or schema repair.
+A matching receipt is acknowledged without replay, including when the current
+file has changed or disappeared. An export review creates only an evidence record.
+With no receipt, one derived registration or original metadata commit requires
+unchanged source identity/curation, current result bytes and verified generation;
+original edits also require the unchanged backup and previous generation. Known
+Native destination identities, changed observations/aliases, unsupported metadata
+or a stale review remain pending. It does not reinterpret conflicting real values.
+
+The action writes a separate `reconciliation-<UUID>.json` intent before admission,
+outside watched/Cherry folders. It retains the original producer journal, image
+and backup. Admitted Native work drains through cancellation; a lost reply is
+checked against its receipt once without resubmission. Database/evidence failures
+remain reviewable, and a historical acknowledgement never restores missing bytes.
+Existing guards require manual review and are not automatically cleared. External
+file edits can still race with checks; post-commit review reports current state.
+For reconciliation, exit 0 means the action was recorded; inspect `current_status`
+separately. GUI integration and retained-backup management remain separate.
 
 ### Metadata in transformed outputs
 
