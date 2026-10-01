@@ -4,6 +4,7 @@ from PySide6.QtGui import QCursor
 from PySide6.QtCore import Signal
 
 from core.base_module import BaseModule
+from core.image_preview import ImagePreview
 from core.library_async import LibraryReader
 from .logic.state import GalleryState
 from .logic.query_engine import QueryEngine
@@ -119,4 +120,5 @@ class GalleryModule(BaseModule):
     def shutdown_ready(self):
         if self.view_widget is None: return True
         return (all(reader.shutdown_ready() for reader in self.view_widget.findChildren(LibraryReader))
+                and all(preview.shutdown_ready() for preview in self.view_widget.findChildren(ImagePreview))
                 and self.view_widget.grid.loader.shutdown_ready())

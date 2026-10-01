@@ -8,6 +8,8 @@ from core.library_async import LibraryReader, LibraryWriter
 from core.components.tag_vocabulary import TagVocabulary
 from core.locale_manager import LocaleManager
 from core.metadata.extractor import MetadataExtractor
+from core.image_preview import ImagePreview
+from core.theme_manager import ThemeManager
 import os
 import logging
 
@@ -29,9 +31,9 @@ class FullscreenHelper(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_viewer = parent
+        self.setStyleSheet(ThemeManager.active().get_stylesheet())
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.showFullScreen()
-        self.setStyleSheet("background-color: black;")
         
         # Use Grid Layout to allow overlapping (Overlay)
         self.layout = QGridLayout(self)
@@ -46,34 +48,19 @@ class FullscreenHelper(QDialog):
         # Navigation Overlay (Floating on top)
         # We wrap it in a container that aligns to Bottom Center
         self.nav_container = QWidget(self)
-        self.nav_container.setStyleSheet("background-color: rgba(0, 0, 0, 150); border-radius: 20px;")
         
         nav_layout = QHBoxLayout(self.nav_container)
         nav_layout.setContentsMargins(15, 5, 15, 5)
         nav_layout.setSpacing(15)
         
-        btn_prev = QPushButton("◀")
-        btn_next = QPushButton("▶")
-        btn_close = QPushButton("✕")
+        btn_prev = QPushButton("<")
+        btn_next = QPushButton(">")
+        btn_close = QPushButton("×")
         
         for btn in (btn_prev, btn_next, btn_close):
             btn.setFixedSize(50, 50)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setFocusPolicy(Qt.NoFocus) # Prevent stealing arrow keys
-            btn.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(255, 255, 255, 30);
-                    color: white;
-                    border: 2px solid rgba(255,255,255,50);
-                    border-radius: 25px;
-                    font-size: 20px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: rgba(255, 255, 255, 80);
-                    border: 2px solid white;
-                }
-            """)
             nav_layout.addWidget(btn)
             
         # Add to grid, aligned to bottom center
@@ -84,6 +71,9 @@ class FullscreenHelper(QDialog):
         # Connect signals
         btn_prev.clicked.connect(self.prev_image_click)
         btn_next.clicked.connect(self.next_image_click)
+        btn_prev.setToolTip(LocaleManager().tr('gallery.viewer.previous_tip', 'Show the previous image.'))
+        btn_next.setToolTip(LocaleManager().tr('gallery.viewer.next_tip', 'Show the next image.'))
+        btn_close.setToolTip(LocaleManager().tr('gallery.viewer.close_tip', 'Leave fullscreen and stop the slideshow.'))
         btn_close.clicked.connect(self.close)
         
         # Action Exit
@@ -99,16 +89,16 @@ class FullscreenHelper(QDialog):
         super().closeEvent(event)
 
     def set_image(self, path):
-        pix = QPixmap(path)
-        if not pix.isNull():
-            # Scale to screen size - ensure we don't exceed screen
+        viewer = self.parent_viewer
+        self.lbl_image.clear()
+        if viewer is not None and viewer._preview_path == path and viewer._preview_image is not None:
+            pix = QPixmap.fromImage(viewer._preview_image)
             scr = self.screen()
-            if scr:
-                target_size = scr.size()
-                self.lbl_image.setPixmap(pix.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            else:
-                self.lbl_image.setPixmap(pix.scaled(1920, 1080, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            
+            target = scr.size() if scr else self.size()
+            self.lbl_image.setPixmap(pix.scaled(target, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            self.lbl_image.setText(LocaleManager().tr('gallery.db.loading', 'Loading…'))
+
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Left:
             self.prev_image_click()
@@ -136,11 +126,20 @@ class AdvancedViewer(QDialog):
 
     def __init__(self, paths, start_index=0, parent=None, service=None):
         super().__init__(parent)
-        self.setWindowTitle("Panopticon Viewer")
+        self.setWindowTitle(LocaleManager().tr('gallery.viewer.title', 'Panopticon Viewer'))
         self.resize(1100, 800)
         self.setWindowState(Qt.WindowMaximized) # Iniciar maximizado para mejor experiencia
-        self.setStyleSheet("background-color: #121212; color: #ddd;")
         
+        self.theme = ThemeManager.active()
+        self.setStyleSheet(self.theme.get_stylesheet())
+        self.theme.theme_changed.connect(self._apply_theme)
+        self._preview_ready = False
+        self._preview_path = None
+        self._preview_image = None
+        self._file_tags, self._file_rating = (), 0
+        self._curation_value = None
+        self.preview = ImagePreview(lambda path: MetadataExtractor.extract(path), self)
+        self.preview.result.connect(self.on_preview_result)
         self.paths = paths
         self.current_idx = start_index
         self.fs_window = None
@@ -166,7 +165,6 @@ class AdvancedViewer(QDialog):
         
         # Panel Izquierdo: Visualización de Imagen (75% del ancho)
         self.img_container = QFrame()
-        self.img_container.setStyleSheet("background-color: black;")
         layout.addWidget(self.img_container, 75)
         
         img_layout = QVBoxLayout(self.img_container)
@@ -174,54 +172,47 @@ class AdvancedViewer(QDialog):
         self.lbl_image = QLabel()
         self.lbl_image.setAlignment(Qt.AlignCenter)
         self.lbl_image.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.lbl_image.installEventFilter(self)
         img_layout.addWidget(self.lbl_image)
         
         # Right: Data & Controls (25%)
         self.data_panel = QFrame()
         self.data_panel.setFixedWidth(320)
-        self.data_panel.setStyleSheet("background-color: #1a1a1a; border-left: 1px solid #333;")
         layout.addWidget(self.data_panel)
         
         data_layout = QVBoxLayout(self.data_panel)
         data_layout.setContentsMargins(20, 20, 20, 20)
         
         # Metadata Section
-        lbl_meta_title = QLabel("📝 Image Details")
-        lbl_meta_title.setStyleSheet("color: #00ffcc; font-size: 18px; font-weight: bold; margin-bottom: 10px;")
+        lbl_meta_title = QLabel(LocaleManager().tr('gallery.viewer.details', '📝 Image Details'))
         data_layout.addWidget(lbl_meta_title)
         
         self.lbl_filename = QLabel("Filename: ...")
         self.lbl_filename.setWordWrap(True)
-        self.lbl_filename.setStyleSheet("color: white; font-weight: bold; font-size: 14px;")
         data_layout.addWidget(self.lbl_filename)
         
         self.lbl_path = QLabel("Path: ...")
         self.lbl_path.setWordWrap(True)
-        self.lbl_path.setStyleSheet("color: #aaa; font-size: 11px; margin-bottom: 10px;")
         data_layout.addWidget(self.lbl_path)
         
         # Stats Table
         grid_stats = QGridLayout()
-        grid_stats.addWidget(QLabel("Resolution:"), 0, 0)
+        grid_stats.addWidget(QLabel(LocaleManager().tr('gallery.viewer.resolution', 'Resolution:')), 0, 0)
         self.lbl_res = QLabel("...")
-        self.lbl_res.setStyleSheet("color: #ddd; font-weight: bold;")
         grid_stats.addWidget(self.lbl_res, 0, 1)
 
         # Rating Row
-        grid_stats.addWidget(QLabel("Rating:"), 1, 0)
-        self.lbl_rating_stars = ClickableRatingLabel("None")
-        self.lbl_rating_stars.setStyleSheet("color: #ffcc00; font-weight: bold; font-size: 18px;")
+        grid_stats.addWidget(QLabel(LocaleManager().tr('gallery.viewer.rating', 'Rating:')), 1, 0)
+        self.lbl_rating_stars = ClickableRatingLabel(LocaleManager().tr('gallery.viewer.rating_none', 'Unrated'))
         self.lbl_rating_stars.clicked.connect(self.cycle_current_rating)
         grid_stats.addWidget(self.lbl_rating_stars, 1, 1)
         
         self.lbl_filesize = QLabel("Size: ...")
-        self.lbl_filesize.setStyleSheet("color: #aaa;")
         grid_stats.addWidget(self.lbl_filesize, 2, 1)
 
         # Quality Score Row
-        grid_stats.addWidget(QLabel("Quality:"), 3, 0)
+        grid_stats.addWidget(QLabel(LocaleManager().tr('gallery.viewer.quality', 'Quality:')), 3, 0)
         self.lbl_quality = QLabel("...")
-        self.lbl_quality.setStyleSheet("color: #00ffcc; font-weight: bold;")
         grid_stats.addWidget(self.lbl_quality, 3, 1)
         
         data_layout.addLayout(grid_stats)
@@ -230,28 +221,22 @@ class AdvancedViewer(QDialog):
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
         line.setFrameShadow(QFrame.Sunken)
-        line.setStyleSheet("background-color: #333; margin-top: 10px; margin-bottom: 10px;")
         data_layout.addWidget(line)
         
         # --- Tags Section ---
-        lbl_tags = QLabel("🏷️ Tags")
-        lbl_tags.setStyleSheet("color: #00ffcc; font-weight: bold; font-size: 14px;")
+        lbl_tags = QLabel(LocaleManager().tr('gallery.viewer.tags', '🏷️ Tags'))
         data_layout.addWidget(lbl_tags)
         
         # Tag Input Area
         input_layout = QHBoxLayout()
         self.input_tag = QLineEdit()
-        self.input_tag.setPlaceholderText("Add tag...")
-        self.input_tag.setStyleSheet("""
-            QLineEdit { background-color: #111; color: white; border: 1px solid #444; padding: 5px; border-radius: 4px; }
-            QLineEdit:focus { border: 1px solid #00ffcc; }
-        """)
+        self.input_tag.setPlaceholderText(LocaleManager().tr('gallery.viewer.tag_placeholder', 'Add tag...'))
         self.input_tag.returnPressed.connect(self.add_tag)
         
         btn_add_tag = QPushButton("+")
         self.btn_add_tag = btn_add_tag
         btn_add_tag.setFixedSize(30, 30)
-        btn_add_tag.setStyleSheet("background-color: #224433; color: #00ffcc; font-weight: bold; border-radius: 4px;")
+        btn_add_tag.setStyleSheet("padding: 0;")
         btn_add_tag.clicked.connect(self.add_tag)
         
         input_layout.addWidget(self.input_tag)
@@ -261,7 +246,6 @@ class AdvancedViewer(QDialog):
         # Tags Flow Layout (Scrollable Area)
         tags_scroll = QScrollArea()
         tags_scroll.setWidgetResizable(True)
-        tags_scroll.setStyleSheet("background-color: transparent; border: none;")
         tags_scroll.setFixedHeight(120) # Limit height
         
         self.tags_container = QWidget()
@@ -284,18 +268,16 @@ class AdvancedViewer(QDialog):
 
         # Navigation Buttons (Big)
         nav_layout = QHBoxLayout()
-        self.btn_prev = QPushButton("◀")
+        self.btn_prev = QPushButton("<")
         self.btn_prev.clicked.connect(self.prev_image)
-        self.btn_next = QPushButton("▶")
+        self.btn_next = QPushButton(">")
         self.btn_next.clicked.connect(self.next_image)
+        self.btn_prev.setToolTip(LocaleManager().tr('gallery.viewer.previous_tip', 'Show the previous image.'))
+        self.btn_next.setToolTip(LocaleManager().tr('gallery.viewer.next_tip', 'Show the next image.'))
         
         for btn in [self.btn_prev, self.btn_next]:
             btn.setFixedSize(60, 40)
             btn.setFocusPolicy(Qt.NoFocus) # Fix keyboard nav
-            btn.setStyleSheet("""
-                QPushButton { background-color: #333; color: white; border: 1px solid #555; border-radius: 5px; font-weight: bold; font-size: 16px; }
-                QPushButton:hover { background-color: #00ffcc; color: black; border: 1px solid #00ffcc; }
-            """)
             
         nav_layout.addWidget(self.btn_prev)
         nav_layout.addWidget(self.btn_next)
@@ -304,37 +286,33 @@ class AdvancedViewer(QDialog):
         data_layout.addSpacing(20)
         
         # Fullscreen Controls
-        lbl_fs = QLabel("🖥️ Presentation Modes")
-        lbl_fs.setStyleSheet("color: #eee; font-weight: bold; margin-top: 10px; border-bottom: 1px solid #444; padding-bottom: 5px;")
+        lbl_fs = QLabel(LocaleManager().tr('gallery.viewer.modes', '🖥️ Presentation Modes'))
         data_layout.addWidget(lbl_fs)
         
-        self.btn_fullscreen = QPushButton("Enter Fullscreen")
+        self.btn_fullscreen = QPushButton(LocaleManager().tr('gallery.viewer.fullscreen', 'Enter Fullscreen'))
         self.btn_fullscreen.setFocusPolicy(Qt.NoFocus)
         self.btn_fullscreen.clicked.connect(self.toggle_fullscreen)
-        self.btn_fullscreen.setStyleSheet("background-color: #222; color: #ccc; padding: 10px; border: 1px solid #444; border-radius: 5px;")
+        self.btn_fullscreen.setToolTip(LocaleManager().tr('gallery.viewer.fullscreen_tip', 'Show the current preview fullscreen without reading the file again.'))
         data_layout.addWidget(self.btn_fullscreen)
         
         # Timer Section
         data_layout.addSpacing(10)
         
-        self.btn_slideshow = QPushButton("Start Slideshow ⏳")
+        self.btn_slideshow = QPushButton(LocaleManager().tr('gallery.viewer.slideshow_start', 'Start Slideshow ⏳'))
         self.btn_slideshow.setFocusPolicy(Qt.NoFocus)
         self.btn_slideshow.clicked.connect(self.start_slideshow)
         self.btn_slideshow.setObjectName("btn_slideshow")
         self.btn_slideshow.setCheckable(True)
-        self.btn_slideshow.setStyleSheet("""
-            QPushButton { background-color: #224433; color: white; padding: 10px; border-radius: 5px; font-weight: bold; }
-            QPushButton:checked { background-color: #00ffcc; color: black; }
-        """)
+        self.btn_slideshow.setToolTip(LocaleManager().tr('gallery.viewer.slideshow_tip', 'Advance automatically at the selected interval; stop to keep the current image.'))
         data_layout.addWidget(self.btn_slideshow)
         
         timer_layout = QHBoxLayout()
-        timer_layout.addWidget(QLabel("Timer (seconds):"))
+        timer_layout.addWidget(QLabel(LocaleManager().tr('gallery.viewer.timer', 'Timer (seconds):')))
         self.spin_timer = QSpinBox()
         self.spin_timer.setRange(1, 60)
         self.spin_timer.setValue(5)
         self.spin_timer.setFocusPolicy(Qt.ClickFocus) 
-        self.spin_timer.setStyleSheet("background-color: #111; color: white; padding: 5px; border: 1px solid #444;")
+        self.spin_timer.setToolTip(LocaleManager().tr('gallery.viewer.timer_tip', 'Seconds between automatic image changes.'))
         timer_layout.addWidget(self.spin_timer)
         data_layout.addLayout(timer_layout)
         
@@ -366,6 +344,8 @@ class AdvancedViewer(QDialog):
     def shutdown(self):
         self._closed = True
         self.timer.stop()
+        self.preview.close()
+        self._preview_image = None
         self.curation_reader.close()
         self.tag_completions.close()
         if self._pending_edit is None:
@@ -468,6 +448,7 @@ class AdvancedViewer(QDialog):
         if self._closed:
             return
         self._curation_ready = False
+        self._curation_value = None
         self.update_edit_controls()
         self.lbl_rating_stars.setText(LocaleManager().tr('gallery.db.loading', 'Loading…'))
         self.clear_tags()
@@ -487,15 +468,26 @@ class AdvancedViewer(QDialog):
             self.lbl_rating_stars.setText(LocaleManager().tr(
                 'gallery.db.read_error', 'Could not load library.'))
             return
-        record = value[0]
+        self._curation_value = value[0]
+        self._apply_curation()
+
+    def _apply_curation(self):
+        if self._closed or not self._preview_ready or self._curation_value is None:
+            return
+        record = self._curation_value
         # Sólo una ruta ausente usa metadata del archivo. Vacío/cero son válidos en DB.
         tags = record['tags'] if record['id'] is not None else self._file_tags
         rating = record['rating'] if record['id'] is not None else self._file_rating
         self._current_rating = rating
-        self.lbl_rating_stars.setText('⭐' * rating if rating > 0 else 'None')
+        self.lbl_rating_stars.setText(LocaleManager().tr('gallery.viewer.rating_value', '{rating}/5').format(rating=rating) if rating > 0 else LocaleManager().tr('gallery.viewer.rating_none', 'Unrated'))
         self.clear_tags()
         for i, t in enumerate(sorted(tags)):
             chip = TagChip(t, i)
+            for button in chip.findChildren(QPushButton):
+                button.setText('×')
+                button.setFixedSize(22, 22)
+                button.setStyleSheet('padding: 0;')
+                button.setToolTip(LocaleManager().tr('gallery.viewer.remove_tag_tip', 'Remove this tag from native curation after a confirmed save.'))
             chip.removed.connect(self.remove_tag)
             self.tags_layout.addWidget(chip)
         self._curation_ready = True
@@ -510,45 +502,71 @@ class AdvancedViewer(QDialog):
             self.lbl_curation_status.setText(LocaleManager().tr(
                 'gallery.viewer.curation_tip', 'Curation is saved in the library; original files are preserved.'))
 
+    def _apply_theme(self):
+        self.setStyleSheet(self.theme.get_stylesheet())
+        if self.fs_window:
+            self.fs_window.setStyleSheet(self.theme.get_stylesheet())
+
     def load_current_image(self):
         if self._closed or not self.paths: return
-        
         path = self.paths[self.current_idx]
-        
-        # Load Pixmap
-        pix = QPixmap(path)
-        if not pix.isNull():
-            # Scale to fit currently available space
-            self.lbl_image.setPixmap(pix.scaled(self.lbl_image.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            self.lbl_res.setText(f"{pix.width()} x {pix.height()}")
-        else:
-            self.lbl_image.setText("Image Load Error")
-            
-        # Update Metadata
-        self.lbl_filename.setText("Filename: " + os.path.basename(path))
-        self.lbl_path.setText("Path: " + path)
-        try:
-             size_mb = os.path.getsize(path) / (1024*1024)
-             self.lbl_filesize.setText(f"Size: {size_mb:.2f} MB")
-        except OSError:
-             self.lbl_filesize.setText("Size: Unknown")
-
-        # Load Metadata directly from file (Extractor)
-        bundle = MetadataExtractor.extract(path)
-        
-        # 1. Quality Score
-        if bundle.quality_score:
-            self.lbl_quality.setText(f"{bundle.quality_score:.2f}")
-        else:
-            self.lbl_quality.setText("N/A")
-
-        self._file_tags = tuple(bundle.tags)
-        self._file_rating = bundle.rating
+        self._preview_ready = False
+        self._preview_path, self._preview_image = path, None
+        self._file_tags, self._file_rating = (), 0
+        self.lbl_image.clear()
+        self.lbl_image.setText(LocaleManager().tr('gallery.db.loading', 'Loading…'))
+        self.lbl_res.setText('…')
+        self.lbl_quality.setText('…')
+        self.lbl_filename.setText(LocaleManager().tr('gallery.viewer.filename', 'Filename: {name}').format(name=os.path.basename(path)))
+        self.lbl_path.setText(LocaleManager().tr('gallery.viewer.path', 'Path: {path}').format(path=path))
+        self.lbl_filesize.setText(LocaleManager().tr('gallery.db.loading', 'Loading…'))
         self.load_tags(path)
-             
-        # Update Fullscreen if active
-        if self.fs_window and self.fs_window.isVisible():
+        self.preview.request(path)
+        if self.fs_window:
             self.fs_window.set_image(path)
+
+    def on_preview_result(self, ticket, value, error):
+        if self._closed: return
+        self._preview_ready = True
+        if error is not None or value is None:
+            self.lbl_image.clear()
+            self.lbl_image.setText(LocaleManager().tr('gallery.viewer.preview_error', 'Could not load image preview.'))
+            reason = str(error)
+            tips = {'preview_file_limit': 'preview_file_limit', 'preview_pixel_limit': 'preview_pixel_limit', 'preview_source_changed': 'preview_changed'}
+            self.lbl_image.setToolTip(LocaleManager().tr('gallery.viewer.' + tips.get(reason, 'preview_error'), 'Could not load image preview.'))
+            self.lbl_res.setText('—')
+            self.lbl_quality.setText('—')
+            self.lbl_filesize.setText('—')
+        else:
+            self._preview_image = None if value['image'].isNull() else value['image']
+            self.lbl_image.setToolTip('')
+            self._display_preview()
+            self.lbl_res.setText(f"{value['width']} x {value['height']}" if value['width'] > 0 else '—')
+            self.lbl_filesize.setText(LocaleManager().tr('gallery.viewer.size', 'Size: {size} MB').format(size=f"{value['bytes'] / (1024*1024):.2f}") if value['bytes'] is not None else '—')
+            self.lbl_quality.setText(f"{value['quality']:.2f}" if value['quality'] else '—')
+            self._file_tags, self._file_rating = value['tags'], value['rating']
+        self._apply_curation()
+        if self.fs_window:
+            self.fs_window.set_image(self._preview_path)
+
+    def _display_preview(self):
+        self.lbl_image.clear()
+        if self._preview_image is not None:
+            pix = QPixmap.fromImage(self._preview_image)
+            self.lbl_image.setPixmap(pix.scaled(self.lbl_image.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        elif self._preview_ready:
+            self.lbl_image.setText(LocaleManager().tr('gallery.viewer.preview_error', 'Could not load image preview.'))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'lbl_image') and self._preview_ready:
+            self._display_preview()
+
+    def eventFilter(self, watched, event):
+        # The layout may resize the label after the dialog's own resize event.
+        if watched is self.lbl_image and event.type() == QEvent.Resize and self._preview_ready:
+            self._display_preview()
+        return super().eventFilter(watched, event)
 
     def next_image(self):
         if self._closed or not self.paths: return
@@ -577,11 +595,11 @@ class AdvancedViewer(QDialog):
     def start_slideshow(self):
         if self.btn_slideshow.isChecked():
             # Start
-            self.btn_slideshow.setText("Stop Slideshow ⏹️")
+            self.btn_slideshow.setText(LocaleManager().tr('gallery.viewer.slideshow_stop', 'Stop Slideshow ⏹️'))
             self.toggle_fullscreen() # Auto enter FS
             interval = self.spin_timer.value() * 1000
             self.timer.start(interval)
         else:
             # Stop
-            self.btn_slideshow.setText("Start Slideshow ⏳")
+            self.btn_slideshow.setText(LocaleManager().tr('gallery.viewer.slideshow_start', 'Start Slideshow ⏳'))
             self.timer.stop()

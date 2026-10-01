@@ -143,6 +143,10 @@ class CurationQt(Fixture):
         for view in self.views:
             view.shutdown()
             view.close()
+            if hasattr(view, 'preview'):
+                for thread in view.preview._threads:
+                    thread.join(3)
+                    self.assertFalse(thread.is_alive())
             view.deleteLater()
         for reader in self.readers:
             reader.close()

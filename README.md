@@ -286,6 +286,25 @@ or unknown content creates a new ID with empty curation, provenance and generati
 metadata while preserving the earlier version offline. An occupied active path or
 changed reviewed state stops the action. Scanning alone never reactivates history.
 The viewer binds edits to its displayed copy ID and rejects a replaced identity.
+
+Gallery's advanced viewer decodes a QImage, reads file statistics and extracts
+embedded metadata in its own worker. Each viewer keeps one active request and
+the latest pending image; stale navigation/closed owners discard results. Source
+identity, size and modification time are checked around loading to reject mixed
+versions. Only the current preview is retained, with a maximum edge of 2048;
+small sources are not enlarged by the decoder. Files over 256 MiB and sources
+over 100 million pixels require review. Decoder plugins may allocate the full
+source before scaling; this is not a total process-memory guarantee.
+
+QPixmap creation/display stays on Qt's GUI thread. Fullscreen and resize reuse
+the loaded preview without rereading files. Native and embedded curation are
+combined only once the matching preview/snapshot are ready; native empty tags
+and zero rating remain authoritative. Preview failure clears earlier embedded
+state and preserves native curation. Decoder devices close explicitly, and error
+delivery does not retain decoder tracebacks. Module shutdown tracks actual worker
+completion without GUI waits. Cancellation is checked between phases; it cannot
+forcibly interrupt a codec or blocked filesystem call. The viewer uses the active
+theme with bilingual controls/tooltips; source bytes and Cherry data are untouched.
 Character Recognizer also captures the native copy ID before decoding each image.
 Manual tag additions/removals and reference learning require the displayed registered
 identity and a confirmed curation commit. A changed native ID disables tag editing until
