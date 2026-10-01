@@ -609,8 +609,24 @@ records or the producer journal. A lost approval reply prevents deletion; queued
 approval can be cancelled and admitted approval drains. Cancellation before the
 delete mark preserves the backup; once marked, completion records the actual
 deletion even if the final evidence write fails. No cleanup is automatic and
-there is no joint filesystem/SQLite transaction. GUI purge controls and live
-concurrent Windows validation remain open.
+there is no joint filesystem/SQLite transaction.
+
+In **Recovery journals**, review one original Metadata Hub journal, then choose
+**Review original backup purge**. This worker preview verifies the backup and
+current copy without deleting anything. **Permanently delete reviewed backup**
+opens a per-operation confirmation showing the backup path, size and SHA-256,
+operation ID and current copy kept. The default is No. Confirmation consumes the
+preview and the worker rechecks it before effects; selection changes, new reviews,
+changed evidence and failed previews invalidate eligibility. Exports, derived
+outputs, pending metadata commits and absent backups cannot offer this purge.
+
+One worker handles review, reconciliation, purge preview or confirmed purge.
+Nested confirmation cannot admit another action or a late action after closing.
+Closing before the delete mark preserves the backup; after deletion, accepted
+evidence work finishes before native thread cleanup. The GUI reports confirmed
+deletion separately from a failed final evidence write. History, curation,
+receipts, current images and producer journals remain preserved. Live concurrent
+Windows validation and manual review of old guards/partial evidence remain open.
 
 ### Metadata in transformed outputs
 

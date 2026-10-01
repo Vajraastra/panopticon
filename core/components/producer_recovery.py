@@ -3,13 +3,14 @@ import threading
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QLabel,
-                               QPlainTextEdit, QPushButton, QVBoxLayout)
+                               QPlainTextEdit, QPushButton, QVBoxLayout, QMessageBox)
 from shiboken6 import isValid
 
 from core.native_threads import native_done, owner_threads_ready, start_worker
 from core.paths import CachePaths
 from core.producer_journal_review import review
 from core.producer_reconciliation import reconcile
+from core.metadata_backup_purge import preview as backup_preview, purge as backup_purge
 
 
 PREFIX = 'tool.producer_recovery.'
@@ -37,12 +38,22 @@ def available_action(report):
     return None
 
 
+def available_backup_preview(report):
+    return bool(report and report['stable'] and report['kind']=='metadata_edit' and
+        report['receipt_matches_request'] and report['backup_matches_source'] and
+        report['source'] and not report['source'].get('missing') and
+        report['source']['is_offline']==0 and bool(report['files']['output'].get('sha256')) and
+        report['files']['output'].get('sha256')==report['source']['current_sha256'])
+
+
 class ProducerRecoveryWorker(QThread):
     finished_signal = Signal(object)
 
-    def __init__(self, service, path, fingerprint=None):
+    def __init__(self, service, path, fingerprint=None, *, operation=None, preview_fingerprint=None):
         super().__init__()
         self.service, self.path, self.fingerprint = service, str(path), fingerprint
+        self.operation = operation or ('review' if fingerprint is None else 'reconcile')
+        self.preview_fingerprint = preview_fingerprint
         self.cancel_event = threading.Event()
 
     def cancel(self):
@@ -51,11 +62,20 @@ class ProducerRecoveryWorker(QThread):
     def run(self):
         result = None
         try:
-            if self.fingerprint is None:
+            if self.operation == 'review':
                 value = review(self.service.db_path, self.path, event=self.cancel_event)
-            else:
+            elif self.operation == 'reconcile':
                 value = reconcile(self.service, self.path,
                                   expected_review_fingerprint=self.fingerprint, event=self.cancel_event)
+            elif self.operation == 'purge_preview':
+                value = backup_preview(self.service, self.path,
+                                       expected_review_fingerprint=self.fingerprint, event=self.cancel_event)
+            elif self.operation == 'purge':
+                value = backup_purge(self.service, self.path, expected_review_fingerprint=self.fingerprint,
+                                     expected_preview_fingerprint=self.preview_fingerprint,
+                                     confirmed=True, event=self.cancel_event)
+            else:
+                raise ValueError('producer_recovery_invalid_operation')
             result = dict(value=value, error=None)
         except Exception as error:
             result = dict(value=None, error=str(error)[:1000])
@@ -70,6 +90,8 @@ class ProducerRecoveryDialog(QDialog):
         self._worker = None
         self._terminal = None
         self._report = None
+        self._purge_preview = None
+        self._confirming = False
         self._path = None
         self._closed = False
         self._choosing = False
@@ -78,7 +100,7 @@ class ProducerRecoveryDialog(QDialog):
         self._close_result = None
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle(self.t('title', 'Recovery journals'))
-        self.resize(820, 610)
+        self.resize(820, 660)
         # A bound slot on this receiver is disconnected during its destruction.
         self.destroyed.connect(lambda: self._destroyed())
 
@@ -113,6 +135,14 @@ class ProducerRecoveryDialog(QDialog):
         for button in (self.choose_button, self.review_button, self.action_button, self.close_button):
             row.addWidget(button)
         layout.addLayout(row)
+        backup_row = QHBoxLayout()
+        self.backup_preview_button = self.button('backup_preview', 'Review original backup purge', 'backup_preview_tip',
+            'Verify one original backup and its history, current file and exclusive Windows handle. This preview deletes nothing.', self.preview_backup)
+        self.backup_purge_button = self.button('backup_purge', 'Permanently delete reviewed backup', 'backup_purge_tip',
+            'Requires a verified preview and confirmation of this operation. Rechecks evidence before deleting only the selected backup; keeps files, history and journals.', self.purge_backup)
+        backup_row.addWidget(self.backup_preview_button)
+        backup_row.addWidget(self.backup_purge_button)
+        layout.addLayout(backup_row)
         self._controls()
 
     def t(self, key, default):
@@ -130,8 +160,10 @@ class ProducerRecoveryDialog(QDialog):
     def _controls(self):
         if not self._alive():
             return
-        idle = self._worker is None and not self._choosing
+        idle = self._worker is None and not self._choosing and not self._confirming
         self.choose_button.setEnabled(idle)
+        self.backup_preview_button.setEnabled(idle and available_backup_preview(self._report))
+        self.backup_purge_button.setEnabled(idle and self._purge_preview is not None)
         self.review_button.setEnabled(idle and self._path is not None)
         action = available_action(self._report)
         self.action_button.setEnabled(idle and action is not None)
@@ -139,7 +171,7 @@ class ProducerRecoveryDialog(QDialog):
                                    else self.t('action', 'Record reviewed action'))
 
     def choose(self):
-        if not self._alive() or self._worker is not None or self._choosing:
+        if not self._alive() or self._worker is not None or self._choosing or self._confirming:
             return
         self._choosing = True
         self._controls()
@@ -154,9 +186,9 @@ class ProducerRecoveryDialog(QDialog):
         self._controls()
 
     def select_journal(self, path):
-        if not self._alive() or self._worker is not None or self._choosing:
+        if not self._alive() or self._worker is not None or self._choosing or self._confirming:
             return False
-        self._path, self._report = str(path), None
+        self._path, self._report, self._purge_preview = str(path), None, None
         self.path_label.setText(self._path)
         self.details.clear()
         self.status_label.setText(self.t('idle', 'Select a journal, then review it.'))
@@ -170,15 +202,50 @@ class ProducerRecoveryDialog(QDialog):
         if available_action(self._report) is not None:
             self._start(self._report['review_fingerprint'])
 
-    def _start(self, fingerprint=None):
-        if not self._alive() or self._worker is not None or self._choosing or self._path is None:
+    def preview_backup(self):
+        if available_backup_preview(self._report):
+            self._start(self._report['review_fingerprint'], operation='purge_preview')
+
+    def purge_backup(self):
+        if not self._alive() or self._worker is not None or self._choosing or self._confirming or self._purge_preview is None:
             return
-        worker = ProducerRecoveryWorker(self.service, self._path, fingerprint)
-        self._worker, self._terminal, self._report = worker, None, None
+        path, selected = self._path, self._purge_preview
+        evidence = selected['evidence']
+        self._confirming = True
+        self._controls()
+        try:
+            answer = QMessageBox.question(self, self.t('purge_title', 'Confirm permanent backup deletion'),
+                self.t('purge_confirm', 'Operation: {operation}\nBackup: {backup}\nSize: {size} bytes\nSHA-256: {hash}\n\n'
+                       'Current copy kept: ID {id}\n{current}\nSHA-256: {current_hash}\n\n'
+                       'This permanently removes the selected previous bytes. The current image, Native history, curation, receipts and journals remain. Delete this backup?').format(
+                           operation=evidence['operation_id'], backup=evidence['backup'], size=evidence['size'],
+                           hash=evidence['backup_sha256'], id=evidence['approval']['copy_id'], current=evidence['current'],
+                           current_hash=evidence['current_sha256']), QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        finally:
+            self._confirming = False
+        # Nested confirmation may close the view; never start a late destructive action.
+        if (self._alive() and answer==QMessageBox.Yes and self._worker is None and self._path==path and
+                self._purge_preview is selected and self._report is not None and
+                self._report['review_fingerprint']==evidence['review_fingerprint']):
+            self._start(evidence['review_fingerprint'], operation='purge',
+                        preview_fingerprint=selected['preview_fingerprint'])
+        self._controls()
+
+    def _start(self, fingerprint=None, *, operation=None, preview_fingerprint=None):
+        if not self._alive() or self._worker is not None or self._choosing or self._confirming or self._path is None:
+            return
+        worker = ProducerRecoveryWorker(self.service, self._path, fingerprint,
+                                        operation=operation, preview_fingerprint=preview_fingerprint)
+        self._worker, self._terminal, self._purge_preview = worker, None, None
+        if worker.operation != 'purge_preview':
+            self._report = None
         worker.finished_signal.connect(self._completed, Qt.QueuedConnection)
         worker.finished.connect(self._native_finished, Qt.QueuedConnection)
-        self.status_label.setText(self.t('applying', 'Rechecking and recording the reviewed action…')
-                                  if fingerprint else self.t('reviewing', 'Reviewing current evidence…'))
+        busy = {'review': ('reviewing', 'Reviewing current evidence…'),
+                'reconcile': ('applying', 'Rechecking and recording the reviewed action…'),
+                'purge_preview': ('backup_reviewing', 'Verifying the original backup purge preview…'),
+                'purge': ('backup_deleting', 'Rechecking and deleting the confirmed backup…')}
+        self.status_label.setText(self.t(*busy[worker.operation]))
         self._controls()
         try:
             start_worker(worker, self)
@@ -215,13 +282,32 @@ class ProducerRecoveryDialog(QDialog):
         if not self._alive():
             return
         if result is None or result['error'] is not None:
+            if worker.operation == 'purge_preview':
+                self._report = None
             self.status_label.setText(self.t('failed', 'Review/action requires attention: {reason}').format(
                 reason=result['error'] if result else self.t('missing_result', 'No terminal result received.')))
-        elif worker.fingerprint is None:
+        elif worker.operation == 'review':
             self._report = result['value']
             self.details.setPlainText(self._describe(self._report))
             self.status_label.setText(self.t('reviewed', 'Review finished: {status}').format(
                 status=self._status(self._report['status'])))
+        elif worker.operation == 'purge_preview':
+            self._purge_preview = result['value']
+            self.details.setPlainText(self._describe(self._report) + '\n\n' +
+                                      self._describe_backup(self._purge_preview['evidence']))
+            self.status_label.setText(self.t('backup_ready', 'Backup preview verified; permanent deletion still requires confirmation.'))
+        elif worker.operation == 'purge':
+            value = result['value']
+            if value['status']=='complete':
+                message = self.t('backup_deleted', 'The selected backup was permanently deleted. The current image, history and journals were preserved.')
+            elif value['deleted']:
+                message = self.t('backup_deleted_attention', 'Backup deletion confirmed; final evidence requires attention: {reason}').format(reason=value['error'])
+            else:
+                message = self.t('backup_pending', 'Backup deletion was not confirmed: {reason}').format(reason=value['error'])
+            lines = [message, self.t('record', 'Evidence record: {path}').format(
+                path=value['record'] or self.t('no_record', 'Not written.'))]
+            self.details.appendPlainText('\n' + '\n'.join(lines))
+            self.status_label.setText(message)
         else:
             value = result['value']
             lines = [self.t('record', 'Evidence record: {path}').format(path=value['record'])]
@@ -282,6 +368,14 @@ class ProducerRecoveryDialog(QDialog):
                       if action else self.t('unavailable', 'Review conflicts or changed evidence before proceeding.')])
         return '\n'.join(lines)
 
+    def _describe_backup(self, evidence):
+        return self.t('backup_evidence', 'Original backup purge preview\nOperation: {operation}\nBackup: {backup}\n'
+                      'Size: {size} bytes\nSHA-256: {hash}\nCurrent copy kept: ID {id}\n{current}\n'
+                      'SHA-256: {current_hash}\nHistorical generation and receipt verified. Previous image bytes cannot be reconstructed from SQLite.').format(
+            operation=evidence['operation_id'], backup=evidence['backup'], size=evidence['size'],
+            hash=evidence['backup_sha256'], id=evidence['approval']['copy_id'], current=evidence['current'],
+            current_hash=evidence['current_sha256'])
+
     def _destroyed(self, *_):
         self._closed = True
         if self._worker is not None:
@@ -290,7 +384,7 @@ class ProducerRecoveryDialog(QDialog):
             self._worker.deleteLater()
 
     def request_shutdown(self):
-        self._closed, self._report = True, None
+        self._closed, self._report, self._purge_preview = True, None, None
         if isValid(self):
             self.setEnabled(False)
         if self._worker is not None:
