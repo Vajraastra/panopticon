@@ -526,6 +526,35 @@ resubmitting the edit. A missing or conflicting receipt leaves the published
 file and backup for review. Confirmation proves the historical commit; later
 file, identity or curation changes require separate current-state review.
 
+### Reviewing a producer recovery journal
+
+Inspect one explicit Metadata Hub, Cropper or Image Optimizer journal:
+
+```bat
+venv\Scripts\python.exe scripts\producer_journal.py --db "panopticon.db" --journal "cache\derived_recovery\<operation-id>\journal.json"
+```
+
+Metadata Hub journals use the `metadata_recovery` tool cache. This command opens
+Native read-only and never prepares schema, resubmits a write, restores bytes,
+edits a journal or deletes backups. Its JSON separates the historical receipt
+from current file SHA, copy ID, curation fingerprint, generation and offline state.
+`confirmed_current` describes the result copy; the parent may since have changed.
+After an original metadata edit, the source's current bytes naturally differ from
+its pre-edit SHA. Review `backup_matches_source` separately.
+
+`published_bytes_without_receipt` needs explicit reconciliation; a confirmed
+historical receipt with changed or missing current output never authorizes replay
+or deletion. Native snapshots close before hashing and are checked again afterward.
+Observed concurrent changes yield `changed_during_review`. Unknown/malformed
+journals, unsafe paths and limits remain unresolved. Reviews are bounded to one
+journal (2 MiB), files of 256 MiB and a report of 32 KiB. Current curation above
+the existing copy-state limits fails explicitly. The review fingerprint identifies
+this observation; it is not a reservation against external editors.
+
+Exit 0 means a stable report was produced, including cases still requiring manual
+review. Exit 1 means concurrent changes; exit 2 means inspection failed.
+Reconciliation, GUI integration and retained-backup management remain separate.
+
 ### Metadata in transformed outputs
 
 Cropper and Image Optimizer stamp and verify a temporary output
