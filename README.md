@@ -917,8 +917,14 @@ policy preserves spelling and separate copy histories. Worker-only
 per page, with a fixed initial ID boundary. Its SQL snapshot closes before
 Windows name probes. Offline/unavailable/reparse paths have no guessed key;
 hard links retain distinct opened names. Revision changes mark the preview stale.
-This is preparation, not a completed key migration or authority to merge/delete;
-existing lookup/prefix behavior is still legacy. Folder spelling and portable Cherry data remain preserved.
+This is preparation, not authority to merge/delete. Explicit Native
+`prepare_path_identity` takes a consistent SQLite backup before additive DDL;
+`publish_path_identity_page()` rechecks disk evidence before ≤100-row FIFO SQL
+CAS. Existing paths, IDs, curation, history and FTS are unchanged. The nonunique
+canonical index keeps conflicting IDs for review; no record wins automatically.
+Status/match APIs are bounded diagnostics. Unknown/offline rows remain unresolved.
+Existing lookup/registration/prefix behavior is still legacy; connecting those
+consumers and validating the real migration remain open. Folder spelling and portable Cherry data remain preserved.
 [Windows supports case rules per directory](https://learn.microsoft.com/en-us/windows/wsl/case-sensitivity).
 
 ## License

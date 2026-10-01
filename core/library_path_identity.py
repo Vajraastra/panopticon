@@ -60,3 +60,38 @@ def inspect_page(service, *, after_id=None, upper_id=None, limit=MAX_IDENTITY_RO
     page.update(records=observations, revision=after,
                 stale=before != after or not after[-1])
     return page
+
+
+def publish_page(service, page, *, cancel_event=None):
+    """Explicit preparation only; cannot merge identities or activate offline.
+
+    Page belongs to this worker. Never publish a prefix of a failed page; SQL
+    commits all records together. Windows observation does not pin names across
+    admission/commit, so this registry remains evidence rather than a destructive
+    operation guard or proof of current bytes.
+    """
+    import threading
+    from core.library_batch import commit_batch
+    event = cancel_event if cancel_event is not None else threading.Event()
+    if (not isinstance(page, dict) or page.get('stale') is not False or
+            page.get('revision') != service.revision_snapshot() or
+            not isinstance(page.get('records'), list) or len(page['records']) > MAX_IDENTITY_ROWS):
+        raise ValueError('path_identity_preview_stale')
+    values = []
+    for row in page['records']:
+        if event.is_set():
+            raise ValueError('identity_cancelled')
+        status, canonical, physical, reason = (row[k] for k in ('status','canonical','physical','reason'))
+        if status == 'resolved':
+            current = observe_path(row['stored_path'], cancel_event=event)
+            if (current.status != 'resolved' or current.canonical != canonical or
+                    current.physical != physical or current.kind != row['kind']):
+                raise ValueError('path_identity_physical_state_changed')
+            if current.kind != 'file':
+                status, canonical, physical, reason = 'unsupported', None, None, 'identity_not_file'
+        values.append(dict(file_id=row['file_id'], stored_path=row['stored_path'],
+            is_offline=int(status == 'offline'), status=status, canonical=canonical,
+            physical=physical, reason=reason))
+    if page['revision'] != service.revision_snapshot():
+        raise ValueError('path_identity_preview_stale')
+    return commit_batch(service, 'store_path_identity_batch', values, event)

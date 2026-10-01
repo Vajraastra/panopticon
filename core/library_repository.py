@@ -316,6 +316,22 @@ class LibraryRepository:
 
     # --- Discovery / Existence ---
 
+    def prepare_path_identity(self):
+        from core.path_identity_registry import prepare
+        return prepare(self.conn)
+
+    def store_path_identity_batch(self, records):
+        from core.path_identity_registry import store
+        return store(self.conn, records)
+
+    def get_path_identity_status(self):
+        from core.path_identity_registry import status
+        return status(self.conn)
+
+    def get_path_identity_matches(self, canonical, **kwargs):
+        from core.path_identity_registry import matches
+        return matches(self.conn, canonical, **kwargs)
+
     def get_path_identity_records(self, **kwargs):
         from core.library_path_identity import records
         return records(self.conn, **kwargs)

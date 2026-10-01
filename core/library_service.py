@@ -27,6 +27,7 @@ from core.paths import ProjectPaths
 
 log = logging.getLogger(__name__)
 READS = frozenset({
+    'get_path_identity_status', 'get_path_identity_matches',
     'get_path_identity_records',
     'get_metadata_edit_history_record', 'get_metadata_edit_state', 'get_metadata_edit_receipt', 'get_generation_history_status', 'get_generation_history_page',
     'get_metadata_path_status', 'get_derived_copies_status', 'get_derived_copy_receipt',
@@ -70,6 +71,7 @@ READ_BUDGET_SECONDS = {
     'get_phash_states': 10,
 }
 WRITES = frozenset({
+    'prepare_path_identity', 'store_path_identity_batch',
     'approve_metadata_backup_purge',
     'prepare_generation_history', 'approve_metadata_edit', 'commit_metadata_edit',
     'prepare_derived_copies', 'approve_derived_copy', 'register_derived_copy',
@@ -238,6 +240,10 @@ class LibraryService:
                         continue
                     try:
                         changes_before = conn.total_changes
+                        if operation == 'prepare_path_identity':
+                            from core.path_identity_registry import prepared
+                            if not prepared(conn):
+                                backup_database(conn, self.db_path, 'path-identity')
                         if operation != 'vacuum_database':
                             phase = time.perf_counter()
                             try:
@@ -331,6 +337,11 @@ class LibraryService:
                 except Full:
                     future.set_exception(LibraryQueueFull(operation))
         return future
+
+    def publish_path_identity_page(self, page, *, cancel_event=None):
+        """Worker-only: recheck physical evidence before bounded FIFO SQL CAS."""
+        from core.library_path_identity import publish_page
+        return publish_page(self, page, cancel_event=cancel_event)
 
     def inspect_path_identity_page(self, **kwargs):
         """Worker-only preparation; filesystem probes run outside SQL snapshots."""
