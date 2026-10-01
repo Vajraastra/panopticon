@@ -248,8 +248,8 @@ that their content matches an existing hash.
 Each retirement group has a durable recovery journal. A partial failure is shown with
 its journal and moved paths; it requires review before retrying. SQLite and file moves
 do not share an atomic transaction. Recovery moves do not free disk space. Explicit
-restoration by reviewed native ID is available below. No automatic restore or permanent
-purge occurs. Dashboard closure keeps the event loop and catalog alive until Duplicate
+restoration and manual permanent deletion by reviewed native ID are available below.
+Neither action runs automatically. Dashboard closure keeps the event loop and catalog alive until Duplicate
 Finder's accepted work finishes.
 
 Folder scans admit at most 100,000 files, 1,000 groups, 2,000 candidate copies and a
@@ -312,6 +312,37 @@ waits for its verification, commit and journal without blocking the interface. R
 distinguish returned bytes from confirmed native restoration. A final journal failure
 still reports a confirmed commit accurately. Subsequent actions require new evidence.
 No global filesystem/SQLite transaction protects against later external changes.
+
+### Manually delete a verified recovery copy
+
+Review its retirement journal, select a **verified retired copy**, and press
+**Prepare deletion preview**. This rechecks the current native state and information,
+SHA-256, file identities and library scope. Inspect the displayed ID, recovery file,
+size and verified retained copy. Then press **Permanently delete verified copy** and
+confirm those captured values; **Cancel** is the default. A new selection or changed
+evidence requires a new preview. Similarity or a recorded journal phase never approves
+deletion. Only one copy is admitted per manual confirmation.
+
+This permanently removes the recovery file, bypassing the Recycle Bin. It preserves
+every native row, offline ID, tag, rating, generation record, hash, FTS entry, original
+retirement journal and Cherry hash/URL/alias receipt. The curated copy takes priority
+even with zero weights; complementary or conflicting information retains both copies.
+External captions/sidecars, changed curation, replaced files, occupied original paths,
+unavailable folders or ambiguous links require review. Recovery must remain outside
+watched folders and portable projects. Deletion supports regular local Windows files;
+network paths, alternate streams and hardlinked victims require manual review.
+
+The worker repeats the preview and keeps the retained file protected against writes,
+rename and deletion, while opening the victim exclusively. Those handles remain open
+through the owner's serialized ID/state/scope approval and deletion of the exact opened
+file. Native approval performs no database DML or schema changes. A separate durable
+`purge-UUID.json` records each admitted attempt. Cancellation before marking deletion
+preserves the victim, including while awaiting native approval; once marked, the
+operation finishes and reports confirmed effects without blocking the interface.
+Results distinguish approval, marking and confirmed physical deletion. A final journal
+failure still reports a confirmed deletion; keep all journals for review. There is no
+common filesystem/SQLite transaction or guarantee against later external changes.
+Neither recovery folders nor Cherry receipts are automatically pruned.
 
 ### Explicit perceptual hash phase
 

@@ -65,6 +65,8 @@ class GUI(prior.Review):
             self.assertTrue(self.module.recovery_review_worker.wait(3000))
         if self.module.recovery_restore_worker is not None:
             self.assertTrue(self.module.recovery_restore_worker.wait(3000))
+        if self.module.recovery_purge_worker is not None:
+            self.assertTrue(self.module.recovery_purge_worker.wait(3000))
         self.assertTrue(pump(lambda: not _LIVE_WORKERS))
         if isValid(self.view):
             self.view.close()

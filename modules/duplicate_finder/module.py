@@ -1,5 +1,6 @@
 """Revisión de duplicados; preferencias por curación y retiro recuperable explícito."""
 from dataclasses import asdict
+from copy import deepcopy
 import json
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from .logic.perceptual_worker import PerceptualBackfillWorker
 from .logic.recovery_worker import RecoveryReviewWorker
 from .ui.recovery_panel import RecoveryPanel
 from .logic.restore_worker import RecoveryRestoreWorker
+from .logic.purge_worker import RecoveryPurgeWorker
 
 # Un QThread sin parent sigue vivo aunque se destruya la vista durante I/O.
 _LIVE_WORKERS = set()
@@ -43,6 +45,8 @@ class DuplicateFinderModule(BaseModule):
         self._phash_busy=False
         self.recovery_review_worker=None
         self.recovery_restore_worker=None
+        self.recovery_purge_worker=None
+        self._purge_request=None
         self._recovery_busy=False
         self._native_busy = False
         self._db_prepared = None
@@ -169,6 +173,8 @@ class DuplicateFinderModule(BaseModule):
         self.recovery_panel.changed.connect(self._configuration_changed)
         self.recovery_panel.selection_changed.connect(self._controls)
         self.recovery_panel.restore_requested.connect(self.restore_selected_copy)
+        self.recovery_panel.purge_preview_requested.connect(self.prepare_selected_purge)
+        self.recovery_panel.purge_requested.connect(self.purge_selected_copy)
         layout.addWidget(self.recovery_panel,1)
         layout.addWidget(self.tree, 3)
         navigation = QHBoxLayout()
@@ -226,7 +232,7 @@ class DuplicateFinderModule(BaseModule):
         self.progress.hide()
         layout.addWidget(self.progress, 1)
         self.btn_cancel = self._button('cancel', 'Cancel', self.cancel)
-        self.btn_cancel.setToolTip(self.text('cancel_tip', 'Stop preparation without blocking the interface. An accepted retirement group is not cancelled; its recovery journal preserves the plan if interrupted.'))
+        self.btn_cancel.setToolTip(self.text('cancel_tip', 'Stop preparation or deletion before the file is marked. An admitted retirement or restoration, or a marked deletion, finishes with its journal without blocking the interface.'))
         self.btn_auto_select = self._button('auto_select', 'Select recommended copies', self.auto_select_duplicates)
         self.btn_auto_select.setToolTip(self.text('auto_select_tip', 'Only marks exact copies whose complete information is preserved in the retained copy. Never selects the first file by position.'))
         self.btn_delete = self._button('delete', 'Retire selected copies', self.delete_files)
@@ -278,6 +284,8 @@ class DuplicateFinderModule(BaseModule):
         self.recovery_panel.setVisible(recovery_review)
         self.recovery_panel.set_idle(idle)
         self.recovery_panel.restore.setEnabled(bool(idle and recovery_review and self.context.get("data_service") is not None and self.recovery_panel.selected_restore()))
+        self.recovery_panel.prepare_purge.setEnabled(bool(idle and recovery_review and self.context.get('data_service') is not None and self.recovery_panel.selected_purge_request()))
+        self.recovery_panel.purge.setEnabled(bool(idle and recovery_review and self.context.get('data_service') is not None and self.recovery_panel.selected_purge()))
         for widget in (self.tree,self.details,self.action_status,self.btn_previous,self.btn_next,self.btn_open_group,self.page_status):
             widget.setVisible(not report_only)
         for widget in (self.recovery_label,self.recovery,self.btn_recovery,self.policy_note,self.btn_auto_select,self.btn_delete):
@@ -590,7 +598,7 @@ class DuplicateFinderModule(BaseModule):
 
     def shutdown_ready(self):
         return all(worker is None or not worker.isRunning()
-                   for worker in (self.worker, self.retirement_worker, self.native_worker,self.phash_worker,self.recovery_review_worker,self.recovery_restore_worker))
+                   for worker in (self.worker, self.retirement_worker, self.native_worker,self.phash_worker,self.recovery_review_worker,self.recovery_restore_worker,self.recovery_purge_worker))
 
     def _db_selected(self):
         if self.view is None or self._closed or self._busy or self._acting or self._native_busy or self._phash_busy or self._recovery_busy:
@@ -710,6 +718,95 @@ class DuplicateFinderModule(BaseModule):
         worker.finished_signal.connect(self.on_scan_finished)
         self._controls()
         worker.start()
+
+    def _purge_idle(self):
+        return (not self._closed and self.combo_mode.currentIndex()==5 and not self._busy and not self._acting
+            and not self._native_busy and not self._phash_busy and not self._recovery_busy
+            and (self.recovery_purge_worker is None or not self.recovery_purge_worker.isRunning())
+            and self.context.get('data_service') is not None)
+
+    def prepare_selected_purge(self):
+        if not self._purge_idle():return
+        arguments=self.recovery_panel.selected_purge_request()
+        if arguments is None:return
+        self.recovery_panel.invalidate_purge()
+        self._start_purge_worker('preview',arguments)
+
+    def _confirm_purge(self,arguments,evidence):
+        box=QMessageBox(self.view)
+        box.setWindowTitle(self.text('purge_confirm_title','Confirm permanent deletion'))
+        box.setTextFormat(Qt.PlainText)
+        box.setText(self.text('purge_confirm','Permanently delete copy ID {id}?\n\nFile: {target}\nSize: {size} bytes\n\nVerified retained copy ID: {keeper_id}\nRetained file: {keeper}\n\nThis bypasses the Recycle Bin and cannot be undone from recovery. Offline IDs, curation, journals and Cherry receipts remain. This evidence is checked again before deletion.').format(
+            id=arguments['copy_id'],target=evidence['destination'],size=evidence['size'],
+            keeper_id=evidence['keeper_id'],keeper=evidence['keeper']))
+        box.setStandardButtons(QMessageBox.Yes|QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+        box.button(QMessageBox.Yes).setText(self.text('purge_confirm_yes','Delete permanently'))
+        box.button(QMessageBox.No).setText(self.text('purge_confirm_no','Cancel'))
+        box.button(QMessageBox.Yes).setToolTip(self.text('purge_confirm_yes_tip','Confirm only this verified file. It will be permanently deleted after verification is repeated.'))
+        box.button(QMessageBox.No).setToolTip(self.text('purge_confirm_no_tip','Close without admitting deletion. The current preview is retained.'))
+        try:return box.exec()==QMessageBox.Yes
+        finally:
+            try:box.deleteLater()
+            except RuntimeError:pass
+
+    def purge_selected_copy(self):
+        if not self._purge_idle():return
+        arguments=self.recovery_panel.selected_purge()
+        if arguments is None:return
+        # Captura de valores concretos antes de un modal reentrante.
+        evidence=deepcopy(self.recovery_panel.purge_preview['evidence'])
+        ticket=self._token
+        if not self._confirm_purge(arguments,evidence):return
+        if not self._purge_idle() or ticket!=self._token or arguments!=self.recovery_panel.selected_purge():return
+        self.recovery_panel.invalidate()
+        self._start_purge_worker('purge',arguments)
+
+    def _start_purge_worker(self,operation,arguments):
+        self._acting=True;self._token+=1
+        self._purge_request=arguments
+        self.progress.setRange(0,0);self.progress.show()
+        self.status.setText(self.text('purge_preview_working','Verifying the selected recovery copy and the retained copy…') if operation=='preview' else
+            self.text('purge_working','Repeating verification and preparing a separate permanent deletion journal…'))
+        keys=('journal','copy_id','journal_fingerprint','expected_fingerprint')+(('preview_fingerprint',) if operation=='purge' else ())
+        worker=RecoveryPurgeWorker(self.context['data_service'],operation=operation,token=self._token,
+            **{key:arguments[key] for key in keys})
+        self.recovery_purge_worker=worker
+        _LIVE_WORKERS.add(worker)
+        worker.finished.connect(lambda worker=worker:_LIVE_WORKERS.discard(worker))
+        worker.finished.connect(self._recovery_purge_finished)
+        worker.finished_signal.connect(self._recovery_purge_received)
+        self._controls();worker.start()
+
+    @Slot(dict)
+    def _recovery_purge_received(self,result):
+        if self._closed or self.sender() is not self.recovery_purge_worker or result['token']!=self._token:return
+        self._token+=1
+        if result['operation']=='preview':
+            if self._purge_request!=self.recovery_panel.selected_purge_request():
+                self.recovery_panel.invalidate_purge()
+                self.status.setText(self.text('purge_selection_changed','Selection changed; prepare a new preview for the selected copy.'))
+                return
+            self.recovery_panel.show_purge_preview(result,self.reason)
+            message=self.text('purge_preview_ready','Preview ready. Inspect the copy and retained file before confirming permanent deletion.') if result['complete'] else (
+                self.text('purge_preview_cancelled','Deletion preview cancelled. No file was deleted.') if result['cancelled'] else
+                self.text('purge_preview_failed','Deletion preview incomplete: {reason}.').format(reason=self.reason(result['error'])))
+        else:
+            self.recovery_panel.show_purge(result,self.reason)
+            message=self.text('purge_summary','Copy ID {id} permanently deleted; offline identity, curation and Cherry receipts retained.').format(id=result['copy_id']) if result['complete'] else (
+                self.text('purge_cancelled','Deletion cancelled before marking the file. No file was deleted.') if result['cancelled'] else
+                self.text('purge_journal_partial','File deletion confirmed; operation journal incomplete: {reason}. Keep the journals for review.').format(reason=self.reason(result['error'])) if result['deleted'] else
+                self.text('purge_partial','File deletion not confirmed: {reason}. Inspect the operation journal before retrying.').format(reason=self.reason(result['error'])))
+        # Recuperación está fuera del scope operativo; no indexar esa carpeta.
+        self.status.setText(message)
+
+    @Slot()
+    def _recovery_purge_finished(self):
+        worker=self.sender()
+        if worker is self.recovery_purge_worker:
+            self.recovery_purge_worker=None;self._purge_request=None;self._acting=False
+            if not self._closed:self.progress.hide();self._controls()
+        worker.deleteLater()
 
     def _confirm_restore(self,arguments):
         box=QMessageBox(self.view)
@@ -909,6 +1006,8 @@ class DuplicateFinderModule(BaseModule):
             self.recovery_review_worker.stop()
         if self.recovery_restore_worker is not None:
             self.recovery_restore_worker.stop()
+        if self.recovery_purge_worker is not None:
+            self.recovery_purge_worker.stop()
 
     def on_unload(self, *unused):
         self._closed = True
@@ -925,6 +1024,8 @@ class DuplicateFinderModule(BaseModule):
             self.recovery_review_worker.stop()
         if self.recovery_restore_worker is not None:
             self.recovery_restore_worker.stop()
+        if self.recovery_purge_worker is not None:
+            self.recovery_purge_worker.stop()
 
     def run_headless(self, params, input_data):
         raise NotImplementedError('duplicate_review_requires_explicit_approval')

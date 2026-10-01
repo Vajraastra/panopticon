@@ -84,7 +84,11 @@ carpeta sola: no hay que registrar nada en el core.
    nada, y por eso se prueba con carpetas de juguete (`scripts/cherry_merge_toytest.py`);
    **Duplicate Finder**, autorizado por David para retirar copias exactas redundantes:
    conserva la curada/documentada, revalida el grupo completo y mueve a recuperación
-   persistente con diario, sin eliminar recibos Cherry. Nunca borrar por posición o pHash.
+   persistente con diario, sin eliminar recibos Cherry. Su purga posterior requiere
+   vista previa actual y confirmación manual por copia (David, 2026-09-30): borrado
+   definitivo sólo del archivo verificado en recuperación, con la copia conservada
+   protegida; conserva IDs offline/curación/diarios/recibos. Nunca automático, por
+   posición o pHash.
 3. **Lo pesado va en un `QThread`.** Inferencia, hashing, recorrido de disco: nunca en el hilo
    de la GUI. La señal de fin se llama `finished_signal`, **no** `finished` (sombrearía la señal
    nativa de `QThread`). Poner siempre un guard `isRunning()` contra doble inicio.

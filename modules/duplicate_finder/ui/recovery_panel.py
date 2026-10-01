@@ -1,4 +1,4 @@
-"""Diario seleccionado y evidencia observada; sin SQL, stat ni acciones destructivas."""
+"""Diario y acciones explícitas; sólo consume evidencia, sin SQL/stat de la GUI."""
 from pathlib import Path
 from PySide6.QtCore import Qt,Signal
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QLabel,QLineEdit,
@@ -10,13 +10,16 @@ class RecoveryPanel(QWidget):
     changed=Signal()
     selection_changed=Signal()
     restore_requested=Signal()
+    purge_preview_requested=Signal()
+    purge_requested=Signal()
 
     def __init__(self,text,accent,color=None):
         super().__init__()
         self.text=text
         self.result=None
+        self.purge_preview=None
         layout=QVBoxLayout(self);layout.setContentsMargins(0,0,0,0)
-        note=QLabel(text('recovery_review_note','Select one retirement journal explicitly. Review compares IDs, curation and current bytes without changing anything. Restore is a separate confirmed action for the selected copy; recorded phase is not proof of completion. No purge occurs.'))
+        note=QLabel(text('recovery_review_note','Review one retirement journal explicitly. Restoration and permanent deletion are separate manual actions. Deletion requires a fresh preview and confirmation of the selected copy; the recorded phase alone proves nothing.'))
         note.setWordWrap(True);layout.addWidget(note)
         row=QHBoxLayout()
         self.journal=QLineEdit()
@@ -46,6 +49,18 @@ class RecoveryPanel(QWidget):
         self.restore.setEnabled(False)
         self.restore.clicked.connect(self.restore_requested)
         layout.addWidget(self.restore)
+        actions=QHBoxLayout()
+        self.prepare_purge=QPushButton(text('purge_preview','Prepare deletion preview'))
+        self.prepare_purge.setToolTip(text('purge_preview_tip','Recheck the selected recovery copy and the retained copy, including current bytes, curation and scope. Displays the exact file before confirmation; deletes nothing.'))
+        self.prepare_purge.setStyleSheet(Theme.get_button_style(color('accent_warning')))
+        self.prepare_purge.setCursor(Qt.PointingHandCursor);self.prepare_purge.setEnabled(False)
+        self.prepare_purge.clicked.connect(self.purge_preview_requested)
+        self.purge=QPushButton(text('purge_selected','Permanently delete verified copy'))
+        self.purge.setToolTip(text('purge_selected_tip','Delete only the file identified by a current preview, after confirmation. Bypasses the Recycle Bin; keeps offline IDs, curation, journals and Cherry download receipts.'))
+        self.purge.setStyleSheet(Theme.get_button_style(color('accent_danger')))
+        self.purge.setCursor(Qt.PointingHandCursor);self.purge.setEnabled(False)
+        self.purge.clicked.connect(self.purge_requested)
+        actions.addWidget(self.prepare_purge);actions.addWidget(self.purge);layout.addLayout(actions)
         self.details=QPlainTextEdit();self.details.setReadOnly(True)
         self.details.setToolTip(text('recovery_review_details_tip','Evidence reflects this inspection only. Missing paths are distinguished from unavailable parents; any future restore or purge requires a fresh check and an explicit action.'))
         layout.addWidget(self.details,1)
@@ -59,10 +74,15 @@ class RecoveryPanel(QWidget):
 
     def set_idle(self,idle):
         self.journal.setEnabled(idle);self.choose.setEnabled(idle)
+        self.tree.setEnabled(idle)
+
+    def invalidate_purge(self):
+        self.purge_preview=None;self.purge.setEnabled(False)
 
     def invalidate(self):
         self.result=None;self.tree.clear();self.details.clear()
         self.restore.setEnabled(False)
+        self.invalidate_purge();self.prepare_purge.setEnabled(False)
 
     def selected_restore(self):
         item=self.tree.currentItem()
@@ -70,8 +90,41 @@ class RecoveryPanel(QWidget):
         move=item.data(0,Qt.UserRole)
         if move['observed'] not in ('retired_verified','archived_source_present'):return None
         copy=next(copy for copy in self.result['copies'] if copy['copy_id']==move['copy_id'])
-        return dict(journal=self.path(),copy_id=copy['copy_id'],journal_fingerprint=self.result['journal_fingerprint'],
+        return dict(journal=Path(self.path()).as_posix(),copy_id=copy['copy_id'],journal_fingerprint=self.result['journal_fingerprint'],
             expected_fingerprint=copy['fingerprint'],source=move['source'],destination=move['destination'],observed=move['observed'])
+
+    def selected_purge_request(self):
+        request=self.selected_restore()
+        return request if request is not None and request['observed']=='retired_verified' else None
+
+    def selected_purge(self):
+        request=self.selected_purge_request()
+        value=self.purge_preview
+        if request is None or value is None or not value['complete']:return None
+        evidence=value['evidence']
+        if any(request[key]!=evidence[key] for key in ('journal','copy_id','journal_fingerprint','source','destination')):return None
+        if request['expected_fingerprint']!=evidence['approved'][0]['fingerprint']:return None
+        return dict(request,preview_fingerprint=value['preview_fingerprint'])
+
+    def show_purge_preview(self,value,reason):
+        self.invalidate_purge()
+        if not value['complete']:
+            self.details.setPlainText(reason(value['error']) if value['error'] else self.text('purge_preview_cancelled','Deletion preview cancelled. No file was deleted.'))
+            return
+        self.purge_preview=value
+        evidence=value['evidence']
+        self.details.setPlainText(self.text('purge_preview_details','Permanent deletion preview\nCopy ID: {id}\nFile to delete: {target}\nOriginal path (absent): {source}\nVerified retained copy ID: {keeper_id}\nRetained file: {keeper}\nFile size: {size} bytes\n\nOffline IDs, curation, journals and Cherry receipts remain. This bypasses the Recycle Bin. No file has been deleted; confirmation is still required.').format(
+            id=evidence['copy_id'],target=evidence['destination'],source=evidence['source'],
+            keeper_id=evidence['keeper_id'],keeper=evidence['keeper'],size=evidence['size']))
+
+    def show_purge(self,value,reason):
+        self.invalidate()
+        self.details.setPlainText(self.text('purge_result_details','Permanent deletion confirmed: {deleted}\nDeletion marked: {marked}\nNative approval confirmed: {approved}\nFile: {target}\nRetained file: {keeper}\nOperation journal: {journal}\n\n{reason}\nOffline identities, curation and Cherry receipts are retained. Request a fresh journal review before another action.').format(
+            deleted=self.text('recovery_yes','Yes') if value['deleted'] else self.text('recovery_no','No'),
+            marked=self.text('recovery_yes','Yes') if value['delete_marked'] else self.text('recovery_no','No'),
+            approved=self.text('recovery_yes','Yes') if value['approved'] else self.text('recovery_no','No'),
+            target=value['destination'] or '—',keeper=value['keeper'] or '—',journal=value['operation_journal'] or '—',
+            reason=reason(value['error']) if value['error'] else ''))
 
     def show_restore(self,value,reason):
         self.invalidate()
@@ -105,6 +158,7 @@ class RecoveryPanel(QWidget):
         if self.tree.topLevelItemCount():self.tree.setCurrentItem(self.tree.topLevelItem(0))
 
     def _selected(self,item,previous):
+        self.invalidate_purge()
         self.selection_changed.emit()
         if item is None or self.result is None:return
         move=item.data(0,Qt.UserRole)
