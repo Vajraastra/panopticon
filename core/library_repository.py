@@ -14,8 +14,9 @@ log = logging.getLogger(__name__)
 class LibraryRepository:
     """SQL privado. La conexión se crea, usa y cierra en el hilo dueño."""
 
-    def __init__(self, conn, *, cache_derived_paths=False):
+    def __init__(self, conn, *, cache_derived_paths=False, path_coverage_cache=None):
         self.conn = conn
+        self._path_coverage_cache = path_coverage_cache
         self._derived_paths = None
         if cache_derived_paths:
             from core.derived_paths import DerivedPaths
@@ -318,7 +319,7 @@ class LibraryRepository:
 
     def get_path_identity_resolution(self, canonical):
         from core.path_identity_registry import resolution
-        return resolution(self.conn, canonical)
+        return resolution(self.conn, canonical, self._path_coverage_cache)
 
     def prepare_path_identity(self):
         from core.path_identity_registry import prepare
@@ -330,7 +331,7 @@ class LibraryRepository:
 
     def get_path_identity_status(self):
         from core.path_identity_registry import status
-        return status(self.conn)
+        return status(self.conn, self._path_coverage_cache)
 
     def get_path_identity_matches(self, canonical, **kwargs):
         from core.path_identity_registry import matches

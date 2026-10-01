@@ -929,8 +929,15 @@ between probes/admissions. It preserves previous confirmed evidence on failure;
 a new explicit pass safely rechecks it. `resolve_path_identity()` asks Windows
 before its SQL snapshot. It selects a unique ID only when coverage is complete
 and no online rows are unresolved; collisions/incomplete/offline remain review
-results. These APIs do not automatically route legacy mutations or register new
-files. No aggregate filesystem/SQLite snapshot or hard I/O deadline is claimed. Unknown/offline rows remain unresolved.
+results. A bounded one-entry coverage cache follows a transactional Native SQL
+clock: file inserts/deletes, changed path/offline bindings and registry writes
+advance it even through other SQLite clients; rollback does not. Only coherent
+query-only snapshots without dirty reads may populate shared coverage, because
+rolled-back epoch numbers can later be reused. Ordinary
+curation retains coverage while match rows read current ratings. Readers validate
+owned clock/table/index/trigger definitions before cache use; incomplete old
+preparations work uncached until another explicit backed-up prepare. These APIs
+do not automatically route legacy mutations or register new files. No aggregate filesystem/SQLite snapshot or hard I/O deadline is claimed. Unknown/offline rows remain unresolved.
 Existing lookup/registration/prefix behavior is still legacy; connecting those
 consumers and validating the real migration remain open. Folder spelling and portable Cherry data remain preserved.
 [Windows supports case rules per directory](https://learn.microsoft.com/en-us/windows/wsl/case-sensitivity).

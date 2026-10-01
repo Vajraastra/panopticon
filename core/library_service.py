@@ -177,6 +177,8 @@ class LibraryService:
         self._metrics = LibraryMetrics(capacity)
         self._wal = WalSampler(self.db_path, self._metrics)
         self._revision = RevisionClock()
+        from core.path_identity_clock import CoverageCache
+        self._path_coverage = CoverageCache()
         self._admission = threading.Lock()
         self._closed = False
         self._ready = Future()
@@ -241,8 +243,8 @@ class LibraryService:
                     try:
                         changes_before = conn.total_changes
                         if operation == 'prepare_path_identity':
-                            from core.path_identity_registry import prepared
-                            if not prepared(conn):
+                            from core.path_identity_registry import needs_prepare
+                            if needs_prepare(conn):
                                 backup_database(conn, self.db_path, 'path-identity')
                         if operation != 'vacuum_database':
                             phase = time.perf_counter()
@@ -398,7 +400,7 @@ class LibraryService:
                 check()
                 # Count + página y consultas relacionadas ven la misma revisión.
                 conn.execute('BEGIN')
-                value = getattr(LibraryRepository(conn), operation)(*saved_args, **saved_kwargs)
+                value = getattr(LibraryRepository(conn, path_coverage_cache=self._path_coverage), operation)(*saved_args, **saved_kwargs)
                 # Python result work may not execute enough SQLite instructions
                 # to invoke the handler. Never deliver a late/cancelled result.
                 check()

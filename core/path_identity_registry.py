@@ -32,12 +32,19 @@ def prepared(conn):
     return True
 
 
+def needs_prepare(conn):
+    from core.path_identity_clock import token
+    ready = prepared(conn)
+    return token(conn) is None or not ready
+
+
 def prepare(conn):
-    if prepared(conn):
-        return True
-    conn.execute(TABLE_SQL)
-    conn.execute(INDEX_SQL)
-    conn.execute('INSERT INTO panopticon_schema(name,value) VALUES(?,?)', (MARKER, '1'))
+    if not prepared(conn):
+        conn.execute(TABLE_SQL)
+        conn.execute(INDEX_SQL)
+        conn.execute('INSERT INTO panopticon_schema(name,value) VALUES(?,?)', (MARKER, '1'))
+    from core.path_identity_clock import prepare as prepare_clock
+    prepare_clock(conn)
     return True
 
 
@@ -94,10 +101,20 @@ def store(conn, values):
     return True
 
 
-def status(conn):
+def status(conn, cache=None):
     if not prepared(conn):
         total = conn.execute('SELECT COUNT(*) FROM files').fetchone()[0]
         return dict(prepared=False, total=total, pending=total, unresolved=0, conflict_groups=0)
+    from core.path_identity_clock import token
+    key = token(conn)
+    # Rolled-back epochs can be reused by a later different transaction. Only
+    # committed, coherent RO snapshots may populate shared coverage; never a
+    # writer's uncommitted state or independent autocommit SELECT snapshots.
+    if not conn.in_transaction or conn.execute('PRAGMA query_only').fetchone() != (1,) or conn.execute('PRAGMA read_uncommitted').fetchone() != (0,):
+        cache = None
+    cached = cache.get(key) if cache is not None else None
+    if cached is not None:
+        return cached
     row = conn.execute('SELECT COUNT(*), SUM(CASE WHEN r.file_id IS NULL OR '
         'r.stored_path!=f.path COLLATE BINARY OR r.is_offline!=f.is_offline THEN 1 ELSE 0 END), '
         "SUM(CASE WHEN f.is_offline=0 AND r.status!='resolved' THEN 1 ELSE 0 END) "
@@ -106,8 +123,11 @@ def status(conn):
         'FROM path_identity_records r JOIN files f ON f.id=r.file_id '
         "WHERE r.status='resolved' AND f.is_offline=0 AND r.is_offline=0 AND f.path=r.stored_path COLLATE BINARY "
         'GROUP BY r.canonical HAVING COUNT(*)>1)').fetchone()[0]
-    return dict(prepared=True, total=row[0], pending=row[1] or 0,
-                unresolved=row[2] or 0, conflict_groups=conflicts)
+    value = dict(prepared=True, total=row[0], pending=row[1] or 0,
+                 unresolved=row[2] or 0, conflict_groups=conflicts)
+    if cache is not None:
+        cache.put(key, value)
+    return value
 
 
 def matches(conn, canonical, *, limit=100):
@@ -125,8 +145,8 @@ def matches(conn, canonical, *, limit=100):
     return dict(canonical=canonical, records=rows, ambiguous=len(rows)>1)
 
 
-def resolution(conn, canonical):
-    coverage = status(conn)
+def resolution(conn, canonical, cache=None):
+    coverage = status(conn, cache)
     result = dict(canonical=local_path(canonical), records=[], file_id=None, coverage=coverage)
     if not coverage['prepared']:
         result['status'] = 'not_prepared'
