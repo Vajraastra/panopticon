@@ -9,6 +9,7 @@ from core.components.tag_vocabulary import TagVocabulary
 from core.locale_manager import LocaleManager
 from core.metadata.extractor import MetadataExtractor
 from core.image_preview import ImagePreview
+from core.library_revision_async import LibraryRevisionWatcher
 from core.theme_manager import ThemeManager
 import os
 import logging
@@ -146,6 +147,7 @@ class AdvancedViewer(QDialog):
         self.timer = QTimer(self) # Temporizador para el slideshow
         self.timer.timeout.connect(self.next_image)
         self.db = DatabaseManager(service=service)
+        initial_revision = self.db.service.revision_snapshot()
         self._closed = False
         self._curation_ready = False
         self._registered_id = None
@@ -326,6 +328,16 @@ class AdvancedViewer(QDialog):
         self.tag_completions.changed.connect(lambda value: self.on_tags_result(0, value['names'], None))
         self.tag_completions.failed.connect(lambda error: self.on_tags_result(0, [], error))
         self.refresh_completer()
+        self.revisions = LibraryRevisionWatcher(self.db.service, self, initial=initial_revision, busy=lambda:
+            self.curation_reader._active or self.tag_completions.busy or
+            self._pending_edit is not None or not self._preview_ready)
+        self.revisions.changed.connect(self._on_native_revision)
+
+    def _on_native_revision(self, revision):
+        if self._closed or not self.paths:
+            return
+        self.load_tags(self.paths[self.current_idx])
+        self.tag_completions.reload_page()
 
     def refresh_completer(self):
         """Updates the autocomplete suggestions with the latest tags from DB."""
@@ -345,6 +357,7 @@ class AdvancedViewer(QDialog):
         self._closed = True
         self.timer.stop()
         self.preview.close()
+        self.revisions.close()
         self._preview_image = None
         self.curation_reader.close()
         self.tag_completions.close()

@@ -5,6 +5,7 @@ from PySide6.QtCore import Signal
 
 from core.base_module import BaseModule
 from core.image_preview import ImagePreview
+from core.library_revision_async import LibraryRevisionWatcher
 from core.library_async import LibraryReader
 from .logic.state import GalleryState
 from .logic.query_engine import QueryEngine
@@ -36,12 +37,22 @@ class GalleryModule(BaseModule):
 
         self.state  = GalleryState()
         self.engine = QueryEngine(service=self.context.get('data_service'))
+        initial_revision = self.engine.db.service.revision_snapshot()
         self.view_widget = GalleryView(self.state, self.engine, self.context)
+        self.revisions = LibraryRevisionWatcher(self.engine.db.service, self.view_widget, initial=initial_revision,
+            busy=lambda: self.view_widget.grid.reader._active or self.view_widget.sidebar.tag_completions.busy)
+        self.revisions.changed.connect(self._on_native_revision)
 
         self.view_widget.btn_send.clicked.connect(self.show_send_menu)
         self.view_widget.sidebar.btn_open.clicked.connect(self.open_folder_dialog)
 
         return self.view_widget
+
+    def _on_native_revision(self, revision):
+        if self._closed or self.view_widget is None:
+            return
+        self.view_widget.grid.refresh()
+        self.view_widget.sidebar.tag_completions.reload_page()
 
     def open_folder_dialog(self):
         if self._closed: return
@@ -109,6 +120,8 @@ class GalleryModule(BaseModule):
 
     def on_unload(self):
         self._closed = True
+        if hasattr(self, 'revisions'):
+            self.revisions.close()
         if self.view_widget is not None:
             from .ui.viewer_window import AdvancedViewer
             for viewer in self.view_widget.findChildren(AdvancedViewer): viewer.close()

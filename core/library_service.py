@@ -16,6 +16,7 @@ from queue import Queue, Full, Empty
 
 from core.library_connections import open_reader
 from core.library_metrics import LibraryMetrics
+from core.library_revision import RevisionClock
 from core.library_results import ReadResultError
 from core.library_payload import snapshot as snapshot_write_payload, snapshot_read
 from core.library_repository import LibraryRepository
@@ -158,6 +159,7 @@ class LibraryService:
         self.db_path = str(Path(db_path).resolve())
         self._queue = Queue(maxsize=capacity)
         self._metrics = LibraryMetrics(capacity)
+        self._revision = RevisionClock()
         self._admission = threading.Lock()
         self._closed = False
         self._ready = Future()
@@ -195,11 +197,13 @@ class LibraryService:
                     raise sqlite3.DatabaseError('WAL unavailable')
             conn.execute('PRAGMA synchronous=FULL')
             repo = LibraryRepository(conn, cache_derived_paths=True)
+            self._revision.poll(conn)
             self._ready.set_result(True)
             while True:
                 try:
                     command = self._queue.get(timeout=.1)
                 except Empty:
+                    self._revision.poll(conn)
                     # Admission is closed before exit: no command can appear
                     # after the drained queue is observed under this lock.
                     with self._admission:
@@ -208,6 +212,7 @@ class LibraryService:
                 try:
                     if command is None:
                         break
+                    self._revision.poll(conn)
                     future, operation, args, kwargs, submitted = command
                     started = self._metrics.start_write(operation, submitted)
                     if not future.set_running_or_notify_cancel():
@@ -215,6 +220,7 @@ class LibraryService:
                         started = None
                         continue
                     try:
+                        changes_before = conn.total_changes
                         if operation != 'vacuum_database':
                             phase = time.perf_counter()
                             try:
@@ -227,6 +233,8 @@ class LibraryService:
                         phase = time.perf_counter()
                         try:
                             conn.commit()
+                            if conn.total_changes != changes_before:
+                                self._revision.committed()
                         finally:
                             self._metrics.observe('commit', time.perf_counter() - phase)
                         repo.finish_derived_paths(True, operation)
@@ -257,6 +265,7 @@ class LibraryService:
                 with self._admission:
                     self._closed = True
                     self._metrics.closed()
+                self._revision.stopped()
                 if repo is not None:
                     repo.finish_derived_paths(False, 'shutdown')
                 if conn is not None:
@@ -419,6 +428,14 @@ class LibraryService:
                 yield guard
             finally:
                 guard.close()
+
+    def revision_snapshot(self):
+        """Epoch, sequence, monitor health; constant-cost, without SQL/filesystem IO.
+
+        Ephemeral invalidation hint, not a durable receipt or approval fingerprint.
+        External commits are coalesced by persistent owner data_version polling.
+        """
+        return self._revision.snapshot()
 
     def metrics_snapshot(self):
         """Contadores/timings locales, sin SQL, stat, payloads ni espera del dueño.

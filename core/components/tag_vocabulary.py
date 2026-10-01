@@ -61,6 +61,13 @@ class TagVocabulary(QObject):
         if not self.closed:
             self.reader.request('get_tags_page', query=self.query, after_name=self.cursors[-1], limit=200)
 
+    def reload_page(self):
+        if self.closed:
+            return
+        self.timer.stop()
+        self._clear()
+        self._request()
+
     def next(self):
         if self.closed or self.busy or not self.more:
             return

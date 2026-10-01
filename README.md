@@ -804,7 +804,31 @@ curation, history or Cherry receipts. The temporary is not a recovery journal.
 The disk discovery result remains in memory, and filesystem/SQLite checks are
 not atomic. Legacy full-inventory API compatibility remains available.
 
-Write scheduling, cross-view invalidation and live WAL pressure remain open.
+The native owner exposes an ephemeral revision token: service epoch, sequence
+and monitor health. Confirmed commands that changed SQLite's total_changes advance
+it after commit; rollback, cancellation and empty writes do not. This counts
+committed SQLite changes, not necessarily semantic differences in matched UPDATEs.
+The same persistent owner connection polls PRAGMA data_version while idle and
+before commands to detect external commits. Multiple external commits can coalesce.
+Monitor failure/recovery/closure changes its health token. Reading revision_snapshot
+copies local primitives under a short lock without SQL/stat or writer waits;
+logging happens outside that lock. Epochs change when a service is recreated.
+
+Gallery's module/viewers and Librarian poll that local token every 250 ms and
+coalesce refreshes until their existing readers are idle. Notifications preserve
+typing, vocabulary cursors and current pages, and avoid cancelling a slow read on
+every commit. Librarian retains externally supplied selections and protects an
+active handoff/export; reduced native results clamp to the last available page.
+The initial token is captured before first reads, so commits during view creation
+are not missed. Owners stop their timers and discard pending notices on closure.
+Viewer curation refreshes without rereading image files; physical preview/cache
+version invalidation and other consumers still need integration.
+
+This is eventual invalidation, not a durable log, receipt, approval fingerprint or
+frozen DB revision attached to a read result. A busy writer/read/export can delay
+notification. External commits still require valid schema/FTS; monitoring does not
+repair their integrity. FIFO scheduling remains unchanged. Other consumer caches,
+write scheduling and live WAL pressure remain open.
 
 ## License
 

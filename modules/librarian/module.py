@@ -9,6 +9,7 @@ from core.base_module import BaseModule
 from core.components.thumbnail import ClickableThumbnail
 from core.components.tag_widgets import FlowLayout, TagChip
 from core.database_manager import DatabaseManager
+from core.library_revision_async import LibraryRevisionWatcher
 from core.library_async import LibraryReader, LibraryWriter
 from core.components.tag_vocabulary import TagVocabulary, TagPageBar
 from core.curation_tasks import CurationExportTasks
@@ -120,8 +121,11 @@ class LibrarianModule(BaseModule):
         )
         self.view.destroyed.connect(self.folder_archive.close)
         
+        initial_revision = self.db.service.revision_snapshot()
         self.setup_completer()
         self.refresh_ui()
+        self.revisions = LibraryRevisionWatcher(self.db.service, self.view, busy=self._revision_busy, initial=initial_revision)
+        self.revisions.changed.connect(self._on_native_revision)
 
         # Escuchar cambios externos en disco (ej. Pickler movió archivos)
         eb = self.context.get('event_bus')
@@ -786,6 +790,19 @@ class LibrarianModule(BaseModule):
         self.current_folder_path = folder_path
         self._request_selection()
 
+    def _revision_busy(self):
+        return (self.overview_reader._active or self.browse_reader._active or
+                self.tag_completions.busy or self._handoff is not None or
+                self._exporting is not None or self._folder_write is not None)
+
+    def _on_native_revision(self, revision):
+        if self._closed or not self.view:
+            return
+        self.overview_reader.request('get_library_overview', include_tags=False)
+        self.tag_completions.reload_page()
+        if self._external_paths is None:
+            self._request_selection(self.current_page)
+
     def update_global_stats(self):
         if not self._closed and self.view:
             self.overview_reader.request('get_library_overview', include_tags=False)
@@ -839,6 +856,10 @@ class LibrarianModule(BaseModule):
         self._browse_ready = True
         self.current_page = value['offset'] // self.page_size
         count = self._selection_count = value['count']
+        last_page = max(0, (count - 1) // self.page_size)
+        if self.current_page > last_page:
+            self._request_selection(last_page)
+            return
         if terms:
             text = self.tr('lib.msg.found_tags', 'Found {count} items matching tags').format(count=count)
         else:
@@ -878,6 +899,8 @@ class LibrarianModule(BaseModule):
 
     def on_unload(self):
         self._closed = True
+        if hasattr(self, 'revisions'):
+            self.revisions.close()
         if hasattr(self, 'tag_completions'):
             self.tag_completions.close()
         if hasattr(self, 'folder_archive'):
