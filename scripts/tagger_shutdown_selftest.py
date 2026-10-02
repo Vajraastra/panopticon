@@ -113,6 +113,7 @@ class TaggerShutdown(unittest.TestCase):
         widget = bbox_editor.BBoxEditor(self.image, self.root/'drafts'/'a.pano.json', parent=self.view)
         self.view._editors.append(widget)
         self.widgets.append(widget)
+        self.assertTrue(pump(lambda: not widget._loading))
         return widget
 
     def test_result_is_not_native_completion_or_permission_to_restart(self):

@@ -37,7 +37,7 @@ from PIL import Image
 
 from core.theme import Theme
 from ..logic.ideogram.datamodel import WorkDoc, Element, STATUS_DRAFT
-from ..logic.ideogram import layout
+from ..logic.ideogram import layout, editor_load
 from ..logic import refine
 from ..logic.providers.openai_compat import OpenAICompatProvider
 from .text_panel import TextComposerDialog, pil_to_qpixmap
@@ -402,6 +402,23 @@ class _AutoDetectWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class _ImageLoadWorker(QThread):
+    finished_signal = Signal(object, object)
+
+    def __init__(self, image_path, pano_path, defaults, index):
+        super().__init__()
+        self.image_path, self.pano_path = Path(image_path), Path(pano_path)
+        self.defaults, self.index = dict(defaults), index
+
+    def run(self):
+        try:
+            value = editor_load.load(self.image_path, self.pano_path, self.defaults,
+                                     self.isInterruptionRequested)
+            self.finished_signal.emit(value, None)
+        except Exception as error:
+            self.finished_signal.emit(None, str(error))
+
+
 class BBoxEditor(WorkerViewLifecycle, QDialog):
     """Ventana de edición de un .pano.json para una imagen."""
 
@@ -445,43 +462,65 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         self.resize(1180, 800)
         self.setStyleSheet(f"background-color: {Theme.BG_MAIN}; color: {Theme.TEXT_PRIMARY};")
 
-        self._load_image_data()   # fija _pixmap, _work_image, _composited, _doc
+        self._load_worker = None
+        self._loading = False
+        self._loaded = False
+        self._pixmap = QPixmap()
+        self._work_image = None
+        self._composited = False
+        self._doc = WorkDoc(image=self.image_path.name)
         self._build_ui()
         self._populate_from_doc()
         self._update_nav()
+        self._load_image_data()
 
-    def _load_image_data(self):
-        """Carga pixmap, imagen de trabajo PIL y documento de la imagen actual."""
-        self._pixmap = QPixmap(str(self.image_path))
-        if self._pixmap.isNull():
-            raise ValueError(f"No se pudo abrir la imagen: {self.image_path}")
-        # Imagen de trabajo (PIL): se modifica al componer texto (Caso A). La
-        # copia de salida con el texto se escribe junto al .pano.json al guardar.
-        self._work_image = Image.open(self.image_path).convert("RGB")
+    def _load_image_data(self, image_path=None, pano_path=None, index=None):
+        if self._closing or self._load_worker is not None:
+            return
+        self._loading = True
+        self.layout().itemAt(0).widget().setEnabled(False)
+        self.setCursor(Qt.WaitCursor)
+        worker = self._load_worker = _ImageLoadWorker(
+            image_path or self.image_path, pano_path or self.pano_path,
+            self._style_defaults, self._index if index is None else index)
+        self._workers.connect(worker, worker.finished_signal, self._image_loaded)
+        try:
+            self._workers.start(worker, '_load_worker')
+        except Exception as error:
+            self._image_loaded(None, str(error))
+            self._worker_settled('_load_worker')
+
+    def _image_loaded(self, value, error):
+        if error is not None or value is None:
+            if error is not None:
+                QMessageBox.warning(self, self.tr('ig4.save_err_title', 'Save error'),
+                                    self.tr('common.error_loading', 'Error loading image.')+'\n'+error)
+            return
+        self.image_path, self.pano_path = value['image_path'], value['pano_path']
+        self._index = self._load_worker.index
+        self._pixmap = QPixmap.fromImage(value['qimage'])
+        if self._work_image is not None:
+            self._work_image.close()
+        self._work_image = value['image']
+        self._doc = value['doc']
+        self._source_identity, self._draft_identity = value['source_identity'], value['draft_identity']
         self._composited = False
-        self._doc = self._load_or_create_doc()
+        self._loaded = True
+        self._reset_scene_for_new_image()
+        self._populate_from_doc()
+        self._update_nav()
+
+    def _worker_settled(self, attribute):
+        if attribute == '_load_worker':
+            self._loading = False
+            self.unsetCursor()
+            self.layout().itemAt(0).widget().setEnabled(self._loaded and not self._closing)
 
     # ── i18n ────────────────────────────────────────────────────────────
     def tr(self, key, default):
         return self._lm.tr(key, default) if self._lm else default
 
     # ── carga del documento ─────────────────────────────────────────────
-    def _load_or_create_doc(self):
-        if self.pano_path.exists():
-            try:
-                return WorkDoc.load(self.pano_path)
-            except (ValueError, OSError, KeyError) as exc:
-                log.warning("pano.json ilegible (%s); se crea uno nuevo", exc)
-        doc = WorkDoc(image=self.image_path.name,
-                      image_w=self._pixmap.width(), image_h=self._pixmap.height(),
-                      status=STATUS_DRAFT)
-        # Hereda el estilo compartido del set (solo en docs nuevos).
-        sd = self._style_defaults
-        doc.style.art_style = sd.get("art_style", "") or doc.style.art_style
-        doc.style.aesthetics = sd.get("aesthetics", "") or doc.style.aesthetics
-        doc.style.lighting = sd.get("lighting", "") or doc.style.lighting
-        return doc
-
     # ── construcción de UI ──────────────────────────────────────────────
     def _build_ui(self):
         root = QHBoxLayout(self)
@@ -654,7 +693,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
 
     def _go(self, delta):
         """Guarda la imagen actual (si tiene contenido) y salta `delta` posiciones."""
-        if self._closing:
+        if self._closing or self._loading or not self._loaded:
             return
         if not self._images:
             return
@@ -669,18 +708,9 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         self._collect_globals()
         if (self._has_content() or self.pano_path.exists()) and not self._save():
             return
-        self._index = new
-        self.image_path = Path(self._images[new])
+        image_path = Path(self._images[new])
         out = self._out_dir or layout.out_dir_from_pano(self.pano_path)
-        self.pano_path = layout.pano_path(out, self.image_path)
-        try:
-            self._load_image_data()
-        except ValueError as exc:
-            QMessageBox.warning(self, self.tr("ig4.save_err_title", "Save error"), str(exc))
-            return
-        self._reset_scene_for_new_image()
-        self._populate_from_doc()
-        self._update_nav()
+        self._load_image_data(image_path, layout.pano_path(out, image_path), new)
 
     def _reset_scene_for_new_image(self):
         """Limpia la escena y la lista para cargar otra imagen en la misma ventana."""
@@ -950,6 +980,8 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
 
     # ── eventos de caja ─────────────────────────────────────────────────
     def _on_box_created(self, rect):
+        if self._closing or self._loading or not self._loaded:
+            return
         etype = "obj" if self._draw_type == DRAW_OBJ else "text"
         elem = Element(id=self._doc.next_element_id(), type=etype,
                        bbox_px=[round(rect.left()), round(rect.top()),
@@ -1193,6 +1225,8 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         color, bbox AUTOMÁTICA y los parámetros de render, y mueve la caja a esa
         bbox. La copia con texto se escribe al guardar.
         """
+        if self._closing or self._loading or not self._loaded:
+            return
         if not self._selected or self._selected.element.type != "text":
             return
         elem = self._selected.element
@@ -1224,6 +1258,8 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         parámetros de render; mueve la caja a esa bbox. La copia con la forma se
         escribe al guardar (igual que el texto compuesto).
         """
+        if self._closing or self._loading or not self._loaded:
+            return
         if not self._selected or self._selected.element.type != "obj":
             return
         from .shape_panel import ShapeComposerDialog
@@ -1248,7 +1284,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
     # ── auto-detección de cajas (YOLO) ──────────────────────────────────
     def _auto_detect(self):
         """Lanza la detección YOLO de la imagen actual en un hilo aparte."""
-        if self._closing:
+        if self._closing or self._loading or not self._loaded:
             return
         if self._autodet is not None:
             return
@@ -1297,6 +1333,8 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
 
     def _nudge_selected(self, dx, dy):
         """Mueve la caja seleccionada `dx,dy` px de escena, con clamp a la imagen."""
+        if self._closing or self._loading or not self._loaded:
+            return
         if not self._selected:
             return
         item = self._selected
@@ -1311,6 +1349,8 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         Copia tipo, descripción y texto literal; NO copia el render compuesto ni la
         paleta (esos implican píxeles ya pintados en la imagen original, que no se
         re-componen en la copia). La copia queda seleccionada al final de la lista."""
+        if self._closing or self._loading or not self._loaded:
+            return
         if not self._selected:
             return
         src = self._selected.element
@@ -1329,6 +1369,8 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         self._list.setCurrentRow(len(self._items) - 1)
 
     def _delete_selected(self):
+        if self._closing or self._loading or not self._loaded:
+            return
         if not self._selected:
             return
         item = self._selected
@@ -1355,6 +1397,8 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         aviso por imagen era tedioso. El éxito se refleja cerrando el editor
         (ver `_save_and_close`); solo los errores interrumpen con un aviso.
         """
+        if self._closing or self._loading or not self._loaded:
+            return False
         self._collect_globals()
         try:
             self.pano_path.parent.mkdir(parents=True, exist_ok=True)

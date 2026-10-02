@@ -755,6 +755,14 @@ and the bounded read-only destination check. The indexed flow uses owner approva
 without a redundant per-image RO scan. The owner reuses bounded destination keys
 between registrations and refreshes after external commits or other writes, with
 complete fallback above cache limits. No read transaction remains open between images.
+The Tagger BBox editor reads its source and work draft in an owned QThread.
+Scene and box coordinates remain original pixels, without downscaling. Inputs
+are limited to one frame, 256 MiB and 20 million pixels; work drafts to 8 MiB.
+Editing, saving and navigation are blocked until loading and native cleanup finish.
+A failed navigation retains the previous image/document. Unreadable or mismatched
+drafts are rejected without creating an empty replacement. Close/Escape retains
+the decoder and discards late results; no original is modified by loading.
+
 Cropper decodes its bounded preview in a worker, with one active and the latest
 pending image. Saving is disabled until the current image is ready; failed loads
 cannot reuse a previous source. Normalized selections still crop original pixels.
