@@ -781,8 +781,7 @@ before publication; an image already published finishes its draft commit.
 Image and draft commits are separate: a failed draft commit keeps the published
 image and a recovery draft, reporting both paths without automatic deletion/retry.
 A failure after the draft commit is reported as committed, even during cancellation.
-This contract does not yet establish ownership of legacy composed output images
-or register composed Tagger derivatives in Native; those remain in producer maintenance.
+Legacy composed output images without source/output proof remain preserved for review.
 
 Regular Tagger captions validate the source/output image pair before calling a
 provider. Different images sharing a caption stem and orphan captions require
@@ -800,7 +799,14 @@ rebuilding; an unowned composition remains preserved for review. Capture and
 AutoBox cooperate with the editor guard and reject concurrent draft/JSON edits.
 JSON and work drafts publish through flushed temporary files. A failed work
 draft commit retains the exported pair and its review guard without reporting
-success. Ideogram Native registration remains under producer maintenance.
+success. Indexed Ideogram sources capture their Native revision before provider
+work, including shared style inference. Approval and a durable journal precede
+publication; draft and Native receipt confirmation precede success. Modified
+compositions receive a new Native ID with empty curation; byte-identical exports
+retain initial curation independently. Existing verified outputs retain their
+current ID/curation. External sources export without automatic registration.
+Late cancellation finishes admitted publication; failed draft/Native commits
+retain the pair, guard and journal for review. The final summary retains errors.
 
 Regular Tagger uses the shared Native service from the app context. It captures
 the source revision before provider work, prepares the derivative schema once per

@@ -721,6 +721,7 @@
   "ig4.no_jobs": "Draw boxes on at least one image first (double-click).",
   "ig4.capturing": "Capturing Ideogram 4 captions…",
   "ig4.warn": "{0}: {1} schema warning(s)",
+  "ig4.partial_errors": "{0} exported, {1} skipped; {2} error(s). Review the details before retrying.",
   "ig4.done": "Done — {0} exported, {1} skipped.",
   "ig4.editor_title": "Ideogram 4 — bbox editor",
   "ig4.draw_type": "DRAW TYPE",

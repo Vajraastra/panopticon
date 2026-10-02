@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
@@ -38,6 +39,8 @@ from . import schema, palette, layout
 from .datamodel import WorkDoc, STATUS_EXPORTED
 from .. import sidecar
 from ..caption_publication import CaptionPair
+from ..caption_native import CaptionNative
+from core.derived_publication import write
 from .draft_publication import draft_guard
 from core.image_preview import MAX_SOURCE_BYTES
 from ..providers.base_provider import ProviderError
@@ -59,7 +62,7 @@ class Ig4Worker(QThread):
     def __init__(self, provider, model, jobs, *, prompt_hld, prompt_background,
                  prompt_obj, default_padding=0.08, recapture=False, retries=2,
                  infer_style=False, style_per_image=False, prompt_style="",
-                 parent=None):
+                 parent=None, native_service=None, journal_root=None):
         super().__init__(parent)
         self.provider = provider
         self.model = model
@@ -85,9 +88,36 @@ class Ig4Worker(QThread):
         self.prompt_style = prompt_style
         self._shared_style = None   # estilo inferido una vez (modo estilo+VLM)
         self._cancel = False
+        self.cancel_event = threading.Event()
+        self.native_service = native_service
+        self.journal_root = journal_root
+        self._native_prepared = False
+        self._shared_source_revision = None
 
     def cancel(self):
         self._cancel = True
+        self.cancel_event.set()
+
+    def _prepare_native(self):
+        if not self._native_prepared:
+            write(self.native_service, 'prepare_derived_copies', event=self.cancel_event)
+            self._native_prepared = True
+
+    def _native(self, image_path, pair, *, shared=False):
+        if self.native_service is None:
+            return None
+        producer = 'ideogram4' if (pair.expected_image or pair.source_hash) != pair.source_hash else 'dataset_tagger'
+        native = CaptionNative(self.native_service, image_path, pair, self.cancel_event,
+                               self.journal_root, self._prepare_native, producer=producer)
+        # Shared-style inference is provider work too. Keep its source revision
+        # until the first export; never silently recapture a changed revision.
+        revision = (str(image_path), native.source['id'], native.source['fingerprint'])
+        if shared:
+            self._shared_source_revision = revision
+        elif self._shared_source_revision is not None and str(image_path) == self._shared_source_revision[0]:
+            if revision != self._shared_source_revision:
+                raise ValueError('ideogram_source_changed_since_style_review')
+        return native
 
     # ── ciclo principal ──────────────────────────────────────────────────
     def run(self):
@@ -135,6 +165,7 @@ class Ig4Worker(QThread):
         with draft_guard(pano_path) as draft_current:
             doc = WorkDoc.load(pano_path)
             with self._pair(image_path, pano_path, doc) as pair:
+                native = self._native(image_path, pair)
                 ref_path = pair.image if pair.image_pin else pair.source
                 if ref_path.stat().st_size > MAX_SOURCE_BYTES:
                     raise ValueError('preview_file_limit')
@@ -145,14 +176,18 @@ class Ig4Worker(QThread):
                         raise ValueError('ideogram_draft_source_mismatch')
                     ref = opened.convert('RGB')
                 try:
-                    result = self._capture_one(image_path, pano_path, doc, ref, ref_path, pair, draft_current)
+                    result = self._capture_one(image_path, pano_path, doc, ref, ref_path, pair, draft_current, native)
+                except Exception as exc:
+                    if native:
+                        native.failed(exc)
+                    raise
                 finally:
                     ref.close()
         if result:
             self.image_done.emit(str(image_path), str(pair.caption))
         return result
 
-    def _capture_one(self, image_path, pano_path, doc, ref, ref_path, pair, draft_current):
+    def _capture_one(self, image_path, pano_path, doc, ref, ref_path, pair, draft_current, native=None):
         # a) high_level_description
         if self.recapture or not doc.high_level_description:
             cap = self._caption_with_retry(str(ref_path), self.prompt_hld)
@@ -214,12 +249,21 @@ class Ig4Worker(QThread):
         if self._cancel:
             return False
         draft_current()
-        if not pair.publish(schema.dumps(caption)):
+        def finish():
+            # Both physical files have published. Finish the draft and Native
+            # receipt even after late cancellation; retain the guard on failure.
+            draft_current()
+            doc.status = STATUS_EXPORTED
+            doc.output_sha256 = pair.expected_image or pair.source_hash
+            doc.save(pano_path)
+            if native:
+                native.commit()
+
+        if not pair.publish(schema.dumps(caption),
+                            prepare=native.prepare if native else None, commit=finish):
+            if native:
+                native.failed('cancelled before publication')
             return False
-        draft_current()
-        doc.status = STATUS_EXPORTED
-        doc.output_sha256 = pair.expected_image or pair.source_hash
-        doc.save(pano_path)
         return True
 
     # ── inferencia de estilo (opcional) ───────────────────────────────────
@@ -231,6 +275,7 @@ class Ig4Worker(QThread):
         with draft_guard(pano_path):
             doc = WorkDoc.load(pano_path)
             with self._pair(image_path, pano_path, doc) as pair:
+                self._native(image_path, pair, shared=True)
                 ref_path = pair.image if pair.image_pin else pair.source
                 with Image.open(ref_path) as image:
                     if (doc.image_w, doc.image_h) != image.size or image.width * image.height > 20_000_000:

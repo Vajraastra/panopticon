@@ -82,6 +82,13 @@ class TaggerShutdown(unittest.TestCase):
         self.assertIn('private Native failure',self.view.status.text())
         self.assertIn('caption_pair_requires_review',self.view.status.toolTip())
 
+    def test_ideogram_partial_error_remains_in_final_summary(self):
+        self.view._batch_failure = None
+        self.view._on_error(str(self.image), 'private Ideogram Native failure; caption_pair_requires_review')
+        self.view._on_ig4_finished(0, 1)
+        self.assertIn('private Ideogram Native failure', self.view.status.text())
+        self.assertIn('caption_pair_requires_review', self.view.status.toolTip())
+
     def cleanup(self):
         for event in self.releases:
             event.set()

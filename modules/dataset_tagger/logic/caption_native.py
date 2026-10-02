@@ -18,7 +18,14 @@ def signature(path):
 
 
 class CaptionNative:
-    def __init__(self, service, source, pair, event, journal_root=None, prepare_schema=None):
+    def __init__(self, service, source, pair, event, journal_root=None, prepare_schema=None,
+                 *, producer='dataset_tagger'):
+        if producer not in ('dataset_tagger', 'ideogram4'):
+            raise ValueError('tagger_native_producer_requires_review')
+        self.producer = producer
+        self.result_digest = pair.expected_image or pair.source_hash
+        if producer == 'dataset_tagger' and self.result_digest != pair.source_hash:
+            raise ValueError('tagger_exact_copy_required')
         self.service, self.pair, self.event = service, pair, event
         self.journal_root = journal_root
         self.prepare_schema = prepare_schema
@@ -77,7 +84,7 @@ class CaptionNative:
         observed = MetadataExtractor.extract(prepared, strict=True)
         request = dict(expected_fingerprint=self.source['fingerprint'], source_path=self.source['path'],
                        path=str(pair.image), destination_paths=path_variants(pair.image, pair.image),
-                       producer='dataset_tagger', source_digest=pair.source_hash, result_digest=pair.source_hash,
+                       producer=self.producer, source_digest=pair.source_hash, result_digest=self.result_digest,
                        generation=dict(width=dimensions[0], height=dimensions[1], tool=observed.tool,
                                        model=observed.model, positive=observed.positive_prompt,
                                        negative=observed.negative_prompt, seed=str(observed.seed)),
@@ -96,7 +103,7 @@ class CaptionNative:
         pair = self.pair
         # A physical publication has happened; cancellation cannot imply SQL rollback.
         pair.pin.verify(pair.source_hash, pair.source_identity)
-        pair.image_pin.verify(pair.source_hash, pair.image_identity)
+        pair.image_pin.verify(self.result_digest, pair.image_identity)
         info = pair.image.stat()
         self.publication.register(dict(filename=pair.image.name, size=info.st_size, created=info.st_ctime),
                                   signature(pair.image))

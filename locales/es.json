@@ -721,6 +721,7 @@
   "ig4.no_jobs": "Dibuja cajas en al menos una imagen primero (doble clic).",
   "ig4.capturing": "Capturando captions de Ideogram 4…",
   "ig4.warn": "{0}: {1} aviso(s) de schema",
+  "ig4.partial_errors": "{0} exportadas, {1} omitidas; {2} error(es). Revisa los detalles antes de reintentar.",
   "ig4.done": "Listo — {0} exportadas, {1} omitidas.",
   "ig4.editor_title": "Ideogram 4 — editor de cajas",
   "ig4.draw_type": "TIPO A DIBUJAR",

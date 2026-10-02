@@ -1384,6 +1384,8 @@ class DatasetTaggerView(WorkerViewLifecycle, QWidget):
             self.edit_apikey.text().strip() or None, model=model, timeout=180)
         nsfw = self.switch_content.isChecked()
         self._batch_failure = None
+        self._capture_errors = []
+        self._capture_error_count = 0
         self._ig4 = Ig4Worker(
             provider, model, jobs,
             prompt_hld=with_content_mode(self.ig4_prompt_hld["editor"].toPlainText().strip(), nsfw),
@@ -1393,7 +1395,8 @@ class DatasetTaggerView(WorkerViewLifecycle, QWidget):
             recapture=self.ig4_recapture.isChecked(),
             infer_style=self._ig4_infer_active(),
             style_per_image=self._ig4_is_character(),
-            prompt_style=self.ig4_prompt_style["editor"].toPlainText().strip())
+            prompt_style=self.ig4_prompt_style["editor"].toPlainText().strip(),
+            native_service=self.context.get('data_service'))
         # set de imágenes de la corrida: el worker también emite error() para
         # crops temporales fallidos; solo marcamos en rojo las imágenes reales.
         self._ig4_job_imgs = {str(Path(img)) for img, _ in jobs}
@@ -1434,6 +1437,13 @@ class DatasetTaggerView(WorkerViewLifecycle, QWidget):
             return
         self.status.setText(self._tr("ig4.done", "Done — {0} exported, {1} skipped.")
                             .format(exported, skipped))
+        if getattr(self, '_capture_error_count', 0):
+            self.status.setText(self._tr('ig4.partial_errors',
+                '{0} exported, {1} skipped; {2} error(s). Review the details before retrying.').format(
+                    exported, skipped, self._capture_error_count) + '\n' + '\n'.join(self._capture_errors[:3]))
+            self.status.setToolTip('\n'.join(self._capture_errors))
+        else:
+            self.status.setToolTip('')
         self._update_run_enabled()
         try:
             out = sidecar.output_dir(self._source_folder, IG4_OUTPUT_TAG, "json")
