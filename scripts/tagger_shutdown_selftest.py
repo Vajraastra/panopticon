@@ -75,6 +75,13 @@ class TaggerShutdown(unittest.TestCase):
         Image.new('RGB', (24,24)).save(self.image)
         self.addCleanup(self.cleanup)
 
+    def test_partial_capture_error_remains_in_final_summary(self):
+        self.view._batch_failure=None
+        self.view._on_error(str(self.image),'private Native failure; caption_pair_requires_review')
+        self.view._on_finished(0,1)
+        self.assertIn('private Native failure',self.view.status.text())
+        self.assertIn('caption_pair_requires_review',self.view.status.toolTip())
+
     def cleanup(self):
         for event in self.releases:
             event.set()

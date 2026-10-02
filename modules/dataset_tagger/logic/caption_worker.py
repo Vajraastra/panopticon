@@ -10,11 +10,14 @@ Nota: el worker no construye strings de UI; emite datos crudos y la vista
 traduce. Las plantillas/meta-prompts ya vienen resueltas desde los presets.
 """
 import logging
+import threading
 from PySide6.QtCore import QThread, Signal
 
 from .templates import CaptionTemplate, with_content_mode
 from . import sidecar
 from .caption_publication import CaptionPair
+from .caption_native import CaptionNative
+from core.derived_publication import write
 from .providers.base_provider import ProviderError
 
 log = logging.getLogger(__name__)
@@ -31,7 +34,7 @@ class CaptionWorker(QThread):
                  policy=sidecar.SKIP, trigger="", prefix="", suffix="",
                  extra_prefix_tags=None, recursive=False, retries=2,
                  images=None, prompt_overrides=None, providers=None,
-                 model_names=None, nsfw=False, parent=None):
+                 model_names=None, nsfw=False, parent=None, native_service=None, journal_root=None):
         super().__init__(parent)
         self.provider = provider               # provider por defecto (VLM)
         # Provider específico por plantilla {key: provider}. Permite que un
@@ -59,9 +62,14 @@ class CaptionWorker(QThread):
         self.prompt_overrides = prompt_overrides or {}
         self.nsfw = nsfw                        # sube el tono del meta-prompt VLM
         self._cancel = False
+        self.cancel_event = threading.Event()
+        self.native_service = native_service
+        self.journal_root = journal_root
+        self._native_prepared = False
 
     def cancel(self):
         self._cancel = True
+        self.cancel_event.set()
 
     def run(self):
         self._processed = self._skipped = 0
@@ -73,6 +81,11 @@ class CaptionWorker(QThread):
             self.batch_failed.emit(str(exc))
         finally:
             self.finished_all.emit(self._processed, self._skipped)
+
+    def _prepare_native(self):
+        if not self._native_prepared:
+            write(self.native_service, 'prepare_derived_copies', event=self.cancel_event)
+            self._native_prepared = True
 
     def _run_batch(self):
         # 1. lista de imágenes
@@ -116,10 +129,15 @@ class CaptionWorker(QThread):
             for tmpl, out, prompt, prov, mname in prepared:
                 if self._cancel:
                     break
+                native = None
+                pair = None
                 try:
                     with CaptionPair(img, out, self.policy, lambda: self._cancel) as pair:
                         if not pair.process:
                             continue
+                        if self.native_service is not None:
+                            native = CaptionNative(self.native_service, img, pair, self.cancel_event,
+                                                   self.journal_root, self._prepare_native)
                         caption = self._caption_with_retry(img, prompt, prov, mname)
                         if caption is None or self._cancel:
                             continue
@@ -127,12 +145,18 @@ class CaptionWorker(QThread):
                             caption, trigger=self.trigger, prefix=self.prefix,
                             suffix=self.suffix, extra_prefix_tags=self.extra_prefix_tags,
                         )
-                        if not pair.publish(final, sep=tmpl.separator):
+                        if not pair.publish(final, sep=tmpl.separator,
+                                            prepare=native.prepare if native else None,
+                                            commit=native.commit if native else None):
+                            if native:
+                                native.failed('cancelled before publication')
                             continue
                     self.image_done.emit(img, final)
                     wrote_any = True
                 except Exception as exc:
-                    if not self._cancel:
+                    if native:
+                        native.failed(exc)
+                    if not self._cancel or (pair is not None and (pair.published_image or pair.published_caption)):
                         log.exception("Caption publication failed for %s", img)
                         self.error.emit(img, str(exc))
 

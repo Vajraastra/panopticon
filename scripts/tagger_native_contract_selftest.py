@@ -83,6 +83,19 @@ class TaggerNative(unittest.TestCase):
         self.assertEqual(copy['hash_original'], 'a'*64)
         self.assertEqual(copy['hash_mod'], 'b'*64)
 
+    def test_unknown_source_hash_cannot_transfer_curation_by_path_alone(self):
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            conn.execute('UPDATE files SET hash_original=NULL,hash_mod=NULL WHERE id=?', (self.key,))
+            conn.commit()
+        self.prepare()
+        value = self.request(producer='dataset_tagger', result_digest='a'*64)
+        before = self.sql('SELECT * FROM files ORDER BY id')
+        with self.assertRaisesRegex(LibraryError, 'requires_backfill'):
+            self.service.submit('approve_derived_copy', self.key, **value).result(3)
+        with self.assertRaisesRegex(LibraryError, 'requires_backfill'):
+            self.apply(value)
+        self.assertEqual(self.sql('SELECT * FROM files ORDER BY id'), before)
+
 
 if __name__ == '__main__':
     unittest.main()

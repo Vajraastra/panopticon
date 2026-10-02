@@ -152,7 +152,7 @@ class CaptionPair:
         self.temps.append(path)
         return path
 
-    def publish(self, text, sep=', '):
+    def publish(self, text, sep=', ', *, prepare=None, commit=None):
         if self.cancel():
             return False
         data = (text or '').encode('utf-8')
@@ -179,6 +179,11 @@ class CaptionPair:
         if self.cancel():
             return False
         self._current()
+        if prepare is not None:
+            prepare(image_temp)
+            if self.cancel():
+                return False
+            self._current()
         if image_temp:
             if os.name != 'nt':
                 raise ValueError('caption_publication_requires_windows')
@@ -199,6 +204,8 @@ class CaptionPair:
         else:
             os.replace(caption_temp, self.caption)
         self.published_caption = True
+        if commit is not None:
+            commit()
         self.record['phase'] = 'complete'
         self._record()
         return True

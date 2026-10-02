@@ -268,6 +268,8 @@
   "tagger.progress": "{0}/{1} — {2}",
   "tagger.err": "Error en {0}: {1}",
   "tagger.done": "Listo — {0} procesadas, {1} saltadas.",
+  "tagger.partial_errors": "{0} procesadas, {1} saltadas; {2} error(es). Revisa los detalles antes de reintentar.",
+  "tagger.native_hash_missing": "Verifica el SHA-256 del origen con Librarian antes de copiar su curación.",
   "tagger.cancelling": "Cancelando…",
   "dashboard.welcome": "PANOPTICON",
   "dashboard.tools": "HERRAMIENTAS DISPONIBLES",

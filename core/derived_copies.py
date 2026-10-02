@@ -160,13 +160,16 @@ def _request(copy_id, expected_fingerprint, operation_id, source_path, path,
     return source_path, path, aliases, hashlib.sha256(raw).hexdigest()
 
 
-def _check(conn, copy_id, expected_fingerprint, source_path, source_digest, aliases, destinations=None, check=lambda: None):
+def _check(conn, copy_id, expected_fingerprint, source_path, source_digest, aliases, destinations=None,
+           check=lambda: None, require_source_hash=False):
     source = _reviewed(conn, copy_id, expected_fingerprint)
     if source['is_offline'] != 0:
         raise ValueError('derived_source_offline')
     if source['path'] != source_path:
         raise ValueError('derived_source_path_changed')
     known = source['hash_mod'] or source['hash_original']
+    if require_source_hash and known is None:
+        raise ValueError('tagger_source_hash_requires_backfill')
     if known is not None and (not isinstance(known, str) or not SHA.fullmatch(known.lower()) or
                               known.lower() != source_digest):
         raise ValueError('derived_source_hash_changed')
@@ -190,7 +193,8 @@ def approve(conn, copy_id, *, expected_fingerprint, operation_id, source_path,
             raise ValueError('derived_schema_not_prepared')
         if saved['receipt'] is not None:
             raise ValueError('derived_operation_already_committed')
-        _check(conn, copy_id, expected_fingerprint, source_path, source_digest, aliases, destinations, check)
+        _check(conn, copy_id, expected_fingerprint, source_path, source_digest, aliases, destinations, check,
+               require_source_hash=producer == 'dataset_tagger')
     return True
 
 
@@ -214,7 +218,8 @@ def register(conn, copy_id, *, expected_fingerprint, operation_id, source_path,
             if saved['receipt']['request_fingerprint'] != fingerprint:
                 raise ValueError('derived_operation_conflict')
             return True
-        source = _check(conn, copy_id, expected_fingerprint, source_path, source_digest, aliases, destinations, check)
+        source = _check(conn, copy_id, expected_fingerprint, source_path, source_digest, aliases, destinations, check,
+                        require_source_hash=producer == 'dataset_tagger')
         values = (path, observation['filename'], observation['size'], observation['created'],
                   result_digest, *(generation[name] for name in FIELDS))
         if producer == 'dataset_tagger':

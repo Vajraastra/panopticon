@@ -1270,6 +1270,8 @@ class DatasetTaggerView(WorkerViewLifecycle, QWidget):
                     character_threshold=preset.character_threshold)
 
         self._batch_failure = None
+        self._capture_errors = []
+        self._capture_error_count = 0
         self._caption = CaptionWorker(
             provider=provider,
             model=model,
@@ -1285,6 +1287,7 @@ class DatasetTaggerView(WorkerViewLifecycle, QWidget):
             providers=providers,
             model_names=model_names,
             nsfw=self.switch_content.isChecked(),
+            native_service=self.context.get('data_service'),
         )
         self._workers.connect(self._caption, self._caption.progress, self._on_progress)
         self._workers.connect(self._caption, self._caption.error, self._on_error)
@@ -1306,6 +1309,14 @@ class DatasetTaggerView(WorkerViewLifecycle, QWidget):
 
     def _on_error(self, path, msg):
         name = Path(path).name if path else "?"
+        if 'tagger_source_hash_requires_backfill' in msg:
+            msg = self._tr('tagger.native_hash_missing',
+                'Verify the source SHA-256 with Librarian before copying its curation.')
+        self._capture_error_count = getattr(self, '_capture_error_count', 0) + 1
+        errors = getattr(self, '_capture_errors', [])
+        if len(errors) < 20:
+            errors.append(self._tr("tagger.err", "Error on {0}: {1}").format(name, msg[:8192]))
+        self._capture_errors = errors
         self.status.setText(self._tr("tagger.err", "Error on {0}: {1}").format(name, msg))
 
     def _on_batch_failed(self, message):
@@ -1318,6 +1329,13 @@ class DatasetTaggerView(WorkerViewLifecycle, QWidget):
             return
         self.status.setText(self._tr(
             "tagger.done", "Done — {0} processed, {1} skipped.").format(processed, skipped))
+        if getattr(self, '_capture_error_count', 0):
+            self.status.setText(self._tr('tagger.partial_errors',
+                '{0} processed, {1} skipped; {2} error(s). Review the details before retrying.').format(
+                    processed, skipped, self._capture_error_count) + '\n' + '\n'.join(self._capture_errors[:3]))
+            self.status.setToolTip('\n'.join(self._capture_errors))
+        else:
+            self.status.setToolTip('')
         self._update_run_enabled()
         # recuerda la última carpeta generada para el botón de revisión y ofrece
         # abrirla (cross-platform, Regla de Oro #1)

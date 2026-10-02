@@ -390,7 +390,7 @@ class Derived(unittest.TestCase):
             return 0 if count == 1 else 11
         with closing(sqlite3.connect(self.service.db_path,isolation_level=None)) as conn:
             conn.execute('BEGIN IMMEDIATE')
-            def long_check(*args):
+            def long_check(*args, **kwargs):
                 conn.execute('WITH RECURSIVE x(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM x WHERE i<100000) SELECT sum(i) FROM x').fetchone()
             with patch('core.derived_copies.time.monotonic',side_effect=expired),patch('core.derived_copies._check',side_effect=long_check):
                 with self.assertRaisesRegex(ValueError,'derived_write_budget'):

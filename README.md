@@ -779,7 +779,7 @@ Image and draft commits are separate: a failed draft commit keeps the published
 image and a recovery draft, reporting both paths without automatic deletion/retry.
 A failure after the draft commit is reported as committed, even during cancellation.
 This contract does not yet establish ownership of legacy composed output images
-or register Tagger derivatives in Native; those remain in producer maintenance.
+or register composed Tagger derivatives in Native; those remain in producer maintenance.
 
 Regular Tagger captions validate the source/output image pair before calling a
 provider. Different images sharing a caption stem and orphan captions require
@@ -797,7 +797,19 @@ rebuilding; an unowned composition remains preserved for review. Capture and
 AutoBox cooperate with the editor guard and reject concurrent draft/JSON edits.
 JSON and work drafts publish through flushed temporary files. A failed work
 draft commit retains the exported pair and its review guard without reporting
-success. Native registration remains under producer maintenance.
+success. Ideogram Native registration remains under producer maintenance.
+
+Regular Tagger uses the shared Native service from the app context. It captures
+the source revision before provider work, prepares the derivative schema once per
+batch, and approves/journals before publishing. New byte-identical copies retain
+initial curation and download identity independently; a source without a known
+hash requires SHA backfill first. Existing verified Native outputs retain their
+current ID and curation when only the caption changes. External sources export
+without automatic registration and retain the bounded destination-history check.
+Success follows Native registration and receipt confirmation. Registration failures
+keep the pair, guard and journal for review; late cancellation cannot hide them or
+undo an admitted commit. Lost acknowledgements query receipts without resending.
+The final UI summary retains per-image errors instead of erasing partial effects.
 
 Caption Review requires exactly one same-stem image and bounded, readable UTF-8
 text. Saves and bulk edits use the text snapshot actually reviewed, verify the
