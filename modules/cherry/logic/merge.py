@@ -1,61 +1,12 @@
 """
-Fusionar dos proyectos en uno — fase 2 de A5.
+Fusionar perfiles sin borrar ni renombrar copias repetidas.
 
-Es la parte destructiva del módulo:
-**mueve archivos entre carpetas de disco y no tiene deshacer**. Todo el trabajo
-real lo hacen funciones del motor; aquí solo se orquestan, en un orden distinto
-al suyo y por un motivo de seguridad que se explica abajo.
-
-Piezas del motor, en el orden en que se usan:
-
-  - `dedup.dup_keep_remove`        — quién absorbe a quién: el proyecto más antiguo.
-  - `catalog.migrate_unique_files` — mueve a destino lo que destino no tiene.
-  - `index.merge_profiles`         — reasigna las URLs y borra el perfil vacío.
-  - `dedup.handle_orphans`         — borra o aparta lo que quedó repetido.
-
-## Dos cambios de orden respecto al original, ambos por seguridad
-
-**1. Si mover archivos falla, el índice NO se fusiona.** El original fusiona el
-índice pase lo que pase (la TUI incluso puede caer con `UnboundLocalError` al
-leer el resultado que la excepción dejó sin asignar). Fusionar el índice tras
-una migración fallida es el peor resultado posible: el perfil origen desaparece
-del índice y sus archivos quedan en disco sin dueño que los reclame, invisibles
-para la app y para el motor. Se prefiere parar con las dos carpetas intactas:
-eso se reintenta; lo otro se arregla a mano.
-
-**2. Los huérfanos se resuelven DESPUÉS de fusionar el índice**, no antes. Un
-huérfano es un archivo que el destino ya tiene con el mismo hash, así que
-borrarlo no pierde nada *si la fusión salió bien*. Si el índice falla y ya se
-borraron, la carpeta origen queda con su catálogo apuntando a archivos que ya
-no están. Al revés no se pierde nada.
-
-## Por qué esto no compacta la numeración, y el original sí
-
-Al terminar, el original ofrece "compactar" el destino —cerrar los huecos de la
-secuencia—, que es puramente cosmético. Aquí no se ofrece, porque el único
-momento en que la fusión lo propondría es justo el momento en que no es seguro.
-Medido con `scripts/cherry_merge_toytest.py` el 2026-09-03:
-
-El motor usa **dos convenciones de nombre distintas**. Lo que descarga se llama
-`prefijo_00042.ext` (`downloads.build_filename`) y lo que migra al fusionar se
-llama `0042.ext` (`migrate_unique_files`). La compactación solo reconoce la
-primera —`get_numbered_files` filtra por el patrón `_(\\d{5})\\.ext`—, así que
-ignora a los recién migrados **y además fija el contador de la carpeta según lo
-que sí vio**. Resultado medido: un destino con un hueco que acaba de recibir
-`0004.jpg` queda con el contador en 3, y la siguiente fusión hacia esa misma
-carpeta pediría el 4, generaría otro `0004.jpg` y **sobrescribiría el anterior**
-con un `shutil.move`, sin aviso. Fusionar dos veces contra el mismo destino no
-es raro: es lo que pasa al limpiar tres proyectos del mismo artista.
-
-Una descarga normal no colisiona (su nombre lleva prefijo), así que compactar
-mediante la API de mantenimiento, sin fusión de por medio, sigue siendo válido.
-
-## Lo que este módulo NO hace
-
-No escribe SQL propio ni toca el schema —la regla del proyecto sobre cherry-dl—
-y tampoco decide por su cuenta lo que el motor ya decide: quién absorbe a quién
-sale de `dup_keep_remove`, no de un criterio nuestro. La convención de nombres
-tampoco se parchea aquí: es del motor y se re-mide si cambia upstream.
+El motor conserva catálogos, URLs e historial portátiles. Las copias que ya tienen
+identidad Native se mueven mediante el servicio y un diario verificado, conservando
+ID y curación. Los repetidos permanecen para Duplicate Finder: un hash almacenado
+no autoriza descartar una copia curada. No fusionar el índice si fallan movimientos
+o acknowledgements; informar ambas carpetas también ante efectos parciales.
+No compactar nombres durante la fusión. Sin SQL propio contra Cherry.
 """
 
 from __future__ import annotations
@@ -113,6 +64,7 @@ class MergeResult:
     purged: int = 0
     orphan_action: str = ORPHAN_IGNORE
     index_merged: bool = False
+    changed_paths: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -127,7 +79,7 @@ class MergeResult:
         enterarse de ambas cosas o se queda con filas que apuntan a rutas
         muertas.
         """
-        if not self.moved:
+        if not self.moved and not self.changed_paths:
             return []
         return [self.plan.keep_folder, self.plan.remove_folder]
 
@@ -202,6 +154,7 @@ async def merge_pair(
     pair: dict,
     orphan_action: str = ORPHAN_IGNORE,
     on_progress: Callable[[int, int], None] | None = None,
+    *, data_service=None, journal_root=None,
 ) -> MergeResult:
     """Ejecuta la fusión. Destructivo y sin deshacer.
 
@@ -210,23 +163,37 @@ async def merge_pair(
     """
     from third_party.cherry_dl.catalog import migrate_unique_files
     from third_party.cherry_dl.config import INDEX_DB
-    from third_party.cherry_dl.dedup import handle_orphans
     from third_party.cherry_dl.index import merge_profiles
 
     plan = plan_pair(pair)
     result = MergeResult(plan=plan, orphan_action=orphan_action)
     log.info("cherry: fusionando %s → %s", plan.remove_name, plan.keep_name)
 
+    # Catalog hash equality is not current-byte/curation approval. Preserve orphans.
+    if orphan_action != ORPHAN_IGNORE:
+        result.errors.append("cherry_orphans_require_duplicate_review")
+        return result
+
+    if data_service is None:
+        result.errors.append("cherry_native_service_unavailable")
+        return result
+
+    async def move_file(source, target, record):
+        result.changed_paths.append(str(target))  # Conservative notification on partial errors.
+        from .native_merge import move_indexed
+        return await asyncio.to_thread(move_indexed, data_service, source, target,
+                                       record['hash'], journal_root, source_root=plan.remove_folder,
+                                       target_root=plan.keep_folder)
+
     # ── 1. Mover los archivos únicos ──────────────────────────────────────
-    orphan_paths: list[Path] = []
     try:
         moved = await migrate_unique_files(
-            plan.remove_folder, plan.keep_folder, on_progress
+            plan.remove_folder, plan.keep_folder, on_progress, move_file=move_file
         )
+        result.changed_paths.extend(moved.get("changed_paths", []))
         result.moved = moved["moved"]
         result.orphaned = moved["orphaned"]
         result.purged = moved["purged"]
-        orphan_paths = list(moved["orphaned_paths"])
         result.errors.extend(moved["errors"][:5])
     except Exception as exc:
         log.exception("cherry: la migración de archivos falló")
@@ -248,16 +215,6 @@ async def merge_pair(
         log.exception("cherry: la fusión del índice falló")
         result.errors.append(f"índice {plan.remove_name}: {type(exc).__name__}: {exc}")
         return result
-
-    # ── 3. Huérfanos, ya con el índice fusionado ──────────────────────────
-    if orphan_paths and orphan_action != ORPHAN_IGNORE:
-        try:
-            await asyncio.to_thread(
-                handle_orphans, plan.remove_folder, orphan_paths, orphan_action
-            )
-        except Exception as exc:
-            log.exception("cherry: no se pudieron gestionar los huérfanos")
-            result.errors.append(f"huérfanos: {type(exc).__name__}: {exc}")
 
     log.info(
         "cherry: fusión terminada · %s movidos, %s repetidos (%s), %s ausentes",

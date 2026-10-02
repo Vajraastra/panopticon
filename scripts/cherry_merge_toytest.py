@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import sys
+import inspect
 import tempfile
 from pathlib import Path
 
@@ -136,7 +137,7 @@ async def test_normal(root: Path, index_db: Path) -> None:
 
     seen: list[tuple[int, int]] = []
     result = await mg.merge_pair(
-        pair, orphan_action=mg.ORPHAN_DELETE,
+        pair, orphan_action=mg.ORPHAN_IGNORE,
         on_progress=lambda done, total: seen.append((done, total)),
     )
 
@@ -150,7 +151,7 @@ async def test_normal(root: Path, index_db: Path) -> None:
     check("el único llegó al destino", (dst / "artista_00004.jpg").exists(),
           f"hay {sorted(p.name for p in dst.iterdir())}")
     check("el único ya no está en el origen", not (src / "oficial_00002.jpg").exists())
-    check("el huérfano se borró", not (src / "oficial_00001.jpg").exists())
+    check("el huérfano queda para revisión", (src / "oficial_00001.jpg").exists())
     check("el archivo sin catalogar sobrevive", (src / "suelto.txt").exists(),
           "borrar lo que el catálogo no conoce sería pérdida de datos")
 
@@ -189,7 +190,7 @@ async def test_migration_fails(root: Path, index_db: Path) -> None:
     src = root / "con_archivos"
 
     pair = pair_of(keep_id, "sin_catalogo", dst, rm_id, "con_archivos", src)
-    result = await mg.merge_pair(pair, orphan_action=mg.ORPHAN_DELETE)
+    result = await mg.merge_pair(pair, orphan_action=mg.ORPHAN_IGNORE)
 
     check("la fusión se reporta como fallida", not result.ok)
     check("hay errores", bool(result.errors), "se esperaba al menos uno")
@@ -226,7 +227,7 @@ async def test_no_compaction(root: Path, index_db: Path) -> None:
     check("el contador quedó en 3, por delante del migrado", counter == 3,
           f"counter={counter}")
     check("merge_pair ya no acepta compactar",
-          "compact" not in mg.merge_pair.__code__.co_varnames,
+          "compact" not in inspect.signature(mg.merge_pair).parameters,
           "el parámetro se retiró a propósito: ver la cabecera de merge.py")
 
 
@@ -290,10 +291,19 @@ async def run(root: Path) -> None:
     if config.INDEX_DB == real or str(root) in ("", "/"):
         raise SystemExit("ABORTADO: el aislamiento del temporal no se aplicó.")
 
-    await test_normal(root, index_db)
-    await test_migration_fails(root, index_db)
-    await test_no_compaction(root, index_db)
-    await test_why_no_compaction(root, index_db)
+    from core.library_service import LibraryService
+    from modules.cherry.logic import merge as mg
+    from functools import partial
+    from unittest.mock import patch
+    service = LibraryService(root / "private-native.db")
+    try:
+        with patch.object(mg, "merge_pair", partial(mg.merge_pair, data_service=service)):
+            await test_normal(root, index_db)
+            await test_migration_fails(root, index_db)
+            await test_no_compaction(root, index_db)
+            await test_why_no_compaction(root, index_db)
+    finally:
+        service.close()
 
 
 def main() -> int:

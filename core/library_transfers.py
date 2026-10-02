@@ -245,8 +245,8 @@ def commit(repo, incoming, observation, identity):
                               'FROM file_tags WHERE file_id=?', (key, current['id']))
         else:
             key = current['id']
-            repo.conn.execute('UPDATE files SET path=?,filename=?,file_size=? WHERE id=?',
-                (value['result_path'], value['result_path'].rsplit('/',1)[-1], observation['size'], key))
+            repo.conn.execute('UPDATE files SET path=?,filename=?,file_size=?,hash_original=coalesce(hash_original,?) WHERE id=?',
+                (value['result_path'], value['result_path'].rsplit('/',1)[-1], observation['size'], value['digest'], key))
         repo._fts_sync_file(key)
         if identity_prepared(repo.conn):
             result['file_id'] = key

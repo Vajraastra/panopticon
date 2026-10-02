@@ -1320,12 +1320,14 @@ class CherryView(QWidget):
             self._set_status(self.tr("cherry.settings_saved", "Settings saved."), flash=True)
 
     def _open_duplicates(self) -> None:
-        if self._maintenance_busy or self._preparing_download:
+        if (self._maintenance_busy or self._preparing_download or self._queue.is_running
+                or self._bridge.is_busy or self.context.get("data_service") is None):
             return
         if not self._runtime.start():
             self._set_status(self.tr("cherry.runtime_failed", "Could not start the async runtime."))
             return
-        dialog = DuplicatesDialog(self._runtime, self._theme, self._lm, self)
+        dialog = DuplicatesDialog(self._runtime, self._theme, self._lm, self,
+                                  data_service=self.context.get("data_service"))
         dialog.folders_changed.connect(self._on_merge_folders)
         dialog.exec()
 

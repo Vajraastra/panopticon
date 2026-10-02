@@ -1883,6 +1883,7 @@ async def migrate_unique_files(
     folder_src: Path,
     folder_dst: Path,
     on_progress: Callable[[int, int], None] | None = None,
+    *, move_file=None,
 ) -> dict:
     """
     Mueve archivos únicos (por hash) de folder_src a folder_dst.
@@ -1922,6 +1923,7 @@ async def migrate_unique_files(
     purged   = 0
     errors: list[str] = []
     orphaned_paths: list[Path] = []
+    changed_paths: list[str] = []
 
     for i, f in enumerate(src_files):
         src_path = folder_src / f["filename"]
@@ -1939,13 +1941,20 @@ async def migrate_unique_files(
                 on_progress(i + 1, total)
             continue
 
+        new_path = None
         try:
             ctr, basename, new_dir, new_name = await reserve_destination(
                 folder_dst, artist_name, f["filename"])
             new_dir.mkdir(parents=True, exist_ok=True)
             new_path = folder_dst / new_name
 
-            await asyncio.to_thread(shutil.move, str(src_path), str(new_path))
+            # The host can preserve its own identity/curation before catalog acknowledgement.
+            if new_path.exists():
+                raise FileExistsError(str(new_path))
+            handled = await move_file(src_path, new_path, f) if move_file is not None else False
+            if not handled:
+                await asyncio.to_thread(shutil.move, str(src_path), str(new_path))
+            changed_paths.append(str(new_path))
             await add_file(
                 folder_dst, f["hash"], new_name,
                 f.get("url_source"), f.get("file_size"), ctr,
@@ -1957,7 +1966,7 @@ async def migrate_unique_files(
             )
             moved += 1
         except Exception as exc:
-            errors.append(f"{f['filename']}: {exc}")
+            errors.append(f"{f['filename']}: {exc}" + (f"; destination: {new_path}" if new_path is not None else ""))
 
         if on_progress:
             on_progress(i + 1, total)
@@ -1976,6 +1985,7 @@ async def migrate_unique_files(
         "purged":         purged,
         "errors":         errors,
         "orphaned_paths": orphaned_paths,
+        "changed_paths": changed_paths,
     }
 
 

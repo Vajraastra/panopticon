@@ -139,9 +139,10 @@ class MergeConfirmDialog(QDialog):
              "itself goes too if nothing else is left in it."),
         ):
             radio = QRadioButton(self.tr(key, text))
-            radio.setToolTip(self.tr(tip_key, tip))
+            radio.setToolTip(self.tr(tip_key, tip) if value == merge_logic.ORPHAN_IGNORE else
+                self.tr("cherry.merge_orphan_review_tip", "Review current bytes and curation in Duplicate Finder before retiring a copy."))
             radio.setProperty("orphan_action", value)
-            radio.setEnabled(plan.duplicated > 0)
+            radio.setEnabled(plan.duplicated > 0 and value == merge_logic.ORPHAN_IGNORE)
             if value == merge_logic.ORPHAN_IGNORE:
                 radio.setChecked(True)
             self._orphans.addButton(radio)
@@ -226,9 +227,10 @@ class DuplicatesDialog(QDialog):
     # es la que sabe si la carpeta cuelga de una vigilada.
     folders_changed = Signal(object)     # list[str]
 
-    def __init__(self, runtime, theme=None, locale=None, parent: QWidget | None = None) -> None:
+    def __init__(self, runtime, theme=None, locale=None, parent: QWidget | None = None, *, data_service=None) -> None:
         super().__init__(parent)
         self._runtime = runtime
+        self._data_service = data_service
         self._theme = theme
         self._lm = locale
         self._pairs: list[dict] = []
@@ -478,6 +480,7 @@ class DuplicatesDialog(QDialog):
             result = await merge_logic.merge_pair(
                 pair,
                 orphan_action=orphan_action,
+                data_service=self._data_service,
                 on_progress=lambda done, total: self._progress.emit(done, total),
             )
         except Exception as exc:
@@ -498,6 +501,9 @@ class DuplicatesDialog(QDialog):
             self._update_buttons()
             return
 
+        folders = [str(f) for f in result.touched_folders]
+        if folders:
+            self.folders_changed.emit(folders)
         if result.ok:
             # El par ya no existe: uno de los dos proyectos desapareció.
             for row, item in enumerate(self._pairs):
@@ -509,15 +515,12 @@ class DuplicatesDialog(QDialog):
                 "cherry.merge_done",
                 "✓ Merged into {keep} · {moved} files moved, {dup} were already there.",
             ).format(keep=result.plan.keep_name, moved=result.moved, dup=result.orphaned))
-            folders = [str(f) for f in result.touched_folders]
-            if folders:
-                self.folders_changed.emit(folders)
         else:
             # Ver `logic/merge.py`: si mover falla, el índice queda intacto a
             # propósito, así que las dos carpetas siguen siendo proyectos válidos.
             detail = result.errors[0] if result.errors else ""
             self._status.setText(self.tr(
                 "cherry.merge_failed",
-                "Merge stopped and nothing was merged — both projects are intact. {msg}",
+                "Merge stopped. Completed moves remain; review the reported paths before retrying. {msg}",
             ).format(msg=detail))
         self._update_buttons()

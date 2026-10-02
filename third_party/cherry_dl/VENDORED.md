@@ -796,3 +796,12 @@ no es una reserva atómica frente a programas externos. Validación en Windows c
 temporales, sesiones del servicio con transporte simulado y regresiones de Cherry. La curación
 central y la elección global de la copia más documentada pertenecen a Panopticon; este bloque
 no borra copias ni consulta esa DB. La estructura de catálogos separados y portabilidad se conserva.
+
+### Host-owned identities during profile merging (2026-10-02)
+
+`migrate_unique_files` accepts an optional awaited file mover. Panopticon uses
+its shared verified transfer for already indexed copies, preserving Native ID,
+curation and history before Cherry acknowledges the destination. The engine still
+owns catalog/history writes. Completed physical paths are reported even if the
+later catalog acknowledgement fails, so consumers can review partial effects.
+The original mover remains available for engine-only clients and unindexed files.

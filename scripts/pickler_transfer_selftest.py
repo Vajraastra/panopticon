@@ -14,7 +14,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from core.library_service import LibraryService
 from core.library_repository import LibraryRepository
 from core.pinned_file import PinnedFile
-from modules.pickler.logic import transfers
+from core import file_transfers as transfers
 
 
 class PicklerTransfer(unittest.TestCase):
@@ -130,7 +130,7 @@ class PicklerTransfer(unittest.TestCase):
         def race(src,dst):
             if str(dst).endswith('.png'):Path(dst).write_bytes(b'foreign raced file')
             return rename(src,dst)
-        with patch('modules.pickler.logic.transfers.os.rename',side_effect=race):
+        with patch('core.file_transfers.os.rename',side_effect=race):
             with self.assertRaises(RuntimeError):self.transfer()
         self.assertEqual((self.output/self.source.name).read_bytes(),b'foreign raced file'); self.assertTrue(self.source.exists())
         transfers.recover(self.service,self.failed_journal(),journal_root=self.journals)
@@ -141,7 +141,7 @@ class PicklerTransfer(unittest.TestCase):
         def fail(src,dst):
             if str(dst).endswith('.txt'):raise OSError('caption publication injected')
             return rename(src,dst)
-        with patch('modules.pickler.logic.transfers.os.rename',side_effect=fail):
+        with patch('core.file_transfers.os.rename',side_effect=fail):
             with self.assertRaisesRegex(RuntimeError,'caption publication injected'):self.transfer()
         self.assertTrue(self.source.exists()); self.assertTrue(self.caption.exists())
         transfers.recover(self.service,self.failed_journal(),journal_root=self.journals)
@@ -153,7 +153,7 @@ class PicklerTransfer(unittest.TestCase):
         def stop(*args):
             value=prepare(*args)
             event.set(); return value
-        with patch('modules.pickler.logic.transfers.prepare_output',side_effect=stop):
+        with patch('core.file_transfers.prepare_output',side_effect=stop):
             with self.assertRaisesRegex(RuntimeError,'cancelled'):self.transfer(event=event)
         self.assertTrue(self.source.exists()); self.assertTrue(self.caption.exists())
         data=json.loads(self.failed_journal().read_bytes())
@@ -164,7 +164,7 @@ class PicklerTransfer(unittest.TestCase):
         event=threading.Event(); publish=transfers.published_pin
         def stop(*args):
             result=publish(*args); event.set(); return result
-        with patch('modules.pickler.logic.transfers.published_pin',side_effect=stop):result=self.transfer(event=event)
+        with patch('core.file_transfers.published_pin',side_effect=stop):result=self.transfer(event=event)
         self.assertEqual(result['receipt']['phase'],'complete'); self.assertFalse(self.source.exists())
         self.assertTrue(Path(result['current']).with_suffix('.txt').exists())
 

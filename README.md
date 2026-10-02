@@ -256,6 +256,19 @@ the catalog with its folder; deleting catalog history also deletes its download 
 Preview records do not block an original download. Conflicting URL/content histories
 stop the merge for review instead of replacing the earlier identity.
 
+Profile merging requires the Native service and cannot start during an active download.
+Already indexed copies move through the same verified Windows transfer used by Pickler:
+their ID, curation and history remain, with a durable recovery journal. Current bytes must
+match Cherry's stored SHA before moving. A previously missing Native hash is filled from
+that verification. Unindexed files keep the engine's registration policy.
+Merging preserves repeated copies in their original folder; use Duplicate Finder to
+verify current bytes and curation before retiring any copy. Folder rename and permanent
+orphan deletion are disabled here. Source catalogs and download receipts are retained.
+Native and Cherry commits are separate. A failed acknowledgement stops profile merging,
+reports destination paths and notifies both folders, including partial effects. Review
+the journal before retrying; a failed Native transfer can restore its original bytes
+without replacing current curation. There is no automatic cross-database rollback.
+
 Download and merge names skip occupied paths if a counter is stale. This protects existing copies
 under normal cooperative use; it does not reserve a destination against external programs
 creating a file after the check.
