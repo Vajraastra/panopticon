@@ -9,9 +9,11 @@ from PySide6.QtWidgets import (
     QFrame, QSizePolicy, QScrollArea, QComboBox, QSpinBox, QStackedWidget
 )
 from PySide6.QtCore import Qt, Signal, QMimeData, QThread, QRectF
-from PySide6.QtGui import QIcon, QAction, QColor, QStandardItem
+from PySide6.QtGui import QIcon, QAction, QColor, QStandardItem, QPixmap
 
 from core.base_module import BaseModule
+from core.image_preview import ImagePreview
+from core.metadata import MetadataBundle
 from core.theme import Theme
 from core.paths import CachePaths
 from core.curation_bindings import valid as valid_binding
@@ -91,14 +93,19 @@ class CropperModule(BaseModule):
         self._closed = False
         self._saving = False
         self._save_dialog = False
+        self._preview_loading = False
+        self._preview_ticket = None
+        self._preview = ImagePreview(lambda path: MetadataBundle())
+        self._preview.result.connect(self._preview_ready)
 
     def on_unload(self):
         self._closed = True
+        self._preview.close()
         if self.worker is not None and self.worker.isRunning():
             self.worker.stop()
 
     def shutdown_ready(self):
-        return owner_threads_ready(self) and native_done(self.worker)
+        return self._preview.shutdown_ready() and owner_threads_ready(self) and native_done(self.worker)
 
     def get_view(self) -> QWidget:
         if self.view:
@@ -388,11 +395,32 @@ class CropperModule(BaseModule):
     def load_image(self, path: str):
         if self._closed:
             return
-        self.cropper_widget.load_image(path)
+        self._preview_loading = True
+        self.cropper_widget.image_path = None
+        self.cropper_widget.set_image(QPixmap())
+        self.btn_save.setEnabled(False)
         self.stack.setCurrentIndex(1)
+        self._preview_ticket = None
+        try:
+            self._preview_ticket = self._preview.request(str(path))
+        except Exception as error:
+            self._preview_ready(None, None, error)
 
-    def _save_busy(self):
+    def _preview_ready(self, ticket, value, error):
+        if self._closed or ticket != self._preview_ticket:
+            return
+        self._preview_loading = False
+        if error is not None or value is None or value['image'].isNull():
+            QMessageBox.warning(self.view, self.tr('common.error', 'Error'),
+                                self.tr('common.error_loading', 'Error loading image.'))
+            return
+        self.cropper_widget.image_path = value['path']
+        self.cropper_widget.set_image(QPixmap.fromImage(value['image']))
+        self.btn_save.setEnabled(not self._save_busy())
+
+    def _save_busy(self, include_preview=True):
         return (self._closed or self._saving or self._save_dialog or
+                (include_preview and self._preview_loading) or
                 (self.worker is not None and self.worker.isRunning()))
 
     def save_crop(self):
@@ -413,7 +441,7 @@ class CropperModule(BaseModule):
                 "PNG (*.png);;JPG (*.jpg)")
         finally:
             self._save_dialog = False
-        if not save_path or self._save_busy():
+        if not save_path or self._save_busy(include_preview=False):
             return
         if not os.path.splitext(save_path)[1]:
             match = re.search(r'\*(\.\w+)', selected_filter)
@@ -438,7 +466,7 @@ class CropperModule(BaseModule):
         if self._closed:
             return
         self._saving = False
-        self.btn_save.setEnabled(True)
+        self.btn_save.setEnabled(not self._save_busy() and bool(self.cropper_widget.image_path))
         self.btn_save.setText(self.tr("crop.save", "💾 Save Crop"))
         if result['cancelled'] and not result.get('published'):
             return

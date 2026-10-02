@@ -43,6 +43,7 @@ class CropperData(helpers.Fixture):
         for worker in self.workers:
             worker.stop()
             self.assertTrue(worker.wait(3000))
+        self.assertTrue(helpers.pump(lambda: all(module.shutdown_ready() for module in self.modules)))
         QApplication.processEvents()
         for module in self.modules:
             module.view.close()
@@ -55,6 +56,7 @@ class CropperData(helpers.Fixture):
         module.get_view()
         module.load_image(self.source)
         self.modules.append(module)
+        self.assertTrue(helpers.pump(lambda: not module._preview_loading))
         return module
 
     def start(self, module, output=None):
@@ -143,6 +145,7 @@ class CropperData(helpers.Fixture):
         self.assertEqual(self.service.read('count_files'), 0)
 
     def test_capture_source_and_rectangle_before_nested_dialog_and_reentrant_save(self):
+        Image.new('RGB', (100, 80), 'blue').save(self.output)
         module = self.view()
         original = QRectF(module.cropper_widget.get_crop_rect_normalized())
         def dialog(*args):
@@ -154,7 +157,7 @@ class CropperData(helpers.Fixture):
                 patch.object(product, 'crop_image', return_value=self.output) as crop, \
                 patch.object(QMessageBox, 'information') as done:
             module.save_crop()
-            self.assertTrue(helpers.pump(lambda: not module._saving))
+            self.assertTrue(helpers.pump(lambda: not module._saving and not module._preview_loading))
         self.assertEqual(select.call_count, 1)
         self.assertEqual(crop.call_args.args, (self.source, original, self.output))
         self.assertEqual(done.call_count, 1)
@@ -162,6 +165,7 @@ class CropperData(helpers.Fixture):
         self.assertEqual(module.cropper_widget.image_path, self.output)
 
     def test_slow_read_keeps_qt_responsive_blocks_double_start_and_keeps_new_image(self):
+        Image.new('RGB', (100, 80), 'blue').save(self.output)
         module = self.view()
         entered, release, blocked = self.block_snapshot()
         with patch.object(LibraryRepository, 'get_curation_snapshot', blocked), \
@@ -180,7 +184,7 @@ class CropperData(helpers.Fixture):
             dialog.assert_not_called()
             module.load_image(self.output)
             release.set()
-            self.assertTrue(helpers.pump(lambda: not module._saving))
+            self.assertTrue(helpers.pump(lambda: not module._saving and not module._preview_loading))
         self.assertEqual(crop.call_args.args[0], self.source)
         self.assertEqual(module.cropper_widget.image_path, self.output)
         self.assertTrue(module.btn_save.isEnabled())
@@ -453,6 +457,80 @@ class CropperData(helpers.Fixture):
             self.assertTrue(module.worker.wait(3000))
             self.assertTrue(helpers.pump(lambda: module.worker not in product._LIVE_WORKERS))
         self.assertTrue(module.shutdown_ready())
+
+
+    def test_preview_slow_replace_blocks_save_and_paints_only_latest_on_gui(self):
+        module = self.view()
+        Image.new('RGB', (100, 80), 'blue').save(self.output)
+        entered, release = threading.Event(), threading.Event()
+        self.releases.append(release)
+        real = module._preview.loader
+        threads, calls = [], []
+        def blocked(path, metadata, cancel):
+            threads.append(threading.get_ident()); calls.append(path)
+            if path == self.source:
+                entered.set(); self.assertTrue(release.wait(3))
+            return real(path, metadata, cancel)
+        module._preview.loader = blocked
+        module.load_image(self.source)
+        self.assertTrue(entered.wait(1))
+        self.assertIsNone(module.cropper_widget.image_path)
+        self.assertFalse(module.btn_save.isEnabled())
+        with patch.object(QFileDialog, 'getSaveFileName') as dialog:
+            module.save_crop()
+        dialog.assert_not_called()
+        ticks=[]; QTimer.singleShot(0, lambda: ticks.append(True))
+        self.assertTrue(helpers.pump(lambda: bool(ticks)))
+        module.load_image(self.source)
+        module.load_image(self.output)
+        release.set()
+        self.assertTrue(helpers.pump(lambda: not module._preview_loading))
+        self.assertEqual(calls, [self.source, self.output])
+        self.assertTrue(all(t != threading.get_ident() for t in threads))
+        self.assertEqual(module.cropper_widget.image_path, self.output)
+        self.assertEqual(module.cropper_widget.image.toImage().pixelColor(0,0).name(), '#0000ff')
+        self.assertTrue(module.btn_save.isEnabled())
+
+    def test_preview_close_retains_decoder_until_real_finish(self):
+        module = self.view()
+        entered, release = threading.Event(), threading.Event()
+        self.releases.append(release)
+        real = module._preview.loader
+        def blocked(*args):
+            entered.set(); self.assertTrue(release.wait(3)); return real(*args)
+        module._preview.loader = blocked
+        module.load_image(self.source)
+        self.assertTrue(entered.wait(1))
+        module.on_unload()
+        self.assertFalse(module.shutdown_ready())
+        release.set()
+        self.assertTrue(helpers.pump(module.shutdown_ready))
+        self.assertIsNone(module.cropper_widget.image_path)
+
+    def test_preview_failed_or_invalid_input_never_reuses_previous_source(self):
+        module = self.view()
+        with patch.object(QMessageBox, 'warning') as warning:
+            module.load_image(self.output)  # missing file
+            self.assertTrue(helpers.pump(lambda: not module._preview_loading))
+            self.assertIsNone(module.cropper_widget.image_path)
+            self.assertFalse(module.btn_save.isEnabled())
+            module.load_image('')
+        self.assertEqual(warning.call_count,2)
+        with patch.object(QFileDialog, 'getSaveFileName') as dialog:
+            module.save_crop()
+        dialog.assert_not_called()
+
+    def test_bounded_preview_preserves_normalized_crop_on_original_dimensions(self):
+        Image.new('RGB', (4096, 3072), 'red').save(self.source)
+        module = self.view()
+        self.assertLessEqual(max(module.cropper_widget.image.width(), module.cropper_widget.image.height()),2048)
+        module.cropper_widget._selection = QRectF(.25,.25,.5,.5)
+        before=Path(self.source).read_bytes()
+        with patch.object(QMessageBox, 'information'):
+            self.start(module)
+            self.assertTrue(helpers.pump(lambda: not module._saving))
+        with Image.open(self.output) as image:self.assertEqual(image.size,(2048,1536))
+        self.assertEqual(Path(self.source).read_bytes(),before)
 
 
 if __name__ == '__main__':

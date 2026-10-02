@@ -26,10 +26,6 @@ class ImageCropperWidget(QWidget):
         self.image = pixmap
         self.update()
 
-    def load_image(self, path):
-        self.image_path = path
-        self.set_image(QPixmap(path))
-
     def get_crop_rect_normalized(self):
         return self._selection
 

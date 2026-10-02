@@ -755,6 +755,11 @@ and the bounded read-only destination check. The indexed flow uses owner approva
 without a redundant per-image RO scan. The owner reuses bounded destination keys
 between registrations and refreshes after external commits or other writes, with
 complete fallback above cache limits. No read transaction remains open between images.
+Cropper decodes its bounded preview in a worker, with one active and the latest
+pending image. Saving is disabled until the current image is ready; failed loads
+cannot reuse a previous source. Normalized selections still crop original pixels.
+The save dialog keeps its captured source/selection even if another preview is
+requested inside the dialog. Closing retains decoding until the actual thread exits.
 Cropper protects existing destinations even for explicitly chosen save paths. Its
 worker registers indexed recrops through this contract; external sources remain
 unregistered.
