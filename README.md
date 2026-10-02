@@ -1002,7 +1002,20 @@ Librarian exposes explicit path preparation and paginated review; it can check
 one image spelling and open retained-copy histories without merging IDs. Stop
 keeps confirmed evidence; closing waits for actual reader completion.
 Existing lookups, other registrations and folder prefixes still require
-migration. Known changing ingest batches retain exact coverage without repeated
+migration. Prepared Gallery/Librarian folder readers now resolve Windows names
+in their worker before SQL, then use literal binary ranges through the canonical
+index for counts, previews, search and selection. A short current Native snapshot
+provides coherent results; later complete ingestion can advance it without
+invalidating the directory. Rechecking directory identity ignores changes in its
+contents, but rejects replacement/rename/unavailability. Incomplete evidence is
+reported for review. Album pages aggregate counts and first covers in one SQL
+statement, preserving watched-folder order, recursive overlaps and empty albums.
+Legacy unprepared libraries retain their prior scope rules without implicit DDL;
+unbounded legacy inventories retain their complete contract pending materialized
+delivery. `scripts/folder_scopes_selftest.py` verifies these private contracts;
+`scripts/folder_scopes_benchmark.py <baseline-repository>` compares a private SQL
+300k fixture. These measurements do not substitute real Windows/Cherry validation.
+Known changing ingest batches retain exact coverage without repeated
 full scans; other mutations still invalidate it normally. Validating the real
 migration remains open. Folder spelling and portable Cherry data remain preserved.
 [Windows supports case rules per directory](https://learn.microsoft.com/en-us/windows/wsl/case-sensitivity).

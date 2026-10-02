@@ -126,7 +126,7 @@ class LibrarianQt(helpers.Fixture):
     def block(self, operation, match=lambda kwargs: True):
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
-        read = self.service.read
+        read = self.service.read_worker
         calls = []
         def blocked(name, *args, **kwargs):
             self.assertNotEqual(threading.current_thread(), threading.main_thread())
@@ -135,7 +135,7 @@ class LibrarianQt(helpers.Fixture):
                 entered.set()
                 release.wait(3)
             return read(name, *args, **kwargs)
-        return entered, release, calls, patch.object(self.service, 'read', blocked)
+        return entered, release, calls, patch.object(self.service, 'read_worker', blocked)
 
     def test_initial_read_never_blocks_qt_and_populates_single_vocabulary(self):
         self.register('C:/images/a.png')

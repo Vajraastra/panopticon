@@ -18,6 +18,7 @@ class LibraryRepository:
         self.conn = conn
         self._path_coverage_cache = path_coverage_cache
         self._path_ingest_transition = None
+        self._folder_scope_context = None
         self._derived_paths = None
         if cache_derived_paths:
             from core.derived_paths import DerivedPaths
@@ -193,6 +194,18 @@ class LibraryRepository:
     def _normalize_path(self, path):
         return os.path.normpath(path).replace('\\', '/')
 
+    def get_folder_scope_metadata(self, **kwargs):
+        from core.folder_queries import metadata
+        return metadata(self, **kwargs)
+
+    def read_folder_scope(self, *args, **kwargs):
+        from core.folder_queries import scope_read
+        return scope_read(self, *args, **kwargs)
+
+    def _folder_filter(self, folder, *, exact=False):
+        from core.folder_queries import condition
+        return condition(self, folder, exact=exact)
+
     def _folder_like(self, folder_path):
         """Patrón LIKE recursivo con separador: '/foo/bar' → '/foo/bar/%'.
         Sin el '/' final, '/foo/bar' matchearía también '/foo/barbecue/...'.
@@ -365,25 +378,20 @@ class LibraryRepository:
         return page(self.conn, folder_path, folder_like=self._folder_like, **kwargs)
 
     def get_known_files_in_folder(self, folder_path):
-        """Returns set of normalized paths for files known in a specific folder (recursive)."""
-        cursor = self.conn.cursor()
-        msg_path = self._folder_like(folder_path)
-        cursor.execute("SELECT path FROM files WHERE is_offline=0 AND path LIKE ? ESCAPE '\\'", (msg_path,))
-        return set(row[0] for row in cursor.fetchall())
+        where,params=self._folder_filter(folder_path)
+        return {row[0] for row in self.conn.execute('SELECT path FROM files WHERE is_offline=0 AND '+where,params)}
 
     def get_files_recursive(self, folder_path, limit=None):
-        """Returns a list of all files under a folder (recursive)."""
         if limit is not None:
             validate_page(limit)
-        cursor = self.conn.cursor()
-        msg_path = self._folder_like(folder_path)
+        where,params=self._folder_filter(folder_path)
+        query='SELECT path FROM files WHERE is_offline=0 AND '+where+' ORDER BY id'
         if limit is not None:
-            cursor.execute("SELECT path FROM files WHERE is_offline=0 AND path LIKE ? ESCAPE '\\' LIMIT ?", (msg_path, limit))
-        else:
-            cursor.execute("SELECT path FROM files WHERE is_offline=0 AND path LIKE ? ESCAPE '\\'", (msg_path,))
+            query+=' LIMIT ?'; params.append(limit)
+        cursor=self.conn.execute(query,params)
         if limit is not None:
-            return collect_rows(cursor, lambda row: row[0])
-        return [row[0] for row in cursor.fetchall()]
+            return collect_rows(cursor,lambda row:row[0])
+        return [row[0] for row in cursor]
 
     def remove_files(self, paths_list):
         """Retira del inventario operativo, conservando identidad/curación offline."""
@@ -444,17 +452,13 @@ class LibraryRepository:
             folder_like=self._folder_like,remove=self.remove_watched_folder)
 
     def get_folder_count(self, folder_path):
-        cursor = self.conn.cursor()
-        query = self._folder_like(folder_path)
-        cursor.execute("SELECT count(*) FROM files WHERE is_offline=0 AND path LIKE ? ESCAPE '\\'", (query,))
-        return cursor.fetchone()[0]
+        where,params=self._folder_filter(folder_path)
+        return self.conn.execute('SELECT count(*) FROM files WHERE is_offline=0 AND '+where,params).fetchone()[0]
 
     def get_folder_preview(self, folder_path, limit=5):
         validate_page(limit)
-        cursor = self.conn.cursor()
-        query = self._folder_like(folder_path)
-        cursor.execute("SELECT path FROM files WHERE is_offline=0 AND path LIKE ? ESCAPE '\\' LIMIT ?", (query, limit))
-        return collect_rows(cursor, lambda row: row[0])
+        where,params=self._folder_filter(folder_path)
+        return collect_rows(self.conn.execute('SELECT path FROM files WHERE is_offline=0 AND '+where+' ORDER BY id LIMIT ?',[*params,limit]),lambda row:row[0])
 
     def search_by_terms(self, terms, limit=5):
         """
@@ -767,8 +771,9 @@ class LibraryRepository:
 
         # 3. Path/Rating
         if folder:
-            conditions.append("(path LIKE ? ESCAPE '\\' OR path = ?)")
-            params.extend([self._folder_like(folder), self._normalize_path(folder)])
+            clause,bound=self._folder_filter(folder,exact=True)
+            conditions.append(clause)
+            params.extend(bound)
         if min_rating > 0:
             conditions.append('rating >= ?')
             params.append(min_rating)
@@ -777,8 +782,9 @@ class LibraryRepository:
                 # crude parse
                 p = query.split("path:")[1].split(" rating:")[0].strip()
                 # Contenido de la carpeta, o el archivo exacto si p es un archivo
-                conditions.append("(path LIKE ? ESCAPE '\\' OR path = ?)")
-                params.extend([self._folder_like(p), self._normalize_path(p)])
+                clause,bound=self._folder_filter(p,exact=True)
+                conditions.append(clause)
+                params.extend(bound)
             if "rating:" in query:
                 try:
                     # Split and pick the part after rating: then strip and take first word/number
@@ -798,24 +804,8 @@ class LibraryRepository:
         return total, collect_rows(cursor, lambda row: (row[0], row[1]))
 
     def get_folders_paginated(self, limit=50, offset=0):
-        validate_page(limit, offset)
-        # Returns list of watched folders with counts
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT count(*) FROM watched_folders")
-        total = cursor.fetchone()[0]
-
-        cursor.execute("SELECT path FROM watched_folders LIMIT ? OFFSET ?", (limit, offset))
-        folders = []
-        budget = ResultBudget()
-        for path in collect_rows(cursor, lambda row: row[0]):
-            count = self.get_folder_count(path)
-            prev = self.get_folder_preview(path, 1)
-            cover = prev[0] if prev else None
-            item = {'path': path, 'name': os.path.basename(path), 'count': count, 'cover': cover}
-            budget.add(item)
-            folders.append(item)
-
-        return total, folders
+        from core.folder_queries import albums
+        return albums(self, limit, offset)
 
     # --- Backfill de identidad de contenido (M3, CHERRY_FUSION_DESIGN) ---
 
@@ -899,7 +889,7 @@ class LibraryRepository:
         if terms:
             return term_filter(terms)
         if folder:
-            return "path LIKE ? ESCAPE '\\'", [self._folder_like(folder)]
+            return self._folder_filter(folder)
         return '', []
 
     def get_library_page(self, *, terms=(), folder=None, limit=100, offset=0):

@@ -27,6 +27,7 @@ from core.paths import ProjectPaths
 
 log = logging.getLogger(__name__)
 READS = frozenset({
+    'get_folder_scope_metadata', 'read_folder_scope',
     'get_path_identity_ingest_state', 'get_path_identity_status', 'get_path_identity_matches', 'get_path_identity_resolution',
     'get_path_identity_records', 'get_path_identity_review_page',
     'get_metadata_edit_history_record', 'get_metadata_edit_state', 'get_metadata_edit_receipt', 'get_generation_history_status', 'get_generation_history_page',
@@ -374,6 +375,15 @@ class LibraryService:
         """Worker-only preparation; filesystem probes run outside SQL snapshots."""
         from core.library_path_identity import inspect_page
         return inspect_page(self, **kwargs)
+
+    def read_worker(self, operation, *args, cancel_event=None, **kwargs):
+        """Worker-only folder observations, with SQL-only reads kept separate."""
+        from core.folder_queries import SCOPED
+        if operation in SCOPED:
+            from core.folder_tasks import read
+            saved_args,saved_kwargs=snapshot_read(args,kwargs)
+            return read(self,operation,saved_args,saved_kwargs,cancel_event)
+        return self.read(operation,*args,cancel_event=cancel_event,**kwargs)
 
     def read(self, operation, *args, cancel_event=None, **kwargs):
         return self._read(operation, args, kwargs, cancel_event, lambda: open_reader(self.db_path))

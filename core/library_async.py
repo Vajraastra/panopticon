@@ -60,7 +60,7 @@ class LibraryReader(QObject):
         def run():
             value = error = None
             try:
-                value = self.service.read(operation, *args, cancel_event=cancel, **kwargs)
+                value = getattr(self.service, 'read_worker', self.service.read)(operation, *args, cancel_event=cancel, **kwargs)
             except Exception as exc:
                 error = exc
             try:

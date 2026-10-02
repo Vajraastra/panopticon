@@ -17,7 +17,7 @@ class DatabaseManager:
 
     def __getattr__(self, name):
         if name in READS:
-            return lambda *args, **kwargs: self.service.read(name, *args, **kwargs)
+            return lambda *args, **kwargs: getattr(self.service, 'read_worker', self.service.read)(name, *args, **kwargs)
         if name in WRITES:
             return lambda *args, **kwargs: self._write(name, *args, **kwargs)
         raise AttributeError(name)
