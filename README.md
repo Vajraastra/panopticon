@@ -341,6 +341,18 @@ registering files or editing originals. Filtered sets use the existing request l
 (10,000 paths and the Native payload budget); oversized requests fail explicitly
 without displaying a prefix. Unfiltered sets retain page-only snapshot delivery.
 
+For an unregistered external image, use **Register image for curation** in the
+viewer. Its worker verifies the file and imports embedded generation metadata,
+tags and rating into a new Native identity. Existing or offline histories require
+review; this action never replaces their curation or changes the original file.
+Once registered, tags and rating can be edited independently in Native.
+**Export this folder's curation** explicitly exports the current image's folder
+and subfolders to `panopticon.curation.db`, replacing its previous export through
+the sidecar recovery contract. It stores per-copy curation and relative paths,
+without generation metadata, image changes or Cherry catalogue writes. Import
+conflicts remain pending review. Both actions run outside Qt's GUI thread; closing
+cancels pending work and waits for admitted Native writes during app shutdown.
+
 Gallery's advanced viewer decodes a QImage, reads file statistics and extracts
 embedded metadata in its own worker. Each viewer keeps one active request and
 the latest pending image; stale navigation/closed owners discard results. Source

@@ -5,6 +5,9 @@ from PySide6.QtGui import QPixmap, QKeySequence, QAction, QMouseEvent
 from core.components.tag_widgets import FlowLayout, TagChip
 from core.database_manager import DatabaseManager
 from core.library_async import LibraryReader, LibraryWriter
+from core.external_registration_tasks import ExternalRegistrationTasks
+from core.curation_tasks import CurationExportTasks
+from pathlib import Path
 from core.components.tag_vocabulary import TagVocabulary
 from core.locale_manager import LocaleManager
 from core.metadata.extractor import MetadataExtractor
@@ -141,7 +144,7 @@ class AdvancedViewer(QDialog):
         self._curation_value = None
         self.preview = ImagePreview(lambda path: MetadataExtractor.extract(path), self)
         self.preview.result.connect(self.on_preview_result)
-        self.paths = paths
+        self.paths = list(paths)
         self.current_idx = start_index
         self.fs_window = None
         self.timer = QTimer(self) # Temporizador para el slideshow
@@ -161,6 +164,12 @@ class AdvancedViewer(QDialog):
         self.curation_reader = LibraryReader(self.db.service, self)
         self.tags_reader = LibraryReader(self.db.service, self)
         self.curation_reader.result.connect(self.on_curation_result)
+        self._registration_pending = False
+        self.registration_reader = LibraryReader(ExternalRegistrationTasks(self.db.service), self)
+        self.registration_reader.result.connect(self.on_registration_result)
+        self._export_pending = False
+        self.export_reader = LibraryReader(CurationExportTasks(self.db.db_path), self)
+        self.export_reader.result.connect(self.on_export_result)
         
         # Diseño Principal
         layout = QHBoxLayout(self)
@@ -262,6 +271,17 @@ class AdvancedViewer(QDialog):
             'gallery.viewer.curation_tip', 'Curation is saved in the library; original files are preserved.'))
         self.lbl_curation_status.setWordWrap(True)
         data_layout.addWidget(self.lbl_curation_status)
+        self.btn_register = QPushButton(LocaleManager().tr(
+            'gallery.viewer.register', 'Register image for curation'))
+        self.btn_register.setToolTip(LocaleManager().tr('gallery.viewer.register_tip',
+            'Verify this file and register its embedded metadata in Native. Originals and Cherry catalogues stay intact; existing or offline identities require review.'))
+        self.btn_register.clicked.connect(self.register_current_image)
+        data_layout.addWidget(self.btn_register)
+        self.btn_export = QPushButton(LocaleManager().tr('gallery.viewer.export', 'Export this folder’s curation'))
+        self.btn_export.setToolTip(LocaleManager().tr('gallery.viewer.export_tip',
+            'Explicitly export Native curation for this image’s folder and subfolders to panopticon.curation.db. Replaces its previous export; preserves originals and Cherry catalogues. Conflicts on import require review.'))
+        self.btn_export.clicked.connect(self.export_current_folder)
+        data_layout.addWidget(self.btn_export)
         tip = self.lbl_curation_status.text()
         self.input_tag.setToolTip(tip)
         self.btn_add_tag.setToolTip(tip)
@@ -331,7 +351,7 @@ class AdvancedViewer(QDialog):
         self.refresh_completer()
         self.revisions = LibraryRevisionWatcher(self.db.service, self, initial=initial_revision, busy=lambda:
             self.curation_reader._active or self.tag_completions.busy or
-            self._pending_edit is not None or not self._preview_ready)
+            self._pending_edit is not None or self._registration_pending or self._export_pending or not self._preview_ready)
         self.revisions.changed.connect(self._on_native_revision)
 
     def _on_native_revision(self, revision):
@@ -365,6 +385,8 @@ class AdvancedViewer(QDialog):
         self.revisions.close()
         self._preview_image = None
         self.curation_reader.close()
+        self.registration_reader.close()
+        self.export_reader.close()
         self.tag_completions.close()
         if self._pending_edit is None:
             self.writer.close()
@@ -410,12 +432,77 @@ class AdvancedViewer(QDialog):
 
     def _can_edit(self):
         return (not self._closed and self._curation_ready and self._registered
-                and self._pending_edit is None and bool(self.paths))
+                and self._pending_edit is None and not self._registration_pending and not self._export_pending and bool(self.paths))
 
     def update_edit_controls(self):
         enabled = self._can_edit()
         for widget in (self.input_tag, self.btn_add_tag, self.lbl_rating_stars, self.tags_container):
             widget.setEnabled(enabled)
+        self.btn_register.setVisible(not self._registered)
+        self.btn_register.setEnabled(not self._closed and not self._registration_pending and not self._export_pending
+                                     and self._curation_ready and self._preview_image is not None
+                                     and not self._registered and bool(self.paths))
+        self.btn_export.setEnabled(enabled)
+        self.btn_prev.setEnabled(not self._registration_pending and not self._export_pending)
+        self.btn_next.setEnabled(not self._registration_pending and not self._export_pending)
+
+    def export_current_folder(self):
+        if not self.btn_export.isEnabled() or self._closed:
+            return
+        folder = str(Path(self.paths[self.current_idx]).parent)
+        self._export_pending = True
+        self.timer.stop()
+        self.btn_slideshow.setChecked(False)
+        self.update_edit_controls()
+        self.lbl_curation_status.setText(LocaleManager().tr('gallery.viewer.exporting', 'Exporting this folder’s curation…'))
+        self.export_reader.request('export_curation', folder=folder)
+
+    def on_export_result(self, ticket, value, error):
+        if self._closed:
+            return
+        self._export_pending = False
+        if error is not None:
+            self._write_error = True
+            self.lbl_curation_status.setText(LocaleManager().tr('gallery.viewer.export_error',
+                'Could not export curation. Review the details before retrying.'))
+            self.lbl_curation_status.setToolTip(str(error))
+        else:
+            self._write_error = False
+            self.lbl_curation_status.setText(LocaleManager().tr('gallery.viewer.exported',
+                '{copies} copies exported; {missing} without a known hash.').format(
+                    copies=value['copies'], missing=value['missing_hash']))
+            self.lbl_curation_status.setToolTip(value['path'])
+        self.update_edit_controls()
+
+    def register_current_image(self):
+        if not self.btn_register.isEnabled() or self._closed:
+            return
+        path = self.paths[self.current_idx]
+        self._registration_pending = True
+        self.timer.stop()
+        self.btn_slideshow.setChecked(False)
+        self.update_edit_controls()
+        self.lbl_curation_status.setText(LocaleManager().tr(
+            'gallery.viewer.registering', 'Verifying and registering this image…'))
+        self.registration_reader.request('register_external_image', path)
+
+    def on_registration_result(self, ticket, value, error):
+        if self._closed:
+            return
+        self._registration_pending = False
+        if error is not None:
+            self._write_error = True
+            self.lbl_curation_status.setText(LocaleManager().tr('gallery.viewer.register_error',
+                'Registration could not be confirmed. Review the details before retrying.'))
+            self.lbl_curation_status.setToolTip(str(error))
+        else:
+            self.paths[self.current_idx] = value['stored_path']
+            self._write_error = False
+            self.lbl_curation_status.setToolTip('')
+            self.curation_saved.emit()
+        # Refresh after both failures and success: an acknowledgement can be
+        # lost after commit. Never resubmit automatically or replace another ID.
+        self.load_tags(self.paths[self.current_idx])
 
     def submit_edit(self, **delta):
         if not self._can_edit(): return
@@ -513,10 +600,10 @@ class AdvancedViewer(QDialog):
         self._registered = record['id'] is not None
         self._registered_id = record['id']
         self.update_edit_controls()
-        if not self._registered and self._pending_edit is None and not self._write_error:
+        if not self._registered and self._pending_edit is None and not self._registration_pending and not self._write_error:
             self.lbl_curation_status.setText(LocaleManager().tr(
                 'gallery.viewer.unregistered', 'This image is not registered in the library; curation is read only.'))
-        elif self._registered and not was_registered and self._pending_edit is None and not self._write_error:
+        elif self._registered and not was_registered and self._pending_edit is None and not self._registration_pending and not self._write_error:
             self.lbl_curation_status.setText(LocaleManager().tr(
                 'gallery.viewer.curation_tip', 'Curation is saved in the library; original files are preserved.'))
 
@@ -588,12 +675,12 @@ class AdvancedViewer(QDialog):
         return super().eventFilter(watched, event)
 
     def next_image(self):
-        if self._closed or not self.paths: return
+        if self._closed or self._registration_pending or self._export_pending or not self.paths: return
         self.current_idx = (self.current_idx + 1) % len(self.paths)
         self.load_current_image()
 
     def prev_image(self):
-        if self._closed or not self.paths: return
+        if self._closed or self._registration_pending or self._export_pending or not self.paths: return
         self.current_idx = (self.current_idx - 1) % len(self.paths)
         self.load_current_image()
 
