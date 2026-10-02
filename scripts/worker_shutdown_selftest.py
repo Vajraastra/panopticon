@@ -22,7 +22,7 @@ from core.theme_manager import ThemeManager
 from modules.format_scanner import module as scanner
 from modules.image_optimizer import module as optimizer
 from modules.gallery.module import GalleryModule
-from modules.gallery.logic import loader as thumbnails
+from core import thumbnail_loader as thumbnails
 import main as product
 
 def pump(condition,seconds=3):

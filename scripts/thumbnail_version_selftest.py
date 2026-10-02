@@ -18,9 +18,9 @@ from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication
 from core.library_service import LibraryService, LibraryError
 from core.library_repository import LibraryRepository
-from modules.gallery.logic.thumbnail_cache import ThumbnailCache
-from modules.gallery.logic.thumbnail_decode import load_thumbnail
-from modules.gallery.logic.loader import ThumbnailLoader
+from core.thumbnail_cache import ThumbnailCache
+from core.thumbnail_decode import load_thumbnail
+from core.thumbnail_loader import ThumbnailLoader
 from modules.gallery.module import GalleryModule
 from modules.gallery.ui.components import ClickableThumbnail
 
@@ -162,7 +162,7 @@ class Thumbnails(unittest.TestCase):
         loader, path = self.loader(), self.source()
         first = self.request(loader, path)
         self.assertEqual(first.size(), QSize(130, 65))
-        from modules.gallery.logic import thumbnail_decode
+        from core import thumbnail_decode
         stat_calls, actual = [], thumbnail_decode._identity
         def identity(source):
             stat_calls.append(threading.get_ident())
@@ -203,9 +203,9 @@ class Thumbnails(unittest.TestCase):
         bad = self.root/'bad.png'
         bad.write_bytes(b'not an image')
         self.assertTrue(self.request(loader, bad.as_posix()).isNull())
-        with patch('modules.gallery.logic.thumbnail_decode.MAX_SOURCE_BYTES', 1):
+        with patch('core.thumbnail_decode.MAX_SOURCE_BYTES', 1):
             self.assertTrue(self.request(loader, path).isNull())
-        with patch('modules.gallery.logic.thumbnail_decode.MAX_SOURCE_PIXELS', 1):
+        with patch('core.thumbnail_decode.MAX_SOURCE_PIXELS', 1):
             self.assertTrue(self.request(loader, path).isNull())
         self.assertEqual(hashlib.sha256(Path(path).read_bytes()).hexdigest(), before)
         moved = self.root/'moved.png'
@@ -217,10 +217,10 @@ class Thumbnails(unittest.TestCase):
         cache = ThumbnailCache(2, 1024*1024)
         cancel = threading.Event()
         identities = [(1, 1, 1, 1), (1, 1, 1, 2)]
-        with patch('modules.gallery.logic.thumbnail_decode._identity', side_effect=identities):
+        with patch('core.thumbnail_decode._identity', side_effect=identities):
             self.assertTrue(load_thumbnail(path, QSize(130, 130), cache, cache.epoch(), cancel).isNull())
         cache.put((path, 130, 130), identities[0], image('red'), cache.epoch())
-        with patch('modules.gallery.logic.thumbnail_decode._identity', side_effect=identities):
+        with patch('core.thumbnail_decode._identity', side_effect=identities):
             self.assertTrue(load_thumbnail(path, QSize(130, 130), cache, cache.epoch(), cancel).isNull())
 
     def test_pending_queue_is_bounded_and_duplicate_requests_coalesce(self):
@@ -228,7 +228,7 @@ class Thumbnails(unittest.TestCase):
         loader.pool.setMaxThreadCount(1)
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
-        actual = __import__('modules.gallery.logic.loader', fromlist=['load_thumbnail']).load_thumbnail
+        actual = __import__('core.thumbnail_loader', fromlist=['load_thumbnail']).load_thumbnail
         calls = []
         def slow(*args):
             calls.append(args[0]); entered.set()
@@ -236,7 +236,7 @@ class Thumbnails(unittest.TestCase):
                 raise RuntimeError('private-thumbnail-timeout')
             return actual(*args)
         paths = [self.source(f'{index}.png') for index in range(4)]
-        with patch('modules.gallery.logic.loader.load_thumbnail', slow):
+        with patch('core.thumbnail_loader.load_thumbnail', slow):
             loader.get_thumbnail_image(paths[0])
             self.assertTrue(entered.wait(2))
             loader.get_thumbnail_image(paths[1])
@@ -254,7 +254,7 @@ class Thumbnails(unittest.TestCase):
         loader.pool.setMaxThreadCount(1)
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
-        from modules.gallery.logic import loader as module
+        from core import thumbnail_loader as module
         actual, calls, received = module.load_thumbnail, [], []
         paths = [self.source(f'{index}.png') for index in range(3)]
         def slow(*args):
@@ -287,7 +287,7 @@ class Thumbnails(unittest.TestCase):
 
     def test_invalid_input_is_rejected_before_worker_or_filesystem(self):
         loader = self.loader()
-        with patch('modules.gallery.logic.loader.ThumbnailWorker', side_effect=AssertionError('worker')):
+        with patch('core.thumbnail_loader.ThumbnailWorker', side_effect=AssertionError('worker')):
             for path, size in [('', QSize(130, 130)), ('a\x00b', QSize(130, 130)),
                                ('a', QSize(513, 1)), ('a', QSize(0, 0))]:
                 with self.assertRaises(ValueError):

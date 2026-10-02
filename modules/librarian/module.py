@@ -7,6 +7,8 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtCore import Qt, QSize, Signal, QTimer, QStringListModel
 from core.base_module import BaseModule
 from core.components.thumbnail import ClickableThumbnail
+from core.thumbnail_loader import ThumbnailLoader
+from core.components.worker_preview import WorkerPreviewDialog
 from core.components.tag_widgets import FlowLayout, TagChip
 from core.database_manager import DatabaseManager
 from core.library_revision_async import LibraryRevisionWatcher
@@ -48,6 +50,9 @@ class LibrarianModule(BaseModule):
         self._icon = "📚"
         
         self.view = None
+        self._thumb_loader = None
+        self._thumb_widgets = {}
+        self._image_previews = []
         # Gestor de base de datos SQLite persistente
         self.db = None
         self.indexer_thread = None
@@ -600,6 +605,11 @@ class LibrarianModule(BaseModule):
         if hasattr(self, '_lazy_load_timer') and self._lazy_load_timer.isActive():
             self._lazy_load_timer.stop()
         self._lazy_load_pending = []
+        self._thumb_widgets = {}
+        if self._thumb_loader is None:
+            self._thumb_loader = ThumbnailLoader()
+            self._thumb_loader.thumbnail_ready.connect(self._thumbnail_ready)
+        self._thumb_loader.invalidate()
 
         # Clear previous thumbnails
         while self.grid_layout_images.count():
@@ -624,6 +634,8 @@ class LibrarianModule(BaseModule):
             thumb.clicked.connect(self.on_thumbnail_clicked)
             self.grid_layout_images.addWidget(thumb, i // cols, i % cols)
             self._lazy_load_pending.append(thumb)
+            key = os.path.normpath(path).replace("\\", "/")
+            self._thumb_widgets.setdefault(key, []).append(thumb)
 
         # Start non-blocking lazy load (batch per idle cycle)
         if not hasattr(self, '_lazy_load_timer'):
@@ -776,24 +788,23 @@ class LibrarianModule(BaseModule):
                     count=value['copies'], path=value['path'], missing=value['missing_hash']))
 
     def _load_next_batch(self):
-        """Loads a small batch of thumbnail pixmaps per event-loop cycle to keep UI responsive."""
+        """Admit requests only; source stat/decode/cache verification stays in workers."""
         if self._closed:
             return
-        batch_size = 10
-        loaded = 0
-        while self._lazy_load_pending and loaded < batch_size:
+        for _ in range(min(10,len(self._lazy_load_pending))):
             thumb = self._lazy_load_pending.pop(0)
-            try:
-                pix = QPixmap(thumb.path)
-                if not pix.isNull():
-                    thumb.setPixmap(pix.scaled(100, 100, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                else:
-                    thumb.setText("❌")
-            except RuntimeError:
-                pass  # Widget was deleted between batches (page changed)
-            loaded += 1
+            if isValid(thumb):
+                self._thumb_loader.get_thumbnail_image(thumb.path,QSize(100,100))
         if not self._lazy_load_pending:
             self._lazy_load_timer.stop()
+
+    def _thumbnail_ready(self,path,image):
+        if self._closed:
+            return
+        for thumb in self._thumb_widgets.get(path,[]):
+            if isValid(thumb):
+                if image.isNull():thumb.setText("❌")
+                else:thumb.setPixmap(QPixmap.fromImage(image))
 
     def _on_tag_item_clicked(self, item):
         """Adds a tag from the sidebar list to the search input."""
@@ -806,24 +817,18 @@ class LibrarianModule(BaseModule):
     def populate_tag_sidebar(self):
         self.update_global_stats()
 
-    def on_thumbnail_clicked(self, path):
-        """Opens the clicked thumbnail in a larger dialog."""
-        dlg = QDialog(self.view)
-        dlg.setWindowTitle(self.tr("lib.preview.title", "Image Preview"))
-        dlg.resize(800, 600)
-        
-        vbox = QVBoxLayout(dlg)
-        lbl_img = QLabel()
-        lbl_img.setAlignment(Qt.AlignCenter)
-        
-        pix = QPixmap(path)
-        if not pix.isNull():
-            lbl_img.setPixmap(pix.scaled(750, 550, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        else:
-            lbl_img.setText(self.tr("gal.viewer.load_error", "Error loading image"))
-            
-        vbox.addWidget(lbl_img)
-        dlg.exec()
+    def on_thumbnail_clicked(self,path):
+        if self._closed:
+            return
+        dialog = WorkerPreviewDialog(path,self.tr,self.view)
+        self._image_previews.append(dialog)
+        try:
+            dialog.exec()
+        finally:
+            # The dialog defers done/close until its decoder has actually exited.
+            if dialog.shutdown_ready():
+                self._image_previews.remove(dialog)
+                dialog.deleteLater()
 
     def on_folder_selected(self, item):
         """Displays preview for the selected folder."""
@@ -943,6 +948,8 @@ class LibrarianModule(BaseModule):
                     self._auto_scan_timer.start(500)
 
     def on_unload(self):
+        if self._thumb_loader is not None:self._thumb_loader.shutdown()
+        for dialog in tuple(self._image_previews):dialog.close()
         self._closed = True
         if hasattr(self, 'revisions'):
             self.revisions.close()
@@ -981,7 +988,7 @@ class LibrarianModule(BaseModule):
         readers = self.findChildren(LibraryReader)
         if self.view is not None and isValid(self.view):
             readers += self.view.findChildren(LibraryReader)
-        return owner_threads_ready(self) and ((not hasattr(self, 'folder_archive') or self.folder_archive.shutdown_ready())
+        return (self._thumb_loader is None or self._thumb_loader.shutdown_ready()) and all(dialog.shutdown_ready() for dialog in self._image_previews) and owner_threads_ready(self) and ((not hasattr(self, 'folder_archive') or self.folder_archive.shutdown_ready())
                 and all(reader.shutdown_ready() for reader in readers)
                 and all(worker is None or native_done(worker) for worker in
                         (self.indexer_thread, self.backfill_thread, self._reindex_thread)))

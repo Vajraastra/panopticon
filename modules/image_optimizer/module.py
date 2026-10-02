@@ -13,6 +13,8 @@ from PySide6.QtCore import Qt, QThread, Signal, QSize
 from PySide6.QtGui import QPixmap, QIcon, QPalette, QColor
 
 from core.base_module import BaseModule
+from core.thumbnail_loader import ThumbnailLoader
+from core.image_preview import ImagePreview, _identity, MAX_SOURCE_BYTES, MAX_SOURCE_PIXELS
 from core.curation_bindings import valid as valid_binding
 from core.derived_publication import write as native_write
 from core.theme import Theme
@@ -172,7 +174,24 @@ class OptimizerWorker(QThread):
         return stats
 
 
+def _analyze_preview(path, metadata_loader, cancel):
+    if cancel.is_set():return None
+    before = _identity(path)
+    if before is None or before[2] > MAX_SOURCE_BYTES:
+        raise ValueError('preview_file_limit')
+    from PIL import Image
+    with Image.open(path) as image:
+        if image.width * image.height > MAX_SOURCE_PIXELS:
+            raise ValueError('preview_pixel_limit')
+    if cancel.is_set():return None
+    result = analyze_image(path)
+    if cancel.is_set():return None
+    if _identity(path) != before:raise ValueError('preview_source_changed')
+    return result
+
+
 class ImageOptimizerModule(BaseModule):
+    _preview_invalidated = Signal()
     def __init__(self):
         super().__init__()
         self._name = "Image Optimizer"
@@ -184,14 +203,44 @@ class ImageOptimizerModule(BaseModule):
         self.worker = None
         self._closed = False
         self._run_queue = None
+        self._thumb_loader = ThumbnailLoader()
+        self._thumb_loader.thumbnail_ready.connect(self._thumbnail_ready)
+        self._thumb_items = {}
+        self._preview_paths = None
+        self._analysis = ImagePreview(None,parent=self,loader=_analyze_preview)
+        self._analysis.result.connect(self._analysis_ready)
+        self._analysis_path = None
+        self._preview_invalidated.connect(self._invalidate_previews,Qt.QueuedConnection)
 
     def on_unload(self):
         self._closed = True
+        bus = (getattr(self,"context",None) or {}).get("event_bus")
+        if bus:bus.unsubscribe("library_changed",self._library_changed)
+        self._thumb_loader.shutdown()
+        self._analysis.close()
         if self.worker is not None and self.worker.isRunning():
             self.worker.stop()
 
     def shutdown_ready(self):
-        return owner_threads_ready(self) and native_done(self.worker)
+        return self._thumb_loader.shutdown_ready() and self._analysis.shutdown_ready() and owner_threads_ready(self) and native_done(self.worker)
+
+    def on_load(self,context=None):
+        super().on_load(context)
+        bus = (context or {}).get('event_bus')
+        if bus:bus.subscribe('library_changed',self._library_changed)
+
+    def _library_changed(self,scope):
+        # EventBus callbacks may originate outside Qt; marshal UI invalidation.
+        self._preview_invalidated.emit()
+
+    def _invalidate_previews(self):
+        if self._closed:return
+        self._preview_paths = None
+        self._thumb_loader.invalidate(clear_cache=True)
+        self._analysis_path = None
+        if self.view is not None:
+            self.lbl_suggestion.clear()
+            self._update_ui()
 
     def get_view(self) -> QWidget:
         if self.view:
@@ -417,38 +466,54 @@ class ImageOptimizerModule(BaseModule):
         self._update_ui()
 
     def _analyze_first(self):
-        if not self.queue:
+        if self._closed or not self.queue:
             return
-        res = analyze_image(self.queue[0])
-        if "error" not in res:
-            self.lbl_suggestion.setText(
-                self.tr("opt.suggestion", "Suggestion: {format} ({reason})").format(
-                    format=res['suggested_format'],
-                    reason=res['suggestion_reason']
-                )
-            )
+        self._analysis_path = self.queue[0]
+        self._analysis.request(self._analysis_path)
+
+    def _analysis_ready(self,ticket,res,error):
+        if self._closed or not self.queue or self.queue[0] != self._analysis_path:
+            return
+        if error is not None or not res or "error" in res:
+            self.lbl_suggestion.setText(self.tr("common.error","Error"))
+        else:
+            self.lbl_suggestion.setText(self.tr("opt.suggestion","Suggestion: {format} ({reason})").format(
+                format=res['suggested_format'],reason=res['suggestion_reason']))
+
+    def _thumbnail_ready(self,path,image):
+        if self._closed:
+            return
+        for item in self._thumb_items.get(path,[]):
+            if not image.isNull():item.setIcon(QIcon(QPixmap.fromImage(image)))
 
     def _update_ui(self):
         if not self.queue:
+            self._thumb_loader.invalidate()
+            self._thumb_items = {}
+            self._preview_paths = None
+            self.list_preview.clear()
             self.stack.setCurrentIndex(0)
             return
 
         self.stack.setCurrentIndex(1)
 
-        if self.list_preview.count() == len(self.queue):
-            return
-
-        self.list_preview.clear()
         preview_limit = 50
+        paths = tuple(self.queue[:preview_limit]),len(self.queue)
+        if self._preview_paths == paths:
+            return
+        self._preview_paths = paths
+        self._thumb_loader.invalidate()
+        self._thumb_items = {}
+        self.list_preview.clear()
 
         for i, path in enumerate(self.queue):
             if i >= preview_limit:
                 break
             item = QListWidgetItem(os.path.basename(path))
-            pix = QPixmap(path)
-            if not pix.isNull():
-                item.setIcon(QIcon(pix.scaled(120, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
             self.list_preview.addItem(item)
+            key = os.path.normpath(path).replace("\\", "/")
+            self._thumb_items.setdefault(key,[]).append(item)
+            self._thumb_loader.get_thumbnail_image(path,QSize(120,120))
 
         if len(self.queue) > preview_limit:
             self.list_preview.addItem(QListWidgetItem(f"+ {len(self.queue) - preview_limit} more..."))

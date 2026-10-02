@@ -951,7 +951,17 @@ A slow filesystem stat can delay the owner while snapshots remain available;
 these observations are diagnostics, not deadlines or automatic pressure control.
 `scripts/library_wal_metrics_selftest.py` verifies private WAL/occupancy behavior.
 
-Gallery grids now own independent thumbnail loaders and pools; unloading one
+Gallery, Librarian and Optimizer reuse the core thumbnail loader with independent
+ownership; unloading one does not stop another. Librarian admits only its current
+page; Optimizer previews the first 50 queued files while retaining the full processing
+queue. Source stat, decode and cache validation run in workers; Qt only paints the
+returned small image. Same-count input replacement refreshes the preview. Optimizer
+invalidates its pixels on library notices delivered to Qt, including notices from
+workers. Librarian's enlarged image dialog defers close/Escape until its actual
+decoder exits. Optimizer's format analysis runs in a separate latest-request worker
+and discards results from a replaced source. These previews never modify originals.
+
+Gallery grids own independent thumbnail loaders and pools; unloading one
 does not stop another. Up to four workers run per grid, with at most 256 pending
 requests. Navigation drops pending old-page work, cancels active old requests and
 discards their late results. Shutdown clears only its own pool and polls actual
