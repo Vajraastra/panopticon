@@ -500,6 +500,8 @@ class MainWindow(QMainWindow):
         self.module_grid_count += 1
 
     def switch_to_module(self, module, *args):
+        if self._shutting_down:
+            return
         window = self.module_windows.get(module.name)
         if window is None:
             try:
@@ -556,11 +558,19 @@ class MainWindow(QMainWindow):
                     lambda paths: self.switch_to_module(pickler, paths)
                 )
 
-        # Gallery → Pickler (envío desde el menú de Gallery)
-        if gallery and pickler:
-            gallery.request_open_pickler.connect(
-                lambda paths: self.switch_to_module(pickler, paths)
+        if gallery:
+            gallery.set_send_targets(
+                name for name, target in (('optimizer', optimizer), ('pickler', pickler))
+                if target is not None
             )
+            if optimizer:
+                gallery.request_open_optimizer.connect(
+                    lambda paths: self.switch_to_module(optimizer, paths)
+                )
+            if pickler:
+                gallery.request_open_pickler.connect(
+                    lambda paths: self.switch_to_module(pickler, paths)
+                )
 
     def get_module(self, partial_name):
         for name, mod in self.loaded_modules.items():

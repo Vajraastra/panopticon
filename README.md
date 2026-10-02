@@ -333,6 +333,11 @@ metadata while preserving the earlier version offline. An occupied active path o
 changed reviewed state stops the action. Scanning alone never reactivates history.
 The viewer binds edits to its displayed copy ID and rejects a replaced identity.
 
+Gallery's Send menu opens Image Optimizer or Pickler with the selected paths,
+reusing that tool's independent session. A tool that failed to load is disabled.
+The obsolete Workshop action has been removed because it had no module receiver.
+Application shutdown rejects late attempts to open a tool.
+
 Gallery also applies tags, rating and search terms to imported external sets before
 pagination. Registered paths use Native fields; absent paths can match their filename
 and have no Native tags/rating. Filtering preserves input order and repeated paths.

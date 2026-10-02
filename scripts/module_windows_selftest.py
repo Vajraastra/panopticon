@@ -10,10 +10,11 @@ from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QWidget, QLineEdit, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QWidget, QLineEdit, QVBoxLayout, QMenu
 from PySide6.QtTest import QTest
 from core.base_module import BaseModule
 from modules.cherry.module import CherryModule
+from modules.gallery.module import GalleryModule
 from main import MainWindow
 from core.paths import ProjectPaths
 from core.library_service import close_library_services, request_close_library_services
@@ -97,6 +98,64 @@ class ModuleWindows(unittest.TestCase):
         self.main.on_navigate('dashboard')
         self.assertTrue(wa.isVisible() and wb.isVisible())
         self.assertEqual(self.main.root_stack.count(), 2)
+
+    def test_gallery_sends_selection_to_reused_optimizer_and_pickler_sessions(self):
+        gallery = GalleryModule()
+        optimizer, pickler = Tool('Image Optimizer'), Tool('Pickler')
+        for module in (gallery, optimizer, pickler):
+            module.on_load(self.main.context)
+            self.main.loaded_modules[module.name] = module
+        self.main.setup_integrations()
+        self.main.switch_to_module(gallery)
+        paths = {'C:/private/uno.png', 'C:/private/dos.png'}
+        gallery.state.selected_paths = paths.copy()
+        for index, target in enumerate((optimizer, pickler)):
+            def choose(menu, point, index=index):
+                self.assertEqual(len(menu.actions()), 2)
+                self.assertTrue(all(action.toolTip() for action in menu.actions()))
+                return menu.actions()[index]
+            class Menu(QMenu):
+                def exec(self, point):
+                    return choose(self, point)
+            with patch('modules.gallery.module.QMenu', Menu):
+                gallery.show_send_menu()
+            self.assertEqual(set(target.received), paths)
+            window = self.main.module_windows[target.name]
+            self.assertTrue(window.isVisible())
+            target.edit.setText('session retained')
+            window.close()
+            gallery.state.selected_paths = {'C:/private/tres.png'}
+            with patch('modules.gallery.module.QMenu', Menu):
+                gallery.show_send_menu()
+            self.assertIs(self.main.module_windows[target.name], window)
+            self.assertEqual(target.received, ['C:/private/tres.png'])
+            self.assertEqual(target.edit.text(), 'session retained')
+            gallery.state.selected_paths = paths.copy()
+
+    def test_gallery_unavailable_target_and_late_navigation_do_not_open_windows(self):
+        gallery = GalleryModule()
+        gallery.on_load(self.main.context)
+        self.main.loaded_modules[gallery.name] = gallery
+        self.main.setup_integrations()
+        self.main.switch_to_module(gallery)
+        gallery.state.selected_paths = {'C:/private/uno.png'}
+        delivered = []
+        gallery.request_open_optimizer.connect(delivered.append)
+        def choose(menu, point):
+            self.assertFalse(any(action.isEnabled() for action in menu.actions()))
+            return menu.actions()[0]
+        class Menu(QMenu):
+            def exec(self, point):
+                return choose(self, point)
+        with patch('modules.gallery.module.QMenu', Menu):
+            gallery.show_send_menu()
+        self.assertEqual(delivered, [])
+        self.main._shutting_down = True
+        self.main.switch_to_module(self.a, ['late.png'])
+        self.assertNotIn('A', self.main.module_windows)
+        self.assertIsNone(self.a.received)
+        # Restore the harness to initiate normal shutdown and unload all modules.
+        self.main._shutting_down = False
 
     def test_real_cherry_runtime_keeps_working_with_another_window(self):
         cherry = CherryModule()

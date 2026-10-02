@@ -436,7 +436,7 @@
   "opt.stats": "Procesadas {total} imágenes.\nAhorrado: {saved} MB",
   "gallery.imported_set": "Set Importado",
   "gallery.send.optimizer": "🚀 Enviar al Optimizador",
-  "gallery.send.workshop": "🛠️ Enviar al Taller",
+  "gallery.send.target_tip": "Abre esta herramienta con las imágenes seleccionadas. Las herramientas no disponibles están deshabilitadas.",
   "crop.settings": "Ajustes de Recorte",
   "crop.ratio": "Relación de Aspecto:",
   "crop.free": "Libre",

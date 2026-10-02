@@ -15,7 +15,6 @@ from .ui.view import GalleryView
 class GalleryModule(BaseModule):
     """Gallery Module — Browse and organize image library."""
 
-    request_open_workshop = Signal(list)
     request_open_optimizer = Signal(list)
     request_open_pickler = Signal(list)
 
@@ -30,6 +29,7 @@ class GalleryModule(BaseModule):
         self.state = None
         self.engine = None
         self._closed = False
+        self.send_targets = frozenset()
 
     def get_view(self) -> QWidget:
         if self.view_widget:
@@ -88,6 +88,9 @@ class GalleryModule(BaseModule):
             title=self.tr("gallery.imported_set", "Imported Set")
         )
 
+    def set_send_targets(self, targets):
+        self.send_targets = frozenset(targets) & {'optimizer', 'pickler'}
+
     def show_send_menu(self):
         if self._closed: return
         menu = QMenu(self.view_widget)
@@ -104,8 +107,13 @@ class GalleryModule(BaseModule):
         """)
 
         act_opt  = menu.addAction(self.tr("gallery.send.optimizer", "🚀 Send to Optimizer"))
-        act_work = menu.addAction(self.tr("gallery.send.workshop",  "🛠️ Send to Workshop"))
         act_pick = menu.addAction(self.tr("gallery.send.pickler",   "🥒 Send to Pickler"))
+        act_opt.setEnabled('optimizer' in self.send_targets)
+        act_pick.setEnabled('pickler' in self.send_targets)
+        for action in (act_opt, act_pick):
+            action.setToolTip(self.tr('gallery.send.target_tip',
+                'Open this tool with the selected images. Unavailable tools are disabled.'))
+        menu.setToolTipsVisible(True)
 
         selected = menu.exec(QCursor.pos())
 
@@ -113,10 +121,10 @@ class GalleryModule(BaseModule):
         if not paths or self._closed:
             return
 
+        if selected is None or not selected.isEnabled():
+            return
         if selected == act_opt:
             self.request_open_optimizer.emit(paths)
-        elif selected == act_work:
-            self.request_open_workshop.emit(paths)
         elif selected == act_pick:
             self.request_open_pickler.emit(paths)
 

@@ -436,7 +436,7 @@
   "opt.stats": "Processed {total} images.\nSaved: {saved} MB",
   "gallery.imported_set": "Imported Set",
   "gallery.send.optimizer": "🚀 Send to Optimizer",
-  "gallery.send.workshop": "🛠️ Send to Workshop",
+  "gallery.send.target_tip": "Open this tool with the selected images. Unavailable tools are disabled.",
   "crop.settings": "Crop Settings",
   "crop.ratio": "Aspect Ratio:",
   "crop.free": "Free",
