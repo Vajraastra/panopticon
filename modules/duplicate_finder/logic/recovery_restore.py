@@ -4,6 +4,7 @@ Sin overwrite/copy+unlink ni compensación automática. Tras admitir un movimien
 o Future, terminar verificación/commit/diario incluso ante cancelación/cierre Qt.
 """
 import os
+from contextlib import nullcontext
 from pathlib import Path
 import stat
 import threading
@@ -99,10 +100,14 @@ class RecoveryRestore:
             # Después del rename no cancelar ni revertir bytes: el owner hará CAS del ID.
             _verify(source,digest,evidence['identity'])
             if not physically_moved:_check_cancel(event)
-            future=self.service.submit('restore_duplicate_copy',self.copy_id,expected_fingerprint=self.expected_fingerprint,
-                path=source.as_posix(),digest=digest)
-            admitted=True
-            if future.result() is not True:raise ValueError('duplicate_restore_commit_unconfirmed')
+            from core.path_identity_online import pinned_online
+            prepared=self.service.read('get_path_identity_status')['prepared']
+            guard=pinned_online(source,None if admitted else event,expected_digest=digest,service=self.service,copy_id=self.copy_id) if prepared else nullcontext(None)
+            with guard as proof:
+                future=self.service.submit('restore_duplicate_copy',self.copy_id,expected_fingerprint=self.expected_fingerprint,
+                    path=source.as_posix(),digest=digest,identity=None if proof is None else proof['identity'])
+                admitted=True
+                if future.result() is not True:raise ValueError('duplicate_restore_commit_unconfirmed')
             result['committed']=operation['committed']=True
             operation['phase']='complete'
             write_journal(target,operation)

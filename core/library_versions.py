@@ -84,7 +84,7 @@ def archive(conn, copy_id, *, expected_fingerprint):
     return True
 
 
-def make_online(conn, copy_id, *, expected_fingerprint, digest, observation, update_fts):
+def make_online(conn, copy_id, *, expected_fingerprint, digest, observation, update_fts, identity=None):
     row = _reviewed(conn, copy_id, expected_fingerprint)
     if not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
         raise ValueError('invalid_copy_version_hash')
@@ -99,10 +99,13 @@ def make_online(conn, copy_id, *, expected_fingerprint, digest, observation, upd
                             (row['path'], copy_id)).fetchone()
     if occupied:
         raise ValueError('copy_version_path_occupied')
+    from core.path_identity_online import record,bind
+    proof=record(conn,copy_id,row['path'],identity)
     known = row['hash_mod'] or row['hash_original']
     if isinstance(known, str) and digest == known.lower():
         if row['is_offline']:
             conn.execute('UPDATE files SET is_offline=0 WHERE id=?', (copy_id,))
+        bind(conn,proof,copy_id)
         return True
     # Contenido distinto/desconocido: conservar fila anterior y crear identidad limpia.
     conn.execute('UPDATE files SET is_offline=1 WHERE id=? AND is_offline=0', (copy_id,))
@@ -111,4 +114,5 @@ def make_online(conn, copy_id, *, expected_fingerprint, digest, observation, upd
     key = conn.execute('INSERT INTO files(path,filename,file_size,created_date,hash_original) VALUES(?,?,?,?,?)',
                        (row['path'], name, size, created, digest)).lastrowid
     update_fts(key)
+    bind(conn,proof,key)
     return True

@@ -17,6 +17,27 @@ import duplicate_recovery_selftest as prior
 
 
 class Restore(prior.Recovery):
+
+    def test_prepared_restoration_binds_same_id_and_keeps_folder_reads_usable(self):
+        source,keeper=self.prepare(curated=True); self.service.backfill_path_identity()
+        result=self.run_restore(); self.assertTrue(result['complete'],result)
+        coverage=self.service.read('get_path_identity_status')
+        self.assertEqual((coverage['pending'],coverage['unresolved']),(0,0))
+        after=self.service.read('get_copy_version_state',self.arguments['copy_id'])
+        expected=deepcopy(self.before['state']); expected['file']['is_offline']=0
+        self.assertEqual(after['state'],expected)
+        self.assertEqual(self.service.read_worker('get_folder_count',str(source.parent)),1)
+
+    def test_prepared_restore_binding_failure_keeps_bytes_recoverable_and_id_offline(self):
+        source,_=self.prepare(); self.service.backfill_path_identity()
+        with patch('core.path_identity_online.store',side_effect=ValueError('binding_failed')):
+            result=self.run_restore()
+        self.assertTrue(result['moved']); self.assertFalse(result['committed'])
+        self.assertEqual(source.read_bytes(),b'same bytes')
+        self.assertEqual(self.service.read('get_copy_version_state',self.arguments['copy_id']),self.before)
+        self.assertEqual(self.service.read('get_path_identity_status')['pending'],0)
+        self.assertEqual(json.loads(Path(result['operation_journal']).read_bytes())['phase'],'partial')
+
     def sql(self,statement,args=()):
         with closing(sqlite3.connect(self.service.db_path)) as conn:
             conn.execute(statement,args);conn.commit()
@@ -165,7 +186,8 @@ class Native(unittest.TestCase):
     def setUp(self):
         self.conn=sqlite3.connect(':memory:')
         self.digest=hashlib.sha256(b'bytes').hexdigest()
-        self.conn.executescript('''CREATE TABLE files(id INTEGER PRIMARY KEY,path TEXT,is_offline INTEGER,hash_original TEXT,hash_mod TEXT,prompt TEXT);
+        self.conn.executescript('''CREATE TABLE panopticon_schema(name TEXT PRIMARY KEY,value TEXT NOT NULL);
+          CREATE TABLE files(id INTEGER PRIMARY KEY,path TEXT,is_offline INTEGER,hash_original TEXT,hash_mod TEXT,prompt TEXT);
           CREATE TABLE tags(id INTEGER PRIMARY KEY,name TEXT,category TEXT);CREATE TABLE file_tags(file_id INTEGER,tag_id INTEGER,source TEXT);''')
         self.conn.execute('INSERT INTO files VALUES(1,?,1,?,NULL,?)',('C:/collection/niÑO.png',self.digest,'documented generation'))
 

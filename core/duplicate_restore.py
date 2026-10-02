@@ -8,7 +8,7 @@ from core.library_versions import _reviewed
 MAX_CHECK_SECONDS=10
 
 
-def restore(conn,copy_id,*,expected_fingerprint,path,digest,normalize):
+def restore(conn,copy_id,*,expected_fingerprint,path,digest,normalize,identity=None):
     row=_reviewed(conn,copy_id,expected_fingerprint)
     if (not isinstance(path,str) or not path or len(path)>4096 or normalize(path)!=path or
             row['path']!=path or row['is_offline']!=1):
@@ -17,6 +17,13 @@ def restore(conn,copy_id,*,expected_fingerprint,path,digest,normalize):
     if (not isinstance(digest,str) or not SHA.fullmatch(digest) or
             not isinstance(known,str) or digest!=known.lower()):
         raise ValueError('duplicate_restore_digest_mismatch')
+    from core.path_identity_online import record,bind
+    proof=record(conn,copy_id,path,identity)
+    if proof is not None:
+        changed=conn.execute('UPDATE files SET is_offline=0 WHERE id=? AND is_offline=1',(copy_id,))
+        if changed.rowcount!=1:raise ValueError('duplicate_restore_identity_changed')
+        bind(conn,proof,copy_id)
+        return True
     # El índice nativo distingue mayúsculas; Windows puede representar la misma
     # ruta con otra caja/Unicode. Chequeo explícito acotado sin índice/UDF persistidos.
     deadline=time.monotonic()+MAX_CHECK_SECONDS

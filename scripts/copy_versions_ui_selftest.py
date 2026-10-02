@@ -325,12 +325,15 @@ class CatalogQt(helpers.Fixture):
         self.assertTrue(dialog.scope.toolTip())
         self.assertTrue(dialog.table.toolTip())
         self.assertTrue(dialog.details.toolTip())
+        translation_keys=[]
         for language in ('en', 'es'):
             values = json.loads((Path(__file__).resolve().parents[1] / 'locales' / (language + '.json')).read_text(encoding='utf-8'))
             keys = [key for key in values if key.startswith('lib.versions.')]
-            self.assertEqual(len(keys), 48)
+            self.assertGreaterEqual(len(keys), 48)
+            translation_keys.append(set(keys))
             for key in keys:
                 self.assertTrue(values[key].format(id=1, count=100, reason='fixture'))
+        self.assertEqual(*translation_keys)
 
 
 class IntegrationQt(helpers.Fixture):

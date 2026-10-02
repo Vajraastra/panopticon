@@ -40,6 +40,15 @@ class CopyVersionTasks:
         if reviewed['fingerprint'] != expected_fingerprint:
             raise ValueError('copy_version_changed_since_review')
         kwargs = dict(expected_fingerprint=expected_fingerprint)
+        if operation == 'make_copy_online' and self.service.read('get_path_identity_status',cancel_event=cancel_event)['prepared']:
+            from core.path_identity_online import pinned_online
+            path=Path(reviewed['state']['file']['path'])
+            with pinned_online(path,cancel_event,service=self.service,copy_id=copy_id) as proof:
+                _check_cancel(cancel_event)
+                result=self.service.submit(operation,copy_id,**kwargs,digest=proof['digest'],
+                    observation=proof['observation'],identity=proof['identity']).result()
+                if result is not True:raise ValueError('copy_version_commit_unconfirmed')
+            return dict(applied=True,action=operation,copy_id=copy_id)
         if operation == 'make_copy_online':
             path = Path(reviewed['state']['file']['path'])
             if not path.is_absolute():

@@ -490,6 +490,14 @@ failure still reports a confirmed deletion; keep all journals for review. There 
 common filesystem/SQLite transaction or guarantee against later external changes.
 Neither recovery folders nor Cherry receipts are automatically pruned.
 
+In a prepared library, explicit online restoration verifies the current bytes
+through a Windows read handle held until the Native commit finishes. Availability
+and fresh canonical/physical evidence change in that same transaction. Identical
+bytes retain the reviewed ID and curation; changed or unknown bytes create a new
+clean ID and preserve the previous one offline. Occupied/ambiguous identities or
+missing proof require review. Duplicate recovery keeps moved bytes and its partial
+journal if the Native commit fails; it never overwrites a new occupant.
+
 ### Explicit perceptual hash phase
 
 Select **pHash by folders (save)**, enter 1–32 separate absolute indexed folders,

@@ -25,6 +25,121 @@ def digest(data):
 
 
 class Versions(unittest.TestCase):
+
+    def test_prepared_parent_case_change_detects_existing_active_alias_before_restore(self):
+        self.action('archive_copy')
+        alias=str(self.image).upper()
+        self.service.submit('register_files_minimal',[dict(path=alias,filename='SAME.PNG',size=11,created=1)]).result(3)
+        self.service.backfill_path_identity(); before=self.state()
+        self.folder.rename(self.folder.with_name(self.folder.name.upper()))
+        with self.assertRaisesRegex(ValueError,'occupied'): self.action('make_copy_online')
+        self.assertEqual(self.state(),before); self.assertEqual(self.service.read('count_files'),1)
+
+    def test_prepared_hardlink_different_name_keeps_each_copy_independent(self):
+        linked=self.image.with_name('linked.png'); os.link(self.image,linked)
+        self.service.submit('register_files_minimal',[dict(path=str(linked),filename=linked.name,size=11,created=1)]).result(3)
+        linked_id=self.db.get_file_id(str(linked)); self.service.backfill_path_identity()
+        self.action('archive_copy'); self.action('make_copy_online')
+        self.assertEqual(self.service.read('count_files'),2)
+        self.assertEqual(self.state(linked_id)['state']['tags'],[])
+        self.assertEqual(self.state()['state']['tags'][0]['name'],'documented')
+        self.assertEqual(self.service.read('get_path_identity_status')['pending'],0)
+
+    def test_prepared_candidate_added_before_admission_rejects_stale_proof(self):
+        import json
+        from core.path_identity import observe_path
+        self.service.backfill_path_identity(); self.action('archive_copy'); before=self.state()
+        native=self.service.submit
+        def race(operation,*args,**kwargs):
+            if operation=='make_copy_online':
+                identity=observe_path(str(self.image))
+                with closing(sqlite3.connect(self.service.db_path)) as conn:
+                    alias=str(self.image).upper().replace('\\','/')
+                    fresh=conn.execute('INSERT INTO files(path,filename) VALUES(?,?)',(alias,'SAME.PNG')).lastrowid
+                    conn.execute('INSERT INTO path_identity_records VALUES(?,?,0,?,?,?,NULL)',
+                        (fresh,alias,'resolved',identity.canonical,json.dumps(identity.physical))); conn.commit()
+            return native(operation,*args,**kwargs)
+        with patch.object(self.service,'submit',side_effect=race):
+            with self.assertRaisesRegex(LibraryError,'sql_state_changed'): self.action('make_copy_online')
+        self.assertEqual(self.state(),before); self.assertEqual(self.service.read('get_path_identity_status')['pending'],0)
+
+
+    def test_prepared_online_same_id_keeps_curation_and_complete_scope(self):
+        self.service.backfill_path_identity()
+        self.action('archive_copy'); before=self.state()['state']
+        self.action('make_copy_online')
+        coverage=self.service.read('get_path_identity_status')
+        self.assertEqual((coverage['pending'],coverage['unresolved']),(0,0))
+        self.assertEqual(self.service.read_worker('get_folder_count',str(self.folder)),1)
+        current=self.state()['state']; current['file']['is_offline']=1
+        self.assertEqual(current,before)
+
+    def test_prepared_changed_bytes_have_new_clean_id_and_live_binding(self):
+        self.service.backfill_path_identity(); self.action('archive_copy')
+        self.image.write_bytes(b'different current bytes')
+        self.action('make_copy_online')
+        fresh=self.db.get_file_id(str(self.image)); self.assertNotEqual(fresh,self.key)
+        self.assertEqual(self.state(fresh)['state']['tags'],[])
+        self.assertEqual(self.state(fresh)['state']['file']['rating'],0)
+        self.assertEqual(self.state()['state']['file']['is_offline'],1)
+        self.assertEqual(self.service.read('get_path_identity_status')['pending'],0)
+        self.assertEqual(self.service.read_worker('get_folder_count',str(self.folder)),1)
+        self.assertEqual(self.sql('SELECT status,is_offline FROM path_identity_records WHERE file_id=?',(fresh,)),[('resolved',0)])
+
+    def test_prepared_unknown_bytes_also_keep_old_curation_offline(self):
+        self.sql('UPDATE files SET hash_original=NULL WHERE id=?',(self.key,))
+        self.service.backfill_path_identity(); self.action('archive_copy'); self.action('make_copy_online')
+        fresh=self.db.get_file_id(str(self.image)); self.assertNotEqual(fresh,self.key)
+        self.assertEqual(self.state()['state']['tags'][0]['name'],'documented')
+        self.assertEqual(self.state(fresh)['state']['tags'],[])
+        self.assertEqual(self.service.read('get_path_identity_status')['pending'],0)
+
+    def test_prepared_online_native_without_worker_identity_is_rejected(self):
+        self.service.backfill_path_identity(); self.action('archive_copy'); before=self.state()
+        current,observation=observe(self.image)
+        with self.assertRaisesRegex(LibraryError,'review_required'):
+            self.service.submit('make_copy_online',self.key,expected_fingerprint=before['fingerprint'],
+                digest=current,observation=observation).result(3)
+        self.assertEqual(self.state(),before)
+        self.assertEqual(self.service.read('get_path_identity_status')['pending'],0)
+
+    def test_prepared_online_binding_failure_rolls_back_availability_and_new_id(self):
+        self.service.backfill_path_identity(); self.action('archive_copy'); before=self.state()
+        self.image.write_bytes(b'different')
+        with patch('core.path_identity_online.store',side_effect=ValueError('binding_failed')):
+            with self.assertRaisesRegex(LibraryError,'binding_failed'): self.action('make_copy_online')
+        self.assertEqual(self.state(),before); self.assertEqual(self.sql('SELECT count(*) FROM files'),[(1,)])
+        self.assertTrue(self.db.check_fts()['consistent'])
+        self.assertEqual(self.service.read('get_path_identity_status')['pending'],0)
+
+    def test_prepared_online_pin_protects_bytes_until_native_commit(self):
+        self.service.backfill_path_identity(); self.action('archive_copy')
+        original=LibraryRepository.make_copy_online; attempts=[]
+        def blocked(repo,*args,**kwargs):
+            with self.assertRaises(OSError): self.image.write_bytes(b'unapproved writer')
+            attempts.append(True); return original(repo,*args,**kwargs)
+        with patch.object(LibraryRepository,'make_copy_online',blocked): self.action('make_copy_online')
+        self.assertEqual(attempts,[True]); self.assertEqual(self.image.read_bytes(),b'first bytes')
+        self.image.write_bytes(b'after commit')  # The worker released its handle.
+
+    def test_prepared_online_canonical_occupied_alias_preserves_offline_id(self):
+        self.action('archive_copy')
+        alias=str(self.image).upper().replace('SAME.PNG','same.png')
+        self.service.submit('register_files_minimal',[dict(path=alias,filename='same.png',size=11,created=1)]).result(3)
+        self.service.backfill_path_identity(); before=self.state()
+        with self.assertRaisesRegex((ValueError,LibraryError),'occupied'): self.action('make_copy_online')
+        self.assertEqual(self.state(),before)
+        self.assertEqual(self.service.read('get_path_identity_status')['pending'],0)
+
+    def test_preparation_between_legacy_hash_and_admission_does_not_publish_missing_binding(self):
+        self.action('archive_copy'); before=self.state(); native=observe
+        def race(*args):
+            proof=native(*args); self.service.backfill_path_identity(); return proof
+        with patch('core.copy_version_tasks.observe',side_effect=race):
+            with self.assertRaisesRegex(LibraryError,'review_required'): self.action('make_copy_online')
+        self.assertEqual(self.state(),before)
+        self.assertEqual(self.service.read('get_path_identity_status')['pending'],0)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

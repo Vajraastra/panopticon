@@ -203,7 +203,8 @@ class Registry(unittest.TestCase):
         self.service.publish_path_identity_page(page)
         self.service.submit('remove_files',[str(image)]).result(3)
         self.assertEqual(self.service.read('get_path_identity_matches',page['records'][0]['canonical'])['records'],[])
-        self.assertEqual(self.service.read('get_path_identity_status')['pending'],1)
+        self.assertEqual(self.service.read('get_path_identity_status')['pending'],0)
+        self.assertEqual(self.service.read('get_path_identity_records')['records'][0][2],1)
 
     def test_caps_duplicate_and_incomplete_record_reject_atomically(self):
         self.add('one.png')
