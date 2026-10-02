@@ -28,6 +28,15 @@ class Archive(helpers.Review):
     def full_state(self, approved):
         return [self.service.read('get_copy_version_state', row['copy_id']) for row in approved]
 
+    def test_prepared_duplicate_retirement_keeps_complete_offline_identity(self):
+        raw,curated=self.pair()
+        self.service.backfill_path_identity()
+        approved=self.approval((raw,curated))
+        self.command(approved,[raw.as_posix()])
+        self.assertEqual(self.service.read('get_path_identity_status')['pending'],0)
+        self.assertEqual(self.service.resolve_path_identity(str(curated))['file_id'],approved[1]['copy_id'])
+        self.assertEqual(self.service.read('get_copy_version_state',approved[0]['copy_id'])['state']['file']['is_offline'],1)
+
     def test_only_raw_archived_curated_preserved_with_all_data_and_bytes(self):
         raw, curated = self.pair()
         approved = self.approval((raw, curated))

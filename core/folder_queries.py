@@ -2,9 +2,9 @@
 import os
 from core.library_results import collect_rows, validate_page
 from core.path_identity import local_path
-from core.path_identity_registry import status
+from core.path_identity_registry import status, prepared
 
-SCOPED = frozenset({'get_folder_count','get_folder_preview','get_files_recursive',
+SCOPED = frozenset({'get_inventory_page','get_folder_count','get_folder_preview','get_files_recursive',
     'get_known_files_in_folder','get_library_page','get_library_selection',
     'resolve_library_selection','search_files_paginated','get_folders_paginated'})
 
@@ -13,7 +13,7 @@ def names(operation, args, options):
     if operation not in SCOPED:
         raise ValueError('invalid_folder_operation')
     values=[]
-    if operation in ('get_folder_count','get_folder_preview','get_files_recursive','get_known_files_in_folder'):
+    if operation in ('get_inventory_page','get_folder_count','get_folder_preview','get_files_recursive','get_known_files_in_folder'):
         values.append(args[0] if args else options.get('folder_path'))
     elif operation != 'get_folders_paginated':
         if operation in ('get_library_page','get_library_selection','resolve_library_selection') and options.get('terms'):
@@ -38,9 +38,16 @@ def watch_page(conn, limit, offset):
     return total,paths
 
 
-def metadata(repo, *, albums=False, limit=50, offset=0):
+def metadata(repo, *, albums=False, limit=50, offset=0, requested_operation=None, args=(), options=None):
     if type(albums) is not bool:
         raise ValueError('invalid_folder_scope')
+    if requested_operation is not None:
+        if requested_operation not in SCOPED or type(args) not in (list,tuple) or type(options) is not dict:
+            raise ValueError('invalid_folder_scope')
+        if not prepared(repo.conn):
+            # Legacy dispatch and page use the same snapshot/connection; no
+            # global count scan or duplicate reader transaction per page.
+            return dict(coverage=dict(prepared=False),value=getattr(repo,requested_operation)(*args,**options))
     value=dict(coverage=status(repo.conn,repo._path_coverage_cache))
     if albums and value['coverage']['prepared']:
         value['page']=watch_page(repo.conn,limit,offset)

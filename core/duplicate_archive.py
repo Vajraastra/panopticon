@@ -63,6 +63,8 @@ def archive(conn, approved, selected, *, digest, policy, expected_scope, normali
     retiring_ids = [record['copy_id'] for record in approved if record['path'] in selected]
     placeholders = ','.join('?' for _ in retiring_ids)
     cursor = conn.execute(f'UPDATE files SET is_offline=1 WHERE is_offline=0 AND id IN ({placeholders})', retiring_ids)
+    from core.path_identity_offline import ids as sync_offline
+    sync_offline(conn,retiring_ids)
     if cursor.rowcount != len(retiring_ids):
         raise ValueError('duplicate_group_changed_since_review')
     return True

@@ -4,7 +4,7 @@ from core.duplicate_policy import SHA
 from core.duplicate_snapshot import snapshot, encode
 
 
-def archive_missing(conn, approved, *, folder, normalize):
+def archive_missing(conn, approved, *, folder, normalize, scope=None):
     if not conn.in_transaction:
         raise RuntimeError('inventory_archive_requires_transaction')
     if (not isinstance(folder, str) or not folder or len(folder) > 4096 or
@@ -33,10 +33,30 @@ def archive_missing(conn, approved, *, folder, normalize):
     from core.library_transfers import reserved
     if reserved(conn, ids):
         raise ValueError('inventory_archive_transfer_pending')
+    from core.path_identity_registry import prepared
+    if prepared(conn):
+        from core.path_identity import local_path
+        from core.folder_queries import bounds
+        if (type(scope) is not dict or set(scope) != {'path','canonical','physical'}
+                or scope['path'] != local_path(folder) or scope['canonical'] != local_path(scope['canonical'])
+                or type(scope['physical']) not in (list,tuple) or len(scope['physical']) != 7
+                or any(type(v) is not int or not 0<=v<=0xffffffff for v in scope['physical'])):
+            raise ValueError('path_identity_review_required')
+        low,high=bounds(scope['canonical'])
+        members={row[0] for row in conn.execute('SELECT r.file_id FROM path_identity_records r '
+            'JOIN files f ON f.id=r.file_id WHERE r.file_id IN ('+','.join('?' for _ in ids)+') '
+            "AND r.status='resolved' AND r.is_offline=0 AND f.is_offline=0 AND r.stored_path=f.path COLLATE BINARY "
+            'AND r.canonical>=? COLLATE BINARY AND r.canonical<? COLLATE BINARY',[*ids,low,high])}
+        if members!=ids:
+            raise ValueError('inventory_archive_scope_changed')
+    elif scope is not None:
+        raise ValueError('path_identity_sql_state_changed')
     placeholders = ','.join('?' for _ in ids)
     cursor = conn.execute(f'UPDATE files SET is_offline=1 WHERE is_offline=0 AND id IN ({placeholders})', tuple(ids))
     if cursor.rowcount != len(ids):
         raise ValueError('inventory_archive_identity_changed')
+    from core.path_identity_offline import ids as sync_offline
+    sync_offline(conn,list(ids))
     # FTS, generaciones, hashes, tags y recibos permanecen; ningún trabajo de disco
     # en el owner. El worker aporta ausencia observada, sin atomicidad FS/SQLite.
     return True

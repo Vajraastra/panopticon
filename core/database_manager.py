@@ -29,6 +29,20 @@ class DatabaseManager:
             log.warning('[DB] %s', exc)
             return False
 
+    def archive_missing_copies(self, records, *, folder, cancel_event=None):
+        scope=None
+        coverage=self.service.read('get_path_identity_status',cancel_event=cancel_event)
+        if coverage['prepared']:
+            from core.path_identity import observe_path, local_path
+            observed=observe_path(folder,cancel_event=cancel_event)
+            if observed.status!='resolved' or observed.kind!='directory':
+                raise ValueError('inventory_archive_scope_unavailable')
+            scope=dict(path=local_path(folder),canonical=observed.canonical,physical=observed.physical)
+        if cancel_event is None:
+            return self._write('archive_missing_copies',records,folder=folder,scope=scope)
+        from core.library_batch import commit_archive_batch
+        return commit_archive_batch(self.service,records,folder,scope,cancel_event)
+
     def register_files_minimal(self, records, *, cancel_event=None):
         if cancel_event is None:
             return self._write('register_files_minimal', records)

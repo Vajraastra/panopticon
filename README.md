@@ -1015,7 +1015,19 @@ unbounded legacy inventories retain their complete contract pending materialized
 delivery. `scripts/folder_scopes_selftest.py` verifies these private contracts;
 `scripts/folder_scopes_benchmark.py <baseline-repository>` compares a private SQL
 300k fixture. These measurements do not substitute real Windows/Cherry validation.
-Known changing ingest batches retain exact coverage without repeated
+Prepared inventory pages use the same observed canonical scope while retaining
+one private idle reader connection across pages; SQL snapshots close before folder
+probes. The fixed initial ID frontier still excludes later additions. Missing-file
+archival submits only reviewed IDs inside the observed canonical folder, with FIFO
+admission and queued cancellation; it never approves a case-folded sibling folder.
+Confirmed Native retirements update offline path bindings in the same transaction
+as availability, including explicit removal, copy history archive, inventory,
+duplicates and Pickler Copy undo. IDs/curation/FTS/receipts remain, and readers need
+no repeated preparation after retirement. No physical identity is guessed for a
+later online restoration; those remaining producer paths still require observation.
+Legacy inventory preflight and page share one snapshot with no global-count scan.
+`scripts/inventory_identity_selftest.py` covers prepared multi-batch retirement and
+private leases. Known changing ingest batches retain exact coverage without repeated
 full scans; other mutations still invalidate it normally. Validating the real
 migration remains open. Folder spelling and portable Cherry data remain preserved.
 [Windows supports case rules per directory](https://learn.microsoft.com/en-us/windows/wsl/case-sensitivity).

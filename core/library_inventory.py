@@ -7,22 +7,22 @@ def _id(value):
     return type(value) is int and -2**63 <= value <= 2**63-1
 
 
-def page(conn, folder, *, folder_like, after_id=None, upper_id=None, limit=256):
+def page(conn, folder, *, folder_like, folder_filter=None, after_id=None, upper_id=None, limit=256):
     validate_page(limit)
     if (limit > 256 or not isinstance(folder, str) or not folder or len(folder) > 4096 or '\x00' in folder or
             (after_id is not None and not _id(after_id)) or
             (upper_id is not None and not _id(upper_id)) or
             (after_id is not None and (upper_id is None or after_id > upper_id))):
         raise ReadResultError('invalid_inventory_page')
-    pattern = folder_like(folder)
+    condition,bindings=(folder_filter(folder) if folder_filter is not None else ("path LIKE ? ESCAPE '\\'",[folder_like(folder)]))
     if upper_id is None:
         upper_id = conn.execute(
-            "SELECT max(id) FROM files WHERE is_offline=0 AND path LIKE ? ESCAPE '\\'",
-            (pattern,)).fetchone()[0]
+            "SELECT max(id) FROM files WHERE is_offline=0 AND "+condition,
+            bindings).fetchone()[0]
     if upper_id is None:
         return dict(rows=[], upper_id=None, after_id=None, done=True)
-    where = "is_offline=0 AND path LIKE ? ESCAPE '\\' AND id <= ?"
-    params = [pattern, upper_id]
+    where = "is_offline=0 AND "+condition+" AND id <= ?"
+    params = [*bindings, upper_id]
     if after_id is not None:
         where += ' AND id > ?'
         params.append(after_id)
@@ -64,9 +64,9 @@ class InventoryReader:
             raise LibraryError(operation, 'inventory_reader_closed')
         if threading.get_ident() != self._thread:
             raise LibraryError(operation, 'inventory_reader_wrong_thread')
-        return self._service._read(operation, (folder,), kwargs,
-            cancel_event if cancel_event is not None else self._cancel,
-            lambda: _PageLease(self._conn))
+        return self._service.read_worker(operation, folder, **kwargs,
+            cancel_event=cancel_event if cancel_event is not None else self._cancel,
+            _reader_factory=lambda: _PageLease(self._conn))
 
     def close(self):
         self._closed = True

@@ -37,11 +37,17 @@ def commit_control(service, operation, cancel_event):
     return _commit(service, operation, (), cancel_event)
 
 
-def _commit(service, operation, args, cancel_event):
+def commit_archive_batch(service, records, folder, scope, cancel_event):
+    if type(records) not in (list,tuple) or not 1<=len(records)<=256:
+        raise ValueError('invalid_inventory_archive')
+    return _commit(service,'archive_missing_copies',(records,),cancel_event,dict(folder=folder,scope=scope))
+
+
+def _commit(service, operation, args, cancel_event, kwargs=None):
     while True:
         if cancel_event.is_set():
             raise BatchCancelled('observation_batch_cancelled')
-        future = service.submit(operation, *args)
+        future = service.submit(operation, *args, **(kwargs or {}))
         try:
             while True:
                 if cancel_event.is_set() and future.cancel():

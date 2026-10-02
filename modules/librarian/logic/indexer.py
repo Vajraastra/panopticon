@@ -207,7 +207,7 @@ class IndexerWorker(QThread):
                         return
                     if approved:
                         normalized = os.path.normpath(folder).replace('\\', '/')
-                        if self.db.archive_missing_copies(approved, folder=normalized) is not True:
+                        if self.db.archive_missing_copies(approved, folder=normalized, cancel_event=self._inventory_cancel) is not True:
                             result.fail(InventoryStatus.ERROR, 'No se pudo confirmar el archivado por ID')
                             return
                         self.archived_count += len(approved)

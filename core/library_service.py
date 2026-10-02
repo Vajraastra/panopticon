@@ -376,13 +376,15 @@ class LibraryService:
         from core.library_path_identity import inspect_page
         return inspect_page(self, **kwargs)
 
-    def read_worker(self, operation, *args, cancel_event=None, **kwargs):
+    def read_worker(self, operation, *args, cancel_event=None, _reader_factory=None, **kwargs):
         """Worker-only folder observations, with SQL-only reads kept separate."""
         from core.folder_queries import SCOPED
         if operation in SCOPED:
             from core.folder_tasks import read
             saved_args,saved_kwargs=snapshot_read(args,kwargs)
-            return read(self,operation,saved_args,saved_kwargs,cancel_event)
+            return read(self,operation,saved_args,saved_kwargs,cancel_event,_reader_factory)
+        if _reader_factory is not None:
+            return self._read(operation,args,kwargs,cancel_event,_reader_factory)
         return self.read(operation,*args,cancel_event=cancel_event,**kwargs)
 
     def read(self, operation, *args, cancel_event=None, **kwargs):

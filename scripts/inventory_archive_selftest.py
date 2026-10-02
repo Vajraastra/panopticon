@@ -76,8 +76,17 @@ class Archive(prior.IndexerSafety):
             conn.execute('BEGIN IMMEDIATE');trace=[];conn.set_trace_callback(trace.append)
             self.assertTrue(archive_missing(conn,self.approved,folder=self.folder.as_posix(),normalize=lambda p:p))
             self.assertEqual(len([s for s in trace if s.startswith('UPDATE files SET is_offline')]),1)
-            self.assertEqual(len([s for s in trace if s.startswith('SELECT')]),3)
+            small_count=len([s for s in trace if s.startswith('SELECT')])
             self.assertFalse(any('files_fts' in s or s.startswith(('INSERT','DELETE','CREATE')) for s in trace))
+            conn.rollback()
+        self.assert_active()
+        # Ownership/transfer guards add a fixed number of reads. Increasing the
+        # batch must not introduce one query per archived copy.
+        self.prepare(tuple(f'many{i}.png' for i in range(128)))
+        with closing(sqlite3.connect(self.db.db_path)) as conn:
+            conn.execute('BEGIN IMMEDIATE');trace=[];conn.set_trace_callback(trace.append)
+            self.assertTrue(archive_missing(conn,self.approved,folder=self.folder.as_posix(),normalize=lambda p:p))
+            self.assertEqual(len([s for s in trace if s.startswith('SELECT')]),small_count)
             conn.rollback()
         self.assert_active()
 

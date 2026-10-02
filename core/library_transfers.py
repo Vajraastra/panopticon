@@ -334,6 +334,8 @@ def retire_copy(repo, operation_id):
                 source['state']['file']['is_offline']):
             raise ValueError('transfer_copy_undo_changed')
         repo.conn.execute('UPDATE files SET is_offline=1 WHERE id=? AND is_offline=0', (saved['result_copy_id'],))
+        from core.path_identity_offline import ids as sync_offline
+        sync_offline(repo.conn,[saved['result_copy_id']])
     return True
 
 

@@ -196,6 +196,16 @@ class PicklerTransfer(unittest.TestCase):
         result=transfers.transfer(self.service,other,self.output,'copy',journal_root=self.journals)
         self.assertTrue(other.exists()); self.assertNotEqual(result['receipt']['result_copy_id'],result['receipt']['source_copy_id'])
 
+    def test_prepared_copy_undo_and_repeated_copy_keep_complete_identity(self):
+        self.service.backfill_path_identity()
+        first=self.transfer('copy')
+        self.undo(first)
+        self.assertEqual(self.service.read('get_path_identity_status')['pending'],0)
+        second=self.transfer('copy')
+        self.assertNotEqual(first['receipt']['result_copy_id'],second['receipt']['result_copy_id'])
+        self.assertEqual(self.service.resolve_path_identity(second['current'])['file_id'],second['receipt']['result_copy_id'])
+        self.assertEqual(self.service.read('get_path_identity_status')['pending'],0)
+
     def test_prepared_identity_move_and_recovery(self):
         self.service.submit('prepare_path_identity').result(5)
         self.service.backfill_path_identity()

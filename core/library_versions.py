@@ -79,6 +79,8 @@ def archive(conn, copy_id, *, expected_fingerprint):
     row = _reviewed(conn, copy_id, expected_fingerprint)
     if row['is_offline'] == 0:
         conn.execute('UPDATE files SET is_offline=1 WHERE id=?', (copy_id,))
+    from core.path_identity_offline import ids
+    ids(conn,[copy_id])
     return True
 
 
@@ -104,6 +106,8 @@ def make_online(conn, copy_id, *, expected_fingerprint, digest, observation, upd
         return True
     # Contenido distinto/desconocido: conservar fila anterior y crear identidad limpia.
     conn.execute('UPDATE files SET is_offline=1 WHERE id=? AND is_offline=0', (copy_id,))
+    from core.path_identity_offline import ids
+    ids(conn,[copy_id])
     key = conn.execute('INSERT INTO files(path,filename,file_size,created_date,hash_original) VALUES(?,?,?,?,?)',
                        (row['path'], name, size, created, digest)).lastrowid
     update_fts(key)

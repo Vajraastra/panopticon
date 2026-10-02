@@ -375,7 +375,7 @@ class LibraryRepository:
 
     def get_inventory_page(self, folder_path, **kwargs):
         from core.library_inventory import page
-        return page(self.conn, folder_path, folder_like=self._folder_like, **kwargs)
+        return page(self.conn, folder_path, folder_like=self._folder_like, folder_filter=self._folder_filter, **kwargs)
 
     def get_known_files_in_folder(self, folder_path):
         where,params=self._folder_filter(folder_path)
@@ -401,14 +401,16 @@ class LibraryRepository:
             for p in paths_list:
                 norm = self._normalize_path(p)
                 cursor.execute("UPDATE files SET is_offline=1 WHERE is_offline=0 AND path = ?", (norm,))
+                from core.path_identity_offline import query
+                query(self.conn,'f.path=?',(norm,))
             return True
         except Exception as e:
             log.warning("[DB] remove_files error: %s", e)
             return False
 
-    def archive_missing_copies(self, approved, *, folder):
+    def archive_missing_copies(self, approved, *, folder, scope=None):
         from core.inventory_archive import archive_missing
-        return archive_missing(self.conn, approved, folder=folder, normalize=self._normalize_path)
+        return archive_missing(self.conn, approved, folder=folder, normalize=self._normalize_path, scope=scope)
 
     # --- Standard Queries (Gallery/Search) ---
 
@@ -437,6 +439,8 @@ class LibraryRepository:
             like = self._folder_like(path)
             cursor.execute("DELETE FROM watched_folders WHERE path=?", (norm,))
             cursor.execute("UPDATE files SET is_offline=1 WHERE is_offline=0 AND path LIKE ? ESCAPE '\\'", (like,))
+            from core.path_identity_offline import query
+            query(self.conn,"f.path LIKE ? ESCAPE '\\'",(like,))
             return True
         except Exception as e:
             log.warning("[DB] remove_watched_folder error: %s", e)
