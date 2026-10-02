@@ -27,7 +27,7 @@ from core.paths import ProjectPaths
 
 log = logging.getLogger(__name__)
 READS = frozenset({
-    'get_path_identity_status', 'get_path_identity_matches', 'get_path_identity_resolution',
+    'get_path_identity_ingest_state', 'get_path_identity_status', 'get_path_identity_matches', 'get_path_identity_resolution',
     'get_path_identity_records', 'get_path_identity_review_page',
     'get_metadata_edit_history_record', 'get_metadata_edit_state', 'get_metadata_edit_receipt', 'get_generation_history_status', 'get_generation_history_page',
     'get_metadata_path_status', 'get_derived_copies_status', 'get_derived_copy_receipt',
@@ -75,7 +75,7 @@ WRITES = frozenset({
     'approve_metadata_backup_purge',
     'prepare_generation_history', 'approve_metadata_edit', 'commit_metadata_edit',
     'prepare_derived_copies', 'approve_derived_copy', 'register_derived_copy',
-    'register_files_minimal', 'update_file_metadata', 'remove_files',
+    'register_files_observed', 'register_files_minimal', 'update_file_metadata', 'remove_files',
     'archive_missing_copies',
     'add_watched_folder', 'remove_watched_folder', 'add_tag_to_file',
     'archive_watched_folder_reviewed',
@@ -215,7 +215,7 @@ class LibraryService:
                 if conn.execute('PRAGMA journal_mode=WAL').fetchone()[0].lower() != 'wal':
                     raise sqlite3.DatabaseError('WAL unavailable')
             conn.execute('PRAGMA synchronous=FULL')
-            repo = LibraryRepository(conn, cache_derived_paths=True)
+            repo = LibraryRepository(conn, cache_derived_paths=True, path_coverage_cache=self._path_coverage)
             self._revision.poll(conn)
             self._wal.poll()
             self._ready.set_result(True)
@@ -339,6 +339,12 @@ class LibraryService:
                 except Full:
                     future.set_exception(LibraryQueueFull(operation))
         return future
+
+    def register_files_observed(self, records, *, cancel_event=None):
+        """Worker-only, bounded observations; migration stays explicit."""
+        from core.library_path_ingest import register
+        event = cancel_event if cancel_event is not None else threading.Event()
+        return register(self, records, event)
 
     def backfill_path_identity(self, **kwargs):
         """Explicit worker operation, bounded pages and confirmed progress."""

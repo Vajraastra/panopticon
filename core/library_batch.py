@@ -4,7 +4,7 @@ from concurrent.futures import CancelledError, TimeoutError
 from core.library_service import LibraryQueueFull
 
 MAX_BATCH_ROWS = 100
-_OPERATIONS = frozenset({'register_files_minimal', 'set_hash_original_bulk', 'store_path_identity_batch'})
+_OPERATIONS = frozenset({'register_files_minimal', 'register_files_observed', 'set_hash_original_bulk', 'store_path_identity_batch'})
 
 
 class BatchCancelled(RuntimeError):

@@ -317,6 +317,14 @@ class LibraryRepository:
 
     # --- Discovery / Existence ---
 
+    def register_files_observed(self, records):
+        from core.library_path_ingest import write
+        return write(self, records)
+
+    def get_path_identity_ingest_state(self, canonicals, paths):
+        from core.library_path_ingest import state
+        return state(self.conn, canonicals, paths, self._path_coverage_cache)
+
     def get_path_identity_review_page(self, **kwargs):
         from core.path_identity_review import page
         return page(self.conn, **kwargs)

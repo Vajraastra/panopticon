@@ -32,8 +32,7 @@ class DatabaseManager:
     def register_files_minimal(self, records, *, cancel_event=None):
         if cancel_event is None:
             return self._write('register_files_minimal', records)
-        from core.library_batch import commit_batch
-        return commit_batch(self.service, 'register_files_minimal', records, cancel_event)
+        return self.service.register_files_observed(records, cancel_event=cancel_event)
 
     def set_hash_original_bulk(self, records, *, cancel_event=None):
         if cancel_event is None:

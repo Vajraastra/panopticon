@@ -941,12 +941,23 @@ a complete refresh before another approval. Offline and collision safeguards
 remain unchanged. Readers validate
 owned clock/table/index/trigger definitions before cache use; incomplete old
 preparations work uncached until another explicit backed-up prepare. These APIs
-do not automatically route legacy mutations or register new files. No aggregate filesystem/SQLite snapshot or hard I/O deadline is claimed. Unknown/offline rows remain unresolved.
+route the indexer's bounded worker registration after explicit preparation:
+resolved aliases reuse the existing ID and stored spelling; new files and their
+identity evidence commit together with FTS. Saved non-NULL provenance, immutable
+original hashes, tags, ratings and generation remain preserved. Ambiguity,
+incomplete coverage, unavailable online evidence or a changed SQL clock rejects
+the whole batch; incomplete indexing cannot archive omissions. Offline exact
+histories remain offline. Stop waits for running commits; admission retains FIFO.
+Unprepared worker batches retain legacy behavior, with a writer-side guard
+against preparation racing admission. Other legacy mutations and callers without
+the worker cancellation contract remain open. No aggregate filesystem/SQLite
+snapshot or hard I/O deadline is claimed; physical evidence expires before SQL.
 Librarian exposes explicit path preparation and paginated review; it can check
 one image spelling and open retained-copy histories without merging IDs. Stop
 keeps confirmed evidence; closing waits for actual reader completion.
-Existing lookup/registration/prefix behavior is still legacy; connecting those
-consumers and validating the real migration remain open. Folder spelling and portable Cherry data remain preserved.
+Existing lookups, other registrations and folder prefixes still require
+migration; repeated coverage work across changing ingest batches also remains
+to be optimized. Validating the real migration remains open. Folder spelling and portable Cherry data remain preserved.
 [Windows supports case rules per directory](https://learn.microsoft.com/en-us/windows/wsl/case-sensitivity).
 
 ## License
