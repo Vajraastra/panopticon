@@ -414,6 +414,10 @@ partial result. **Visual similarity** admits at most 2,000 images and 10 million
 per image, with four workers and bounded pair comparison. It never authorizes retirement
 and performs no implicit cache writes. It can reuse previously saved pHash only after
 checking current SHA-256; absent or unproven cache uses fresh decoding for review.
+Visual groups compare remaining images against each group's first image. Similarity
+does not imply that every pair in a group matches, and groups are not transitively
+merged. The 2,000-image limit bounds this comparison; increasing it requires a
+separate capacity review.
 
 ### Review recovery journals
 
