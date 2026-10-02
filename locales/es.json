@@ -249,6 +249,8 @@
   "review.as_tag": "Tratar como tags",
   "review.folder": "Carpeta: {0} ({1} captions)",
   "review.save": "Guardar este caption",
+  "review.reload": "Recargar caption (descartar cambios sin guardar)",
+  "review.write_error": "Falló la revisión: {0}. Los cambios siguen en el editor; los cambios masivos previos podrían estar guardados.",
   "review.no_image": "(imagen no encontrada)",
   "review.tools": "Edición masiva de tags",
   "review.find": "Tag / texto a buscar",

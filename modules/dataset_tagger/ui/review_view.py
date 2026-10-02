@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 
-from ..logic import tag_tools, tag_db, refine
+from ..logic import tag_tools, tag_db, refine, caption_edit
+from ..logic.review_worker import ReviewWorker
 from ..logic.sidecar import IMAGE_EXTS
 from ..logic.templates import CaptionTemplate, available_models
 from ..logic.providers.openai_compat import OpenAICompatProvider
@@ -42,6 +43,11 @@ class ReviewView(WorkerViewLifecycle, QWidget):
         self.context = context
         self.folder = str(folder) if folder else None
         self._current = None  # Path del .txt en edición
+        self._caption_snapshot = None
+        self._review_io = None
+        self._review_after = None
+        self._review_ok = False
+        self._close_requested = False
         # stem a preseleccionar al cargar (p. ej. la imagen abierta desde el grid)
         self._select_stem = Path(select).stem if select else None
         # arquitectura sugerida (del tagger). Dirige el CSV de autocompletado y
@@ -140,7 +146,7 @@ class ReviewView(WorkerViewLifecycle, QWidget):
 
     # -- sugerencia de prosa (LLM, a demanda) ---------------------------------
     def _on_suggest(self):
-        if self._closing:
+        if self._closing or self._review_io is not None:
             return
         if self._refine_worker is not None:
             return
@@ -154,6 +160,8 @@ class ReviewView(WorkerViewLifecycle, QWidget):
         structure = getattr(tmpl, "structure", "") if tmpl else ""
         label = getattr(tmpl, "label", "") if tmpl else ""
         image = self._current_image_path() if self.chk_suggest_image.isChecked() else None
+        if self.chk_suggest_image.isChecked() and image is None:
+            return
         provider = OpenAICompatProvider(self._endpoint, self._api_key,
                                         model=self._vlm_model, timeout=120)
         self.btn_suggest.setEnabled(False)
@@ -171,6 +179,8 @@ class ReviewView(WorkerViewLifecycle, QWidget):
                 self.combo_arch.currentData())
 
     def _on_refine_ready(self, suggested):
+        if self._review_io is not None:
+            return
         self.btn_suggest.setEnabled(True)
         self.status.setText("")
         if self._suggestion_state() != self._refine_snapshot:
@@ -323,6 +333,9 @@ class ReviewView(WorkerViewLifecycle, QWidget):
         btn_save = QPushButton(self._tr("review.save", "Save this caption"))
         btn_save.clicked.connect(self._save_current)
         rlay.addWidget(btn_save)
+        btn_reload = QPushButton(self._tr("review.reload", "Reload caption (discard unsaved edits)"))
+        btn_reload.clicked.connect(lambda: self._select_caption(self._current))
+        rlay.addWidget(btn_reload)
         split.addWidget(right)
         split.setSizes([260, 700])
         root.addWidget(split, 1)
@@ -372,9 +385,11 @@ class ReviewView(WorkerViewLifecycle, QWidget):
             self._load_folder(folder)
 
     def _load_folder(self, folder):
-        self._save_current()  # no perder ediciones pendientes
+        if not self._save_current(after=lambda: self._load_folder(folder)):
+            return
         self.folder = folder
         self._current = None
+        self._caption_snapshot = None
         self.editor.clear()
         self.preview.clear()
         files = tag_tools.caption_files(folder)
@@ -398,32 +413,57 @@ class ReviewView(WorkerViewLifecycle, QWidget):
             self.file_list.setCurrentRow(row)
 
     # -- selección / edición individual ---------------------------------------
+    def _restore_selection(self):
+        self.file_list.blockSignals(True)
+        for row in range(self.file_list.count()):
+            if self.file_list.item(row).data(Qt.UserRole) == self._current:
+                self.file_list.setCurrentRow(row)
+                break
+        self.file_list.blockSignals(False)
+
     def _on_select(self, current, _previous):
-        self._save_current()  # autoguarda el anterior
-        if not current:
-            self._current = None
+        path = current.data(Qt.UserRole) if current else None
+        if not self._save_current(after=lambda: self._select_caption(path)):
+            self._restore_selection()
             return
-        path = current.data(Qt.UserRole)
-        self._current = path
-        self.editor.setPlainText(tag_tools.read(path))
+        self._select_caption(path)
+
+    def _select_caption(self, path):
+        if self._closing or self._review_io is not None:
+            return
+        if not path:
+            self._current = self._caption_snapshot = None
+            self.editor.clear()
+            self.preview.clear()
+            return
+        try:
+            snapshot = caption_edit.load(path)
+        except Exception as exc:
+            self._review_error(str(exc))
+            self._restore_selection()
+            return
+        self._current = str(path)
+        self._caption_snapshot = snapshot
+        self.editor.setPlainText(snapshot['text'])
+        self._restore_selection()
         self._show_preview(path)
 
     def _image_for(self, txt_path):
-        """Ruta de la imagen junto a un .txt (misma raíz), o None."""
-        if not txt_path:
+        try:
+            return caption_edit.image_for(txt_path) if txt_path else None
+        except (OSError, ValueError):
             return None
-        stem = Path(txt_path).stem
-        folder = Path(txt_path).parent
-        for ext in IMAGE_EXTS:
-            cand = folder / (stem + ext)
-            if cand.exists():
-                return cand
-        return None
 
     def _current_image_path(self):
         """Imagen del caption en edición (para la sugerencia con imagen)."""
-        p = self._image_for(self._current)
-        return str(p) if p else None
+        try:
+            current = caption_edit.load(self._current)
+            if self._caption_snapshot is None or current['image_identity'] != self._caption_snapshot['image_identity']:
+                raise ValueError('review_image_changed; reload before requesting a suggestion')
+            return str(current['image'])
+        except (OSError, ValueError, TypeError) as exc:
+            self._review_error(str(exc))
+            return None
 
     def _show_preview(self, txt_path):
         img = self._image_for(txt_path)
@@ -438,48 +478,98 @@ class ReviewView(WorkerViewLifecycle, QWidget):
             self.preview.width(), self.preview.height(),
             Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
-    def _save_current(self):
-        if self._closing:
-            return
-        if self._current is not None:
-            tag_tools.write(self._current, self.editor.toPlainText())
+    def _review_error(self, message):
+        if self._close_requested and self.parentWidget() is not None and not self.parentWidget().isEnabled():
+            # The hub retains this window until it can close. Keep conflict recovery usable.
+            self.setParent(None, Qt.Window)
+            self.show()
+        self.status.setText(self._tr("review.write_error",
+            "Review failed: {0}. Edits remain in the editor; earlier bulk changes may already be saved.").format(message))
 
-    # -- edición masiva -------------------------------------------------------
+    def _start_review_io(self, operation, apply, after=None):
+        if self._closing or self._review_io is not None:
+            return False
+        self._review_after = after
+        self._review_ok = False
+        self._review_apply = apply
+        self._review_io = ReviewWorker(operation)
+        self.setEnabled(False)
+        self._workers.connect(self._review_io, self._review_io.result, self._review_result)
+        self._workers.start(self._review_io, "_review_io")
+        return False
+
+    def _review_result(self, value, error):
+        if error:
+            self._review_error(error)
+            self._close_requested = False
+            return
+        try:
+            self._review_apply(value)
+            self._review_ok = True
+        except Exception as exc:
+            self._review_error(str(exc))
+            self._close_requested = False
+
+    def _save_current(self, *_args, after=None):
+        if self._closing or self._review_io is not None:
+            return False
+        if self._current is None:
+            return True
+        snapshot = self._caption_snapshot
+        if snapshot is None:
+            self._review_error('review_caption_requires_reload')
+            return False
+        text = self.editor.toPlainText()
+        if text == snapshot['text']:
+            return True
+        path = self._current
+        def applied(value):
+            self._caption_snapshot = value
+        return self._start_review_io(lambda cancel: tag_tools.write(path, text, snapshot), applied, after)
+
     def _as_tag(self):
         return self.chk_as_tag.isChecked()
 
     def _after_bulk(self, changed):
         self.status.setText(self._tr("review.changed", "{0} caption(s) updated.").format(changed))
-        # recarga el archivo actual para reflejar el cambio en el editor
-        if self._current:
-            self.editor.setPlainText(tag_tools.read(self._current))
+        self._review_refresh = True
+
+    def _bulk(self, operation):
+        if not self.folder:
+            return
+        if not self._save_current(after=lambda: self._bulk(operation)):
+            return
+        self._start_review_io(operation, self._after_bulk)
 
     def _replace_all(self):
-        if not self.folder:
-            return
-        self._save_current()
-        n = tag_tools.replace(self.folder, self.edit_find.text(),
-                              self.edit_replace.text(), as_tag=self._as_tag())
-        self._after_bulk(n)
+        folder, old, new, as_tag = self.folder, self.edit_find.text(), self.edit_replace.text(), self._as_tag()
+        self._bulk(lambda cancel: tag_tools.replace(folder, old, new, as_tag=as_tag, cancel=cancel))
 
     def _remove_all(self):
-        if not self.folder:
-            return
-        self._save_current()
-        n = tag_tools.remove(self.folder, self.edit_find.text(), as_tag=self._as_tag())
-        self._after_bulk(n)
+        folder, target, as_tag = self.folder, self.edit_find.text(), self._as_tag()
+        self._bulk(lambda cancel: tag_tools.remove(folder, target, as_tag=as_tag, cancel=cancel))
 
     def _apply_banned(self):
-        if not self.folder:
-            return
-        self._save_current()
+        folder, as_tag = self.folder, self._as_tag()
         banned = [t.strip() for t in self.edit_banned.text().split(",") if t.strip()]
-        n = tag_tools.apply_banned(self.folder, banned, as_tag=self._as_tag())
-        self._after_bulk(n)
+        self._bulk(lambda cancel: tag_tools.apply_banned(folder, banned, as_tag=as_tag, cancel=cancel))
 
 
     def _worker_settled(self, attribute):
-        if attribute == "_tagdb_worker":
+        if attribute == "_review_io":
+            after = self._review_after if self._review_ok else None
+            self._review_after = None
+            self.setEnabled(True)
+            if self._review_ok and self._caption_snapshot is not None:
+                self.editor.setPlainText(self._caption_snapshot['text'])
+            if self._review_ok and getattr(self, '_review_refresh', False):
+                self._review_refresh = False
+                self._select_caption(self._current)
+            if after is not None:
+                after()
+            if self._close_requested and self._review_ok:
+                self.close()
+        elif attribute == "_tagdb_worker":
             tmpl = self._current_template()
             if (self.chk_as_tag.isChecked() and tmpl
                     and self._tagdb_requested != tmpl.tag_csv):
@@ -490,5 +580,21 @@ class ReviewView(WorkerViewLifecycle, QWidget):
     def shutdown(self):
         if self._closing:
             return
-        self._save_current()
+        self._close_requested = True
+        if self._review_io is not None:
+            self._review_io.cancel()  # Bulk stops between files; an admitted Save finishes.
+            self._review_after = self.shutdown
+            return
+        if not self._save_current(after=self.shutdown):
+            return
         super().shutdown()
+
+    def shutdown_ready(self):
+        return self._closing and super().shutdown_ready()
+
+    def closeEvent(self, event):
+        self.shutdown()
+        if not self._closing:
+            event.ignore()  # A failed Save retains the editor; no retry loop.
+            return
+        super().closeEvent(event)

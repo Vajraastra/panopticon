@@ -799,6 +799,17 @@ JSON and work drafts publish through flushed temporary files. A failed work
 draft commit retains the exported pair and its review guard without reporting
 success. Native registration remains under producer maintenance.
 
+Caption Review requires exactly one same-stem image and bounded, readable UTF-8
+text. Saves and bulk edits use the text snapshot actually reviewed, verify the
+image identity under a Windows handle, share the producer caption guard and
+replace from flushed temporary files. Changed captions/images, orphan captions,
+ambiguous stems and protected Cherry paths require review. Writes and bulk edits
+run in owned workers; navigation waits for the previous Save and native completion.
+Close finishes an admitted Save. Failed saves retain the buffer and keep Reload
+available even while the parent module shuts down. Reload explicitly discards
+unsaved local text. Bulk edits are per-file commits; a later failure reports that
+earlier changes may already have been saved, without pretending to roll them back.
+
 Cropper decodes its bounded preview in a worker, with one active and the latest
 pending image. Saving is disabled until the current image is ready; failed loads
 cannot reuse a previous source. Normalized selections still crop original pixels.

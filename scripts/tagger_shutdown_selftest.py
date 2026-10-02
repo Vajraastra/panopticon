@@ -186,8 +186,9 @@ class TaggerShutdown(unittest.TestCase):
 
     def test_review_saves_once_while_both_workers_drain(self):
         review=self.review()
-        caption=self.root/'caption.txt'
-        review._current=caption
+        caption=self.root/'a.txt'
+        caption.write_text('old caption',encoding='utf-8')
+        review._select_caption(str(caption))
         review.editor.setPlainText('edited caption')
         workers=[self.held(review, attr) for attr in ('_tagdb_worker','_refine_worker')]
         with patch.object(review_view.tag_tools,'write',wraps=review_view.tag_tools.write) as writes:

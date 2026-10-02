@@ -249,6 +249,8 @@
   "review.as_tag": "Treat as tags",
   "review.folder": "Folder: {0} ({1} captions)",
   "review.save": "Save this caption",
+  "review.reload": "Reload caption (discard unsaved edits)",
+  "review.write_error": "Review failed: {0}. Edits remain in the editor; earlier bulk changes may already be saved.",
   "review.no_image": "(image not found)",
   "review.tools": "Bulk tag tools",
   "review.find": "Tag / text to find",

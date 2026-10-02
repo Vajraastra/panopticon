@@ -13,6 +13,7 @@ Nada aquí toca las imágenes originales: solo los .txt de la carpeta de salida.
 """
 import logging
 from pathlib import Path
+from . import caption_edit
 
 log = logging.getLogger(__name__)
 
@@ -26,15 +27,11 @@ def caption_files(folder, recursive=False):
 
 
 def read(path):
-    try:
-        return Path(path).read_text(encoding="utf-8")
-    except OSError as e:
-        log.warning("No se pudo leer %s: %s", path, e)
-        return ""
+    return caption_edit.load(path)['text']
 
 
-def write(path, text):
-    Path(path).write_text(text or "", encoding="utf-8")
+def write(path, text, expected=None):
+    return caption_edit.write(path, text, expected)
 
 
 def split_tags(text):
@@ -71,7 +68,7 @@ def find(folder, needle, as_tag=True, recursive=False):
 
 
 # -- reemplazo / eliminación --------------------------------------------------
-def replace(folder, old, new, as_tag=True, recursive=False):
+def replace(folder, old, new, as_tag=True, recursive=False, cancel=lambda: False):
     """Reemplaza un tag/subcadena en todos los .txt. new='' => eliminar.
     Retorna el número de archivos modificados."""
     old = (old or "").strip()
@@ -80,7 +77,10 @@ def replace(folder, old, new, as_tag=True, recursive=False):
     new = (new or "").strip()
     changed = 0
     for p in caption_files(folder, recursive):
-        text = read(p)
+        if cancel():
+            break
+        snapshot = caption_edit.load(p)
+        text = snapshot['text']
         if as_tag:
             ol = old.lower()
             tags = split_tags(text)
@@ -99,16 +99,16 @@ def replace(folder, old, new, as_tag=True, recursive=False):
                 continue
             updated = _isubstr_replace(text, old, new)
         if updated != text:
-            write(p, updated)
+            write(p, updated, snapshot)
             changed += 1
     return changed
 
 
-def remove(folder, target, as_tag=True, recursive=False):
-    return replace(folder, target, "", as_tag=as_tag, recursive=recursive)
+def remove(folder, target, as_tag=True, recursive=False, cancel=lambda: False):
+    return replace(folder, target, "", as_tag=as_tag, recursive=recursive, cancel=cancel)
 
 
-def apply_banned(folder, banned, as_tag=True, recursive=False):
+def apply_banned(folder, banned, as_tag=True, recursive=False, cancel=lambda: False):
     """Elimina cada tag de la lista de baneadas en todos los .txt.
     Retorna el total de archivos modificados (únicos)."""
     banned = [b.strip() for b in (banned or []) if b and b.strip()]
@@ -116,7 +116,10 @@ def apply_banned(folder, banned, as_tag=True, recursive=False):
         return 0
     touched = set()
     for p in caption_files(folder, recursive):
-        text = read(p)
+        if cancel():
+            break
+        snapshot = caption_edit.load(p)
+        text = snapshot['text']
         original = text
         if as_tag:
             ban_l = {b.lower() for b in banned}
@@ -127,7 +130,7 @@ def apply_banned(folder, banned, as_tag=True, recursive=False):
                 text = _isubstr_replace(text, b, "")
             text = " ".join(text.split())  # colapsa espacios sobrantes
         if text != original:
-            write(p, text)
+            write(p, text, snapshot)
             touched.add(str(p))
     return len(touched)
 
