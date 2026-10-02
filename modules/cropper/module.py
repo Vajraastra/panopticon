@@ -95,6 +95,8 @@ class CropperModule(BaseModule):
         self._save_dialog = False
         self._preview_loading = False
         self._preview_ticket = None
+        self._image_paths = []
+        self._image_index = 0
         self._preview = ImagePreview(lambda path: MetadataBundle())
         self._preview.result.connect(self._preview_ready)
 
@@ -129,6 +131,7 @@ class CropperModule(BaseModule):
         self.view.dragEnterEvent = self._drag_enter
         self.view.dropEvent = self._drop
 
+        self._update_sequence_controls()
         return self.view
 
     def _drag_enter(self, event):
@@ -141,7 +144,7 @@ class CropperModule(BaseModule):
         files  = [u.toLocalFile() for u in event.mimeData().urls()]
         images = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.webp', '.tiff', '.avif'))]
         if images:
-            self.load_image(images[0])
+            self.load_image_set(images)
 
     def _create_content(self) -> QWidget:
         theme      = self.context.get('theme_manager') if hasattr(self, 'context') else None
@@ -310,6 +313,19 @@ class CropperModule(BaseModule):
         self.btn_open.clicked.connect(self.open_image_dialog)
         self.btn_open.setFixedWidth(120)
         layout.addWidget(self.btn_open)
+        self.btn_previous = QPushButton(self.tr('tool.cropper.previous', 'Previous image'))
+        self.btn_next = QPushButton(self.tr('tool.cropper.next', 'Next image'))
+        for button in (self.btn_previous, self.btn_next):
+            button.setToolTip(self.tr('tool.cropper.navigate_tip',
+                'Review another image in the received set. Keeps the current crop settings; no crop is saved automatically. Navigation waits for a save to finish.'))
+        self.btn_previous.clicked.connect(lambda: self._navigate_image(-1))
+        self.btn_next.clicked.connect(lambda: self._navigate_image(1))
+        self.lbl_sequence = QLabel()
+        self.lbl_sequence.setToolTip(self.tr('tool.cropper.sequence_tip',
+            'Current position in the complete received set. Save Crop exports only the displayed image.'))
+        layout.addWidget(self.btn_previous)
+        layout.addWidget(self.lbl_sequence)
+        layout.addWidget(self.btn_next)
 
         layout.addStretch()
 
@@ -393,8 +409,32 @@ class CropperModule(BaseModule):
             self.load_image(path)
 
     def load_image(self, path: str):
+        self.load_image_set([path])
+
+    def _update_sequence_controls(self):
+        if self.view is None:
+            return
+        count = len(self._image_paths)
+        available = not self._save_busy(include_preview=False)
+        self.btn_previous.setEnabled(available and self._image_index > 0)
+        self.btn_next.setEnabled(available and self._image_index + 1 < count)
+        self.lbl_sequence.setText(self.tr('tool.cropper.sequence', 'Image {current} of {total}').format(
+            current=self._image_index + 1 if count else 0, total=count))
+
+    def _navigate_image(self, step):
+        if self._save_busy(include_preview=False):
+            return
+        index = self._image_index + step
+        if not 0 <= index < len(self._image_paths):
+            return
+        self._image_index = index
+        self._load_sequence_image()
+
+    def _load_sequence_image(self):
         if self._closed:
             return
+        path = self._image_paths[self._image_index]
+        self._update_sequence_controls()
         self._preview_loading = True
         self.cropper_widget.image_path = None
         self.cropper_widget.set_image(QPixmap())
@@ -435,12 +475,14 @@ class CropperModule(BaseModule):
             return
         selection = QRectF(selection)
         self._save_dialog = True
+        self._update_sequence_controls()
         try:
             save_path, selected_filter = QFileDialog.getSaveFileName(
                 self.view, self.tr("common.save_copy", "Save Crop"), "",
                 "PNG (*.png);;JPG (*.jpg)")
         finally:
             self._save_dialog = False
+            self._update_sequence_controls()
         if not save_path or self._save_busy(include_preview=False):
             return
         if not os.path.splitext(save_path)[1]:
@@ -454,7 +496,9 @@ class CropperModule(BaseModule):
             _LIVE_WORKERS.add(self.worker)
             self.worker.finished.connect(lambda worker=self.worker: _LIVE_WORKERS.discard(worker))
             self.worker.finished_signal.connect(self._on_crop_finished)
+            self.worker.finished.connect(self._update_sequence_controls)
             self._saving = True
+            self._update_sequence_controls()
             self.btn_save.setEnabled(False)
             self.btn_save.setText(self.tr("tool.cropper.saving", "Saving…"))
             start_worker(self.worker, self)
@@ -466,6 +510,7 @@ class CropperModule(BaseModule):
         if self._closed:
             return
         self._saving = False
+        self._update_sequence_controls()
         self.btn_save.setEnabled(not self._save_busy() and bool(self.cropper_widget.image_path))
         self.btn_save.setText(self.tr("crop.save", "💾 Save Crop"))
         if result['cancelled'] and not result.get('published'):
@@ -491,8 +536,12 @@ class CropperModule(BaseModule):
                 CachePaths.open_folder(os.path.dirname(os.path.abspath(result['path'])))
 
     def load_image_set(self, paths: list):
-        if paths:
-            self.load_image(paths[0])
+        if self._closed or not paths:
+            return
+        self.get_view()
+        self._image_paths = [str(path) for path in paths]
+        self._image_index = 0
+        self._load_sequence_image()
 
     def run_headless(self, params: dict, input_data) -> None:
         pass

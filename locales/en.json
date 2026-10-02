@@ -1,4 +1,9 @@
 {
+  "tool.cropper.previous": "Previous image",
+  "tool.cropper.next": "Next image",
+  "tool.cropper.navigate_tip": "Review another image in the received set. Keeps the current crop settings; no crop is saved automatically. Navigation waits for a save to finish.",
+  "tool.cropper.sequence_tip": "Current position in the complete received set. Save Crop exports only the displayed image.",
+  "tool.cropper.sequence": "Image {current} of {total}",
   "lib.folder.archive_offline_literal": "The folder is unavailable. This review includes only the exact stored path and its subfolders; other spellings are not combined.",
   "lib.versions.error.transfer_ingestion_pending": "The path has a pending transfer. Review it before restoring the copy.",
   "dup.reason_transfer_ingestion_pending": "The path has a pending transfer. Review it before restoring the copy.",

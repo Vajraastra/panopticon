@@ -14,7 +14,7 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 | **Librarian** | Central library manager. Scans folders, builds an indexed collection, provides thumbnails and lazy loading for large sets. |
 | **Gallery** | Visual browser for your collection. Paginates and displays images with filtering and sorting. |
 | **Character Recognizer** | Identifies and tags characters within a set using face recognition (ArcFace + YuNet) with landmark alignment. Supports real photos, 3D renders, and illustration/anime. |
-| **Smart Cropper** | Batch-crops images to target aspect ratios. Supports standard dataset ratios, monitor formats, and mobile sizes. |
+| **Smart Cropper** | Interactively crops received images to target aspect ratios. Supports standard dataset ratios, monitor formats, and mobile sizes. |
 | **Duplicate Finder** | Reviews exact SHA-256 duplicates with curation priority and recoverable retirement; visual similarity stays review-only. |
 | **Format Scanner** | Analyzes the distribution of image formats across a collection for statistical review. |
 | **Image Optimizer** | Compresses and re-encodes images in batch. Supports AVIF, PNG (via oxipng), and standard formats. |
@@ -855,6 +855,14 @@ Close finishes an admitted Save. Failed saves retain the buffer and keep Reload
 available even while the parent module shuts down. Reload explicitly discards
 unsaved local text. Bulk edits are per-file commits; a later failure reports that
 earlier changes may already have been saved, without pretending to roll them back.
+
+Cropper retains the complete received image set, including repeated paths, and
+shows the current position with Previous/Next controls. Navigation keeps the
+current normalized crop settings; **Save Crop** exports only the displayed image.
+It never saves other images automatically. Navigation is disabled during a save
+dialog or worker. A new explicitly received set replaces the queue; an already
+running save still uses its captured source and rectangle. Drops retain every
+accepted image, and opening a single image starts a new one-image set.
 
 Cropper decodes its bounded preview in a worker, with one active and the latest
 pending image. Saving is disabled until the current image is ready; failed loads

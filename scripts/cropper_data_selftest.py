@@ -520,6 +520,84 @@ class CropperData(helpers.Fixture):
             module.save_crop()
         dialog.assert_not_called()
 
+    def test_received_set_retains_order_duplicates_and_independent_snapshot(self):
+        Image.new('RGB', (100,80), 'blue').save(self.output)
+        module = self.view()
+        paths = [self.source, self.output, self.source]
+        module.load_image_set(paths)
+        paths.clear()
+        self.assertTrue(helpers.pump(lambda: not module._preview_loading))
+        self.assertEqual(module._image_paths, [self.source,self.output,self.source])
+        self.assertFalse(module.btn_previous.isEnabled())
+        self.assertTrue(module.btn_next.isEnabled())
+        rect=QRectF(.2,.3,.4,.5)
+        module.cropper_widget._selection=rect
+        module.btn_next.click()
+        self.assertTrue(helpers.pump(lambda: not module._preview_loading))
+        self.assertEqual(module.cropper_widget.image_path, self.output)
+        self.assertEqual(module.cropper_widget.get_crop_rect_normalized(), rect)
+        module.btn_next.click()
+        self.assertTrue(helpers.pump(lambda: not module._preview_loading))
+        self.assertEqual(module.cropper_widget.image_path, self.source)
+        self.assertFalse(module.btn_next.isEnabled())
+        self.assertEqual(module.lbl_sequence.text(), module.tr('tool.cropper.sequence',
+            'Image {current} of {total}').format(current=3,total=3))
+        module.btn_previous.click()
+        self.assertTrue(helpers.pump(lambda: not module._preview_loading))
+        self.assertEqual(module.cropper_widget.image_path, self.output)
+        self.assertEqual(self.service.read('count_files'), 0)
+        self.assertFalse(any(path.name.endswith('_cropped.png') for path in self.root.iterdir()))
+
+    def test_navigation_waits_for_dialog_and_real_save_worker(self):
+        second=str(self.root/'second.png')
+        Image.new('RGB',(100,80),'blue').save(second)
+        module=self.view()
+        module.load_image_set([self.source,second])
+        self.assertTrue(helpers.pump(lambda:not module._preview_loading))
+        entered,release,blocked=self.block_snapshot()
+        def select(*args):
+            module._navigate_image(1)
+            self.assertEqual(module._image_index,0)
+            self.assertFalse(module.btn_next.isEnabled())
+            return self.output,'PNG (*.png)'
+        with patch.object(QFileDialog,'getSaveFileName',side_effect=select), \
+                patch.object(LibraryRepository,'get_curation_snapshot',blocked), \
+                patch.object(QMessageBox,'information'):
+            module.save_crop()
+            self.assertTrue(entered.wait(1))
+            ticks=[]
+            QTimer.singleShot(0,lambda:ticks.append(True))
+            self.assertTrue(helpers.pump(lambda:bool(ticks)))
+            module._navigate_image(1)
+            self.assertEqual(module._image_index,0)
+            self.assertFalse(module.btn_next.isEnabled())
+            release.set()
+            self.assertTrue(helpers.pump(lambda:not module._saving and module.btn_next.isEnabled()))
+        module.btn_next.click()
+        self.assertTrue(helpers.pump(lambda:not module._preview_loading))
+        self.assertEqual(module.cropper_widget.image_path,second)
+        self.assertTrue(Path(self.output).exists())
+        self.assertEqual(module._image_paths,[self.source,second])
+
+    def test_missing_middle_image_preserves_tail_and_single_open_replaces_set(self):
+        module=self.view()
+        module.load_image_set([self.source,self.output,self.source])
+        self.assertTrue(helpers.pump(lambda:not module._preview_loading))
+        with patch.object(QMessageBox,'warning') as warning:
+            module.btn_next.click()
+            self.assertTrue(helpers.pump(lambda:not module._preview_loading))
+        self.assertEqual(warning.call_count,1)
+        self.assertIsNone(module.cropper_widget.image_path)
+        self.assertFalse(module.btn_save.isEnabled())
+        self.assertTrue(module.btn_next.isEnabled())
+        module.btn_next.click()
+        self.assertTrue(helpers.pump(lambda:not module._preview_loading))
+        self.assertEqual(module.cropper_widget.image_path,self.source)
+        module.load_image(self.source)
+        self.assertTrue(helpers.pump(lambda:not module._preview_loading))
+        self.assertEqual(module._image_paths,[self.source])
+        self.assertFalse(module.btn_previous.isEnabled() or module.btn_next.isEnabled())
+
     def test_bounded_preview_preserves_normalized_crop_on_original_dimensions(self):
         Image.new('RGB', (4096, 3072), 'red').save(self.source)
         module = self.view()

@@ -1,4 +1,9 @@
 {
+  "tool.cropper.previous": "Imagen anterior",
+  "tool.cropper.next": "Imagen siguiente",
+  "tool.cropper.navigate_tip": "Revisa otra imagen del conjunto recibido. Conserva los ajustes de recorte; no guarda automáticamente. La navegación espera a que termine un guardado.",
+  "tool.cropper.sequence_tip": "Posición actual dentro del conjunto completo recibido. Guardar recorte exporta sólo la imagen mostrada.",
+  "tool.cropper.sequence": "Imagen {current} de {total}",
   "lib.folder.archive_offline_literal": "La carpeta no está disponible. Esta revisión incluye sólo la ruta guardada exacta y sus subcarpetas; otras escrituras del nombre no se agrupan.",
   "lib.versions.error.transfer_ingestion_pending": "La ruta tiene una transferencia pendiente. Revísala antes de restaurar la copia.",
   "dup.reason_transfer_ingestion_pending": "La ruta tiene una transferencia pendiente. Revísala antes de restaurar la copia.",
