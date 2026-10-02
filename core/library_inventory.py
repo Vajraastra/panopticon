@@ -68,5 +68,13 @@ class InventoryReader:
             cancel_event=cancel_event if cancel_event is not None else self._cancel,
             _reader_factory=lambda: _PageLease(self._conn))
 
+    def get_unavailable_inventory_page(self,folder,*,cancel_event=None,**kwargs):
+        from core.library_service import LibraryError
+        operation='get_unavailable_inventory_page'
+        if self._closed:raise LibraryError(operation,'inventory_reader_closed')
+        if threading.get_ident()!=self._thread:raise LibraryError(operation,'inventory_reader_wrong_thread')
+        return self._service._read(operation,(folder,),kwargs,
+            cancel_event if cancel_event is not None else self._cancel,lambda:_PageLease(self._conn))
+
     def close(self):
         self._closed = True

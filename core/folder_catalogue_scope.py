@@ -28,10 +28,10 @@ def prefix(path, depth, *, directory=False):
     return '/'.join(parts[:depth]) + ('/' if depth == 1 else '')
 
 
-def catalogue(conn, folder):
+def catalogue(conn, folder, *, watched_required=True):
     folder = local_path(folder)
     watched = roots(conn)
-    if folder not in watched:
+    if watched_required and folder not in watched:
         raise ValueError('folder_archive_not_watched')
     depth = len(folder.rstrip('/').split('/'))
     names = {folder}
@@ -147,9 +147,9 @@ def selector(scope, *, alias=''):
     return '(' + ' OR '.join(clauses) + ')', params, stamp
 
 
-def condition(conn, folder, scope, *, alias=''):
+def condition(conn, folder, scope, *, alias='', watched_required=True):
     value = selector(scope, alias=alias)
-    if scope['catalogue'] != catalogue(conn, folder):
+    if scope['catalogue'] != catalogue(conn, folder,watched_required=watched_required):
         raise ValueError('folder_archive_members_changed')
     return value
 

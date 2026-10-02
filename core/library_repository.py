@@ -373,6 +373,14 @@ class LibraryRepository:
         from core.library_path_identity import records
         return records(self.conn, **kwargs)
 
+    def get_unavailable_inventory_scope(self,folder):
+        from core.inventory_unavailable import metadata
+        return metadata(self,folder)
+
+    def get_unavailable_inventory_page(self,folder,*,scope,**kwargs):
+        from core.inventory_unavailable import page
+        return page(self,folder,scope=scope,**kwargs)
+
     def get_inventory_page(self, folder_path, **kwargs):
         from core.library_inventory import page
         return page(self.conn, folder_path, folder_like=self._folder_like, folder_filter=self._folder_filter, **kwargs)

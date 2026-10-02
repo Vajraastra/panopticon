@@ -63,7 +63,16 @@ class IndexerWorker(QThread):
                                 spool.extend(result.files)
                                 result.files = spool
                             spool.seal()
-                            for i in range(0, len(result.files), batch_size):
+                            can_register=True
+                            # Sync-only can resolve known missing bindings before
+                            # ready-only ingestion, but only after complete discovery.
+                            if self.deep_clean and result.complete and getattr(self.db,'service',None) is not None:
+                                coverage=self.db.service.read('get_path_identity_status',cancel_event=self._inventory_cancel)
+                                if coverage['prepared'] and not coverage['pending'] and coverage['unresolved']:
+                                    spool.verify()
+                                    self._reconcile_missing(folder,result,unavailable_only=True)
+                                    can_register=result.complete
+                            for i in range(0, len(result.files) if can_register else 0, batch_size):
                                 if not self.is_running:
                                     result.fail(InventoryStatus.CANCELLED)
                                     break
@@ -114,7 +123,7 @@ class IndexerWorker(QThread):
         self.is_running = False
         self._inventory_cancel.set()
 
-    def _reconcile_missing(self, folder, result):
+    def _reconcile_missing(self, folder, result, *, unavailable_only=False):
         # Una omisión de catálogo no demuestra ausencia. Leer todas las páginas
         # antes de archivar; retener el ID inicial en un temporal, no otro set DB.
         try:
@@ -124,7 +133,12 @@ class IndexerWorker(QThread):
                 return
             discovered = result.paths
             parents = IdentityCache(lambda parent: directory_chain_identity(parent))
-            with InventoryCandidates() as missing, self.db.inventory_reader(cancel_event=self._inventory_cancel) as reader:
+            if unavailable_only:
+                from core.inventory_unavailable import UnavailableInventoryReader
+                reader_context=UnavailableInventoryReader(self.db.service,folder,self._inventory_cancel)
+            else:
+                reader_context=self.db.inventory_reader(cancel_event=self._inventory_cancel)
+            with InventoryCandidates() as missing, reader_context as reader:
                 for batch in pages(reader, folder, lambda: not self.is_running, self._inventory_cancel):
                     present = (discovered.contains_many(path for _, path in batch)
                                if isinstance(discovered, InventorySpool) else discovered)
@@ -207,7 +221,8 @@ class IndexerWorker(QThread):
                         return
                     if approved:
                         normalized = os.path.normpath(folder).replace('\\', '/')
-                        if self.db.archive_missing_copies(approved, folder=normalized, cancel_event=self._inventory_cancel) is not True:
+                        archive=reader.archive_missing_copies if unavailable_only else self.db.archive_missing_copies
+                        if archive(approved, folder=normalized, cancel_event=self._inventory_cancel) is not True:
                             result.fail(InventoryStatus.ERROR, 'No se pudo confirmar el archivado por ID')
                             return
                         self.archived_count += len(approved)

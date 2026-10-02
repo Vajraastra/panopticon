@@ -1041,7 +1041,14 @@ delivery. `scripts/folder_scopes_selftest.py` verifies these private contracts;
 300k fixture. These measurements do not substitute real Windows/Cherry validation.
 Prepared inventory pages use the same observed canonical scope while retaining
 one private idle reader connection across pages; SQL snapshots close before folder
-probes. The fixed initial ID frontier still excludes later additions. Missing-file
+probes. The fixed initial ID frontier still excludes later additions.
+When a completed identity backfill includes known missing bindings, **Sync folder**
+can reconcile those records before ready-only ingestion. It requires a complete
+discovery, the observed directory scope, accessible stable parents and repeated file
+absence checks. Only file/path-not-found bindings qualify. Permission errors,
+unsupported names, incomplete coverage, disconnected roots, unavailable parents and
+reappearing files remain for review. IDs, curation and history stay offline; no image
+bytes or Cherry receipts are removed. Ordinary indexing does not enable this cleanup. Missing-file
 archival submits only reviewed IDs inside the observed canonical folder, with FIFO
 admission and queued cancellation; it never approves a case-folded sibling folder.
 Confirmed Native retirements update offline path bindings in the same transaction
