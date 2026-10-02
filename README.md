@@ -47,7 +47,12 @@ the Qt event loop alive until the writer has closed its connection and released
 ownership; it does not wait for the writer on the GUI thread, even with a full
 command queue. Pending cancelled commands are skipped and failed transactions
 resolve their futures. Blocking `close()` remains available for CLI/tests.
-This writer guarantee does not yet cover every module's own shutdown handler.
+All 12 active modules participate in shutdown readiness. The dashboard first
+requests cancellation and waits for their retained work and the native thread
+registry, then drains the Cherry ingestor and central writer. Accepted publication
+or database work finishes before its services close. Closing a module window only
+hides it; close the dashboard to exit. Native codec, network or inference work can
+delay exit until it returns; shutdown never force-terminates it.
 
 Gallery closes its viewers/readers and rejects new inputs during shutdown. It
 waits for actual reader completion and its own thumbnail pool; queued thumbnails
@@ -313,7 +318,8 @@ review evidence, 10 seconds per SQL read and a
 partial scope. Only a confirmed commit reports success. Indexing and hashing in Librarian
 wait while it runs. Closing cancels before admission; an admitted command finishes in its
 retained worker without blocking Qt. Reactivation requires explicit copy-ID review.
-This does not pause Cherry downloads or coordinate every module's shutdown.
+Archiving a folder does not pause Cherry downloads; application exit coordinates
+module workers and accepted database work separately.
 
 Select **All copy versions** to review active copies too. Select an ID and read its
 complete stored state. **Keep offline** archives that identity without touching file
@@ -361,8 +367,8 @@ replacement or make inference and SQLite an atomic transaction.
 
 Recognizer workers remain retained through native thread completion. Closing cancels
 pending reads and inference loops without blocking Qt; an admitted native write still
-finishes. Application shutdown checks recognition workers before closing services;
-the other remaining module workers are still outside this guarantee.
+finishes. Application shutdown checks recognition and profile workers before
+closing their services, within the shared active-module shutdown contract.
 
 The initial native schema migration creates a SQLite backup beside the database before
 rebuilding path uniqueness for active copies. Unsupported custom schemas are preserved
