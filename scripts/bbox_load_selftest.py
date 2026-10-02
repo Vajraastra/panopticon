@@ -121,13 +121,13 @@ class BBoxLoad(unittest.TestCase):
             self.assertFalse(widget._save())
             self.assertEqual(path.read_bytes(),raw)
 
-    def test_source_changed_during_draft_read_is_rejected(self):
+    def test_draft_changed_during_read_is_rejected(self):
         path=layout.pano_path(self.out,self.image); path.parent.mkdir(parents=True)
         WorkDoc(image=self.image.name,image_w=120,image_h=80).save(path)
-        real=WorkDoc.load
+        real=WorkDoc.from_dict
         def changed(*args):
-            doc=real(*args); Image.new('RGB',(120,80),'blue').save(self.image); return doc
-        with patch.object(WorkDoc,'load',side_effect=changed):
+            doc=real(*args); path.write_bytes(b'changed during reading'); return doc
+        with patch.object(WorkDoc,'from_dict',side_effect=changed):
             with self.assertRaisesRegex(ValueError,'source_changed'):
                 editor_load.load(self.image,path,{},lambda:False)
 

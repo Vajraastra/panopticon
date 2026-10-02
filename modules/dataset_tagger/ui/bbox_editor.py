@@ -16,6 +16,7 @@ va en (0,0) a tamaño completo), así `Element.bbox_px` y `rect()` coinciden 1:1
 La normalización a 0–1000 ocurre solo al exportar (datamodel.to_canonical).
 """
 import logging
+import html
 from pathlib import Path
 
 from .worker_lifecycle import WorkerViewLifecycle
@@ -37,7 +38,7 @@ from PIL import Image
 
 from core.theme import Theme
 from ..logic.ideogram.datamodel import WorkDoc, Element, STATUS_DRAFT
-from ..logic.ideogram import layout, editor_load
+from ..logic.ideogram import layout, editor_load, editor_save
 from ..logic import refine
 from ..logic.providers.openai_compat import OpenAICompatProvider
 from .text_panel import TextComposerDialog, pil_to_qpixmap
@@ -419,6 +420,17 @@ class _ImageLoadWorker(QThread):
             self.finished_signal.emit(None, str(error))
 
 
+class _EditorSaveWorker(QThread):
+    finished_signal = Signal(object)
+
+    def __init__(self, args):
+        super().__init__()
+        self.args = args
+
+    def run(self):
+        self.finished_signal.emit(editor_save.save(*self.args, self.isInterruptionRequested))
+
+
 class BBoxEditor(WorkerViewLifecycle, QDialog):
     """Ventana de edición de un .pano.json para una imagen."""
 
@@ -463,6 +475,10 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         self.setStyleSheet(f"background-color: {Theme.BG_MAIN}; color: {Theme.TEXT_PRIMARY};")
 
         self._load_worker = None
+        self._save_worker = None
+        self._saving = False
+        self._save_result = None
+        self._save_intent = None
         self._loading = False
         self._loaded = False
         self._pixmap = QPixmap()
@@ -475,7 +491,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         self._load_image_data()
 
     def _load_image_data(self, image_path=None, pano_path=None, index=None):
-        if self._closing or self._load_worker is not None:
+        if self._closing or self._saving or self._load_worker is not None:
             return
         self._loading = True
         self.layout().itemAt(0).widget().setEnabled(False)
@@ -494,7 +510,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         if error is not None or value is None:
             if error is not None:
                 QMessageBox.warning(self, self.tr('ig4.save_err_title', 'Save error'),
-                                    self.tr('common.error_loading', 'Error loading image.')+'\n'+error)
+                                    html.escape(self.tr('common.error_loading', 'Error loading image.')+'\n'+error))
             return
         self.image_path, self.pano_path = value['image_path'], value['pano_path']
         self._index = self._load_worker.index
@@ -504,6 +520,8 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         self._work_image = value['image']
         self._doc = value['doc']
         self._source_identity, self._draft_identity = value['source_identity'], value['draft_identity']
+        self._draft_digest = value['draft_digest']
+        self._source_digest, self._pinned_identity = value['source_digest'], value['pinned_identity']
         self._composited = False
         self._loaded = True
         self._reset_scene_for_new_image()
@@ -511,6 +529,18 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         self._update_nav()
 
     def _worker_settled(self, attribute):
+        if attribute == '_save_worker':
+            self._saving = False
+            self.unsetCursor()
+            self.layout().itemAt(0).widget().setEnabled(self._loaded and not self._closing)
+            result, self._save_result = self._save_result, None
+            intent, self._save_intent = self._save_intent, None
+            if result is not None and result['error'] is None and not result['cancelled']:
+                if intent == 'close':
+                    self.accept()
+                elif isinstance(intent, int):
+                    self._load_index(intent)
+            return
         if attribute == '_load_worker':
             self._loading = False
             self.unsetCursor()
@@ -693,7 +723,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
 
     def _go(self, delta):
         """Guarda la imagen actual (si tiene contenido) y salta `delta` posiciones."""
-        if self._closing or self._loading or not self._loaded:
+        if self._closing or self._loading or self._saving or not self._loaded:
             return
         if not self._images:
             return
@@ -706,8 +736,12 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
             return  # ni con una sugerencia de prosa en curso (aplicaría al campo viejo)
         # Guarda solo si hay algo (o ya había un .pano.json): no crea vacíos al hojear.
         self._collect_globals()
-        if (self._has_content() or self.pano_path.exists()) and not self._save():
+        if self._has_content() or self.pano_path.exists():
+            self._save(intent=new)
             return
+        self._load_index(new)
+
+    def _load_index(self, new):
         image_path = Path(self._images[new])
         out = self._out_dir or layout.out_dir_from_pano(self.pano_path)
         self._load_image_data(image_path, layout.pano_path(out, image_path), new)
@@ -980,7 +1014,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
 
     # ── eventos de caja ─────────────────────────────────────────────────
     def _on_box_created(self, rect):
-        if self._closing or self._loading or not self._loaded:
+        if self._closing or self._loading or self._saving or not self._loaded:
             return
         etype = "obj" if self._draw_type == DRAW_OBJ else "text"
         elem = Element(id=self._doc.next_element_id(), type=etype,
@@ -1225,7 +1259,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         color, bbox AUTOMÁTICA y los parámetros de render, y mueve la caja a esa
         bbox. La copia con texto se escribe al guardar.
         """
-        if self._closing or self._loading or not self._loaded:
+        if self._closing or self._loading or self._saving or not self._loaded:
             return
         if not self._selected or self._selected.element.type != "text":
             return
@@ -1258,7 +1292,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         parámetros de render; mueve la caja a esa bbox. La copia con la forma se
         escribe al guardar (igual que el texto compuesto).
         """
-        if self._closing or self._loading or not self._loaded:
+        if self._closing or self._loading or self._saving or not self._loaded:
             return
         if not self._selected or self._selected.element.type != "obj":
             return
@@ -1284,7 +1318,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
     # ── auto-detección de cajas (YOLO) ──────────────────────────────────
     def _auto_detect(self):
         """Lanza la detección YOLO de la imagen actual en un hilo aparte."""
-        if self._closing or self._loading or not self._loaded:
+        if self._closing or self._loading or self._saving or not self._loaded:
             return
         if self._autodet is not None:
             return
@@ -1333,7 +1367,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
 
     def _nudge_selected(self, dx, dy):
         """Mueve la caja seleccionada `dx,dy` px de escena, con clamp a la imagen."""
-        if self._closing or self._loading or not self._loaded:
+        if self._closing or self._loading or self._saving or not self._loaded:
             return
         if not self._selected:
             return
@@ -1349,7 +1383,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         Copia tipo, descripción y texto literal; NO copia el render compuesto ni la
         paleta (esos implican píxeles ya pintados en la imagen original, que no se
         re-componen en la copia). La copia queda seleccionada al final de la lista."""
-        if self._closing or self._loading or not self._loaded:
+        if self._closing or self._loading or self._saving or not self._loaded:
             return
         if not self._selected:
             return
@@ -1369,7 +1403,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         self._list.setCurrentRow(len(self._items) - 1)
 
     def _delete_selected(self):
-        if self._closing or self._loading or not self._loaded:
+        if self._closing or self._loading or self._saving or not self._loaded:
             return
         if not self._selected:
             return
@@ -1390,38 +1424,52 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         self._doc.style.lighting = self._ed_light.text().strip()
         self._doc.style.art_style = self._ed_artstyle.text().strip()
 
-    def _save(self):
-        """Persiste el .pano.json. Devuelve True si guardó sin error.
-
-        No muestra diálogo de confirmación: en una sesión de 40+ imágenes ese
-        aviso por imagen era tedioso. El éxito se refleja cerrando el editor
-        (ver `_save_and_close`); solo los errores interrumpen con un aviso.
-        """
-        if self._closing or self._loading or not self._loaded:
+    def _save(self, intent=None):
+        """Capture immutable fields; encode and publish in one owned worker."""
+        if (self._closing or self._loading or self._saving or not self._loaded or
+                self._save_worker is not None or self._autodet is not None or self._refine_worker is not None):
             return False
         self._collect_globals()
+        args = (self.image_path, self.pano_path,
+                self._out_dir or layout.out_dir_from_pano(self.pano_path),
+                self._doc.to_dict(), self._work_image, self._composited,
+                self._source_identity, self._draft_identity, self._draft_digest,
+                self._source_digest, self._pinned_identity)
+        self._saving = True
+        self._save_intent = intent
+        self.layout().itemAt(0).widget().setEnabled(False)
+        self.setCursor(Qt.WaitCursor)
+        worker = self._save_worker = _EditorSaveWorker(args)
+        self._workers.connect(worker, worker.finished_signal, self._saved)
         try:
-            self.pano_path.parent.mkdir(parents=True, exist_ok=True)
-            self._doc.save(self.pano_path)
-            # Si se compuso texto, la copia de salida (con el texto) va a la raíz
-            # de la carpeta de salida (NO a drafts/), junto al .json final; el
-            # original nunca se toca (Regla #9).
-            if self._composited:
-                out_dir = self._out_dir or layout.out_dir_from_pano(self.pano_path)
-                out_img = Path(out_dir) / self.image_path.name
-                self._work_image.save(out_img)
-        except OSError as exc:
-            QMessageBox.warning(self, self.tr("ig4.save_err_title", "Save error"), str(exc))
-            return False
-        log.info("pano.json guardado: %s", self.pano_path)
+            self._workers.start(worker, '_save_worker')
+        except Exception as error:
+            self._saved(dict(error=str(error), cancelled=False, published=None, recovery=None))
+            self._worker_settled('_save_worker')
         return True
 
+    def _saved(self, result):
+        self._save_result = result
+        if result['error'] is not None:
+            message = result['error']
+            if 'editor_requires_new_output' in message:
+                message = self.tr('ig4.save_occupied',
+                    'An image already occupies the destination. It was preserved; no new draft was committed.')
+            if result.get('draft_committed') is not None:
+                message = self.tr('ig4.save_draft_partial',
+                    'Draft committed to {path}; subsequent verification failed. Keep it for review; reload before retrying.').format(path=result['draft_committed'])+'\n'+message
+            elif result['published'] is not None:
+                message = self.tr('ig4.save_partial',
+                    'Image published to {path}; draft commit failed. Keep it for review; do not repeat blindly.').format(path=result['published'])+'\n'+message
+                if result['recovery']:
+                    message += '\n'+self.tr('ig4.save_recovery', 'Recovery draft: {path}').format(path=result['recovery'])
+            QMessageBox.warning(self, self.tr('ig4.save_err_title', 'Save error'), html.escape(message))
+        elif not result['cancelled']:
+            self._draft_identity, self._draft_digest = result['draft_identity'], result['draft_digest']
+            self._composited = False
+
     def _save_and_close(self):
-        """Guarda y, si todo fue bien, cierra el editor (flujo de captura masiva)."""
-        if self._closing:
-            return
-        if self._save():
-            self.accept()
+        self._save(intent='close')
 
     def showEvent(self, event):
         super().showEvent(event)

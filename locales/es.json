@@ -1886,5 +1886,9 @@
   "pickler.recovery_partial": "Se alcanzó el límite de revisión; se muestra sólo este conjunto acotado.",
   "pickler.recovery_restore": "Resolver operación seleccionada",
   "pickler.recovery_restore_tip": "Una transferencia pendiente restaura el origen y conserva su curación actual. Deshacer una copia sólo continúa si no cambió. Las transferencias confirmadas se conservan.",
-  "pickler.recovery_confirm": "¿Resolver esta operación? Una transferencia pendiente restaura el origen; Deshacer una copia sólo retira la copia verificada que no cambió."
+  "pickler.recovery_confirm": "¿Resolver esta operación? Una transferencia pendiente restaura el origen; Deshacer una copia sólo retira la copia verificada que no cambió.",
+  "ig4.save_partial": "Imagen publicada en {path}; falló el guardado del borrador. Consérvala para revisión; no repitas la exportación sin revisarla.",
+  "ig4.save_recovery": "Borrador de recuperación: {path}",
+  "ig4.save_occupied": "Ya existe una imagen en el destino. Se conservó; no se guardó un borrador nuevo.",
+  "ig4.save_draft_partial": "Borrador guardado en {path}; falló la verificación posterior. Consérvalo para revisión; recarga antes de reintentar."
 }

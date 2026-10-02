@@ -1886,5 +1886,9 @@
   "pickler.recovery_partial": "The review limit was reached; only this bounded set is shown.",
   "pickler.recovery_restore": "Resolve selected operation",
   "pickler.recovery_restore_tip": "A pending transfer restores the source and preserves current curation. Copy undo resumes only for unchanged files. Confirmed transfers are retained.",
-  "pickler.recovery_confirm": "Resolve this operation? A pending transfer restores the source; an interrupted copy undo removes only its verified unchanged copy."
+  "pickler.recovery_confirm": "Resolve this operation? A pending transfer restores the source; an interrupted copy undo removes only its verified unchanged copy.",
+  "ig4.save_partial": "Image published to {path}; draft commit failed. Keep it for review; do not repeat blindly.",
+  "ig4.save_recovery": "Recovery draft: {path}",
+  "ig4.save_occupied": "An image already occupies the destination. It was preserved; no new draft was committed.",
+  "ig4.save_draft_partial": "Draft committed to {path}; subsequent verification failed. Keep it for review; reload before retrying."
 }

@@ -762,6 +762,21 @@ Editing, saving and navigation are blocked until loading and native cleanup fini
 A failed navigation retains the previous image/document. Unreadable or mismatched
 drafts are rejected without creating an empty replacement. Close/Escape retains
 the decoder and discards late results; no original is modified by loading.
+Saving runs in an owned worker and keeps the captured fields/image immutable until
+native completion. It pins the source on Windows and verifies its freshly captured
+SHA-256; draft identity/hash are checked before publication. One exclusive guard
+per draft prevents competing editor saves; stale guards remain for manual review.
+The work JSON is staged, decoded and flushed before an atomic file rename/replace.
+Compositions stage and fully decode a new image, never replacing occupied image
+paths, including original aliases/hardlinks. An existing composition blocks a new
+composition at that name; it is preserved for review. Navigation/close after Save
+waits for successful publication and actual native completion. Closing cancels
+before publication; an image already published finishes its draft commit.
+Image and draft commits are separate: a failed draft commit keeps the published
+image and a recovery draft, reporting both paths without automatic deletion/retry.
+A failure after the draft commit is reported as committed, even during cancellation.
+This contract does not yet establish ownership of legacy composed output images
+or register Tagger derivatives in Native; those remain in producer maintenance.
 
 Cropper decodes its bounded preview in a worker, with one active and the latest
 pending image. Saving is disabled until the current image is ready; failed loads
