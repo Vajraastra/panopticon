@@ -25,6 +25,8 @@ class QueryEngine:
         
         # Consultar sólo la página visible, nunca todo el conjunto externo.
         if state.mode == state.VIEW_CUSTOM:
+            if self.has_custom_filters(state):
+                return self.db.get_external_files_page(**self.custom_query(state, page_size))
             total = len(state._custom_paths)
             start = offset
             end = min(total, start + page_size)
@@ -37,6 +39,16 @@ class QueryEngine:
         # Results is list of (path, rating)
         # We assume the UI primarily needs paths, but might cache ratings
         return count, results
+
+    @staticmethod
+    def has_custom_filters(state):
+        return bool(state.tags or state.search_terms or state.min_rating)
+
+    @staticmethod
+    def custom_query(state, page_size):
+        return dict(paths=state._custom_paths, tags=tuple(state.tags),
+                    search_terms=tuple(state.search_terms), min_rating=state.min_rating,
+                    limit=page_size, offset=state._page * page_size)
 
     def image_query(self, state, page_size):
         # Capturar sólo datos en GUI; ningún worker lee un QObject mutable.

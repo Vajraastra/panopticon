@@ -1252,6 +1252,7 @@
   "cherry.archives_working": "Processing: {name}",
   "cherry.archives_done": "Archives: {p} processed, {a} files added, {d} archive duplicates; maintenance: {r} exact copies removed, {c} renumbered, {u} recovered; {o} organized, {e} errors.",
   "gallery.db.loading": "Loading…",
+  "gallery.external_scope_limit": "This filtered external set exceeds the supported request size. Use a smaller set.",
   "gallery.db.read_error": "Could not load library. Change the view or filters to retry.",
   "gallery.db.title": "Library",
   "gallery.db.write_error": "Could not save rating. Reloading confirmed data.",

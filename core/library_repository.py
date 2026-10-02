@@ -831,6 +831,10 @@ class LibraryRepository:
         cursor.execute(f"SELECT path, rating FROM files {where} ORDER BY id DESC LIMIT ? OFFSET ?", params + [limit, offset])
         return total, collect_rows(cursor, lambda row: (row[0], row[1]))
 
+    def get_external_files_page(self, paths, **filters):
+        from core.external_selection import page
+        return page(self, paths, **filters)
+
     def get_folders_paginated(self, limit=50, offset=0):
         from core.folder_queries import albums
         return albums(self, limit, offset)

@@ -107,6 +107,11 @@ class GalleryGrid(QWidget):
             name = self.state.current_folder if self.state.current_folder else "All Images"
             self.lbl_title.setText(f"🖼️ {name}")
             if self.state.mode == self.state.VIEW_CUSTOM:
+                self._custom_filtered = self.engine.has_custom_filters(self.state)
+                if self._custom_filtered:
+                    self.reader.request('get_external_files_page',
+                                        **self.engine.custom_query(self.state, self.state._page_size))
+                    return
                 self._custom_total = len(self.state._custom_paths)
                 start = self.state._page * self.state._page_size
                 self._custom_page = tuple(self.state._custom_paths[start:start + self.state._page_size])
@@ -125,16 +130,23 @@ class GalleryGrid(QWidget):
         self._loading = False
         if error is not None:
             logging.getLogger(__name__).warning('Gallery query failed: %s', error)
-            self.lbl_page.setText(LocaleManager().tr('gallery.db.read_error', 'Could not load library.'))
+            reason = str(error)
+            if 'external_selection_requires_staging' in reason or 'read_payload_too_large' in reason:
+                self.lbl_page.setText(LocaleManager().tr('gallery.external_scope_limit',
+                    'This filtered external set exceeds the supported request size. Use a smaller set.'))
+            else:
+                self.lbl_page.setText(LocaleManager().tr('gallery.db.read_error', 'Could not load library.'))
+            self.lbl_page.setToolTip(reason)
             self.btn_prev.setEnabled(self.state._page > 0)
             self.btn_next.setEnabled(False)
             return
-        if self.state.mode == self.state.VIEW_CUSTOM:
+        if self.state.mode == self.state.VIEW_CUSTOM and not self._custom_filtered:
             total = self._custom_total
             rows = [(path, record['rating'] or 0)
                     for path, record in zip(self._custom_page, value)]
         else:
             total, rows = value
+        self.lbl_page.setToolTip('')
         self.state.set_total_items(total)
         if self.state._page >= self.state.total_pages:
             self.state.set_page(self.state.total_pages - 1)

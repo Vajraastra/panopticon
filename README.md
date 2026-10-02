@@ -333,6 +333,14 @@ metadata while preserving the earlier version offline. An occupied active path o
 changed reviewed state stops the action. Scanning alone never reactivates history.
 The viewer binds edits to its displayed copy ID and rejects a replaced identity.
 
+Gallery also applies tags, rating and search terms to imported external sets before
+pagination. Registered paths use Native fields; absent paths can match their filename
+and have no Native tags/rating. Filtering preserves input order and repeated paths.
+It reads bounded SQL blocks in one read-only snapshot outside the GUI, without
+registering files or editing originals. Filtered sets use the existing request limit
+(10,000 paths and the Native payload budget); oversized requests fail explicitly
+without displaying a prefix. Unfiltered sets retain page-only snapshot delivery.
+
 Gallery's advanced viewer decodes a QImage, reads file statistics and extracts
 embedded metadata in its own worker. Each viewer keeps one active request and
 the latest pending image; stale navigation/closed owners discard results. Source
