@@ -1,4 +1,5 @@
 {
+  "cherry.ingest_pending": "Las imágenes descargadas esperan indexación en la biblioteca: {error}",
   "gallery.viewer.rating_none": "Sin calificación",
   "gallery.viewer.rating_value": "{rating}/5",
   "gallery.viewer.remove_tag_tip": "Quita esta etiqueta de la curación nativa después de confirmar el guardado.",

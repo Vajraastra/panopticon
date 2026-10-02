@@ -79,6 +79,11 @@ class MainWindow(QMainWindow):
         # 5. Load Modules
         self.loader = ModuleLoader()
         self.load_available_modules()
+        from core.cherry_ingest import CherryIngestor
+        self._cherry_ingestor = CherryIngestor(self.context['data_service'], self.event_bus, self)
+        self.context['cherry_ingestor'] = self._cherry_ingestor
+        self._cherry_ingestor.failed.connect(lambda error: self.statusBar().showMessage(
+            self.tr('cherry.ingest_pending', 'Downloaded images await library indexing: {error}').format(error=error), 15000))
 
     def init_ui(self):
         """Initialize the main application layout."""
@@ -624,6 +629,16 @@ class MainWindow(QMainWindow):
                 self._shutdown_retry_scheduled = True
                 QTimer.singleShot(50, self._retry_close)
             return
+        ingestor = getattr(self, '_cherry_ingestor', None)
+        if ingestor is not None:
+            ingestor.request_shutdown()
+            if not ingestor.shutdown_ready():
+                event.ignore()
+                self.statusBar().showMessage(self.tr('app.shutdown_wait', 'Finishing accepted work before closing…'))
+                if not self._shutdown_retry_scheduled:
+                    self._shutdown_retry_scheduled = True
+                    QTimer.singleShot(50, self._retry_close)
+                return
         request_close_library_services(permanent=True)
         if not library_services_shutdown_ready():
             event.ignore()

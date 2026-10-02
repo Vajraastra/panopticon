@@ -1,4 +1,5 @@
 {
+  "cherry.ingest_pending": "Downloaded images await library indexing: {error}",
   "gallery.viewer.rating_none": "Unrated",
   "gallery.viewer.rating_value": "{rating}/5",
   "gallery.viewer.remove_tag_tip": "Remove this tag from native curation after a confirmed save.",

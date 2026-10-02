@@ -144,6 +144,22 @@ uv run python main.py
 
 ---
 
+## Cherry downloads and the library
+
+Downloaded images in watched folders enter the central library even when
+Librarian has not been opened. Cherry announces each completed, failed or
+cancelled profile; core reads committed catalog entries and registers only
+published image files. Existing IDs, curation and documented origin are retained.
+Unwatched projects remain outside the library. An ingestion pass never removes
+or archives files and never writes SQL to Cherry databases.
+
+Folder work persists beside the central database in `panopticon.db.cherry-ingest.db`.
+On every app start, watched folders are reconciled to recover an interrupted
+notice. New notices during a pass trigger another pass. Errors keep work pending;
+other readable folders continue. Shutdown cancels further observations, retains
+pending work and waits for already running Native commits without joining from
+the GUI. Large or ambiguous scopes require review rather than accepting a prefix.
+
 ## Cherry-DL: organize and extract archives
 
 Select a project and click **Organize and extract ZIP/RAR** in its inspector.

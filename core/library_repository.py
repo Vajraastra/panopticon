@@ -402,6 +402,10 @@ class LibraryRepository:
 
     # --- Standard Queries (Gallery/Search) ---
 
+    def register_catalog_files_observed(self, records, watched_folder):
+        from core.cherry_ingest_queue import register_catalog_files
+        return register_catalog_files(self, records, watched_folder)
+
     def get_watched_folders(self):
         cursor = self.conn.cursor()
         cursor.execute("SELECT path FROM watched_folders")

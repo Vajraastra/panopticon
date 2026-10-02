@@ -1681,23 +1681,22 @@ class CherryView(QWidget):
     def _announce_folder(self, profile: dict) -> None:
         """Avisa por EventBus de que la carpeta del perfil tiene archivos nuevos (A4).
 
-        El Librarian escucha `library_changed`, junta las carpetas de una
-        ráfaga y lanza UN re-index dirigido a ellas — no un escaneo de las
-        294K filas. Se publica por perfil y no al final del lote para que un
-        lote de horas vaya indexando según avanza; el debounce del Librarian
-        se encarga de que dos perfiles seguidos no sean dos escaneos.
-
-        Solo se publica si la carpeta cuelga de una vigilada. El Librarian
-        re-indexa lo que le manden **sin comprobar si le pertenece**, así que
-        avisar de una carpeta de fuera metería sus archivos en la biblioteca
-        sin que nadie la haya dado de alta. Hoy `G:/images/cherry-dl` sí está
-        vigilada, así que el destino por defecto entra solo; un `download_dir`
-        movido a otro sitio simplemente no dispara nada.
+        En la aplicación, core recibe el aviso y reconcilia en su worker,
+        aunque Librarian no se haya abierto. El worker valida pertenencia real
+        a carpetas vigiladas; Native vuelve a comprobarla al confirmar cada lote.
+        También se avisa tras fallo/cancelación por lo ya catalogado. La cola
+        propia y la reconciliación de arranque cubren los avisos interrumpidos.
+        El camino legacy se conserva para vistas autónomas sin el servicio core.
         """
         if self._event_bus is None:
             return
         folder = profile.get("folder_path")
         if not folder:
+            return
+        if self.context.get('cherry_ingestor') is not None:
+            # Core validates watch membership in its worker and Native commit.
+            # Never use a GUI probe/progress event as a persistence guarantee.
+            self._event_bus.publish('cherry_catalog_changed', str(folder))
             return
         if not library_probe.is_watched(folder):
             log.info("cherry: %s no está bajo una carpeta vigilada; no se avisa", folder)
