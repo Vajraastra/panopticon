@@ -635,6 +635,9 @@ class CherryView(QWidget):
             self._maintenance_future.cancel()
         if self._queue.is_running:
             self._queue.cancel()
+        # The view owns the bridge even if no queue currently owns its job.
+        if self._bridge.is_busy:
+            self._bridge.cancel()
         self._runtime.request_stop()
 
     # ── Carga de datos ────────────────────────────────────────────────────

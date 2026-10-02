@@ -62,6 +62,9 @@ accepted derivative registration and receipt confirmation after cancellation.
 Format Scanner counts files as a stream, supports cooperative cancellation and
 always emits a terminal result. Interrupted or failed scans are not presented as
 complete reports. Closing keeps its worker retained until native completion.
+Cherry also cancels an active bridge job when the queue has no current job;
+dashboard exit requests this cancellation before draining the owned runtime.
+Hiding/reopening the module window keeps its session and download running.
 Cherry now cancels its active download/maintenance through their existing
 cooperative cleanup and closes runtime admission without waiting on the GUI.
 Actual admitted tasks finish before the loop, async generators and executor close;
