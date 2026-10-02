@@ -770,8 +770,11 @@ native completion. It pins the source on Windows and verifies its freshly captur
 SHA-256; draft identity/hash are checked before publication. One exclusive guard
 per draft prevents competing editor saves; stale guards remain for manual review.
 The work JSON is staged, decoded and flushed before an atomic file rename/replace.
-Compositions stage and fully decode a new image, never replacing occupied image
-paths, including original aliases/hardlinks. An existing composition blocks a new
+Compositions stage a new image, transfer and verify the source generation metadata
+while the source remains pinned, and hash the final stamped bytes. PNG/JPEG/WebP
+stamping preserves the encoded image pixels. Invalid metadata or a failed stamp
+stops publication; draft-only edits preserve existing compositions. New images
+never replace occupied paths, including original aliases/hardlinks. An existing composition blocks a new
 composition at that name; it is preserved for review. Navigation/close after Save
 waits for successful publication and actual native completion. Closing cancels
 before publication; an image already published finishes its draft commit.

@@ -9,6 +9,8 @@ from PIL import Image
 from core.image_preview import _identity
 from core.output_paths import safe_path
 from core.pinned_file import PinnedFile
+from core.metadata.extractor import MetadataExtractor
+from core.metadata.stamper import MetadataStamper
 from .datamodel import WorkDoc
 
 
@@ -66,9 +68,17 @@ def save(source, pano, out_dir, data, image, composited, source_identity,
                     raise ValueError('editor_requires_new_output; existing images are preserved')
                 if output.suffix.lower() not in ('.png','.jpg','.jpeg','.webp'):
                     raise ValueError('editor_output_format')
+                # Read metadata while the verified source remains pinned.
+                bundle = MetadataExtractor.extract(source, strict=True)
                 fd,name=tempfile.mkstemp(prefix='.panopticon-bbox-image-',suffix=output.suffix,dir=output.parent)
                 os.close(fd);image_temp=Path(name)
                 image.save(image_temp)
+                # Only the fresh staged composition may be stamped. Hash the
+                # final metadata-bearing bytes after independent verification.
+                if not MetadataStamper.stamp(image_temp, bundle, prepared=True):
+                    raise ValueError('editor_metadata_stamp_failed')
+                if not MetadataStamper.verify_prepared(image_temp, bundle):
+                    raise ValueError('editor_metadata_verification_failed')
                 with Image.open(image_temp) as verified:
                     verified.load()
                     if verified.size!=image.size:raise ValueError('editor_output_dimensions')
