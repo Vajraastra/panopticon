@@ -104,8 +104,8 @@ class IndexerSafety(unittest.TestCase):
         worker.finished_signal.connect(lambda: finished.append(True))
         def interrupted(*args, **kwargs):
             worker.stop()
-            yield str(self.folder), [], []
-        with patch.object(indexer.os, 'walk', interrupted):
+            yield 'image', str(self.folder/'never.png'), 'never.png'
+        with patch.object(indexer, 'tree_entries', interrupted):
             worker.run()
         self.assertEqual(worker.outcome, Status.CANCELLED)
         self.assertEqual(finished, [True])
@@ -114,10 +114,10 @@ class IndexerSafety(unittest.TestCase):
     def test_walk_permission_error_preserves_missing_rows(self):
         path = self.folder / 'unseen.png'
         before = self.seed(path)
-        def broken(folder, onerror):
+        def broken(folder, extensions, *, onerror, **kwargs):
             onerror(PermissionError('injected inaccessible child'))
-            yield folder, [], []
-        with patch.object(indexer.os, 'walk', broken):
+            return iter(())
+        with patch.object(indexer, 'tree_entries', broken):
             worker = self.run_worker()
         self.assertEqual(worker.outcome, Status.ERROR)
         self.assert_preserved(path, before)

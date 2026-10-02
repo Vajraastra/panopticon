@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import sqlite3
 from PySide6.QtCore import QThread, Signal
 from core.catalog_reader import is_cherry_catalog, read_image_files, get_artist_info
 from core.inventory import InventoryResult, InventoryStatus, directory_identity, directory_chain_identity
@@ -8,6 +9,8 @@ from core.inventory import InventoryResult, InventoryStatus, directory_identity,
 from core.inventory_candidates import InventoryCandidates, IdentityCache, pages, InventoryCancelled
 from core.library_service import LibraryError
 from core.library_batch import BatchCancelled, MAX_BATCH_ROWS
+from core.inventory_spool import InventorySpool
+from core.inventory_walk import entries as tree_entries, InventoryUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +34,7 @@ class IndexerWorker(QThread):
         self.outcome = InventoryStatus.COMPLETE
         self.folder_statuses = {}
         self.archived_count = 0
+        self._inventory_spool = None
 
     def _progress(self, key, default, **values):
         self.progress_signal.emit(self.tr(key, default).format(**values))
@@ -49,27 +53,40 @@ class IndexerWorker(QThread):
                         self.outcome = InventoryStatus.CANCELLED
                     break
                 self._progress("lib.scan.folder", "Scanning: {folder}", folder=folder)
-                result = self._discover_tree(folder, extensions)
+                result = InventoryResult()
                 try:
-                    for i in range(0, len(result.files), batch_size):
-                        if not self.is_running:
+                    with InventorySpool(cancel_event=self._inventory_cancel) as spool:
+                        self._inventory_spool = spool
+                        try:
+                            result = self._discover_tree(folder, extensions)
+                            if result.files is not spool:
+                                spool.extend(result.files)
+                                result.files = spool
+                            spool.seal()
+                            for i in range(0, len(result.files), batch_size):
+                                if not self.is_running:
+                                    result.fail(InventoryStatus.CANCELLED)
+                                    break
+                                batch = result.files[i:i + batch_size]
+                                if not self.db.register_files_minimal(batch, cancel_event=self._inventory_cancel):
+                                    result.fail(InventoryStatus.ERROR, "No se pudo confirmar el lote")
+                                    break
+                                total_found += len(batch)
+                                self.count_signal.emit(i + len(batch), len(result.files))
+                            if not self.is_running and result.complete:
+                                result.fail(InventoryStatus.CANCELLED)
+                            if self.deep_clean and result.complete:
+                                spool.verify()
+                                self._reconcile_missing(folder, result)
+                        except (BatchCancelled, InventoryCancelled):
                             result.fail(InventoryStatus.CANCELLED)
-                            break
-                        batch = result.files[i:i + batch_size]
-                        if not self.db.register_files_minimal(batch, cancel_event=self._inventory_cancel):
-                            result.fail(InventoryStatus.ERROR, "No se pudo confirmar el lote")
-                            break
-                        total_found += len(batch)
-                        self.count_signal.emit(i + len(batch), len(result.files))
-                    if not self.is_running and result.complete:
-                        result.fail(InventoryStatus.CANCELLED)
-                    if self.deep_clean and result.complete:
-                        self._reconcile_missing(folder, result)
-                except BatchCancelled:
-                    result.fail(InventoryStatus.CANCELLED)
-                except Exception as exc:
-                    log.exception("[Indexer] No se pudo indexar %s", folder)
-                    result.fail(InventoryStatus.ERROR, exc)
+                        except Exception as exc:
+                            log.exception("[Indexer] No se pudo indexar %s", folder)
+                            result.fail(InventoryStatus.ERROR, exc)
+                        finally:
+                            self._inventory_spool = None
+                except (OSError, sqlite3.Error) as exc:
+                    result.fail(InventoryStatus.UNAVAILABLE, exc)
                 self.folder_statuses[str(folder)] = result.status
                 if not result.complete:
                     if self.outcome == InventoryStatus.COMPLETE:
@@ -109,11 +126,13 @@ class IndexerWorker(QThread):
             parents = IdentityCache(lambda parent: directory_chain_identity(parent))
             with InventoryCandidates() as missing, self.db.inventory_reader(cancel_event=self._inventory_cancel) as reader:
                 for batch in pages(reader, folder, lambda: not self.is_running, self._inventory_cancel):
+                    present = (discovered.contains_many(path for _, path in batch)
+                               if isinstance(discovered, InventorySpool) else discovered)
                     for copy_id, path in batch:
                         if not self.is_running:
                             result.fail(InventoryStatus.CANCELLED)
                             return
-                        if path in discovered:
+                        if path in present:
                             continue
                         try:
                             os.lstat(path)
@@ -201,7 +220,7 @@ class IndexerWorker(QThread):
             result.fail(InventoryStatus.UNAVAILABLE, exc)
 
     def _discover_tree(self, folder, extensions):
-        result = InventoryResult()
+        result = InventoryResult(files=self._inventory_spool if self._inventory_spool is not None else [])
         if not self.is_running:
             result.fail(InventoryStatus.CANCELLED)
             return result
@@ -212,60 +231,64 @@ class IndexerWorker(QThread):
             return result
         try:
             if is_cherry_catalog(folder):
-                return self._discover_cherry(folder)
+                catalog = self._discover_cherry(folder)
+                result.merge(catalog)
+                if result.complete and catalog.root_identity != result.root_identity:
+                    result.fail(InventoryStatus.UNAVAILABLE, "La raíz cambió durante el recorrido")
+                return result
 
             def walk_error(exc):
-                result.fail(InventoryStatus.ERROR, exc)
+                result.fail(InventoryStatus.UNAVAILABLE if isinstance(exc, InventoryUnavailable)
+                            else InventoryStatus.ERROR, exc)
 
-            for root, dirs, files in os.walk(folder, onerror=walk_error):
+            for kind, path, filename in tree_entries(folder, extensions,
+                    cancelled=lambda: not self.is_running, onerror=walk_error,
+                    is_catalog=is_cherry_catalog):
                 if not self.is_running:
                     result.fail(InventoryStatus.CANCELLED)
                     break
-                for d in list(dirs):
-                    if not self.is_running:
-                        result.fail(InventoryStatus.CANCELLED)
-                        break
-                    if is_cherry_catalog(os.path.join(root, d)):
-                        result.merge(self._discover_cherry(os.path.join(root, d)))
-                        dirs.remove(d)
-                for filename in files:
-                    if not self.is_running:
-                        result.fail(InventoryStatus.CANCELLED)
-                        break
-                    if filename.lower().endswith(extensions):
-                        path = os.path.join(root, filename)
-                        try:
-                            info = os.stat(path)
-                            result.files.append({
-                                'path': os.path.normpath(path).replace('\\', '/'),
-                                'filename': filename, 'size': info.st_size,
-                                'created': info.st_ctime,
-                            })
-                        except OSError as exc:
-                            result.fail(InventoryStatus.ERROR, exc)
+                if kind == 'catalog':
+                    result.merge(self._discover_cherry(path))
+                else:
+                    try:
+                        info = os.stat(path)
+                        result.files.append({
+                            'path': os.path.normpath(path).replace('\\', '/'),
+                            'filename': filename, 'size': info.st_size,
+                            'created': info.st_ctime,
+                        })
+                    except OSError as exc:
+                        result.fail(InventoryStatus.ERROR, exc)
             if not self.is_running:
                 result.fail(InventoryStatus.CANCELLED)
             elif result.complete and directory_identity(folder) != result.root_identity:
                 result.fail(InventoryStatus.UNAVAILABLE, "La raíz cambió durante el recorrido")
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             result.fail(InventoryStatus.ERROR, exc)
         return result
 
     def _discover_cherry(self, folder):
         self._progress("lib.scan.catalog", "Reading Cherry catalog...")
-        inventory = read_image_files(folder, cancelled=lambda: not self.is_running)
         info = (get_artist_info(folder) or {}) if self.is_running else {}
+        def convert(entry):
+            return {
+                'path': os.path.normpath(entry['path']).replace('\\', '/'),
+                'filename': entry['filename'], 'size': entry['size'],
+                'created': entry['created'], 'hash_original': entry['cherry_hash'],
+                'origin_url': entry['cherry_url'], 'origin_site': info.get('primary_site'),
+                'artist': info.get('display_name'),
+            }
+        sink = self._inventory_spool
+        if sink is None:
+            inventory = read_image_files(folder, cancelled=lambda: not self.is_running)
+        else:
+            inventory = read_image_files(folder, cancelled=lambda: not self.is_running,
+                                         on_file=lambda entry: sink.append(convert(entry)))
         result = InventoryResult(status=inventory.status, issues=list(inventory.issues),
                                  root_identity=inventory.root_identity)
         for entry in inventory.files:
             if not self.is_running:
                 result.fail(InventoryStatus.CANCELLED)
                 break
-            result.files.append({
-                'path': os.path.normpath(entry['path']).replace('\\', '/'),
-                'filename': entry['filename'], 'size': entry['size'],
-                'created': entry['created'], 'hash_original': entry['cherry_hash'],
-                'origin_url': entry['cherry_url'], 'origin_site': info.get('primary_site'),
-                'artist': info.get('display_name'),
-            })
+            result.files.append(convert(entry))
         return result

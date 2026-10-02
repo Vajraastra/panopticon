@@ -26,19 +26,22 @@ class InventoryResult:
 
     @property
     def paths(self):
+        from core.inventory_spool import InventorySpool
+        if isinstance(self.files, InventorySpool):
+            return self.files.path_membership()
         return {os.path.normpath(f["path"]).replace("\\", "/") for f in self.files}
 
     def fail(self, status, issue=None):
         if self.complete or status == InventoryStatus.CANCELLED:
             self.status = status
-        if issue:
-            self.issues.append(str(issue))
+        if issue and len(self.issues) < 32:
+            self.issues.append(str(issue)[:4096])
 
     def merge(self, other):
         self.files.extend(other.files)
         if not other.complete:
             self.fail(other.status)
-        self.issues.extend(other.issues)
+        self.issues.extend(str(issue)[:4096] for issue in other.issues[:max(0, 32-len(self.issues))])
 
 
 def directory_identity(folder):

@@ -17,6 +17,8 @@ import stat
 from contextlib import closing
 from pathlib import Path
 from core.inventory import InventoryResult, InventoryStatus, directory_identity
+from core.catalog_inventory_pages import pages as catalog_pages
+from core.inventory_candidates import InventoryCancelled
 
 log = logging.getLogger(__name__)
 
@@ -62,8 +64,10 @@ def get_image_files(folder: str | Path) -> list[dict]:
     return read_image_files(folder).files
 
 
-def read_image_files(folder: str | Path, cancelled=None) -> InventoryResult:
+def read_image_files(folder: str | Path, cancelled=None, *, on_file=None) -> InventoryResult:
     """Lee sólo en modo ro; conserva archivos válidos y marca inventarios parciales."""
+    if on_file is not None and not callable(on_file):
+        raise ValueError('invalid_inventory_sink')
     folder = Path(folder).absolute()
     catalog_path = folder / _CATALOG_FILENAME
     result = InventoryResult()
@@ -78,36 +82,43 @@ def read_image_files(folder: str | Path, cancelled=None) -> InventoryResult:
         uri = catalog_path.as_uri() + '?mode=ro'
         with closing(sqlite3.connect(uri, uri=True, timeout=5)) as conn:
             conn.row_factory = sqlite3.Row
-            conn.set_progress_handler(lambda: int(cancelled()), 1000)
-            rows = conn.execute(
-                "SELECT hash, filename, url_source, date_added, file_size FROM files"
-            )
-            for row in rows:
-                if cancelled():
-                    result.fail(InventoryStatus.CANCELLED)
-                    break
-                filename = row['filename']
-                if not filename or Path(filename).suffix.lower() not in _IMAGE_EXTENSIONS:
-                    continue
-                relative = Path(filename)
-                if relative.is_absolute() or relative.drive or '..' in relative.parts:
-                    result.fail(InventoryStatus.ERROR, f"Ruta fuera del catálogo: {filename}")
-                    continue
-                full_path = folder / filename
-                try:
-                    info = full_path.stat()
-                    if not stat.S_ISREG(info.st_mode):
+            for block in catalog_pages(conn, cancelled):
+                for row in block:
+                    if cancelled():
+                        result.fail(InventoryStatus.CANCELLED)
+                        break
+                    if not row['_inventory_valid']:
+                        result.fail(InventoryStatus.ERROR, 'catalog_inventory_record_requires_review')
                         continue
-                    result.files.append({
-                        'path': str(full_path), 'filename': filename,
-                        'size': row['file_size'] or info.st_size,
-                        'created': float(row['date_added'] or 0),
-                        'cherry_url': row['url_source'], 'cherry_hash': row['hash'],
-                    })
-                except FileNotFoundError:
-                    continue
-                except (OSError, ValueError, TypeError) as exc:
-                    result.fail(InventoryStatus.ERROR, exc)
+                    filename = row['filename']
+                    if not filename or Path(filename).suffix.lower() not in _IMAGE_EXTENSIONS:
+                        continue
+                    relative = Path(filename)
+                    if relative.is_absolute() or relative.drive or '..' in relative.parts:
+                        result.fail(InventoryStatus.ERROR, f"Ruta fuera del catálogo: {filename}")
+                        continue
+                    full_path = folder / filename
+                    try:
+                        info = full_path.stat()
+                        if not stat.S_ISREG(info.st_mode):
+                            continue
+                        entry = {
+                            'path': str(full_path), 'filename': filename,
+                            'size': row['file_size'] or info.st_size,
+                            'created': float(row['date_added'] or 0),
+                            'cherry_url': row['url_source'], 'cherry_hash': row['hash'],
+                        }
+                    except FileNotFoundError:
+                        continue
+                    except (OSError, ValueError, TypeError) as exc:
+                        result.fail(InventoryStatus.ERROR, exc)
+                        continue
+                    if on_file is None:
+                        result.files.append(entry)
+                    else:
+                        on_file(entry)
+    except InventoryCancelled:
+        result.fail(InventoryStatus.CANCELLED)
     except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
         result.fail(InventoryStatus.ERROR, exc)
         log.warning("[CatalogReader] No se pudo leer %s: %s", catalog_path, exc)

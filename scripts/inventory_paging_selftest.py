@@ -506,11 +506,9 @@ class PagingSafety(unittest.TestCase):
         values = self.seed(3)
         Path(values[0]).write_bytes(b'physical but uncatalogued')
         worker = self.worker()
-        discover = worker._discover_tree
         def omitted(*args):
-            value = discover(*args)
-            value.files.clear()
-            return value
+            from core.inventory import InventoryResult, directory_identity
+            return InventoryResult(root_identity=directory_identity(self.folder))
         with patch.object(worker, '_discover_tree', omitted):
             self.run_worker(worker)
         self.assertEqual((worker.outcome, worker.archived_count), (Status.COMPLETE, 2))

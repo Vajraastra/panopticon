@@ -801,8 +801,24 @@ Fresh state fingerprints, absence and directory identity are checked again befor
 each existing writer transaction. Confirmed earlier batches remain if a later
 archive fails or is cancelled. This moves records offline without deleting files,
 curation, history or Cherry receipts. The temporary is not a recovery journal.
-The disk discovery result remains in memory, and filesystem/SQLite checks are
-not atomic. Legacy full-inventory API compatibility remains available.
+Disk discovery now uses a private record stream and SQLite path index, each
+capped at 128 MiB, with a 2 MiB SQLite page cache and <=64 KiB per record. Seal
+checks the complete stream/index before registration; each <=100-row delivery
+checks its bytes again, and another full check precedes absence reconciliation.
+Presence is queried by native pages of <=256 paths instead of a full Python set.
+Lazy scandir traversal avoids per-directory filename lists and caps open directory
+handles at 64; an exceeded depth or inaccessible directory makes the pass
+incomplete. Worker errors retain at most 32 messages of 4096 characters.
+Storage failure, corruption, cancellation or limits cannot authorize archival
+using a prefix. The private spool is closed/removed before worker completion and
+is not a journal. It trades extra temporary disk work for lower Python memory.
+Cherry catalogs reuse one RO connection with <=128 rows per short snapshot and
+an initial rowid frontier; each snapshot ends before file checks or spool writes.
+Oversized/invalid source fields are flagged for review, never delivered as
+accepted truncated metadata. Existing Cherry catalogs, schema and receipts are
+not modified by Panopticon SQL. The pass has no common snapshot across pages;
+later records need a subsequent scan. Filesystem/SQLite checks are not atomic.
+Legacy list-returning inventory APIs remain available for other consumers.
 
 The native owner exposes an ephemeral revision token: service epoch, sequence
 and monitor health. Confirmed commands that changed SQLite's total_changes advance
