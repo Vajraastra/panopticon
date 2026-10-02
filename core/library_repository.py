@@ -981,6 +981,30 @@ class LibraryRepository:
         from core.generation_history import commit
         return commit(self.conn, copy_id, update_fts=self._fts_sync_file, **kwargs)
 
+    def get_transfer_status(self):
+        from core.library_transfers import status
+        return status(self.conn)
+
+    def get_transfer_receipt(self, operation_id):
+        from core.library_transfers import receipt
+        return receipt(self.conn, operation_id)
+
+    def prepare_transfers(self):
+        from core.library_transfers import prepare
+        return prepare(self.conn)
+
+    def approve_transfer(self, request):
+        from core.library_transfers import approve
+        return approve(self, request)
+
+    def commit_transfer(self, request, observation, identity):
+        from core.library_transfers import commit
+        return commit(self, request, observation, identity)
+
+    def abort_transfer(self, operation_id, **kwargs):
+        from core.library_transfers import abort
+        return abort(self, operation_id, **kwargs)
+
     def get_derived_copies_status(self):
         from core.derived_copies import status
         return status(self.conn)

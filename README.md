@@ -1000,6 +1000,15 @@ full scans; other mutations still invalidate it normally. Validating the real
 migration remains open. Folder spelling and portable Cherry data remain preserved.
 [Windows supports case rules per directory](https://learn.microsoft.com/en-us/windows/wsl/case-sensitivity).
 
+Explicit Pickler transfer contracts are prepared in Native; wiring the Pickler
+view remains pending. Approval reserves source/destination before physical work,
+and pending sources cannot be archived as missing by an inventory. A confirmed
+move/discard retains its ID and curation; explicit byte-identical copies receive
+a new ID with the initial tags, sources and rating, then edit independently.
+Receipts acknowledge historical commits without replaying later curation.
+Preparation takes a consistent Native backup; readers never create schema.
+Filesystem publication and SQLite remain separate operations.
+
 ## License
 
 Business Source License 1.1 — free for non-commercial use.  

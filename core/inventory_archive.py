@@ -30,6 +30,9 @@ def archive_missing(conn, approved, *, folder, normalize):
         if (now['state'] is None or now['fingerprint'] != before['fingerprint'] or
                 now['state']['file']['id'] != before['copy_id']):
             raise ValueError('inventory_archive_identity_changed')
+    from core.library_transfers import reserved
+    if reserved(conn, ids):
+        raise ValueError('inventory_archive_transfer_pending')
     placeholders = ','.join('?' for _ in ids)
     cursor = conn.execute(f'UPDATE files SET is_offline=1 WHERE is_offline=0 AND id IN ({placeholders})', tuple(ids))
     if cursor.rowcount != len(ids):
