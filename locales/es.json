@@ -1,4 +1,8 @@
 {
+  "gallery.folder.loading": "Leyendo esta carpeta…",
+  "gallery.folder.loaded": "{count} imágenes leídas.",
+  "gallery.folder.error": "No se pudo leer la carpeta completa. Se conservó la vista anterior; revisa los detalles.",
+  "gallery.folder.limit": "Esta carpeta excede el presupuesto externo (10,000 imágenes / 4 MiB de rutas). Usa una carpeta más pequeña o las vistas Native. No se abrió un conjunto parcial.",
   "tool.cropper.previous": "Imagen anterior",
   "tool.cropper.next": "Imagen siguiente",
   "tool.cropper.navigate_tip": "Revisa otra imagen del conjunto recibido. Conserva los ajustes de recorte; no guarda automáticamente. La navegación espera a que termine un guardado.",

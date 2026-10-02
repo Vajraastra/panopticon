@@ -1,4 +1,8 @@
 {
+  "gallery.folder.loading": "Reading this folder…",
+  "gallery.folder.loaded": "{count} images read.",
+  "gallery.folder.error": "Could not read the complete folder. The previous view was preserved; see details.",
+  "gallery.folder.limit": "This folder exceeds the external-set budget (10,000 images / 4 MiB of paths). Use a smaller folder or Native library views. No partial set was opened.",
   "tool.cropper.previous": "Previous image",
   "tool.cropper.next": "Next image",
   "tool.cropper.navigate_tip": "Review another image in the received set. Keeps the current crop settings; no crop is saved automatically. Navigation waits for a save to finish.",

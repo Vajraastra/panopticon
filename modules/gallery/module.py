@@ -1,4 +1,3 @@
-import os
 from PySide6.QtWidgets import QWidget, QMenu, QFileDialog
 from PySide6.QtGui import QCursor
 from PySide6.QtCore import Signal
@@ -7,6 +6,7 @@ from core.base_module import BaseModule
 from core.image_preview import ImagePreview
 from core.library_revision_async import LibraryRevisionWatcher
 from core.library_async import LibraryReader
+from core.folder_images import FolderImages
 from .logic.state import GalleryState
 from .logic.query_engine import QueryEngine
 from .ui.view import GalleryView
@@ -40,6 +40,9 @@ class GalleryModule(BaseModule):
         initial_revision = self.engine.db.service.revision_snapshot()
         self._preview_revision = self.engine.db.service.preview_revision_snapshot()
         self.view_widget = GalleryView(self.state, self.engine, self.context)
+        self.folder_reader = LibraryReader(FolderImages(), self.view_widget)
+        self.folder_reader.result.connect(self._on_folder_images)
+        self.state.view_mode_changed.connect(lambda mode: self.folder_reader.invalidate())
         self.revisions = LibraryRevisionWatcher(self.engine.db.service, self.view_widget, initial=initial_revision,
             busy=lambda: self.view_widget.grid.reader._active or self.view_widget.sidebar.tag_completions.busy)
         self.revisions.changed.connect(self._on_native_revision)
@@ -68,23 +71,37 @@ class GalleryModule(BaseModule):
         if not folder or self._closed:
             return
 
-        valid_ext = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.avif'}
-        files = []
-        for root, _, filenames in os.walk(folder):
-            for f in filenames:
-                if os.path.splitext(f)[1].lower() in valid_ext:
-                    files.append(os.path.join(root, f).replace('\\', '/'))
+        self.view_widget.lbl_status.setText(self.tr('gallery.folder.loading', 'Reading this folder…'))
+        self.view_widget.lbl_status.setToolTip('')
+        self.folder_reader.request('folder_images', folder)
 
-        if files:
-            self.load_image_set(files)
+    def _on_folder_images(self, ticket, files, error):
+        if self._closed:
+            return
+        if error is not None:
+            key = ('gallery.folder.limit' if 'folder_images_requires_staging' in str(error)
+                   else 'gallery.folder.error')
+            fallback = ('This folder exceeds the external-set budget (10,000 images / 4 MiB of paths). Use a smaller folder or Native library views. No partial set was opened.'
+                        if key.endswith('limit') else
+                        'Could not read the complete folder. The previous view was preserved; see details.')
+            self.view_widget.lbl_status.setText(self.tr(key, fallback))
+            self.view_widget.lbl_status.setToolTip(str(error))
+            return
+        # Empty is a complete result too: never leave the previous folder looking
+        # like the newly selected one. load_image_set invalidates older discovery.
+        self.load_image_set(files)
+        self.view_widget.lbl_status.setText(self.tr('gallery.folder.loaded', '{count} images read.').format(count=len(files)))
+        self.view_widget.lbl_status.setToolTip('')
 
     def load_image_set(self, paths: list):
         """Called by Librarian or other modules."""
         if self._closed: return
         self.get_view()
+        self.folder_reader.invalidate()
+        self.state.clear_selection()
         self.state.set_mode(
             self.state.VIEW_CUSTOM,
-            custom_paths=paths,
+            custom_paths=list(paths),
             title=self.tr("gallery.imported_set", "Imported Set")
         )
 

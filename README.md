@@ -333,6 +333,16 @@ metadata while preserving the earlier version offline. An occupied active path o
 changed reviewed state stops the action. Scanning alone never reactivates history.
 The viewer binds edits to its displayed copy ID and rejects a replaced identity.
 
+Gallery's external **Open folder** enumerates images in an owned worker, with
+cooperative cancellation and latest-request delivery. Errors, inaccessible
+subfolders, replaced roots or exceeded budgets preserve the previous view and
+report failure; no partial folder is presented as complete. An empty successful
+folder clears the previous set. Discovery uses the external request budget of
+10,000 images / 4 MiB of path objects and a 30-second cooperative deadline;
+use a smaller folder or Native library views for larger collections. It skips
+symbolic subdirectories and rejects unsupported reparse points/deep trees.
+No image decoding, indexing or Cherry writes are performed by discovery.
+
 Gallery's Send menu opens Image Optimizer or Pickler with the selected paths,
 reusing that tool's independent session. A tool that failed to load is disabled.
 The obsolete Workshop action has been removed because it had no module receiver.
