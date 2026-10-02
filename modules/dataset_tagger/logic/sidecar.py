@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 from pathlib import Path
+from core.output_paths import safe_path
 
 log = logging.getLogger(__name__)
 
@@ -76,8 +77,16 @@ def output_dir(source_folder, model_id, fmt):
 
 def prepare_output(source_folder, model_id, fmt):
     out = output_dir(source_folder, model_id, fmt)
+    # Reject protected/linked parents before creating a nested output directory.
+    out = out.absolute()
+    ancestor = out.parent
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    safe_path(ancestor, portable=True)
+    if any(os.path.lexists(ancestor / name) for name in ('catalog.db', 'panopticon.curation.db')):
+        raise ValueError('metadata_cherry_original_protected')
     out.mkdir(parents=True, exist_ok=True)
-    return out
+    return safe_path(out, portable=True)
 
 
 def caption_path(out_dir, image_path, ext=".txt"):

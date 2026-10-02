@@ -781,6 +781,16 @@ A failure after the draft commit is reported as committed, even during cancellat
 This contract does not yet establish ownership of legacy composed output images
 or register Tagger derivatives in Native; those remain in producer maintenance.
 
+Regular Tagger captions validate the source/output image pair before calling a
+provider. Different images sharing a caption stem and orphan captions require
+review; skip, overwrite and append never silently attach a caption to another
+image. Image copies preserve their exact bytes; captions publish from flushed
+temporary files. Cancellation before publication discards the result. If a new
+image publishes but its caption cannot finish, the image and a `.caption.guard`
+receipt remain for manual review; the item is reported as failed. Nested outputs
+inside Cherry catalogs/curation sidecars are rejected before creating folders.
+Ideogram composition ownership and Native registration remain under maintenance.
+
 Cropper decodes its bounded preview in a worker, with one active and the latest
 pending image. Saving is disabled until the current image is ready; failed loads
 cannot reuse a previous source. Normalized selections still crop original pixels.

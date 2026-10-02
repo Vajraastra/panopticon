@@ -329,10 +329,10 @@ class TaggerShutdown(unittest.TestCase):
         errors=[];terminals=[]
         worker.error.connect(lambda *args: errors.append(args))
         worker.finished_all.connect(lambda *args:terminals.append(args))
-        with patch.object(caption_worker.sidecar,'copy_image',side_effect=OSError('private publish failure')):
+        with patch.object(caption_worker.CaptionPair,'publish',side_effect=OSError('private publish failure')):
             worker.start();self.assertTrue(worker.wait(3000))
             self.assertTrue(pump(lambda:bool(terminals)))
-        self.assertEqual(terminals,[(0,0)])
+        self.assertEqual(terminals,[(0,1)])
         self.assertTrue(any('private publish failure' in message for _,message in errors))
         self.assertTrue(self.image.exists())
         worker.deleteLater()
@@ -412,7 +412,7 @@ class TaggerShutdown(unittest.TestCase):
             release.set()
             self.assertTrue(pump(self.module.shutdown_ready))
 
-    def test_actual_caption_finishes_accepted_image_without_late_ui(self):
+    def test_actual_caption_discards_unpublished_result_without_late_ui(self):
         entered=threading.Event();release=threading.Event();self.releases.append(release)
         provider=MagicMock()
         def caption(*args,**kwargs):
@@ -431,8 +431,8 @@ class TaggerShutdown(unittest.TestCase):
         release.set()
         self.assertTrue(pump(self.module.shutdown_ready))
         captions=[path for path in self.root.rglob('a.txt')]
-        self.assertEqual(len(captions),1)
-        self.assertIn('private caption',captions[0].read_text(encoding='utf-8'))
+        self.assertEqual(len(captions),0)
+        self.assertFalse(list(self.root.rglob('*.caption.guard')))
         self.assertEqual(self.image.read_bytes(),original)
         self.assertEqual(callbacks,[])
         self.open_folder.assert_not_called()

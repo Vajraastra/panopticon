@@ -14,6 +14,7 @@ from PySide6.QtCore import QThread, Signal
 
 from .templates import CaptionTemplate, with_content_mode
 from . import sidecar
+from .caption_publication import CaptionPair
 from .providers.base_provider import ProviderError
 
 log = logging.getLogger(__name__)
@@ -113,21 +114,27 @@ class CaptionWorker(QThread):
 
             wrote_any = False
             for tmpl, out, prompt, prov, mname in prepared:
-                cap_path = sidecar.caption_path(out, img)
-                do, mode = sidecar.should_process(cap_path, self.policy)
-                if not do:
-                    continue
-                caption = self._caption_with_retry(img, prompt, prov, mname)
-                if caption is None:
-                    continue  # error ya emitido
-                final = tmpl.assemble(
-                    caption, trigger=self.trigger, prefix=self.prefix,
-                    suffix=self.suffix, extra_prefix_tags=self.extra_prefix_tags,
-                )
-                sidecar.copy_image(img, out)
-                sidecar.write_caption(cap_path, final, mode, sep=tmpl.separator)
-                self.image_done.emit(img, final)
-                wrote_any = True
+                if self._cancel:
+                    break
+                try:
+                    with CaptionPair(img, out, self.policy, lambda: self._cancel) as pair:
+                        if not pair.process:
+                            continue
+                        caption = self._caption_with_retry(img, prompt, prov, mname)
+                        if caption is None or self._cancel:
+                            continue
+                        final = tmpl.assemble(
+                            caption, trigger=self.trigger, prefix=self.prefix,
+                            suffix=self.suffix, extra_prefix_tags=self.extra_prefix_tags,
+                        )
+                        if not pair.publish(final, sep=tmpl.separator):
+                            continue
+                    self.image_done.emit(img, final)
+                    wrote_any = True
+                except Exception as exc:
+                    if not self._cancel:
+                        log.exception("Caption publication failed for %s", img)
+                        self.error.emit(img, str(exc))
 
             if wrote_any:
                 processed += 1
