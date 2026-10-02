@@ -9,15 +9,16 @@ from core.library_batch import BatchCancelled, commit_batch
 from core.library_results import collect_rows
 from core.path_identity import observe_path, local_path
 from core.path_identity_clock import token
-from core.path_identity_registry import prepared, status, store
+from core.path_identity_registry import prepared, status, store, PHYSICAL_COLUMNS, physical_index
 
 
-def state(conn, canonicals, paths, cache=None, *, coverage=None):
+def state(conn, canonicals, paths, cache=None, *, coverage=None, physicals=()):
     if (type(canonicals) not in (list, tuple) or type(paths) not in (list, tuple)
-            or len(canonicals) > 100 or len(paths) > 100):
+            or len(canonicals) > 100 or len(paths) > 100 or type(physicals) not in (list, tuple)
+            or len(physicals) > 100):
         raise ValueError('invalid_path_ingest_batch')
     coverage = status(conn, cache) if coverage is None else coverage
-    result = dict(coverage=coverage, clock=token(conn), matches=[], historical=[])
+    result = dict(coverage=coverage, clock=token(conn), matches=[], historical=[], candidates=[])
     if not coverage['prepared'] or not canonicals:
         return result
     names = list(dict.fromkeys(local_path(p) for p in canonicals))
@@ -32,6 +33,33 @@ def state(conn, canonicals, paths, cache=None, *, coverage=None):
     if len(rows) > 100:
         raise ValueError('path_identity_review_required')
     result['matches'] = rows
+    # Physical IDs are bounded search hints, never copy identity. A worker
+    # must reopen each saved name: hard links remain independent named copies.
+    keys = []
+    for physical in physicals:
+        if (type(physical) not in (tuple, list) or len(physical) != 7 or
+                any(type(v) is not int or not 0 <= v <= 0xffffffff for v in physical)):
+            raise ValueError('invalid_path_ingest_batch')
+        if tuple(physical[:3]) not in keys:
+            keys.append(tuple(physical[:3]))
+    if keys:
+        wanted = ','.join('(?,?,?)' for _ in keys)
+        columns = [part.replace('physical', 'r.physical') for part in PHYSICAL_COLUMNS]
+        if physical_index(conn):
+            table = '(VALUES '+wanted+') w CROSS JOIN path_identity_records r'
+            equal = ' AND '.join(column+'=w.column'+str(i+1) for i, column in enumerate(columns))
+        else:
+            # Prior owned schemas remain usable without implicit DDL. One
+            # bounded scan per batch, rather than one scan per wanted ID.
+            table = 'path_identity_records r'
+            equal = '('+','.join(columns)+') IN (VALUES '+wanted+')'
+        result['candidates'] = collect_rows(conn.execute(
+            'SELECT '+','.join(columns)+',f.id,f.path FROM '+table+' JOIN files f ON f.id=r.file_id WHERE '+equal+
+            " AND r.status='resolved' AND r.is_offline=0 AND f.is_offline=0 "
+            'AND f.path=r.stored_path COLLATE BINARY ORDER BY f.id LIMIT 257',
+            [part for key in keys for part in key]))
+        if len(result['candidates']) > 256:
+            raise ValueError('path_identity_review_required')
     names = list(dict.fromkeys([*names, *(local_path(p) for p in paths)]))
     placeholders = ','.join('?' * len(names))
     result['historical'] = collect_rows(conn.execute('SELECT DISTINCT path FROM files '
@@ -44,10 +72,10 @@ def _ready(coverage):
         raise ValueError('path_identity_review_required')
 
 
-def _read(service, canonicals, paths, event):
+def _read(service, canonicals, paths, event, physicals=()):
     from core.library_service import LibraryError
     try:
-        return service.read('get_path_identity_ingest_state', canonicals, paths, cancel_event=event)
+        return service.read('get_path_identity_ingest_state', canonicals, paths, physicals=physicals, cancel_event=event)
     except LibraryError as exc:
         if exc.reason == 'cancelled':
             raise BatchCancelled('observation_batch_cancelled') from exc
@@ -75,21 +103,41 @@ def register(service, records, cancel_event):
         if any(o.status != 'resolved' or o.kind != 'file' for o in observations):
             raise ValueError('path_identity_review_required')
         proof = _read(service, [o.canonical for o in observations],
-                      [o.path for o in observations], cancel_event)
+                      [o.path for o in observations], cancel_event, [o.physical for o in observations])
         _ready(proof['coverage'])
         if proof['clock'] is None:
             raise ValueError('path_identity_not_prepared')
         targets = {}
-        for canonical, file_id, path in proof['matches']:
-            if canonical in targets:
-                raise ValueError('path_identity_review_required')
-            targets[canonical] = (file_id, path)
         historical = {path for (path,) in proof['historical']}
-        for canonical, (_, stored_path) in targets.items():
-            saved = observe_path(stored_path, cancel_event=cancel_event)
-            incoming = next(o for o in observations if o.canonical == canonical)
-            if (saved.status != 'resolved' or saved.kind != 'file' or
-                    saved.canonical != canonical or saved.physical != incoming.physical):
+        checked = {}
+        incoming = {}
+        for observation in observations:
+            previous = incoming.setdefault(observation.canonical, observation)
+            if previous.physical != observation.physical:
+                raise ValueError('path_identity_physical_state_changed')
+        for canonical, observation in incoming.items():
+            exact = {(file_id, path) for name, file_id, path in proof['matches'] if name == canonical}
+            hints = {(file_id, path) for volume, high, low, file_id, path in proof['candidates']
+                     if (volume, high, low) == observation.physical[:3]}
+            matches = set()
+            for file_id, stored_path in exact | hints:
+                if stored_path not in checked:
+                    checked[stored_path] = observe_path(stored_path, cancel_event=cancel_event)
+                saved = checked[stored_path]
+                if saved.status != 'resolved' or saved.kind != 'file':
+                    raise ValueError('path_identity_physical_state_changed')
+                if saved.canonical == canonical:
+                    if saved.physical != observation.physical:
+                        raise ValueError('path_identity_physical_state_changed')
+                    matches.add((file_id, stored_path))
+                elif (file_id, stored_path) in exact:
+                    raise ValueError('path_identity_physical_state_changed')
+            if len(matches) > 1:
+                raise ValueError('path_identity_review_required')
+            if matches:
+                targets[canonical] = next(iter(matches))
+        for stored_path, saved in checked.items():
+            if observe_path(stored_path, cancel_event=cancel_event) != saved:
                 raise ValueError('path_identity_physical_state_changed')
         values = []
         for row, observation in zip(data, observations):
@@ -147,19 +195,35 @@ def write(repo, values):
         paths.append(identity['path'])
     from core.library_transfers import guard_ingestion
     guard_ingestion(conn, canonicals)
-    current = state(conn, canonicals, paths, coverage=coverage)
+    current = state(conn, canonicals, paths, coverage=coverage,
+                    physicals=[value['identity']['physical'] for value in values])
     targets = {}
     for canonical, file_id, path in current['matches']:
         if canonical in targets:
             raise ValueError('path_identity_review_required')
         targets[canonical] = (file_id, path)
     historical = {path for (path,) in current['historical']}
+    repaired = False
     for value, canonical, path in zip(values, canonicals, paths):
-        if ((tuple(value['target']) if value['target'] is not None else None) != targets.get(canonical)
-                or value['historical'] != (path in historical or canonical in historical)):
+        chosen_target = tuple(value['target']) if value['target'] is not None else None
+        expected = targets.get(canonical)
+        if expected is not None:
+            valid = chosen_target == expected
+        else:
+            # Only an attested existing name for the same physical search hint
+            # may repair stale canonical evidence. SQL never merges by inode.
+            hints = {(file_id, stored_path) for volume, high, low, file_id, stored_path
+                     in current['candidates'] if (volume, high, low) == tuple(value['identity']['physical'][:3])}
+            valid = chosen_target is None or chosen_target in hints
+        if not valid or value['historical'] != (path in historical or canonical in historical):
             raise ValueError('path_identity_sql_state_changed')
-        if value['historical'] and value['target'] is not None:
+        if value['historical'] and chosen_target is not None:
             raise ValueError('path_identity_review_required')
+        if chosen_target is not None:
+            repaired = repaired or expected is None
+            previous = targets.setdefault(canonical, chosen_target)
+            if previous != chosen_target:
+                raise ValueError('path_identity_sql_state_changed')
     # Simulate repeated aliases in input order; preserve the saved name and
     # first documented non-NULL provenance, even when Cherry brings a raw copy.
     bindings, normalized = {}, []
@@ -210,7 +274,7 @@ def write(repo, values):
     changed = sum(previous.get(file_id) != _record(record) for file_id, record in bindings.items())
     retained = {chosen[c] for v, c in zip(values, canonicals) if not v['historical']}
     inserted = sum(path not in saved_rows_before for path in retained)
-    known = all(v['historical'] or v['target'] is not None or chosen[c] not in saved_rows_before
+    known = not repaired and all(v['historical'] or v['target'] is not None or chosen[c] not in saved_rows_before
                 for v, c in zip(values, canonicals))
     # Registration + keys + FTS all commit/rollback as one Native command.
     store(conn, list(bindings.values()))

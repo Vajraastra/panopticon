@@ -52,6 +52,133 @@ class Ingest(unittest.TestCase):
         with closing(sqlite3.connect(self.service.db_path)) as conn:
             return conn.execute(query).fetchall()
 
+    def test_deep_indexing_renamed_parent_keeps_curated_copy_online(self):
+        path=self.image('Árbol/One.png')
+        key=self.seed(path)
+        self.service.submit('edit_curation',str(path),rating=5,add_tags=['keep']).result(3)
+        self.service.backfill_path_identity()
+        folder=self.root/'árbol'
+        path.parent.rename(folder)
+        worker=IndexerWorker(self.db,[str(folder)],deep_clean=True)
+        worker.run()
+        self.assertEqual(worker.outcome,InventoryStatus.COMPLETE)
+        self.assertEqual(self.sql('SELECT id,rating,is_offline FROM files'),[(key,5,0)])
+        self.assertEqual(worker.archived_count,0)
+        self.assertEqual(self.service.resolve_path_identity(str(folder/path.name))['file_id'],key)
+
+    def test_owned_old_registry_repairs_names_without_implicit_index_migration(self):
+        path=self.image('Árbol/One.png')
+        key=self.seed(path)
+        self.service.backfill_path_identity()
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            conn.execute('DROP INDEX idx_path_identity_physical')
+            conn.commit()
+        backups=set(self.root.glob('private.db.pre-path-identity-*.bak'))
+        path.parent.rename(self.root/'árbol')
+        self.ingest([self.row(self.root/'árbol'/path.name)])
+        self.assertEqual(self.sql('SELECT id FROM files'),[(key,)])
+        self.assertEqual(self.sql("SELECT name FROM sqlite_master WHERE name='idx_path_identity_physical'"),[])
+        self.assertEqual(set(self.root.glob('private.db.pre-path-identity-*.bak')),backups)
+
+    def test_case_renamed_parent_preserves_curated_id_and_refreshes_actual_name(self):
+        path = self.image('Árbol/One.png')
+        key = self.seed(path, hash_original='saved', origin_url='documented', artist='curated')
+        self.service.submit('edit_curation', str(path), rating=5, add_tags=['keep']).result(3)
+        self.service.submit('update_file_metadata', str(path), dict(model='model', positive='prompt')).result(3)
+        self.service.backfill_path_identity()
+        current = self.root/'árbol'/path.name
+        path.parent.rename(current.parent)
+        # Metadata may change between preparation and rename: inode hints do
+        # not require a stale saved mtime/size to equal the current file.
+        current.write_bytes(b'new current private metadata')
+        self.ingest([self.row(current, hash_original='raw', origin_url='raw', artist='raw')])
+        self.assertEqual(self.sql('SELECT id,path,rating,hash_original,origin_url,artist,meta_model,meta_positive FROM files'),
+            [(key, path.as_posix(), 5, 'saved', 'documented', 'curated', 'model', 'prompt')])
+        self.assertEqual(self.service.read('get_tags_for_file', str(path)), ['keep'])
+        self.assertEqual(self.service.resolve_path_identity(str(current))['file_id'], key)
+        self.assertEqual(self.service.read('check_fts')['stale'], 0)
+
+    def test_existing_hardlink_does_not_donate_curation_to_new_name(self):
+        path = self.image()
+        key = self.seed(path)
+        self.service.submit('edit_curation', str(path), rating=5, add_tags=['keep']).result(3)
+        self.service.backfill_path_identity()
+        link = self.root/'Other.png'
+        os.link(path, link)
+        self.ingest([self.row(link)])
+        other = self.service.resolve_path_identity(str(link))['file_id']
+        self.assertNotEqual(key, other)
+        self.assertEqual(self.sql('SELECT id,rating FROM files ORDER BY id'), [(key,5),(other,0)])
+        self.assertEqual(self.service.read('get_tags_for_file', str(link)), [])
+
+    def test_external_move_without_resolvable_saved_name_requires_review(self):
+        path = self.image()
+        key = self.seed(path)
+        self.service.submit('edit_curation', str(path), rating=5).result(3)
+        self.service.backfill_path_identity()
+        renamed = self.root/'Renamed.png'
+        path.rename(renamed)
+        with self.assertRaisesRegex(ValueError, 'physical_state_changed'):
+            self.ingest([self.row(renamed),self.row(self.image('new.png'))])
+        self.assertEqual(self.sql('SELECT id,path,rating FROM files'), [(key,path.as_posix(),5)])
+
+    def test_stale_duplicate_aliases_are_reviewed_without_merging_ids(self):
+        path = self.image('Árbol/One.png')
+        first = self.seed(path)
+        second = self.seed(self.root/'ÁRBOL'/'ONE.PNG')
+        self.service.backfill_path_identity()
+        path.parent.rename(self.root/'árbol')
+        with self.assertRaisesRegex(ValueError, 'review_required'):
+            self.ingest([self.row(self.root/'árbol'/'One.png')])
+        self.assertEqual(self.sql('SELECT id FROM files ORDER BY id'), [(first,),(second,)])
+
+    def test_case_sensitive_same_inode_names_remain_distinct_with_existing_evidence(self):
+        a,b=(self.root/'Name.png').as_posix(),(self.root/'name.png').as_posix()
+        physical=(1,2,3,0,7,0,0)
+        self.seed(a)
+        def observation(path, **kwargs):
+            return PathIdentity(path=path,status='resolved',canonical=path,kind='file',physical=physical,reason=None)
+        with patch('core.library_path_identity.observe_path',side_effect=observation):
+            self.service.backfill_path_identity()
+        with patch('core.library_path_ingest.observe_path',side_effect=observation):
+            self.ingest([self.row(b)])
+        self.assertEqual(self.sql('SELECT path FROM files ORDER BY id'),[(a,),(b,)])
+
+    def test_saved_name_change_after_candidate_probe_rejects_whole_batch(self):
+        path=self.image('Árbol/One.png')
+        self.seed(path)
+        self.service.backfill_path_identity()
+        path.parent.rename(self.root/'árbol')
+        seen=0
+        def probe(name,**kwargs):
+            nonlocal seen
+            result=observe_path(name,**kwargs)
+            if name == path.as_posix():
+                seen+=1
+                if seen==2:
+                    path.rename(path.with_name('Changed.png'))
+                    return observe_path(name,**kwargs)
+            return result
+        with patch('core.library_path_ingest.observe_path',side_effect=probe):
+            with self.assertRaisesRegex(ValueError,'physical_state_changed'):
+                self.ingest([self.row(self.root/'árbol'/'One.png')])
+        self.assertEqual(self.service.read('count_files'),1)
+
+    def test_physical_candidate_overflow_does_not_approve_a_prefix(self):
+        path=self.image()
+        self.seed(path)
+        self.service.backfill_path_identity()
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            physical=conn.execute('SELECT physical FROM path_identity_records').fetchone()[0]
+            for i in range(257):
+                name=(self.root/f'alias{i}.png').as_posix()
+                key=conn.execute('INSERT INTO files(path,filename) VALUES(?,?)',(name,f'alias{i}.png')).lastrowid
+                conn.execute("INSERT INTO path_identity_records VALUES(?,?,0,'resolved',?,?,NULL)",(key,name,name,physical))
+            conn.commit()
+        with self.assertRaisesRegex(ValueError,'review_required'):
+            self.ingest([self.row(path)])
+        self.assertEqual(self.service.read('count_files'),258)
+
     def test_unicode_alias_reuses_curated_id_name_hash_origin_and_generation(self):
         path = self.image('Árbol/One.png')
         file_id = self.seed(path, hash_original='saved', origin_url='documented', artist='curated')

@@ -982,7 +982,14 @@ owned clock/table/index/trigger definitions before cache use; incomplete old
 preparations work uncached until another explicit backed-up prepare. These APIs
 route the indexer's bounded worker registration after explicit preparation:
 resolved aliases reuse the existing ID and stored spelling; new files and their
-identity evidence commit together with FTS. Saved non-NULL provenance, immutable
+identity evidence commit together with FTS. Case-only parent renames refresh stale
+canonical evidence under the same curated ID, after reopening and rechecking the
+saved name. Physical file IDs only locate candidates; distinct hard-link names
+never inherit curation automatically. Ambiguous or unavailable saved names reject
+the whole batch. Explicit preparation backs up prior owned registries before
+adding the physical lookup index; ordinary ingestion creates no schema. Repairs
+invalidate coverage hints so canonical conflict counts are read again.
+Saved non-NULL provenance, immutable
 original hashes, tags, ratings and generation remain preserved. Ambiguity,
 incomplete coverage, unavailable online evidence or a changed SQL clock rejects
 the whole batch; incomplete indexing cannot archive omissions. Offline exact

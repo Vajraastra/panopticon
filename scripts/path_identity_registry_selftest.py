@@ -40,6 +40,52 @@ class Registry(unittest.TestCase):
         keys = ('file_id','stored_path','status','canonical','physical','reason')
         return [dict(**{k:r[k] for k in keys}, is_offline=int(r['status']=='offline')) for r in page['records']]
 
+    def test_prior_owned_registry_adds_physical_index_only_with_backup(self):
+        image=self.add('one.png')
+        self.service.backfill_path_identity()
+        before=self.service.read('get_path_identity_status')
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            conn.execute('DROP INDEX idx_path_identity_physical')
+            conn.commit()
+        previous=set(self.root.glob('private.db.pre-path-identity-*.bak'))
+        self.assertEqual(self.service.read('get_path_identity_status'),before)
+        self.prepare()
+        new=set(self.root.glob('private.db.pre-path-identity-*.bak'))-previous
+        self.assertEqual(len(new),1)
+        with closing(sqlite3.connect(next(iter(new)))) as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM sqlite_master WHERE name='idx_path_identity_physical'").fetchone())
+            self.assertEqual(conn.execute('PRAGMA integrity_check').fetchone(),('ok',))
+        self.assertEqual(self.service.read('get_path_identity_status'),before)
+        self.prepare()
+        self.assertEqual(set(self.root.glob('private.db.pre-path-identity-*.bak')),previous|new)
+
+    def test_foreign_physical_index_is_rejected_without_overwriting(self):
+        self.add('one.png')
+        self.prepare()
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            conn.execute('DROP INDEX idx_path_identity_physical')
+            conn.execute('CREATE INDEX idx_path_identity_physical ON path_identity_records(stored_path)')
+            conn.commit()
+        with self.assertRaisesRegex(ValueError,'unknown_schema'):
+            self.service.read('get_path_identity_status')
+        with self.assertRaisesRegex(LibraryError,'unknown_schema'):
+            self.prepare()
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            self.assertEqual(conn.execute("SELECT sql FROM sqlite_master WHERE name='idx_path_identity_physical'").fetchone(),
+                ('CREATE INDEX idx_path_identity_physical ON path_identity_records(stored_path)',))
+
+    def test_physical_search_uses_index_for_bounded_batch(self):
+        self.add('one.png')
+        self.service.backfill_path_identity()
+        from core.path_identity_registry import PHYSICAL_COLUMNS
+        columns=[part.replace('physical','r.physical') for part in PHYSICAL_COLUMNS]
+        equal=' AND '.join(column+'=w.column'+str(i+1) for i,column in enumerate(columns))
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            query='SELECT r.file_id FROM (VALUES '+','.join('(?,?,?)' for _ in range(100))+') w CROSS JOIN path_identity_records r WHERE '+equal
+            plan=conn.execute('EXPLAIN QUERY PLAN '+query,[0]*300).fetchall()
+            self.assertTrue(any('SEARCH r USING ' in row[3] and 'INDEX idx_path_identity_physical' in row[3] for row in plan),plan)
+            self.assertFalse(any('SCAN r' in row[3] for row in plan),plan)
+
     def test_backup_consistent_before_additive_schema_and_idempotent(self):
         image = self.add('one.png')
         file_id = self.service.read('get_file_id', str(image))

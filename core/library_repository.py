@@ -328,9 +328,9 @@ class LibraryRepository:
         from core.library_path_ingest import write
         return write(self, records)
 
-    def get_path_identity_ingest_state(self, canonicals, paths):
+    def get_path_identity_ingest_state(self, canonicals, paths, *, physicals=()):
         from core.library_path_ingest import state
-        return state(self.conn, canonicals, paths, self._path_coverage_cache)
+        return state(self.conn, canonicals, paths, self._path_coverage_cache, physicals=physicals)
 
     def get_path_identity_review_page(self, **kwargs):
         from core.path_identity_review import page

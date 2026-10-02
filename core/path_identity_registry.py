@@ -16,6 +16,19 @@ TABLE_SQL = ('CREATE TABLE path_identity_records ('
         "OR (status!='resolved' AND canonical IS NULL AND physical IS NULL)))")
 INDEX_SQL = ('CREATE INDEX idx_path_identity_canonical ON path_identity_records(canonical,file_id)')
 
+PHYSICAL_INDEX = 'idx_path_identity_physical'
+PHYSICAL_COLUMNS = tuple("json_extract(physical,'$[%d]')" % i for i in range(3))
+PHYSICAL_INDEX_SQL = ('CREATE INDEX idx_path_identity_physical ON '
+                      'path_identity_records('+','.join(PHYSICAL_COLUMNS)+',file_id)')
+
+
+def physical_index(conn):
+    row = conn.execute("SELECT type,sql FROM sqlite_master WHERE name=?", (PHYSICAL_INDEX,)).fetchone()
+    if row is not None and row != ('index', PHYSICAL_INDEX_SQL):
+        raise ValueError('path_identity_unknown_schema')
+    return row is not None
+
+
 
 def prepared(conn):
     row = conn.execute('SELECT value FROM panopticon_schema WHERE name=?', (MARKER,)).fetchone()
@@ -29,13 +42,14 @@ def prepared(conn):
     if (conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (TABLE,)).fetchone() != (TABLE_SQL,) or
             conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_path_identity_canonical'").fetchone() != (INDEX_SQL,)):
         raise ValueError('path_identity_unknown_schema')
+    physical_index(conn)
     return True
 
 
 def needs_prepare(conn):
     from core.path_identity_clock import token
     ready = prepared(conn)
-    return token(conn) is None or not ready
+    return token(conn) is None or not ready or not physical_index(conn)
 
 
 def prepare(conn):
@@ -43,6 +57,8 @@ def prepare(conn):
         conn.execute(TABLE_SQL)
         conn.execute(INDEX_SQL)
         conn.execute('INSERT INTO panopticon_schema(name,value) VALUES(?,?)', (MARKER, '1'))
+    if not physical_index(conn):
+        conn.execute(PHYSICAL_INDEX_SQL)
     from core.path_identity_clock import prepare as prepare_clock
     prepare_clock(conn)
     return True
