@@ -57,6 +57,10 @@ def save(source, pano, out_dir, data, image, composited, source_identity,
                 raise ValueError('preview_source_changed')
             pin.verify(source_digest, pinned_identity)
             draft_current()
+            data = dict(data, source_sha256=source_digest)
+            if not composited and data.get('output_sha256'):
+                with PinnedFile(safe_path(output)) as existing:
+                    existing.verify(data['output_sha256'], existing.check())
             if composited:
                 if os.path.lexists(output):
                     raise ValueError('editor_requires_new_output; existing images are preserved')
@@ -70,6 +74,8 @@ def save(source, pano, out_dir, data, image, composited, source_identity,
                     if verified.size!=image.size:raise ValueError('editor_output_dimensions')
                 # Windows CRT fsync requires a writable descriptor.
                 with open(image_temp,'r+b') as stream:os.fsync(stream.fileno())
+                with open(image_temp, 'rb') as stream:
+                    data['output_sha256'] = hashlib.file_digest(stream, 'sha256').hexdigest()
             fd,name=tempfile.mkstemp(prefix='.panopticon-bbox-draft-',suffix='.json',dir=pano.parent)
             draft_temp=Path(name)
             with os.fdopen(fd,'w',encoding='utf-8',newline='\n') as stream:
@@ -97,7 +103,8 @@ def save(source, pano, out_dir, data, image, composited, source_identity,
             final_identity=_identity(pano)
             if digest(pano)!=expected_digest or _identity(pano)!=final_identity:
                 raise ValueError('editor_draft_changed_after_commit')
-            result.update(draft_identity=final_identity,draft_digest=expected_digest)
+            result.update(draft_identity=final_identity,draft_digest=expected_digest,
+                          source_sha256=data['source_sha256'], output_sha256=data.get('output_sha256'))
     except Exception as error:
         result['error']=str(error)
         if cancel() and result['published'] is None and result['draft_committed'] is None:

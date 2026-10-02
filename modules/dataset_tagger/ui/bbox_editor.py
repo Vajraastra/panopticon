@@ -1467,6 +1467,8 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         elif not result['cancelled']:
             self._draft_identity, self._draft_digest = result['draft_identity'], result['draft_digest']
             self._composited = False
+            self._doc.source_sha256 = result.get('source_sha256')
+            self._doc.output_sha256 = result.get('output_sha256')
 
     def _save_and_close(self):
         self._save(intent='close')

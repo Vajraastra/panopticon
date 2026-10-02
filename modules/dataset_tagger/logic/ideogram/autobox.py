@@ -22,6 +22,11 @@ from PySide6.QtCore import QThread, Signal
 from core.paths import CachePaths
 
 from . import layout
+from .draft_publication import draft_guard
+from ..caption_publication import CaptionPair
+from .. import sidecar
+from core.output_paths import safe_path
+from core.image_preview import MAX_SOURCE_BYTES
 
 log = logging.getLogger(__name__)
 
@@ -145,6 +150,7 @@ class AutoBoxBatchWorker(QThread):
             from .datamodel import WorkDoc, Element, STATUS_DRAFT
             boxer = AutoBoxer(conf=self.conf)
             # Los borradores van a la subcarpeta visible <out_dir>/drafts/.
+            self.out_dir = safe_path(Path(self.out_dir).absolute(), portable=True)
             layout.drafts_dir(self.out_dir).mkdir(parents=True, exist_ok=True)
             total = len(self.images)
             created = skipped = 0
@@ -157,26 +163,36 @@ class AutoBoxBatchWorker(QThread):
                 if self.skip_existing and pano.exists():
                     skipped += 1
                     continue
-                try:
-                    with Image.open(img) as im:
-                        w, h = im.size
-                except (OSError, ValueError):
-                    skipped += 1
-                    continue
-                doc = WorkDoc(image=img.name, image_w=w, image_h=h, status=STATUS_DRAFT)
-                sd = self.style_defaults
-                doc.style.art_style = sd.get("art_style", "")
-                doc.style.aesthetics = sd.get("aesthetics", "")
-                doc.style.lighting = sd.get("lighting", "")
-                for d in boxer.detect(str(img)):
-                    x0, y0, x1, y1 = d["bbox_px"]
-                    x0, x1 = max(0, min(x0, w)), max(0, min(x1, w))
-                    y0, y1 = max(0, min(y0, h)), max(0, min(y1, h))
-                    # desc vacío: el VLM lo captura al Iniciar (no precategorizar).
-                    doc.elements.append(Element(
-                        id=doc.next_element_id(), type="obj",
-                        bbox_px=[x0, y0, x1, y1]))
-                doc.save(pano)
+                with draft_guard(pano) as draft_current:
+                    prior = WorkDoc.load(pano) if pano.exists() else None
+                    with CaptionPair(img, self.out_dir, sidecar.OVERWRITE, lambda: self._cancel,
+                                     caption_ext='.json',
+                                     source_sha256=prior.source_sha256 if prior else None,
+                                     image_sha256=prior.output_sha256 if prior else None) as pair:
+                        reference = pair.image if pair.image_pin else pair.source
+                        if reference.stat().st_size > MAX_SOURCE_BYTES:
+                            raise ValueError('preview_file_limit')
+                        with Image.open(reference) as im:
+                            w, h = im.size
+                            if w * h > 20_000_000 or getattr(im, 'n_frames', 1) != 1:
+                                raise ValueError('ideogram_image_limit')
+                        doc = WorkDoc(image=img.name, image_w=w, image_h=h, status=STATUS_DRAFT,
+                                      source_sha256=pair.source_hash,
+                                      output_sha256=(pair.expected_image or pair.source_hash) if pair.image_pin else None)
+                        sd = self.style_defaults
+                        doc.style.art_style = sd.get("art_style", "")
+                        doc.style.aesthetics = sd.get("aesthetics", "")
+                        doc.style.lighting = sd.get("lighting", "")
+                        for d in boxer.detect(str(reference)):
+                            x0, y0, x1, y1 = d["bbox_px"]
+                            x0, x1 = max(0, min(x0, w)), max(0, min(x1, w))
+                            y0, y1 = max(0, min(y0, h)), max(0, min(y1, h))
+                            doc.elements.append(Element(id=doc.next_element_id(), type="obj",
+                                                        bbox_px=[x0, y0, x1, y1]))
+                        if self._cancel:
+                            break
+                        pair._current(); draft_current()
+                        doc.save(pano)
                 created += 1
             self.finished_ok.emit(created, skipped)
         except Exception as exc:  # noqa: BLE001 — se reporta a la UI

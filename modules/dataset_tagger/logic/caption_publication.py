@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import uuid
 
-from core.image_preview import _identity
+from core.image_preview import _identity, MAX_SOURCE_BYTES
 from core.output_paths import safe_path
 from core.pinned_file import PinnedFile
 from .sidecar import IMAGE_EXTS, caption_path, should_process
@@ -34,10 +34,16 @@ def caption_snapshot(path):
 
 
 class CaptionPair:
-    def __init__(self, source, out, policy, cancel):
+    def __init__(self, source, out, policy, cancel, *, caption_ext='.txt',
+                 source_sha256=None, image_sha256=None):
         self.source = Path(source).absolute()
         self.out = Path(out).absolute()
         self.policy, self.cancel = policy, cancel
+        if caption_ext not in ('.txt', '.json'):
+            raise ValueError('caption_extension')
+        self.caption_ext = caption_ext
+        self.expected_source = source_sha256
+        self.expected_image = image_sha256
         self.stack = ExitStack()
         self.guard = self.guard_identity = None
         self.temps = []
@@ -52,8 +58,8 @@ class CaptionPair:
             self.out_identity = (info.st_dev, info.st_ino)
             self.image = safe_path(self.out / self.source.name,
                                    exists=os.path.lexists(self.out / self.source.name), portable=True)
-            self.caption = safe_path(caption_path(self.out, self.source),
-                                     exists=os.path.lexists(caption_path(self.out, self.source)), portable=True)
+            caption = caption_path(self.out, self.source, self.caption_ext)
+            self.caption = safe_path(caption, exists=os.path.lexists(caption), portable=True)
             if self.source == self.image or (self.image.exists() and os.path.samefile(self.source, self.image)):
                 raise ValueError('caption_original_protected')
             self.guard = self.caption.with_name(self.caption.name + '.caption.guard')
@@ -66,22 +72,31 @@ class CaptionPair:
             self.guard_identity = _identity(self.guard)
             self.pin = self.stack.enter_context(PinnedFile(self.source))
             self.source_identity = self.pin.check()
+            if self.source.stat().st_size > MAX_SOURCE_BYTES:
+                raise ValueError('preview_file_limit')
             self.pin.stream.seek(0)
             self.source_hash = hashlib.file_digest(self.pin.stream, 'sha256').hexdigest()
             self.pin.verify(self.source_hash, self.source_identity)
+            if self.expected_source is not None and self.expected_source != self.source_hash:
+                raise ValueError('caption_draft_source_changed; review the draft')
+            target_hash = self.expected_image or self.source_hash
+            if target_hash != self.source_hash and self.expected_source is None:
+                raise ValueError('caption_composition_requires_source_proof')
             # A caption stem can describe only one image, including PNG/JPEG collisions.
             self._check_stem()
             self.image_pin = None
             if self.image.exists():
                 self.image_pin = self.stack.enter_context(PinnedFile(self.image))
                 self.image_identity = self.image_pin.check()
-                self.image_pin.verify(self.source_hash, self.image_identity)
+                self.image_pin.verify(target_hash, self.image_identity)
+            elif target_hash != self.source_hash:
+                raise ValueError('caption_composition_missing')
             self.caption_before, self.caption_bytes = caption_snapshot(self.caption)
             if self.caption_before is not None and self.image_pin is None:
                 raise ValueError('caption_without_verified_image; review the existing output')
             self.process, self.mode = should_process(self.caption, self.policy)
             self.record = dict(version=1, token=self.token, source=str(self.source),
-                               source_sha256=self.source_hash, image=str(self.image),
+                               source_sha256=self.source_hash, image_sha256=target_hash, image=str(self.image),
                                caption=str(self.caption), phase='prepared')
             self._record()
             return self

@@ -37,6 +37,9 @@ from PIL import Image
 from . import schema, palette, layout
 from .datamodel import WorkDoc, STATUS_EXPORTED
 from .. import sidecar
+from ..caption_publication import CaptionPair
+from .draft_publication import draft_guard
+from core.image_preview import MAX_SOURCE_BYTES
 from ..providers.base_provider import ProviderError
 
 log = logging.getLogger(__name__)
@@ -116,23 +119,40 @@ class Ig4Worker(QThread):
             skipped += int(not ok)
         self.finished_all.emit(exported, skipped)
 
+    def _pair(self, image_path, pano_path, doc):
+        if not doc.source_sha256:
+            raise ValueError('ideogram_draft_requires_review; inspect and save or rebuild this draft')
+        if doc.image != image_path.name:
+            raise ValueError('ideogram_draft_source_mismatch')
+        return CaptionPair(image_path, layout.out_dir_from_pano(pano_path), sidecar.OVERWRITE,
+                           lambda: self._cancel, caption_ext='.json',
+                           source_sha256=doc.source_sha256, image_sha256=doc.output_sha256)
+
     def _process_one(self, image_path, pano_path):
         if not pano_path.exists():
             self.error.emit(str(image_path), "falta el .pano.json")
             return False
-        doc = WorkDoc.load(pano_path)
-        # El .pano.json vive en <out_dir>/drafts/; el producto final (json +
-        # copia de la imagen) va a la raíz <out_dir>.
-        out_dir = layout.out_dir_from_pano(pano_path)
+        with draft_guard(pano_path) as draft_current:
+            doc = WorkDoc.load(pano_path)
+            with self._pair(image_path, pano_path, doc) as pair:
+                ref_path = pair.image if pair.image_pin else pair.source
+                if ref_path.stat().st_size > MAX_SOURCE_BYTES:
+                    raise ValueError('preview_file_limit')
+                with Image.open(ref_path) as opened:
+                    if opened.width * opened.height > 20_000_000 or getattr(opened, 'n_frames', 1) != 1:
+                        raise ValueError('ideogram_image_limit')
+                    if (doc.image_w, doc.image_h) != opened.size:
+                        raise ValueError('ideogram_draft_source_mismatch')
+                    ref = opened.convert('RGB')
+                try:
+                    result = self._capture_one(image_path, pano_path, doc, ref, ref_path, pair, draft_current)
+                finally:
+                    ref.close()
+        if result:
+            self.image_done.emit(str(image_path), str(pair.caption))
+        return result
 
-        # Imagen de referencia: la copia de salida (con texto si se compuso),
-        # si no el original. De ella salen crops y paletas.
-        out_img = out_dir / image_path.name
-        ref_path = out_img if out_img.exists() else image_path
-        ref = Image.open(ref_path).convert("RGB")
-        if not doc.image_w or not doc.image_h:
-            doc.image_w, doc.image_h = ref.width, ref.height
-
+    def _capture_one(self, image_path, pano_path, doc, ref, ref_path, pair, draft_current):
         # a) high_level_description
         if self.recapture or not doc.high_level_description:
             cap = self._caption_with_retry(str(ref_path), self.prompt_hld)
@@ -182,21 +202,24 @@ class Ig4Worker(QThread):
         except ValueError as exc:
             self.error.emit(str(image_path),
                             f"no se pudo ensamblar (¿falta art_style?): {exc}")
-            doc.save(pano_path)  # conserva lo capturado para reanudar
+            if not self._cancel:
+                pair._current(); draft_current()
+                doc.save(pano_path)  # conserva capturas verificadas para reanudar
             return False
 
         warns = schema.verify(caption)
         if warns:
             self.warnings.emit(str(image_path), warns)
 
-        json_path = out_dir / (image_path.stem + ".json")
-        json_path.write_text(schema.dumps(caption), encoding="utf-8")
-        # Si no hubo compositing, asegura que la imagen acompañe al caption.
-        if not out_img.exists():
-            sidecar.copy_image(image_path, out_dir)
+        if self._cancel:
+            return False
+        draft_current()
+        if not pair.publish(schema.dumps(caption)):
+            return False
+        draft_current()
         doc.status = STATUS_EXPORTED
+        doc.output_sha256 = pair.expected_image or pair.source_hash
         doc.save(pano_path)
-        self.image_done.emit(str(image_path), str(json_path))
         return True
 
     # ── inferencia de estilo (opcional) ───────────────────────────────────
@@ -204,10 +227,17 @@ class Ig4Worker(QThread):
         """Infiere UN estilo del set (modo estilo+VLM) desde la primera imagen y
         lo devuelve como dict; luego se propaga idéntico a todas las imágenes."""
         image_path, pano_path = self.jobs[0]
-        out_dir = layout.out_dir_from_pano(pano_path)
-        out_img = out_dir / Path(image_path).name
-        ref_path = out_img if out_img.exists() else Path(image_path)
-        resp = self._caption_with_retry(str(ref_path), self.prompt_style)
+        image_path, pano_path = Path(image_path), Path(pano_path)
+        with draft_guard(pano_path):
+            doc = WorkDoc.load(pano_path)
+            with self._pair(image_path, pano_path, doc) as pair:
+                ref_path = pair.image if pair.image_pin else pair.source
+                with Image.open(ref_path) as image:
+                    if (doc.image_w, doc.image_h) != image.size or image.width * image.height > 20_000_000:
+                        raise ValueError('ideogram_draft_source_mismatch')
+                    if getattr(image, 'n_frames', 1) != 1:
+                        raise ValueError('ideogram_image_limit')
+                resp = self._caption_with_retry(str(ref_path), self.prompt_style)
         if not resp:
             return {}
         fields = self._parse_style(resp)

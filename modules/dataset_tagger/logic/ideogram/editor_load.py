@@ -28,6 +28,11 @@ def load(image_path, pano_path, style_defaults, cancel):
                 hasher.update(block)
             pin.check()
             value['source_digest'] = hasher.hexdigest()
+            if (value['doc'].source_sha256 is not None
+                    and value['doc'].source_sha256 != value['source_digest']):
+                raise ValueError('editor_draft_source_changed; review the draft')
+            # Becomes durable only if the user explicitly saves the inspected draft.
+            value['doc'].source_sha256 = value['source_digest']
             return value
         except Exception:
             value['image'].close()

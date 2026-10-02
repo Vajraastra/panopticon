@@ -13,6 +13,9 @@ ya normalizadas. El editor trabaja en píxeles y así puede reabrir/editar sin
 pérdida; la normalización a 0–1000 ocurre una sola vez, al exportar.
 """
 import json
+import os
+import tempfile
+from core.output_paths import safe_path
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -102,6 +105,8 @@ class WorkDoc:
     background: str = ""
     style: StyleSpec = field(default_factory=StyleSpec)
     elements: list = field(default_factory=list)
+    source_sha256: str | None = None
+    output_sha256: str | None = None
 
     # -- (de)serialización del sidecar de trabajo -----------------------------
     def to_dict(self):
@@ -111,6 +116,8 @@ class WorkDoc:
             "image_w": self.image_w,
             "image_h": self.image_h,
             "status": self.status,
+            "source_sha256": self.source_sha256,
+            "output_sha256": self.output_sha256,
             "global": {
                 "high_level_description": self.high_level_description,
                 "style": self.style.to_dict(),
@@ -121,11 +128,17 @@ class WorkDoc:
 
     @classmethod
     def from_dict(cls, d):
+        for key in ('source_sha256', 'output_sha256'):
+            value = d.get(key)
+            if value is not None and (not isinstance(value, str) or len(value) != 64
+                                      or any(c not in '0123456789abcdef' for c in value)):
+                raise ValueError('ideogram_invalid_image_proof')
         g = d.get("global", {})
         return cls(
             image=d.get("image", ""),
             image_w=d.get("image_w", 0), image_h=d.get("image_h", 0),
             status=d.get("status", STATUS_DRAFT),
+            source_sha256=d.get("source_sha256"), output_sha256=d.get("output_sha256"),
             high_level_description=g.get("high_level_description", ""),
             background=g.get("background", ""),
             style=StyleSpec.from_dict(g.get("style")),
@@ -133,9 +146,23 @@ class WorkDoc:
         )
 
     def save(self, path):
-        Path(path).write_text(
-            json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        path = Path(path).absolute()
+        safe_path(path, exists=os.path.lexists(path), portable=True)
+        raw = json.dumps(self.to_dict(), ensure_ascii=False, indent=2).encode('utf-8')
+        if len(raw) > 8 * 1024 * 1024:
+            raise ValueError('editor_draft_limit')
+        fd, name = tempfile.mkstemp(prefix='.ideogram-draft-', suffix='.tmp', dir=path.parent)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+            if os.path.lexists(path):
+                os.replace(name, path)
+            elif os.name == 'nt':
+                os.rename(name, path)
+            else:
+                os.link(name, path)
+        finally:
+            Path(name).unlink(missing_ok=True)
 
     @classmethod
     def load(cls, path):

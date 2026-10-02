@@ -789,7 +789,15 @@ temporary files. Cancellation before publication discards the result. If a new
 image publishes but its caption cannot finish, the image and a `.caption.guard`
 receipt remain for manual review; the item is reported as failed. Nested outputs
 inside Cherry catalogs/curation sidecars are rejected before creating folders.
-Ideogram composition ownership and Native registration remain under maintenance.
+Ideogram drafts record the source SHA-256 and the output SHA-256 when a
+composition is saved or a pair is exported. AutoBox and capture verify those
+bytes before using an existing output, including the shared style inference.
+Legacy drafts without source proof require inspection and an explicit Save or
+rebuilding; an unowned composition remains preserved for review. Capture and
+AutoBox cooperate with the editor guard and reject concurrent draft/JSON edits.
+JSON and work drafts publish through flushed temporary files. A failed work
+draft commit retains the exported pair and its review guard without reporting
+success. Native registration remains under producer maintenance.
 
 Cropper decodes its bounded preview in a worker, with one active and the latest
 pending image. Saving is disabled until the current image is ready; failed loads
