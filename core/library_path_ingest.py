@@ -118,6 +118,7 @@ def write(repo, values):
         raise ValueError('invalid_path_ingest_batch')
     if not values:
         return True
+    repo._path_ingest_transition = None
     conn = repo.conn
     ready = prepared(conn)
     if not ready:
@@ -170,6 +171,7 @@ def write(repo, values):
     saved_rows = dict((r[0], r[1:]) for r in conn.execute(
         'SELECT path,hash_original,origin_url,origin_site,artist FROM files '
         f'WHERE is_offline=0 AND path IN ({placeholders})', names))
+    saved_rows_before = set(saved_rows)
     for value, canonical in zip(values, canonicals):
         if value['historical']:
             continue
@@ -196,6 +198,21 @@ def write(repo, values):
             raise ValueError('path_identity_sql_state_changed')
         bindings[file_id] = dict(file_id=file_id, stored_path=path, is_offline=0,
             status='resolved', canonical=canonical, physical=value['identity']['physical'], reason=None)
+    from core.path_identity_registry import _record
+    previous = {}
+    if bindings:
+        placeholders = ','.join('?' * len(bindings))
+        previous = {r[0]: r for r in conn.execute(
+            'SELECT file_id,stored_path,is_offline,status,canonical,physical,reason '
+            f'FROM path_identity_records WHERE file_id IN ({placeholders})', list(bindings))}
+    changed = sum(previous.get(file_id) != _record(record) for file_id, record in bindings.items())
+    retained = {chosen[c] for v, c in zip(values, canonicals) if not v['historical']}
+    inserted = sum(path not in saved_rows_before for path in retained)
+    known = all(v['historical'] or v['target'] is not None or chosen[c] not in saved_rows_before
+                for v, c in zip(values, canonicals))
     # Registration + keys + FTS all commit/rollback as one Native command.
     store(conn, list(bindings.values()))
+    from core.path_identity_transition import candidate
+    repo._path_ingest_transition = candidate(conn, clock, coverage, inserted=inserted,
+                                             changed=changed, known_bindings=known)
     return True

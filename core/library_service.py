@@ -262,10 +262,12 @@ class LibraryService:
                                 self._revision.committed(previews_changed=operation in PREVIEW_WRITES)
                         finally:
                             self._metrics.observe('commit', time.perf_counter() - phase)
+                        repo.finish_path_ingest(True)
                         repo.finish_derived_paths(True, operation)
                         self._metrics.finish_write('committed', started)
                         started = None
                     except BaseException as exc:
+                        repo.finish_path_ingest(False)
                         repo.finish_derived_paths(False, operation)
                         conn.rollback()
                         self._metrics.finish_write('failed', started)

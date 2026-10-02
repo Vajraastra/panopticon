@@ -931,9 +931,16 @@ before its SQL snapshot. It selects a unique ID only when coverage is complete
 and no online rows are unresolved; collisions/incomplete/offline remain review
 results. A bounded one-entry coverage cache follows a transactional Native SQL
 clock: file inserts/deletes, changed path/offline bindings and registry writes
-advance it even through other SQLite clients; rollback does not. Only coherent
-query-only snapshots without dirty reads may populate shared coverage, because
-rolled-back epoch numbers can later be reused. Ordinary
+advance it even through other SQLite clients; rollback does not. Reader
+population requires coherent query-only snapshots without dirty reads, because
+rolled-back epoch numbers can later be reused. Known ingestion transactions can
+also carry exact coverage counts forward, published only after successful commit.
+That optional hint uses the token captured inside the transaction: it never reads
+SQL after commit to acknowledge a possible intervening foreign write. Exact
+Native triggers, expected epoch increments and unchanged canonical memberships
+are required; foreign/temporary triggers, unexpected bindings or a changed epoch
+force an authoritative recount. A cache failure cannot report a committed batch
+as failed. Ordinary
 curation retains coverage while match rows read current ratings. Producer
 destination guards recognize only the exact verified Native clock triggers,
 retaining their warm path cache; foreign/altered/temporary triggers still force
@@ -956,8 +963,9 @@ Librarian exposes explicit path preparation and paginated review; it can check
 one image spelling and open retained-copy histories without merging IDs. Stop
 keeps confirmed evidence; closing waits for actual reader completion.
 Existing lookups, other registrations and folder prefixes still require
-migration; repeated coverage work across changing ingest batches also remains
-to be optimized. Validating the real migration remains open. Folder spelling and portable Cherry data remain preserved.
+migration. Known changing ingest batches retain exact coverage without repeated
+full scans; other mutations still invalidate it normally. Validating the real
+migration remains open. Folder spelling and portable Cherry data remain preserved.
 [Windows supports case rules per directory](https://learn.microsoft.com/en-us/windows/wsl/case-sensitivity).
 
 ## License

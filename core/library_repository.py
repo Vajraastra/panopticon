@@ -17,10 +17,15 @@ class LibraryRepository:
     def __init__(self, conn, *, cache_derived_paths=False, path_coverage_cache=None):
         self.conn = conn
         self._path_coverage_cache = path_coverage_cache
+        self._path_ingest_transition = None
         self._derived_paths = None
         if cache_derived_paths:
             from core.derived_paths import DerivedPaths
             self._derived_paths = DerivedPaths(conn)
+
+    def finish_path_ingest(self, committed):
+        from core.path_identity_transition import finish
+        finish(self, committed)
 
     def finish_derived_paths(self, committed, operation):
         if self._derived_paths is not None:
