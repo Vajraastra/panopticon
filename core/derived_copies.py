@@ -1,7 +1,8 @@
 """Alta Native de derivados; el productor verifica bytes y conserva su diario.
 
 Sólo SQL del dueño. Un recibo confirma una operación histórica, nunca disponibilidad
-actual ni atomicidad entre publicación en disco y registro. No heredar curación.
+actual ni atomicidad entre publicación en disco y registro. Sólo las copias
+idénticas de Tagger conservan curación inicial independiente.
 """
 from contextlib import contextmanager
 import hashlib
@@ -19,7 +20,8 @@ from core.library_versions import _id, _reviewed
 NAME = 'panopticon_derived_copies_v1'
 MAX_REQUEST = 256 * 1024
 BUDGET = 10
-PRODUCERS = frozenset(('image_optimizer', 'image_cropper', 'image_converter'))
+PRODUCERS = frozenset(('image_optimizer', 'image_cropper', 'image_converter',
+                       'dataset_tagger', 'ideogram4'))
 DDL = f'''CREATE TABLE {NAME} (
     operation_id TEXT PRIMARY KEY NOT NULL,
     copy_id INTEGER NOT NULL UNIQUE REFERENCES files(id),
@@ -123,6 +125,8 @@ def _request(copy_id, expected_fingerprint, operation_id, source_path, path,
             raise ValueError('invalid_derived_digest')
     if not isinstance(producer, str) or producer not in PRODUCERS:
         raise ValueError('invalid_derived_producer')
+    if producer == 'dataset_tagger' and source_digest != result_digest:
+        raise ValueError('tagger_copy_requires_identical_bytes')
     path_keys([source_path, path], normalize=normalize)
     keys = path_keys(destination_paths, normalize=normalize)
     source_path, path = normalize(source_path), normalize(path)
@@ -170,6 +174,7 @@ def _check(conn, copy_id, expected_fingerprint, source_path, source_digest, alia
                 path_status(conn, aliases, normalize=lambda value: value)['occupied'])
     if occupied:
         raise ValueError('derived_destination_occupied')
+    return source
 
 
 def approve(conn, copy_id, *, expected_fingerprint, operation_id, source_path,
@@ -209,12 +214,26 @@ def register(conn, copy_id, *, expected_fingerprint, operation_id, source_path,
             if saved['receipt']['request_fingerprint'] != fingerprint:
                 raise ValueError('derived_operation_conflict')
             return True
-        _check(conn, copy_id, expected_fingerprint, source_path, source_digest, aliases, destinations, check)
+        source = _check(conn, copy_id, expected_fingerprint, source_path, source_digest, aliases, destinations, check)
         values = (path, observation['filename'], observation['size'], observation['created'],
                   result_digest, *(generation[name] for name in FIELDS))
-        key = conn.execute('INSERT INTO files(path,filename,file_size,created_date,hash_original,'
-                           + ','.join(COLUMNS) + ') VALUES(' + ','.join('?' for _ in values) + ')',
-                           values).lastrowid
+        if producer == 'dataset_tagger':
+            # Byte-identical copies retain reviewed curation/provenance, with their own ID.
+            copied = dict(source, path=path, filename=observation['filename'],
+                          file_size=observation['size'], created_date=observation['created'], is_offline=0)
+            copied.pop('id')
+            if copied.get('hash_original') is None:
+                copied['hash_original'] = result_digest
+            copied.update(zip(COLUMNS, (generation[name] for name in FIELDS)))
+            quoted = ['"' + name.replace('"', '""') + '"' for name in copied]
+            key = conn.execute('INSERT INTO files(' + ','.join(quoted) + ') VALUES('
+                               + ','.join('?' for _ in copied) + ')', list(copied.values())).lastrowid
+            conn.execute('INSERT INTO file_tags(file_id,tag_id,source) SELECT ?,tag_id,source '
+                         'FROM file_tags WHERE file_id=?', (key, copy_id))
+        else:
+            key = conn.execute('INSERT INTO files(path,filename,file_size,created_date,hash_original,'
+                               + ','.join(COLUMNS) + ') VALUES(' + ','.join('?' for _ in values) + ')',
+                               values).lastrowid
         update_fts(key)
         conn.execute(f'INSERT INTO {NAME} (' + ','.join(RECEIPT_FIELDS[:-1]) + ') VALUES(?,?,?,?,?,?,?,?,?,?)',
                      (operation_id, key, copy_id, expected_fingerprint, source_digest, result_digest,
