@@ -219,6 +219,8 @@ class LibraryRepository:
         # UPSERT sin UPDATE puede avanzar sqlite_sequence (AUTOINCREMENT).
         observations = [(self._normalize_path(f['path']), f) for f in files_data]
         paths = list(dict.fromkeys(path for path, _ in observations))
+        from core.library_transfers import guard_ingestion
+        guard_ingestion(self.conn, paths)
         previous = {}
         historical = set()
         for start in range(0, len(paths), 256):
@@ -980,6 +982,18 @@ class LibraryRepository:
     def commit_metadata_edit(self, copy_id, **kwargs):
         from core.generation_history import commit
         return commit(self.conn, copy_id, update_fts=self._fts_sync_file, **kwargs)
+
+    def get_transfer_sources(self, paths):
+        from core.library_transfers import sources
+        return sources(self.conn, paths, self._normalize_path)
+
+    def approve_transfer_restore(self, request, expected_source_fingerprint, identity):
+        from core.library_transfers import approve_restore
+        return approve_restore(self, request, expected_source_fingerprint, identity)
+
+    def retire_transfer_copy(self, operation_id):
+        from core.library_transfers import retire_copy
+        return retire_copy(self, operation_id)
 
     def get_transfer_status(self):
         from core.library_transfers import status

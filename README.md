@@ -21,7 +21,7 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 | **Watermarker** | Batch watermarking with configurable position, opacity, and scale. Deliberately removes embedded generation metadata from public output files. |
 | **Metadata Hub** | Inspect and edit embedded metadata (EXIF, tags, captions) across your collection. |
 | **Dataset Tagger** | Auto-captions image folders with a local or online vision LLM plus a WD tagger, producing kohya-style `.txt` sidecars for training datasets (booru tags and natural language, per-model templates). |
-| **Pickler** | Manual culling tool — quickly keep or discard images with two error-proof modes, wired into the Librarian for directed re-indexing. |
+| **Pickler** | Manual culling with verified image/caption transfers: moves preserve curated IDs, explicit copies inherit initial curation independently, and guarded undo preserves changed files. |
 
 ---
 
@@ -1000,14 +1000,27 @@ full scans; other mutations still invalidate it normally. Validating the real
 migration remains open. Folder spelling and portable Cherry data remain preserved.
 [Windows supports case rules per directory](https://learn.microsoft.com/en-us/windows/wsl/case-sensitivity).
 
-Explicit Pickler transfer contracts are prepared in Native; wiring the Pickler
-view remains pending. Approval reserves source/destination before physical work,
-and pending sources cannot be archived as missing by an inventory. A confirmed
-move/discard retains its ID and curation; explicit byte-identical copies receive
-a new ID with the initial tags, sources and rating, then edit independently.
-Receipts acknowledge historical commits without replaying later curation.
-Preparation takes a consistent Native backup; readers never create schema.
-Filesystem publication and SQLite remain separate operations.
+Pickler transfers run in an owned worker on Windows, with one admitted action
+per view. Image and same-stem caption are pinned, copied through verified durable
+temporaries and published without overwriting existing names. Move/discard retain
+the curated ID; explicit identical-byte Copy creates an independent ID with the
+initial tag associations, sources, rating, category definitions and generation.
+Later association/rating edits remain per copy; tag taxonomy is shared as before.
+Native approval reserves source/destination aliases before publication; inventory
+cannot archive or register pending paths. FTS, identity and receipts commit
+together. Preparation backs up Native before additive schema; reads create none.
+Undo refuses occupied original names, changed bytes/captions and changed copy
+curation. Copy undo retains its ID and curation offline while removing only the
+verified redundant files with the original pinned. Interrupted operations have
+a manual recovery review: restore a pending source while preserving current
+curation, or resume verified copy undo. Confirmed Native transfers are retained.
+Recovery reads at most 100 entries from a bounded directory scan and reports
+incomplete review; it never represents that prefix as a complete inventory.
+Previews use the shared bounded asynchronous decoder, and closure waits for
+actual worker completion without GUI joins. Receipts are historical acknowledgments;
+filesystem publication and SQLite remain separate, journaled operations.
+Portable Cherry catalogs/receipts are never rewritten or removed. Live Windows
+and Cherry validation remains open.
 
 ## License
 

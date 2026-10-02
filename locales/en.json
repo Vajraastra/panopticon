@@ -1858,5 +1858,15 @@
   "lib.identity.lookup.unavailable": "This file is unavailable. No identity was selected.",
   "lib.identity.lookup.unsupported": "This path needs separate review.",
   "lib.identity.lookup.changed": "This path changed during review. Check it again.",
-  "lib.identity.lookup.stale": "Records changed during lookup. Check the path again."
+  "lib.identity.lookup.stale": "Records changed during lookup. Check the path again.",
+  "pickler.recovery": "Review interrupted transfers…",
+  "pickler.recovery_tip": "Restore the source of a pending transfer, keeping its current curation. Verified copy undo can resume; confirmed transfers are retained.",
+  "pickler.processing": "Processing…",
+  "pickler.recovery_done": "Recovery verified. Reload the folder to update the set.",
+  "pickler.recovery_list_tip": "Choose the pending operation to resolve; modified or ambiguous files remain protected.",
+  "pickler.recovery_empty": "No pending transfers in this reviewed set.",
+  "pickler.recovery_partial": "The review limit was reached; only this bounded set is shown.",
+  "pickler.recovery_restore": "Resolve selected operation",
+  "pickler.recovery_restore_tip": "A pending transfer restores the source and preserves current curation. Copy undo resumes only for unchanged files. Confirmed transfers are retained.",
+  "pickler.recovery_confirm": "Resolve this operation? A pending transfer restores the source; an interrupted copy undo removes only its verified unchanged copy."
 }

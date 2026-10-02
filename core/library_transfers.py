@@ -12,6 +12,12 @@ from core.path_identity_registry import prepared as identity_prepared, store as 
 NAME = 'panopticon_transfers_v1'
 SOURCE_INDEX = NAME + '_source_pending'
 DEST_INDEX = NAME + '_destination_pending'
+PATHS = 'panopticon_transfer_paths_v1'
+PATH_DDL = f'''CREATE TABLE {PATHS} (
+    operation_id TEXT NOT NULL REFERENCES {NAME}(operation_id),
+    path TEXT NOT NULL COLLATE BINARY,
+    PRIMARY KEY(operation_id,path)
+)'''
 DDL = f'''CREATE TABLE {NAME} (
     operation_id TEXT PRIMARY KEY NOT NULL,
     source_copy_id INTEGER NOT NULL REFERENCES files(id),
@@ -35,15 +41,15 @@ SHA = re.compile('[0-9a-f]{64}')
 
 
 def status(conn):
-    expected = [(NAME, 'table', DDL), *((name, 'index', ddl) for name, ddl in INDEXES)]
+    expected = [(NAME, 'table', DDL), *((name, 'index', ddl) for name, ddl in INDEXES), (PATHS,'table',PATH_DDL)]
     present = []
     canonical = lambda value:' '.join(value.split()).rstrip(';')
     for name, kind, ddl in expected:
         row = conn.execute('SELECT type,tbl_name,sql FROM sqlite_master WHERE name=?', (name,)).fetchone()
-        if row is not None and (row[:2] != (kind, NAME) or type(row[2]) is not str or canonical(row[2]) != canonical(ddl)):
+        if row is not None and (row[:2] != (kind, PATHS if name==PATHS else NAME) or type(row[2]) is not str or canonical(row[2]) != canonical(ddl)):
             raise ValueError('transfer_schema_requires_review')
         present.append(row is not None)
-    if any(present) and not all(present):
+    if (any(present[:3]) and not all(present[:3])) or (present[3] and not all(present[:3])):
         raise ValueError('transfer_schema_requires_review')
     return dict(prepared=all(present))
 
@@ -51,9 +57,10 @@ def status(conn):
 def prepare(conn):
     with _budget(conn):
         if not status(conn)['prepared']:
-            conn.execute(DDL)
-            for _, ddl in INDEXES:
-                conn.execute(ddl)
+            if conn.execute('SELECT 1 FROM sqlite_master WHERE name=?',(NAME,)).fetchone() is None:
+                conn.execute(DDL)
+                for _, ddl in INDEXES:conn.execute(ddl)
+            conn.execute(PATH_DDL)
         if not status(conn)['prepared']:
             raise ValueError('transfer_schema_requires_review')
     return True
@@ -101,7 +108,7 @@ def receipt(conn, operation_id):
 def request(value):
     required = {'operation_id','source_copy_id','action','source_path','result_path',
                 'digest','caption_digest','source_fingerprint','destination_paths'}
-    if type(value) is not dict or set(value) != required:
+    if type(value) is not dict or not required <= set(value) or set(value) - required - {'source_paths'}:
         raise ValueError('invalid_transfer_request')
     value = dict(value)
     operation(value['operation_id'])
@@ -118,6 +125,12 @@ def request(value):
     value['destination_paths'] = sorted(set(local_path(path) for path in aliases))
     if value['result_path'] not in value['destination_paths']:
         raise ValueError('invalid_transfer_destinations')
+    if 'source_paths' in value:
+        paths=value['source_paths']
+        if type(paths) not in (list,tuple) or not 1<=len(paths)<=32:
+            raise ValueError('invalid_transfer_sources')
+        value['source_paths']=sorted(set(local_path(path) for path in paths))
+        if value['source_path'] not in value['source_paths']:raise ValueError('invalid_transfer_sources')
     for key in ('digest', 'source_fingerprint'):
         if type(value[key]) is not str or not SHA.fullmatch(value[key]):
             raise ValueError('invalid_transfer_digest')
@@ -156,6 +169,11 @@ def _destination(repo, value, check):
         (value['operation_id'], *aliases)).fetchone()
     if pending:
         raise ValueError('transfer_destination_requires_review')
+    pending = repo.conn.execute(f'SELECT 1 FROM {NAME} t WHERE t.phase=\'approved\' AND t.operation_id<>? '
+        f'AND EXISTS(SELECT 1 FROM {PATHS} p WHERE p.operation_id=t.operation_id '
+        f'AND p.path IN ({",".join("?" for _ in aliases)})) LIMIT 1',
+        (value['operation_id'],*aliases)).fetchone()
+    if pending:raise ValueError('transfer_destination_requires_review')
     check()
 
 
@@ -179,6 +197,9 @@ def approve(repo, incoming):
             'digest,caption_digest,source_fingerprint,request_fingerprint,phase) VALUES(?,?,?,?,?,?,?,?,?,\'approved\')',
             tuple(value[key] for key in ('operation_id','source_copy_id','action','source_path','result_path',
                 'digest','caption_digest','source_fingerprint')) + (fingerprint,))
+        paths={p.casefold() for p in [*value['destination_paths'],*value.get('source_paths',[value['source_path']])]}
+        repo.conn.executemany(f'INSERT INTO {PATHS}(operation_id,path) VALUES(?,?)',
+            [(value['operation_id'],path) for path in sorted(paths)])
     return True
 
 
@@ -247,7 +268,98 @@ def abort(repo, operation_id, *, expected_fingerprint):
 
 def reserved(conn, copy_ids):
     """Incomplete transfers cannot be mistaken for missing source files."""
-    if not status(conn)['prepared']:
+    ready=status(conn)['prepared']
+    if not ready and conn.execute('SELECT 1 FROM sqlite_master WHERE name=?',(NAME,)).fetchone() is None:
         return False
     return conn.execute(f'SELECT 1 FROM {NAME} WHERE source_copy_id IN '
         f'({",".join("?" for _ in copy_ids)}) AND phase=\'approved\' LIMIT 1', tuple(copy_ids)).fetchone() is not None
+
+
+def sources(conn, paths, normalize):
+    """Conservative unprepared lookup: ambiguity/offline history require review."""
+    from core.generation_history import path_keys
+    keys = path_keys(paths, normalize=normalize)
+    conn.create_function('transfer_path_key_v1', 1, lambda path:path.casefold() if isinstance(path,str) else None, deterministic=True)
+    rows = conn.execute('SELECT id,is_offline FROM files WHERE transfer_path_key_v1(path) IN ('
+        + ','.join('?' for _ in keys)+') ORDER BY id LIMIT 2',keys).fetchall()
+    return dict(records=rows)
+
+
+def guard_ingestion(conn, paths):
+    if not paths:return
+    ready=status(conn)['prepared']
+    if not ready:
+        if conn.execute('SELECT 1 FROM sqlite_master WHERE name=?',(NAME,)).fetchone() is not None and conn.execute(
+                f'SELECT 1 FROM {NAME} WHERE phase=\'approved\' LIMIT 1').fetchone():
+            raise ValueError('transfer_ingestion_pending')
+        return
+    conn.create_function('transfer_path_key_v1', 1, lambda path:path.casefold() if isinstance(path,str) else None, deterministic=True)
+    # Legacy SQL-only approvals did not persist aliases. Never infer them while
+    # consuming an inventory: keep ambiguous pending work for explicit review.
+    if conn.execute(f'SELECT 1 FROM {NAME} t WHERE phase=\'approved\' '
+            f'AND NOT EXISTS(SELECT 1 FROM {PATHS} p WHERE p.operation_id=t.operation_id) LIMIT 1').fetchone():
+        raise ValueError('transfer_ingestion_pending')
+    canonical = ''
+    if identity_prepared(conn):
+        canonical = f" OR transfer_path_key_v1((SELECT canonical FROM path_identity_records WHERE file_id={NAME}.source_copy_id)) IN ({{}})"
+    for start in range(0,len(paths),100):
+        keys = [path.casefold() for path in paths[start:start+100]]
+        marks = ','.join('?' for _ in keys)
+        query = f'SELECT 1 FROM {NAME} WHERE phase=\'approved\' AND ('
+        query += f'transfer_path_key_v1(source_path) IN ({marks}) OR transfer_path_key_v1(result_path) IN ({marks})'
+        args = [*keys,*keys]
+        if canonical:
+            query += canonical.format(marks); args.extend(keys)
+        if conn.execute(query+') LIMIT 1',args).fetchone():
+            raise ValueError('transfer_ingestion_pending')
+        if conn.execute(f'SELECT 1 FROM {NAME} t WHERE t.phase=\'approved\' '
+                f'AND EXISTS(SELECT 1 FROM {PATHS} p WHERE p.operation_id=t.operation_id '
+                f'AND p.path IN ({marks})) LIMIT 1',keys).fetchone():
+            raise ValueError('transfer_ingestion_pending')
+
+
+def retire_copy(repo, operation_id):
+    """Explicit Copy undo; retain the independent copy's offline history."""
+    with _budget(repo.conn):
+        saved = receipt(repo.conn, operation_id)['receipt']
+        if saved is None or saved['phase'] != 'complete' or saved['action'] != 'copy':
+            raise ValueError('transfer_copy_undo_requires_review')
+        source = state(repo.conn, saved['source_copy_id'])
+        result = state(repo.conn, saved['result_copy_id'])
+        reviewed = dict(result['state'], file=dict(result['state']['file'], is_offline=0))
+        result_fingerprint = hashlib.sha256(encode(reviewed)).hexdigest()
+        if (source['fingerprint'] != saved['source_fingerprint'] or
+                result_fingerprint != saved['result_fingerprint'] or
+                result['state']['file']['is_offline'] not in (0,1) or
+                source['state']['file']['is_offline']):
+            raise ValueError('transfer_copy_undo_changed')
+        repo.conn.execute('UPDATE files SET is_offline=1 WHERE id=? AND is_offline=0', (saved['result_copy_id'],))
+    return True
+
+
+def approve_restore(repo, incoming, expected_source_fingerprint, identity):
+    """Explicit recovery preserves current source curation and pending guards.
+
+    Worker pins the restored source before this command, removes only its own
+    verified unregistered publications, then aborts the reservation. No FS I/O.
+    """
+    with _budget(repo.conn) as check:
+        value, fingerprint = request(incoming)
+        saved = receipt(repo.conn,value['operation_id'])['receipt']
+        if saved is None or saved['phase'] != 'approved' or saved['request_fingerprint'] != fingerprint:
+            raise ValueError('transfer_restore_requires_pending')
+        current = state(repo.conn,value['source_copy_id'])
+        file = current['state']['file']
+        known = file.get('hash_mod') or file.get('hash_original')
+        if (current['fingerprint'] != expected_source_fingerprint or file['is_offline'] or
+                file['path'] != value['source_path'] or (known is not None and known.lower() != value['digest'])):
+            raise ValueError('transfer_restore_source_changed')
+        _destination(repo,value,check)
+        if type(identity) is not dict or set(identity) != {'canonical','physical'}:
+            raise ValueError('invalid_transfer_identity')
+        from core.path_identity_registry import _record
+        record=dict(file_id=file['id'],stored_path=file['path'],is_offline=0,status='resolved',
+            canonical=identity['canonical'],physical=identity['physical'],reason=None)
+        _record(record)
+        if identity_prepared(repo.conn):store_identity(repo.conn,[record])
+    return True

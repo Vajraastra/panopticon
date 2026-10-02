@@ -1858,5 +1858,15 @@
   "lib.identity.lookup.unavailable": "Este archivo no está disponible. No se eligió ninguna identidad.",
   "lib.identity.lookup.unsupported": "Esta ruta requiere una revisión aparte.",
   "lib.identity.lookup.changed": "La ruta cambió durante la revisión. Compruébala de nuevo.",
-  "lib.identity.lookup.stale": "Los registros cambiaron durante la consulta. Comprueba la ruta de nuevo."
+  "lib.identity.lookup.stale": "Los registros cambiaron durante la consulta. Comprueba la ruta de nuevo.",
+  "pickler.recovery": "Revisar transferencias interrumpidas…",
+  "pickler.recovery_tip": "Restaura el origen de una transferencia pendiente y conserva su curación actual. Deshacer una copia puede continuar si no cambió; las transferencias confirmadas se conservan.",
+  "pickler.processing": "Procesando…",
+  "pickler.recovery_done": "Recuperación verificada. Vuelve a cargar la carpeta para actualizar el conjunto.",
+  "pickler.recovery_list_tip": "Elige la operación pendiente que resolverás; los archivos modificados o ambiguos permanecen protegidos.",
+  "pickler.recovery_empty": "No hay transferencias pendientes en este conjunto revisado.",
+  "pickler.recovery_partial": "Se alcanzó el límite de revisión; se muestra sólo este conjunto acotado.",
+  "pickler.recovery_restore": "Resolver operación seleccionada",
+  "pickler.recovery_restore_tip": "Una transferencia pendiente restaura el origen y conserva su curación actual. Deshacer una copia sólo continúa si no cambió. Las transferencias confirmadas se conservan.",
+  "pickler.recovery_confirm": "¿Resolver esta operación? Una transferencia pendiente restaura el origen; Deshacer una copia sólo retira la copia verificada que no cambió."
 }

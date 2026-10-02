@@ -90,6 +90,11 @@ carpeta sola: no hay que registrar nada en el core.
    definitivo sólo del archivo verificado en recuperación, con la copia conservada
    protegida; conserva IDs offline/curación/diarios/recibos. Nunca automático, por
    posición o pHash.
+   Pickler también mueve originales por decisión explícita del curador: Windows,
+   imagen/caption verificados, destino sin sobrescritura, diario y servicio Native.
+   Mover conserva ID; copiar conserva curación inicial en ID independiente (David,
+   2026-10-01). Deshacer jamás sobrescribe una ruta ocupada ni elimina una copia
+   modificada; su ID/curación se conservan offline. Sin SQL propio en Cherry.
    Metadata Hub conserva el respaldo previo hasta una purga definitiva manual por
    operación (David, 2026-10-01): vista previa actual, archivo conservado verificado,
    historial/recibo y confirmación explícita. Nunca purga automática; preservar

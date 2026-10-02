@@ -145,6 +145,8 @@ def write(repo, values):
             raise ValueError('invalid_path_ingest_batch')
         canonicals.append(local_path(identity['canonical']))
         paths.append(identity['path'])
+    from core.library_transfers import guard_ingestion
+    guard_ingestion(conn, canonicals)
     current = state(conn, canonicals, paths, coverage=coverage)
     targets = {}
     for canonical, file_id, path in current['matches']:

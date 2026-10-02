@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.database_manager import DatabaseManager
 from core.library_service import LibraryService, LibraryError
 from core.library_repository import LibraryRepository
-from core.library_transfers import NAME, request as normalize_request
+from core.library_transfers import NAME, PATHS, DDL, INDEXES, request as normalize_request
 
 
 class Transfers(unittest.TestCase):
@@ -247,6 +247,48 @@ class Transfers(unittest.TestCase):
                 self.prepare(); self.approve(value)
                 self.commit(value,identity={'canonical':output,'physical':[1]*7})
                 self.assertEqual(self.receipt(value)['source_copy_id'],new_id)
+
+    def test_backed_up_upgrade_adds_alias_table_to_prior_owned_schema(self):
+        self.sql(DDL)
+        for _,ddl in INDEXES:self.sql(ddl)
+        before=self.state(); self.assertFalse(self.service.read('get_transfer_status')['prepared'])
+        self.prepare(); self.assertEqual(before,self.state())
+        self.assertTrue(self.service.read('get_transfer_status')['prepared'])
+        backups=list(self.root.glob('private.db.pre-transfers-*.bak')); self.assertEqual(len(backups),1)
+        with closing(sqlite3.connect(backups[0])) as conn:
+            self.assertIsNotNone(conn.execute('SELECT 1 FROM sqlite_master WHERE name=?',(NAME,)).fetchone())
+            self.assertIsNone(conn.execute('SELECT 1 FROM sqlite_master WHERE name=?',(PATHS,)).fetchone())
+
+    def test_pending_long_short_aliases_block_ingestion(self):
+        self.prepare()
+        short=(self.root/'LONGNA~1'/'copy.png').as_posix()
+        value=self.request(destination_paths=[self.output,short],source_paths=[self.source])
+        self.approve(value)
+        with self.assertRaisesRegex(LibraryError,'ingestion_pending'):
+            self.service.submit('register_files_minimal',[dict(path=short,filename='copy.png',size=10,created=1)]).result(5)
+        self.assertEqual(self.db.count_files(),1)
+
+    def test_foreign_alias_schema_is_preserved(self):
+        self.sql(f'CREATE TABLE {PATHS}(foreign_data TEXT)')
+        with self.assertRaisesRegex(LibraryError,'requires_review'):self.prepare()
+        self.assertEqual(self.sql(f'PRAGMA table_info({PATHS})')[0][1],'foreign_data')
+
+    def test_copy_retirement_is_idempotent_with_offline_history(self):
+        value=self.request(); saved=self.apply(value); key=saved['result_copy_id']
+        self.service.submit('retire_transfer_copy',value['operation_id']).result(5)
+        before=self.state(key)
+        self.service.submit('retire_transfer_copy',value['operation_id']).result(5)
+        self.assertEqual(before,self.state(key)); self.assertEqual(before['state']['file']['is_offline'],1)
+        self.assertEqual(before['state']['file']['rating'],5)
+
+    def test_restore_approval_preserves_new_curation_but_requires_fresh_cas(self):
+        self.prepare(); value=self.request(action='move'); self.approve(value)
+        self.db.edit_curation(self.source,rating=3); current=self.state()
+        identity={'canonical':self.source,'physical':[1]*7}
+        with self.assertRaisesRegex(LibraryError,'source_changed'):
+            self.service.submit('approve_transfer_restore',value,value['source_fingerprint'],identity).result(5)
+        self.service.submit('approve_transfer_restore',value,current['fingerprint'],identity).result(5)
+        self.assertEqual(current,self.state()); self.assertEqual(self.receipt(value)['phase'],'approved')
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -19,7 +19,7 @@ class PicklerModule(BaseModule):
     deliberada evita borrados accidentales al curar miles de imágenes en
     "piloto automático".
 
-    No usa base de datos ni importa otros módulos (Regla de Oro #3).
+    Usa el servicio central para conservar identidad/curación; no importa otros módulos.
     """
 
     def __init__(self):
@@ -37,6 +37,12 @@ class PicklerModule(BaseModule):
             return self.view
         self.view = PicklerView(self.context)
         return self.view
+
+    def on_unload(self):
+        if self.view:self.view.shutdown()
+
+    def shutdown_ready(self):
+        return self.view is None or self.view.shutdown_ready()
 
     def load_image_set(self, paths: list):
         """Interfaz estándar: recibe un set de imágenes desde Gallery/Librarian."""

@@ -39,7 +39,7 @@ READS = frozenset({
     'get_library_overview', 'get_library_selection', 'get_library_page',
     'resolve_library_selection', 'check_fts',
     'get_copy_versions_page', 'get_copy_version_state',
-    'get_transfer_status', 'get_transfer_receipt',
+    'get_transfer_status', 'get_transfer_receipt', 'get_transfer_sources',
     'get_duplicate_snapshot',
     'get_duplicate_recovery_state',
     'get_duplicate_retirement_roots',
@@ -73,7 +73,7 @@ READ_BUDGET_SECONDS = {
 }
 WRITES = frozenset({
     'prepare_path_identity', 'store_path_identity_batch',
-    'prepare_transfers', 'approve_transfer', 'commit_transfer', 'abort_transfer',
+    'prepare_transfers', 'approve_transfer', 'commit_transfer', 'abort_transfer', 'retire_transfer_copy', 'approve_transfer_restore',
     'approve_metadata_backup_purge',
     'prepare_generation_history', 'approve_metadata_edit', 'commit_metadata_edit',
     'prepare_derived_copies', 'approve_derived_copy', 'register_derived_copy',
@@ -96,7 +96,7 @@ WRITES = frozenset({
 # These successful Native commands can represent published/replaced image bytes.
 # Observation-only registration/hash and ordinary curation retain physical caches.
 PREVIEW_WRITES = frozenset({'commit_metadata_edit', 'update_file_metadata',
-                          'register_derived_copy', 'restore_duplicate_copy', 'commit_transfer'})
+                          'register_derived_copy', 'restore_duplicate_copy', 'commit_transfer', 'retire_transfer_copy', 'abort_transfer'})
 
 
 class LibraryError(RuntimeError):
