@@ -1,4 +1,5 @@
 {
+  "lib.folder.archive_offline_literal": "La carpeta no está disponible. Esta revisión incluye sólo la ruta guardada exacta y sus subcarpetas; otras escrituras del nombre no se agrupan.",
   "lib.versions.error.transfer_ingestion_pending": "La ruta tiene una transferencia pendiente. Revísala antes de restaurar la copia.",
   "dup.reason_transfer_ingestion_pending": "La ruta tiene una transferencia pendiente. Revísala antes de restaurar la copia.",
   "lib.versions.error.path_identity_review_required": "Prepara o revisa las identidades de rutas de la biblioteca antes de usar este alcance.",

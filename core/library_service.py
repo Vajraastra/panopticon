@@ -47,7 +47,7 @@ READS = frozenset({
     'get_duplicate_candidates_page', 'get_duplicate_candidate_copies',
     'get_duplicate_search_status',
     'get_folder_overlap',
-    'get_folder_archive_preview',
+    'get_folder_archive_preview', 'get_folder_archive_scope',
     'get_phash_registry_status', 'get_phash_page',
     'get_phash_states',
 })
@@ -64,6 +64,7 @@ READ_BUDGET_SECONDS = {
     'get_generation_history_page': 10,
     'get_curation_snapshot': 10,
     'get_folder_archive_preview': 10,
+    'get_folder_archive_scope': 10,
     'get_duplicate_snapshot': 10,
     'get_duplicate_recovery_state': 10,
     'get_duplicate_candidates_page': 10,

@@ -432,28 +432,44 @@ class LibraryRepository:
             log.warning("[DB] add_watched_folder error: %s", e)
             return False
 
-    def remove_watched_folder(self, path):
-        cursor = self.conn.cursor()
+    def remove_watched_folder(self, path, *, scope=None):
+        from core.path_identity_registry import prepared
         norm = self._normalize_path(path)
+        if prepared(self.conn):
+            from core.folder_catalogue_scope import condition
+            where,params,_ = condition(self.conn,norm,scope)
+            # A reviewed pending physical transfer owns its source state until
+            # commit/abort. Folder archival cannot invalidate it halfway through.
+            from core.library_transfers import NAME,status
+            if self.conn.execute('SELECT 1 FROM sqlite_master WHERE name=?',(NAME,)).fetchone():
+                status(self.conn)
+                if self.conn.execute('SELECT 1 FROM '+NAME+" t JOIN files f ON f.id=t.source_copy_id WHERE t.phase='approved' AND "+where+' LIMIT 1',params).fetchone():
+                    raise ValueError('transfer_ingestion_pending')
+        else:
+            if scope is not None:raise ValueError('folder_archive_scope_changed')
+            where,params = "path LIKE ? ESCAPE '\\'",[self._folder_like(path)]
         try:
-            like = self._folder_like(path)
-            cursor.execute("DELETE FROM watched_folders WHERE path=?", (norm,))
-            cursor.execute("UPDATE files SET is_offline=1 WHERE is_offline=0 AND path LIKE ? ESCAPE '\\'", (like,))
+            self.conn.execute('DELETE FROM watched_folders WHERE path=?',(norm,))
+            self.conn.execute('UPDATE files SET is_offline=1 WHERE is_offline=0 AND '+where,params)
             from core.path_identity_offline import query
-            query(self.conn,"f.path LIKE ? ESCAPE '\\'",(like,))
+            query(self.conn,where.replace('path','f.path'),params)
             return True
         except Exception as e:
             log.warning("[DB] remove_watched_folder error: %s", e)
             return False
 
-    def get_folder_archive_preview(self, folder):
-        from core.folder_archive import preview
-        return preview(self.conn,folder,normalize=self._normalize_path,folder_like=self._folder_like)
+    def get_folder_archive_scope(self, folder):
+        from core.folder_catalogue_scope import metadata
+        return metadata(self,folder)
 
-    def archive_watched_folder_reviewed(self, folder, *, expected_fingerprint):
+    def get_folder_archive_preview(self, folder, *, scope=None):
+        from core.folder_archive import preview
+        return preview(self.conn,folder,normalize=self._normalize_path,folder_like=self._folder_like,scope=scope)
+
+    def archive_watched_folder_reviewed(self, folder, *, expected_fingerprint, scope=None):
         from core.folder_archive import archive
         return archive(self.conn,folder,expected_fingerprint=expected_fingerprint,normalize=self._normalize_path,
-            folder_like=self._folder_like,remove=self.remove_watched_folder)
+            folder_like=self._folder_like,remove=self.remove_watched_folder,scope=scope)
 
     def get_folder_count(self, folder_path):
         where,params=self._folder_filter(folder_path)

@@ -283,11 +283,19 @@ It shows active, already offline and total identities, including subfolders and 
 watched roots. The commit removes only the selected watched root and marks its active
 copies offline; nested watched roots remain registered. No file is deleted or moved.
 IDs, curation, generation, hashes, FTS and Cherry download receipts are preserved.
-The folder may be disconnected: this explicit catalog action requires no disk access.
+Prepared libraries inspect directory names in a worker, without reading image bytes.
+Directory aliases share the reviewed scope; distinct case-sensitive names stay separate.
+The folder may be disconnected: the confirmation then shows a literal catalogue scope,
+using only its exact stored prefix. Unavailable potentially equivalent spellings require
+review. Offline history remains in the preview. No filesystem snapshot spans SQL work;
+observations are rechecked before admission and Native rechecks catalogue membership.
+Pending physical transfer sources cannot be archived mid-publication. Unprepared libraries
+retain legacy SQL matching until explicit identity preparation.
 
 The confirmed scope is checked again inside the native owner transaction. Changes to
 members, paths, availability or watched roots require a new preview; newer curation is
-preserved. Checks are limited to one million identities, 10 seconds per preview and a
+preserved. Checks are limited to one million catalogue rows, 256 directory prefixes, 256 KiB of
+review evidence, 10 seconds per SQL read and a
 30-second owner transaction. Exceeding a limit rejects the action, without accepting a
 partial scope. Only a confirmed commit reports success. Indexing and hashing in Librarian
 wait while it runs. Closing cancels before admission; an admitted command finishes in its

@@ -129,6 +129,9 @@ class FolderArchiveController(QObject):
             'Includes subfolders. Preserves files on disk, IDs, curation, generation metadata '
             'and Cherry download receipts. Offline copies are excluded from normal views. '
             'Reactivating them requires explicit review by copy ID.').format(**report, path=report['folder'])
+        if report.get('scope_mode')=='literal_offline':
+            text+='\n\n'+module.tr('lib.folder.archive_offline_literal',
+                'The folder is unavailable. This review includes only the exact stored path and its subfolders; other spellings are not combined.')
         if report['nested_watched']:
             text += '\n\n' + module.tr('lib.folder.archive_nested',
                 'These nested folders stay watched, but their indexed copies are included '

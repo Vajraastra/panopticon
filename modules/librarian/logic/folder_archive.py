@@ -17,14 +17,16 @@ class FolderArchiveTasks:
             raise ValueError('invalid_folder_archive_scope')
         folder=os.path.normpath(folder).replace('\\','/')
         _check_cancel(cancel_event)
-        value=self.service.read('get_folder_archive_preview',folder,cancel_event=cancel_event)
+        from core.folder_catalogue_scope import inspect,revalidate
+        value,scope=inspect(self.service,folder,cancel_event)
         if operation=='preview':return dict(preview=value,committed=False,archived=0)
         if not isinstance(expected_fingerprint,str) or not SHA.fullmatch(expected_fingerprint):
             raise ValueError('invalid_folder_archive_fingerprint')
         if value['fingerprint']!=expected_fingerprint:
             raise ValueError('folder_archive_members_changed')
         _check_cancel(cancel_event)
-        future=self.service.submit('archive_watched_folder_reviewed',folder,expected_fingerprint=expected_fingerprint)
+        if scope is not None:revalidate(scope,cancel_event)
+        future=self.service.submit('archive_watched_folder_reviewed',folder,expected_fingerprint=expected_fingerprint,scope=scope)
         # Una vez admitido, esperar confirmación/error; cerrar Qt no cancela commit.
         if future.result() is not True:
             raise ValueError('folder_archive_commit_unconfirmed')
@@ -48,7 +50,7 @@ class FolderArchiveWorker(QThread):
             value=self.task.read(self.operation,folder=self.folder,expected_fingerprint=self.fingerprint,cancel_event=self._cancel)
         except Exception as exc:
             error=str(getattr(exc,'reason',exc))[:256]
-            cancelled=self._cancel.is_set() and error in ('curation_cancelled','cancelled')
+            cancelled=self._cancel.is_set() and error in ('curation_cancelled','cancelled','identity_cancelled')
             if cancelled:error=None
         self.finished_signal.emit(dict(operation=self.operation,folder=self.folder,token=self.token,
             value=value,error=error,cancelled=cancelled))

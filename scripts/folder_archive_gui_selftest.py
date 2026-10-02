@@ -78,6 +78,20 @@ class FolderArchiveQt(helpers.Fixture):
         self.assertEqual(seen,[True]);self.assertEqual(self.service.read('count_files'),2)
         self.assertIn('cancelled',module.lbl_folder_write.text())
 
+    def test_prepared_unavailable_scope_is_explained_in_confirmation(self):
+        self.service.submit('prepare_path_identity').result(3)
+        module=self.selected();seen=[]
+        from core.path_identity import PathIdentity
+        def observe(path,**kwargs):return PathIdentity(path,'unavailable',reason='winerror_2')
+        def inspect(box):
+            self.assertIn('exact stored path',box.text())
+            self.assertIn('other spellings are not combined',box.text())
+            self.assertEqual(box.defaultButton(),box.button(QMessageBox.No))
+            seen.append(True);return QMessageBox.No
+        with patch('core.folder_catalogue_scope.observe_path',side_effect=observe),patch.object(QMessageBox,'exec',inspect):
+            module.remove_folder();self.finish(module)
+        self.assertEqual(seen,[True]);self.assert_active()
+
     def test_new_members_during_modal_reject_whole_confirmed_scope_and_allow_retry(self):
         module=self.selected()
         def mutate(report):

@@ -1,4 +1,5 @@
 {
+  "lib.folder.archive_offline_literal": "The folder is unavailable. This review includes only the exact stored path and its subfolders; other spellings are not combined.",
   "lib.versions.error.transfer_ingestion_pending": "The path has a pending transfer. Review it before restoring the copy.",
   "dup.reason_transfer_ingestion_pending": "The path has a pending transfer. Review it before restoring the copy.",
   "lib.versions.error.path_identity_review_required": "Prepare or review the library path identities before using this scope.",
