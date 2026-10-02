@@ -5,7 +5,7 @@ from pathlib import PureWindowsPath
 from core.duplicate_candidates import DIGEST, VALID
 from core.duplicate_policy import SHA
 from core.duplicate_snapshot import encode
-from core.library_scopes import folder_paths,folder_filter
+from core.library_scopes import folder_paths,folder_filter,observed_paths
 
 NAME='panopticon_phash_evidence_v1'
 DDL=f'''CREATE TABLE {NAME} (
@@ -41,14 +41,20 @@ def prepare(conn):
     return True
 
 
-def page(conn,folders,algorithm,*,after_id=0,through_id=None,limit=256,normalize):
+def page(conn,folders,algorithm,*,after_id=0,through_id=None,limit=256,normalize,evidence=None,scope_filter=None):
     _algorithm(algorithm)
     if (type(after_id) is not int or not 0<=after_id<=2**63-1 or type(limit) is not int or not 1<=limit<=256 or
             through_id is not None and (type(through_id) is not int or not after_id<=through_id<=2**63-1) or
             after_id>0 and through_id is None):
         raise ValueError('invalid_phash_page')
-    paths=folder_paths(folders,normalize)
-    scope,params=folder_filter(paths)
+    paths=folder_paths(folders,normalize,check_nested=evidence is None)
+    if evidence is None:
+        scope,params=folder_filter(paths)
+    else:
+        observed_paths(paths,evidence)
+        conditions=[scope_filter(path) for path in paths]
+        scope='('+' OR '.join(clause for clause,_ in conditions)+')'
+        params=[value for _,bindings in conditions for value in bindings]
     prepared=status(conn)['prepared']
     total=known=None
     if after_id==0:

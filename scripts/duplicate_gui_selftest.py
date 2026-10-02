@@ -362,6 +362,7 @@ class GUI(prior.Review):
         QMainWindow.__init__(host)
         host.loaded_modules = {'Duplicate Finder': self.module}
         host.module_windows = {}
+        host._producer_recovery_dialog = None
         host._shutting_down = host._shutdown_finished = host._shutdown_retry_scheduled = False
         host.tr = Language().tr
         self.addCleanup(host.deleteLater)

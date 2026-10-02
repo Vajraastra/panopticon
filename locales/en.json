@@ -1,4 +1,8 @@
 {
+  "dup.reason_path_identity_review_required": "Prepare or review the library path identities before using this scope.",
+  "dup.reason_folder_scope_unavailable_or_ambiguous": "A selected folder is unavailable or ambiguous. Reconnect it or review its path before retrying.",
+  "dup.reason_folder_scope_physical_state_changed": "A selected folder changed during the query. Review the current folders and retry.",
+  "dup.reason_folder_scope_requires_directory": "Choose existing folders; individual files do not define a folder scope.",
   "cherry.ingest_pending": "Downloaded images await library indexing: {error}",
   "gallery.viewer.rating_none": "Unrated",
   "gallery.viewer.rating_value": "{rating}/5",

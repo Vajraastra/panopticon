@@ -83,7 +83,7 @@ class PerceptualBackfill:
         try:
             _check_cancel(event)
             algorithm=result['algorithm']=algorithm_id()
-            first=block=self.service.read('get_phash_page',self.folders,algorithm,cancel_event=event)
+            first=block=self.service.read_worker('get_phash_page',self.folders,algorithm,cancel_event=event)
             for key in ('total_images','known_images','unknown_images','prepared'):result[key]=first[key]
             if first['known_images']>self.max_images:raise ValueError('phash_backfill_image_budget')
             if first['unknown_images']:problem('', 'phash_source_sha_unknown',first['unknown_images'])
@@ -129,7 +129,7 @@ class PerceptualBackfill:
                             result['persisted']+=len(ready)
                             admitted=False
                     if not block['has_more']:break
-                    block=self.service.read('get_phash_page',self.folders,algorithm,
+                    block=self.service.read_worker('get_phash_page',self.folders,algorithm,
                         after_id=block['next_after_id'],through_id=first['through_id'],cancel_event=event)
             _check_cancel(event)
             if result['processed']!=first['known_images']:problem('', 'phash_inventory_changed')

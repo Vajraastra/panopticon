@@ -1058,7 +1058,7 @@ class LibraryRepository:
 
     def get_folder_overlap(self, folders, **kwargs):
         from core.folder_overlap import compare
-        return compare(self.conn, folders, normalize=self._normalize_path, **kwargs)
+        return compare(self.conn, folders, normalize=self._normalize_path,evidence=self._folder_scope_context, **kwargs)
 
     def get_phash_registry_status(self):
         from core.perceptual_hash import status
@@ -1070,7 +1070,8 @@ class LibraryRepository:
 
     def get_phash_page(self, folders, algorithm, **kwargs):
         from core.perceptual_hash import page
-        return page(self.conn, folders, algorithm, normalize=self._normalize_path, **kwargs)
+        return page(self.conn, folders, algorithm, normalize=self._normalize_path,
+                    evidence=self._folder_scope_context,scope_filter=self._folder_filter, **kwargs)
 
     def prepare_phash_registry(self):
         from core.perceptual_hash import prepare

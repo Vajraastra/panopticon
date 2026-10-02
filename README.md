@@ -515,6 +515,14 @@ The stored count includes only acknowledged commits. Dashboard closure waits wit
 blocking the event loop for accepted writes before closing the catalog. This phase
 uses CPU workers and never authorizes retirement based on similarity.
 
+Prepared path-identity libraries resolve both folder-overlap and pHash scopes
+in the worker using Windows directory identities and literal canonical ranges.
+Unicode aliases resolve to the existing directory; case-distinct directories stay
+separate where Windows distinguishes them. Actual repeated/nested scopes are
+rejected. Missing/ambiguous directories or incomplete identity coverage require
+review, with no partial report. SQL snapshots end before filesystem observations.
+Legacy libraries keep their SQL behavior without implicit migration.
+
 ### Folder overlap and pair classification
 
 Select **Folder overlap (review only)** in Duplicate Finder, then paste absolute

@@ -4,7 +4,7 @@ from core.library_results import collect_rows, validate_page
 from core.path_identity import local_path
 from core.path_identity_registry import status, prepared
 
-SCOPED = frozenset({'get_inventory_page','get_folder_count','get_folder_preview','get_files_recursive',
+SCOPED = frozenset({'get_folder_overlap','get_phash_page','get_inventory_page','get_folder_count','get_folder_preview','get_files_recursive',
     'get_known_files_in_folder','get_library_page','get_library_selection',
     'resolve_library_selection','search_files_paginated','get_folders_paginated'})
 
@@ -12,6 +12,15 @@ SCOPED = frozenset({'get_inventory_page','get_folder_count','get_folder_preview'
 def names(operation, args, options):
     if operation not in SCOPED:
         raise ValueError('invalid_folder_operation')
+    if operation in ('get_folder_overlap','get_phash_page'):
+        from core.library_scopes import folder_paths
+        folders=args[0] if args else options.get('folders')
+        try:
+            return folder_paths(folders,local_path,minimum=2 if operation=='get_folder_overlap' else 1,check_nested=False)
+        except ValueError as error:
+            if operation=='get_folder_overlap':
+                raise ValueError('invalid_folder_overlap_scope') from error
+            raise
     values=[]
     if operation in ('get_inventory_page','get_folder_count','get_folder_preview','get_files_recursive','get_known_files_in_folder'):
         values.append(args[0] if args else options.get('folder_path'))

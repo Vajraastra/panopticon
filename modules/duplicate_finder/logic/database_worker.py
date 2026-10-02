@@ -52,7 +52,8 @@ class NativeDuplicateQueryWorker(QThread):
                 if value is not True:
                     raise ValueError('duplicate_index_prepare_unconfirmed')
             else:
-                value=self.service.read(self.operation,**self.arguments,cancel_event=self._cancel)
+                read=self.service.read_worker if self.operation=='get_folder_overlap' else self.service.read
+                value=read(self.operation,**self.arguments,cancel_event=self._cancel)
         except Exception as exc:
             cancelled=self._cancel.is_set() and not submitted
             if not cancelled:

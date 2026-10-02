@@ -1,4 +1,8 @@
 {
+  "dup.reason_path_identity_review_required": "Prepara o revisa las identidades de rutas de la biblioteca antes de usar este alcance.",
+  "dup.reason_folder_scope_unavailable_or_ambiguous": "Una carpeta seleccionada no está disponible o su ruta es ambigua. Reconéctala o revisa su ruta antes de reintentar.",
+  "dup.reason_folder_scope_physical_state_changed": "Una carpeta seleccionada cambió durante la consulta. Revisa las carpetas actuales y vuelve a intentar.",
+  "dup.reason_folder_scope_requires_directory": "Elige carpetas existentes; un archivo individual no define un alcance de carpeta.",
   "cherry.ingest_pending": "Las imágenes descargadas esperan indexación en la biblioteca: {error}",
   "gallery.viewer.rating_none": "Sin calificación",
   "gallery.viewer.rating_value": "{rating}/5",
