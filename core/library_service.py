@@ -80,7 +80,7 @@ WRITES = frozenset({
     'approve_metadata_backup_purge',
     'prepare_generation_history', 'approve_metadata_edit', 'commit_metadata_edit',
     'prepare_derived_copies', 'approve_derived_copy', 'register_derived_copy',
-    'register_catalog_files_observed',
+    'register_catalog_files_observed', 'register_external_copy_observed',
     'register_files_observed', 'register_files_minimal', 'update_file_metadata', 'remove_files',
     'archive_missing_copies',
     'add_watched_folder', 'remove_watched_folder', 'add_tag_to_file',

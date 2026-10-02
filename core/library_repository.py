@@ -341,6 +341,10 @@ class LibraryRepository:
         from core.library_path_ingest import write
         return write(self, records)
 
+    def register_external_copy_observed(self, records, **metadata):
+        from core.external_registration import write
+        return write(self, records, **metadata)
+
     def get_path_identity_ingest_state(self, canonicals, paths, *, physicals=()):
         from core.library_path_ingest import state
         return state(self.conn, canonicals, paths, self._path_coverage_cache, physicals=physicals)

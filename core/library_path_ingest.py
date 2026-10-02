@@ -82,7 +82,7 @@ def _read(service, canonicals, paths, event, physicals=()):
         raise
 
 
-def register(service, records, cancel_event):
+def register(service, records, cancel_event, *, commit=None):
     """One <=100 batch, no reader held during filesystem I/O; FIFO admission."""
     if type(records) not in (list, tuple) or len(records) > 100:
         raise ValueError('invalid_path_ingest_batch')
@@ -91,12 +91,15 @@ def register(service, records, cancel_event):
     if not records:
         return True
     data = [dict(row) for row in records]
+    def publish(values):
+        return (commit(values) if commit is not None else
+                commit_batch(service, 'register_files_observed', values, cancel_event))
     initial = _read(service, [], [], cancel_event)
     if not initial['coverage']['prepared']:
         # No implicit migration. The writer checks this again, so explicit
         # preparation racing admission cannot let a legacy batch slip through.
-        return commit_batch(service, 'register_files_observed', [dict(data=row,
-            identity=None, clock=None, target=None, historical=False) for row in data], cancel_event)
+        return publish([dict(data=row,
+            identity=None, clock=None, target=None, historical=False) for row in data])
     _ready(initial['coverage'])
     try:
         observations = [observe_path(row['path'], cancel_event=cancel_event) for row in data]
@@ -152,7 +155,7 @@ def register(service, records, cancel_event):
                 raise ValueError('path_identity_review_required')
             values.append(dict(data=row, identity=asdict(observation), clock=proof['clock'],
                                target=target, historical=retained))
-        return commit_batch(service, 'register_files_observed', values, cancel_event)
+        return publish(values)
     except ValueError as exc:
         if str(exc) == 'identity_cancelled':
             raise BatchCancelled('observation_batch_cancelled') from exc
