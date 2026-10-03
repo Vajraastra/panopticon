@@ -1811,6 +1811,8 @@
   "tool.metadata.positive_tip": "Edit the positive prompt, up to 65,536 characters. Save affects the reviewed indexed copy; export requires a fresh path.",
   "tool.metadata.negative_tip": "Edit the negative prompt. Leaving both prompts blank requests metadata cleaning after confirmation.",
   "tool.metadata.details_tip": "Current file data or a bounded page of generation history. Native tags and manual rating are preserved separately.",
+  "tool.metadata.selection_busy": "The new image set was not loaded because Metadata Hub is processing another operation. Send the set again after it finishes.",
+  "tool.metadata.selection_busy_tip": "Close this notice. The current operation continues.",
   "tool.metadata.selection_limit": "Select at most 100,000 image paths.",
   "tool.metadata.selection_bytes": "Selected paths exceed the 8 MiB review limit.",
   "tool.metadata.confirm_title": "Update indexed original?",

@@ -106,6 +106,7 @@ class MetadataModule(BaseModule):
         self._closed = self._busy = self._confirming = False
         self._worker = None
         self._workers = set()
+        self._dialogs = []
         self._token = 0
         self._capture = None
         self._pending_result = None
@@ -119,6 +120,8 @@ class MetadataModule(BaseModule):
     def on_unload(self):
         self._closed = True
         self._token += 1
+        for dialog in tuple(self._dialogs):
+            if isValid(dialog): dialog.close()
         for worker in self._workers:
             worker.stop()
 
@@ -420,7 +423,21 @@ class MetadataModule(BaseModule):
 
     def load_image_set(self, paths: list):
         """Standard integration from Librarian."""
-        if not paths or self._closed or self._busy: return
+        if not paths or self._closed: return
+        if self._busy:
+            dialog = QMessageBox(QMessageBox.Warning, self.tr('tool.metadata.name', 'Metadata Hub'),
+                self.tr('tool.metadata.selection_busy',
+                    'The new image set was not loaded because Metadata Hub is processing another operation. '
+                    'Send the set again after it finishes.'), QMessageBox.Ok, self.view)
+            dialog.setTextFormat(Qt.PlainText)
+            dialog.button(QMessageBox.Ok).setToolTip(self.tr('tool.metadata.selection_busy_tip',
+                'Close this notice. The current operation continues.'))
+            self._dialogs.append(dialog)
+            try: dialog.exec()
+            finally:
+                self._dialogs.remove(dialog)
+                dialog.deleteLater()
+            return
         if self.view is None: self.get_view()
         if len(paths) > 100000:
             self._notice('selection_limit', 'Select at most 100,000 image paths.', danger=True)
@@ -434,7 +451,7 @@ class MetadataModule(BaseModule):
             if size > 8*1024*1024:
                 self._notice('selection_bytes', 'Selected paths exceed the 8 MiB review limit.', danger=True)
                 return
-        self.image_list = sorted(paths)
+        self.image_list = list(paths)
         self.current_index = 0
         self.display_current()
 

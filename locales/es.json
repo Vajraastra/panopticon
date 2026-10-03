@@ -1811,6 +1811,8 @@
   "tool.metadata.positive_tip": "Edita el prompt positivo, hasta 65.536 caracteres. Guardar modifica la copia indexada revisada; exportar necesita una ruta nueva.",
   "tool.metadata.negative_tip": "Edita el prompt negativo. Dejar ambos prompts vacíos solicita limpiar la metadata, con confirmación al guardar el original.",
   "tool.metadata.details_tip": "Datos actuales del archivo o una página de su historial. Las etiquetas y la calificación manual de la DB se conservan por separado.",
+  "tool.metadata.selection_busy": "No se cargó el nuevo conjunto porque Metadata Hub está procesando otra operación. Cuando termine, vuelve a enviar el conjunto.",
+  "tool.metadata.selection_busy_tip": "Cierra este aviso. La operación actual continúa.",
   "tool.metadata.selection_limit": "Selecciona como máximo 100.000 rutas de imágenes válidas.",
   "tool.metadata.selection_bytes": "Las rutas seleccionadas superan el límite de revisión de 8 MiB.",
   "tool.metadata.confirm_title": "¿Actualizar el original indexado?",

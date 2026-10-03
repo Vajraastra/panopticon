@@ -11,7 +11,7 @@ from concurrent.futures import Future
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from PySide6.QtCore import Qt, QEvent, QCoreApplication
+from PySide6.QtCore import Qt, QEvent, QCoreApplication, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox, QFileDialog, QPushButton, QTextEdit
 from core.theme_manager import ThemeManager
 from modules.metadata.module import MetadataModule, _LIVE_WORKERS
@@ -71,6 +71,61 @@ class UI(unittest.TestCase):
     def edit_fields(self):
         self.module.txt_pos.setPlainText('Qt edited ñ')
         self.module.txt_neg.setPlainText('bad')
+
+    def test_handoff_busy_reports_rejection_then_retry_preserves_order(self):
+        gate, emitted = threading.Event(), threading.Event()
+        real_run = MetadataWorker.run
+        def delayed(worker):
+            real_run(worker)
+            emitted.set()
+            gate.wait(5)
+        self.view()
+        other = self.fixture.root/'z-last.png'
+        other.write_bytes(self.fixture.original)
+        paths = [str(other), str(self.fixture.source)]
+        with patch.object(MetadataWorker, 'run', delayed):
+            self.module.load_image_set([str(self.fixture.source)])
+            try:
+                spin(emitted.is_set)
+                notices = []
+                def acknowledge(box):
+                    notices.append(box.text())
+                    self.assertIs(box.parent(), self.module.view)
+                    self.assertTrue(box.button(QMessageBox.Ok).toolTip())
+                    return QMessageBox.Ok
+                with patch.object(QMessageBox, 'exec', acknowledge):
+                    self.module.load_image_set(paths)
+                self.assertEqual(len(notices), 1)
+                self.assertIn('vuelve a enviar', notices[0])
+                self.assertEqual(self.module.image_list, [str(self.fixture.source)])
+            finally:
+                gate.set()
+            spin(lambda: not self.module._busy)
+        self.module.load_image_set(paths)
+        spin(lambda: not self.module._busy)
+        self.assertEqual(self.module.image_list, paths)
+        self.assertEqual(self.module.active_path, paths[0])
+        self.assertEqual(self.fixture.source.read_bytes(), self.fixture.original)
+
+    def test_shutdown_closes_busy_handoff_notice_and_ignores_late_delivery(self):
+        self.load()
+        original = list(self.module.image_list)
+        self.module._busy = True
+        QTimer.singleShot(0, self.module.on_unload)
+        self.module.load_image_set(['late.png'])
+        self.assertTrue(self.module._closed)
+        self.assertEqual(self.module._dialogs, [])
+        self.assertTrue(self.module.shutdown_ready())
+        self.module.load_image_set(['later.png'])
+        self.assertEqual(self.module.image_list, original)
+
+    def test_handoff_keeps_order_from_first_delivery(self):
+        self.view()
+        paths = ['C:/fixture/z.png', 'C:/fixture/a.png']
+        with patch.object(self.module, 'display_current'):
+            self.module.load_image_set(paths)
+        self.assertEqual(self.module.image_list, paths)
+        self.assertIsNot(self.module.image_list, paths)
 
     def test_lazy_view_and_no_read_ddl(self):
         self.assertIsNone(self.module.view)
