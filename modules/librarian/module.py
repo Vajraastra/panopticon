@@ -19,6 +19,7 @@ from core.components.curation_review import CurationReviewDialog
 from core.components.curation_recovery import CurationRecoveryDialog
 from core.components.copy_versions import CopyVersionsDialog
 from core.components.path_identity_review import PathIdentityReviewDialog
+from .ui.provenance import ProvenancePanel
 from .logic.indexer import IndexerWorker
 from .logic.hash_backfill import HashBackfillWorker
 from .ui.folder_archive import FolderArchiveController, retain_worker
@@ -277,6 +278,9 @@ class LibrarianModule(BaseModule):
         self.tag_pager = TagPageBar()
         layout.addWidget(self.tag_pager)
 
+        self.provenance = ProvenancePanel(self.db.service, self.tr, container)
+        layout.addWidget(self.provenance, 0, Qt.AlignLeft)
+
         # Stats at bottom of sidebar
         layout.addStretch()
         self.lbl_stats = QLabel(self.tr("common.status.loading", "Loading..."))
@@ -289,7 +293,7 @@ class LibrarianModule(BaseModule):
     def _create_content(self) -> QWidget:
         """Main Content: Tag Explorer and Preview"""
         tm = self.context.get('theme_manager')
-        c = tm.get_color if tm else lambda k: '#000000'
+        c = tm.get_color if tm else Theme._c
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -464,7 +468,7 @@ class LibrarianModule(BaseModule):
     def _create_bottom_bar(self) -> QWidget:
         """Bottom: Indexing Controls"""
         tm = self.context.get('theme_manager')
-        c = tm.get_color if tm else lambda k: '#000000'
+        c = tm.get_color if tm else Theme._c
 
         container = QWidget()
         layout = QHBoxLayout(container)
@@ -624,9 +628,9 @@ class LibrarianModule(BaseModule):
         cols = max(3, vp_width // thumb_total) if vp_width > 110 else 5
 
         tm = self.context.get('theme_manager')
-        accent = tm.get_color('accent_main') if tm else '#00ffcc'
-        border = tm.get_color('border') if tm else '#555555'
-        bg = tm.get_color('bg_main') if tm else '#000000'
+        accent = tm.get_color('accent_main') if tm else Theme._c('accent_main')
+        border = tm.get_color('border') if tm else Theme._c('border')
+        bg = tm.get_color('bg_main') if tm else Theme._c('bg_main')
 
         for i, path in enumerate(page_items):
             thumb = ClickableThumbnail(path, auto_load=False,
@@ -820,6 +824,7 @@ class LibrarianModule(BaseModule):
     def on_thumbnail_clicked(self,path):
         if self._closed:
             return
+        self.provenance.show_path(path)
         dialog = WorkerPreviewDialog(path,self.tr,self.view)
         self._image_previews.append(dialog)
         try:
@@ -850,8 +855,11 @@ class LibrarianModule(BaseModule):
             return
         self.overview_reader.request('get_library_overview', include_tags=False)
         self.tag_completions.reload_page()
+        selected_path = self.provenance.path
         if self._external_paths is None:
             self._request_selection(self.current_page)
+        if selected_path is not None:
+            self.provenance.show_path(selected_path)
 
     def update_global_stats(self):
         if not self._closed and self.view:
@@ -870,6 +878,7 @@ class LibrarianModule(BaseModule):
     def _request_selection(self, page=0):
         if self._closed or not self.view:
             return
+        if hasattr(self, 'provenance'): self.provenance.clear()
         self.handoff_reader.invalidate()
         self._handoff = None
         self._external_paths = None
@@ -951,6 +960,8 @@ class LibrarianModule(BaseModule):
         if self._thumb_loader is not None:self._thumb_loader.shutdown()
         for dialog in tuple(self._image_previews):dialog.close()
         self._closed = True
+        if hasattr(self, 'provenance'):
+            self.provenance.shutdown()
         if hasattr(self, 'revisions'):
             self.revisions.close()
         if hasattr(self, 'tag_completions'):
@@ -1112,7 +1123,7 @@ class LibrarianModule(BaseModule):
     def _start_scan(self, folders, sync_only, auto):
         # Automatic scans expose the same cancellation controls as manual scans.
         tm = self.context.get('theme_manager')
-        c = tm.get_color if tm else lambda k: '#000000'
+        c = tm.get_color if tm else Theme._c
         self.btn_scan.setText(self.tr("lib.stop_indexer", "🛑 Stop Scanning"))
         self.btn_scan.setStyleSheet(f"background-color: {c('accent_warning')}; color: {c('text_primary')}; border-radius: 4px; padding: 6px; font-weight: bold;")
         if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(False)
@@ -1144,7 +1155,7 @@ class LibrarianModule(BaseModule):
             if self.indexer_thread and self.indexer_thread.isRunning():
                 return
             tm = self.context.get('theme_manager')
-            c = tm.get_color if tm else lambda k: '#000000'
+            c = tm.get_color if tm else Theme._c
             self.btn_backfill.setText(self.tr("lib.stop_backfill", "🛑 Stop Hashing"))
             self.btn_backfill.setStyleSheet(f"background-color: {c('accent_warning')}; color: {c('text_primary')}; border-radius: 4px; padding: 6px 12px; font-weight: bold;")
             self.btn_scan.setEnabled(False)
@@ -1163,7 +1174,7 @@ class LibrarianModule(BaseModule):
         if self._closed:
             return
         tm = self.context.get('theme_manager')
-        c = tm.get_color if tm else lambda k: '#000000'
+        c = tm.get_color if tm else Theme._c
         self.btn_backfill.setText(self.tr("lib.backfill", "🧬 Compute Hashes"))
         self.btn_backfill.setStyleSheet(f"background-color: transparent; color: {c('text_secondary')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px 12px;")
         self.btn_backfill.setEnabled(True)
@@ -1339,6 +1350,7 @@ class LibrarianModule(BaseModule):
         if hasattr(self, 'browse_reader'):
             self.browse_reader.invalidate()
         self._browse_ready = True
+        if hasattr(self, 'provenance'): self.provenance.clear()
         self.handoff_reader.invalidate()
         self._handoff = None
         self._external_paths = tuple(paths)

@@ -518,6 +518,19 @@ class LibraryRepository:
             lambda row: row[0])
         return total_count, preview_paths
 
+    def get_file_provenance(self, path):
+        """Bounded read of the active copy; never invent origin from a filename."""
+        if not isinstance(path, str) or not path or len(path) > 4096:
+            raise ValueError('invalid_provenance_path')
+        row = self.conn.execute(
+            'SELECT id,substr(artist,1,1025),substr(origin_url,1,4097) '
+            'FROM files WHERE is_offline=0 AND path=?', (self._normalize_path(path),)).fetchone()
+        if row is None:
+            return None
+        artist, url = row[1] or '', row[2] or ''
+        return dict(id=row[0], artist=artist[:1024], origin_url=url[:4096],
+                    truncated=len(artist)>1024 or len(url)>4096)
+
     def get_file_id(self, path):
         """Helper: Gets the DB ID for a file path."""
         cursor = self.conn.cursor()
