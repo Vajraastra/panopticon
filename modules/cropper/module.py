@@ -496,7 +496,7 @@ class CropperModule(BaseModule):
             _LIVE_WORKERS.add(self.worker)
             self.worker.finished.connect(lambda worker=self.worker: _LIVE_WORKERS.discard(worker))
             self.worker.finished_signal.connect(self._on_crop_finished)
-            self.worker.finished.connect(self._update_sequence_controls)
+            self.worker.finished.connect(self._on_worker_finished)
             self._saving = True
             self._update_sequence_controls()
             self.btn_save.setEnabled(False)
@@ -505,6 +505,12 @@ class CropperModule(BaseModule):
         except Exception as error:
             self._on_crop_finished(dict(error=str(error), source_destination=False,
                                        cancelled=False, path=None))
+
+    def _on_worker_finished(self):
+        if self._closed:
+            return
+        self._update_sequence_controls()
+        self.btn_save.setEnabled(not self._save_busy() and bool(self.cropper_widget.image_path))
 
     def _on_crop_finished(self, result):
         if self._closed:

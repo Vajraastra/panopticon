@@ -189,6 +189,33 @@ class CropperData(helpers.Fixture):
         self.assertEqual(module.cropper_widget.image_path, self.output)
         self.assertTrue(module.btn_save.isEnabled())
 
+    def test_save_reenabled_after_result_precedes_native_completion(self):
+        module = self.view()
+        real_run = product.CropWorker.run
+        for outcome in (self.output, RuntimeError('fixture failure'), product.CropCancelled()):
+            with self.subTest(outcome=type(outcome).__name__):
+                release = threading.Event()
+                self.releases.append(release)
+                def delayed_finish(worker):
+                    real_run(worker)
+                    release.wait(3)
+                crop_args = ({'side_effect': outcome} if isinstance(outcome, Exception)
+                             else {'return_value': outcome})
+                with patch.object(product.CropWorker, 'run', delayed_finish), \
+                        patch.object(product, 'crop_image', **crop_args), \
+                        patch.object(QMessageBox, 'information'), patch.object(QMessageBox, 'warning'):
+                    self.start(module)
+                    self.assertTrue(helpers.pump(lambda: not module._saving))
+                    self.assertTrue(module.worker.isRunning())
+                    self.assertFalse(module.btn_save.isEnabled())
+                    with patch.object(QFileDialog, 'getSaveFileName') as dialog:
+                        module.save_crop()
+                    dialog.assert_not_called()
+                    release.set()
+                    self.assertTrue(module.worker.wait(3000))
+                    self.assertTrue(helpers.pump(lambda: module.btn_save.isEnabled()))
+                    self.assertEqual(module.cropper_widget.image_path, self.source)
+
     def test_slow_encode_keeps_qt_responsive(self):
         module = self.view()
         gui_thread = threading.get_ident()
