@@ -46,6 +46,13 @@ o cuerpos que no caben quedan diferidos para otra Sync, sin parcial publicado.
 El contrato conserva el conteo de transferencias completadas; no redefine el
 consumo de red de intentos fallidos ni garantiza cuota si faltan archivos elegibles.
 
+Las esperas con fecha de vencimiento también despiertan cuando cambia una reserva:
+redimensionar por cabeceras, terminar, fallar o abandonar un archivo obliga a
+revalidar el cupo. La prueba visible expuso que un segundo worker podía dormir
+hasta vencer consumo histórico aunque el primero ya hubiera liberado espacio.
+El aviso distingue cupo ocupado por consumo o reservas de una cuota consumida;
+el techo estricto se conserva y la cancelación recoge el temporizador auxiliar.
+
 
 ### Frontera incremental confirmada por descubrimiento (2026-10-01)
 

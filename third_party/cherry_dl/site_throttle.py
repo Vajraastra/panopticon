@@ -115,6 +115,7 @@ class SiteThrottle:
         self._clock = clock
         self._sleep = sleeper
         self._condition = asyncio.Condition()
+        self._changed = asyncio.Event()
         self._reservations = 0
         self._reserved_bytes = 0
         self._probe_in_flight = False
@@ -285,7 +286,32 @@ class SiteThrottle:
             self._probe_in_flight = False
             self._last_notice = None
             _write(self.path, data)
-            self._condition.notify_all()
+            self._notify_change()
+
+    def _notify_change(self) -> None:
+        """Wake indefinite and timed waits; caller holds the condition lock."""
+        self._condition.notify_all()
+        self._changed.set()
+        self._changed = asyncio.Event()
+
+    async def _wait_for_change(self, changed: asyncio.Event, seconds: float) -> None:
+        # Subscribe under the admission lock, before another worker can release.
+        # Keep the injected clock/sleeper contract used by deterministic tests.
+        if changed.is_set():
+            return
+        timer = asyncio.create_task(self._sleep(seconds))
+        notification = asyncio.create_task(changed.wait())
+        try:
+            done, _ = await asyncio.wait(
+                (timer, notification), return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in done:
+                task.result()
+        finally:
+            for task in (timer, notification):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(timer, notification, return_exceptions=True)
 
     def _bytes_to_reserve(self, state: dict, expected: int) -> int:
         # Sin tamaño anunciado, reservar el espacio libre y validar el cuerpo
@@ -355,10 +381,12 @@ class SiteThrottle:
 
                 _write(self.path, data)
 
+                changed = self._changed
+
             if not wait:
                 raise ThrottleDeferred(wait_kind, wait_for)
             self._notice(on_wait, wait_kind, wait_until, now)
-            await self._sleep(wait_for)
+            await self._wait_for_change(changed, wait_for)
 
     async def resize(self, permit: Permit, announced_bytes: int) -> int:
         """Revalida la reserva con cabeceras reales, sin esperar con HTTP abierto.
@@ -379,7 +407,7 @@ class SiteThrottle:
                 return 0
             self._reserved_bytes = other_bytes + announced_bytes
             permit.reserved_bytes = announced_bytes
-            self._condition.notify_all()
+            self._notify_change()
             return announced_bytes
 
     async def finish(
@@ -455,7 +483,7 @@ class SiteThrottle:
                     self._last_notice = None
 
             _write(self.path, data)
-            self._condition.notify_all()
+            self._notify_change()
         return trip
 
     async def abandon(self, permit: Permit | None) -> None:
@@ -470,4 +498,4 @@ class SiteThrottle:
             )
             if permit.probe:
                 self._probe_in_flight = False
-            self._condition.notify_all()
+            self._notify_change()

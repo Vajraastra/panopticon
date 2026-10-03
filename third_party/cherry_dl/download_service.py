@@ -598,9 +598,9 @@ async def run_profile_download(
             )
         elif kind == "quota_bytes":
             msg = (
-                f"⏸ {site}: cuota de {meta['gigabytes']:g} GB en "
-                f"{meta['window'] / 3600:g} h alcanzada; reanuda "
-                f"automáticamente en {seconds / 60:.0f} min"
+                f"⏸ {site}: cupo de {meta['gigabytes']:g} GiB en "
+                f"{meta['window'] / 3600:g} h ocupado por consumo o reservas; "
+                f"se reevalúa al liberar reservas o en {seconds / 60:.0f} min"
             )
         elif kind == "quota_count":
             msg = (
