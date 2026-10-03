@@ -340,6 +340,53 @@ class LibrarianQt(helpers.Fixture):
         module.on_unload()
         self.assertFalse(module._auto_scan_timer.isActive())
 
+    def exercise_automatic_scan(self, *, close=False, check_controls=False):
+        from PySide6.QtWidgets import QMessageBox
+        from core.inventory import InventoryResult, InventoryStatus
+        from modules.librarian.logic.indexer import IndexerWorker
+        entered = threading.Event()
+        def discovery(worker, *_):
+            entered.set()
+            if not worker._inventory_cancel.wait(3):
+                raise RuntimeError('fixture cancellation timeout')
+            result = InventoryResult()
+            result.fail(InventoryStatus.CANCELLED)
+            return result
+        module = self.view()
+        self.ready(module)
+        with patch.object(IndexerWorker, '_discover_tree', discovery), \
+             patch.object(QMessageBox, 'warning'), patch.object(QMessageBox, 'information'):
+            module._start_scan([self.temp.name], True, True)
+            self.assertTrue(entered.wait(1))
+            try:
+                tick = []
+                QTimer.singleShot(0, lambda: tick.append(True))
+                self.assertTrue(helpers.pump(lambda: tick))
+                if check_controls:
+                    self.assertEqual(module.btn_scan.text(), module.tr('lib.stop_indexer', '🛑 Stop Scanning'))
+                    self.assertFalse(module.btn_sync.isEnabled())
+                    self.assertFalse(module.btn_backfill.isEnabled())
+                    self.assertFalse(module.progress_bar.isHidden())
+                if close:
+                    module.on_unload()
+                else:
+                    module.btn_scan.click()
+                self.assertTrue(helpers.pump(lambda: module.indexer_thread.wait(0)))
+                self.assertEqual(module.indexer_thread.outcome, InventoryStatus.CANCELLED)
+            finally:
+                module.indexer_thread.stop()
+                self.assertTrue(helpers.pump(lambda: module.indexer_thread.wait(0)))
+                QApplication.processEvents()
+
+    def test_automatic_scan_exposes_running_controls(self):
+        self.exercise_automatic_scan(check_controls=True)
+
+    def test_automatic_scan_can_be_cancelled_from_button(self):
+        self.exercise_automatic_scan()
+
+    def test_automatic_scan_shutdown_finishes_worker(self):
+        self.exercise_automatic_scan(close=True)
+
     def test_large_folder_reports_full_count_and_sql_page(self):
         paths = [f'C:/images/{i}.png' for i in range(10001)]
         self.register(*paths)

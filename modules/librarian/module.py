@@ -1110,17 +1110,16 @@ class LibrarianModule(BaseModule):
         self._start_scan(folders, sync_only, auto)
 
     def _start_scan(self, folders, sync_only, auto):
-        # Update UI state
-        if not auto:
-            tm = self.context.get('theme_manager')
-            c = tm.get_color if tm else lambda k: '#000000'
-            self.btn_scan.setText(self.tr("lib.stop_indexer", "🛑 Stop Scanning"))
-            self.btn_scan.setStyleSheet(f"background-color: {c('accent_warning')}; color: {c('text_primary')}; border-radius: 4px; padding: 6px; font-weight: bold;")
-            if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(False)
-            if hasattr(self, 'btn_backfill'): self.btn_backfill.setEnabled(False)
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
-            self.lbl_status.setText(self.tr("lib.indexing", "🔍 Running Background Sync..."))
+        # Automatic scans expose the same cancellation controls as manual scans.
+        tm = self.context.get('theme_manager')
+        c = tm.get_color if tm else lambda k: '#000000'
+        self.btn_scan.setText(self.tr("lib.stop_indexer", "🛑 Stop Scanning"))
+        self.btn_scan.setStyleSheet(f"background-color: {c('accent_warning')}; color: {c('text_primary')}; border-radius: 4px; padding: 6px; font-weight: bold;")
+        if hasattr(self, 'btn_sync'): self.btn_sync.setEnabled(False)
+        if hasattr(self, 'btn_backfill'): self.btn_backfill.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        self.lbl_status.setText(self.tr("lib.indexing", "🔍 Running Background Sync..."))
 
         # Una auditoría profunda reconcilia sólo inventarios completos.
         self.indexer_thread = IndexerWorker(self.db, folders, deep_clean=sync_only, translate=self.tr)
