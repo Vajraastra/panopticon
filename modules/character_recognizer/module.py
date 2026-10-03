@@ -12,6 +12,7 @@ class CharacterRecognizerModule(BaseModule):
         self._icon = "👤"
         self.accent_color = "#FF9800"  # Orange
         self.view = None
+        self._closed = False
     
     def get_view(self) -> QWidget:
         """Punto de entrada visual."""
@@ -30,6 +31,7 @@ class CharacterRecognizerModule(BaseModule):
         return CachePaths.get_tool_cache("character_recognizer")
 
     def on_unload(self):
+        self._closed = True
         if self.view:
             self.content_view.shutdown()
 
@@ -41,8 +43,8 @@ class CharacterRecognizerModule(BaseModule):
     
     def load_image_set(self, paths: list):
         """Interfaz estándar para recibir datos masivos."""
-        if self.view:
-            self.content_view.load_images(paths)
+        if paths and not self._closed:
+            self.get_view().load_images(paths)
 
     def run_headless(self, paths: list):
         """Ejecuta el reconocimiento sin interfaz (para pipelines)."""

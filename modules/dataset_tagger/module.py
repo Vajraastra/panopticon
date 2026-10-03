@@ -36,8 +36,8 @@ class DatasetTaggerModule(BaseModule):
 
     def load_image_set(self, paths: list):
         """Interfaz estándar para recibir imágenes desde otros módulos (Fase 6)."""
-        if not self._closed and self.view:
-            self.view.load_images(paths)
+        if paths and not self._closed:
+            self.get_view().load_images(paths)
 
     def on_unload(self):
         self._closed = True
