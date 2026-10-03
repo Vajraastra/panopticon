@@ -10,7 +10,7 @@ os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from PIL import Image
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication, QFileDialog
+from PySide6.QtWidgets import QApplication, QFileDialog, QMenu
 from core.folder_images import FolderImages
 from core.library_service import LibraryService
 from core.theme_manager import ThemeManager
@@ -130,7 +130,7 @@ class FolderDiscovery(unittest.TestCase):
 
     def test_failure_preserves_view_empty_success_clears_view_and_stale_selection(self):
         module=self.view();module.load_image_set([str(self.path)])
-        module.state.selected_paths={str(self.path)}
+        module.state.toggle_selection(str(self.path))
         self.open(self.root/'missing')
         self.assertTrue(pump(lambda:not module.folder_reader._active))
         self.assertEqual(module.state._custom_paths,[str(self.path)])
@@ -138,7 +138,29 @@ class FolderDiscovery(unittest.TestCase):
         empty=self.root/'empty';empty.mkdir();self.open(empty)
         self.assertTrue(pump(lambda:not module.folder_reader._active))
         self.assertEqual(module.state._custom_paths,[])
-        self.assertEqual(module.state.selected_paths,set())
+        self.assertFalse(module.state.selected_paths)
+
+    def test_handoff_keeps_selection_order_across_pages_and_reselection(self):
+        module=self.view();module.set_send_targets(('optimizer','pickler'))
+        # Deliberately differ from set iteration, independent of hash randomization.
+        paths=list({str(self.path),str(self.other),str(self.folder/'third.png')})[::-1]
+        module.load_image_set(paths);module.state.toggle_picker_mode(True)
+        for path in paths:module.state.toggle_selection(path)
+        module.state.set_page(1)
+        self.assertEqual(list(module.state.selected_paths),paths)
+        module.state.toggle_selection(paths[0]);module.state.toggle_selection(paths[0])
+        expected=paths[1:]+paths[:1]
+        for index,signal in enumerate((module.request_open_optimizer,module.request_open_pickler)):
+            received=[];signal.connect(received.append)
+            class Menu(QMenu):
+                def exec(self,point):return self.actions()[index]
+            with patch('modules.gallery.module.QMenu',Menu):
+                module.show_send_menu()
+            self.assertEqual(received,[expected])
+        module.state.toggle_picker_mode(False)
+        self.assertFalse(module.state.selected_paths)
+        module.state.toggle_selection(paths[0]);module.load_image_set(paths[1:])
+        self.assertFalse(module.state.selected_paths)
 
     def test_latest_folder_request_replaces_pending_older_request(self):
         module=self.view();slow,entered,release=self.block()

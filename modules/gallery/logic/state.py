@@ -39,7 +39,8 @@ class GalleryState(QObject):
         
         # Selection (Picker Mode)
         self.picker_active = False
-        self.selected_paths = set()
+        # Dict keys preserve selection order across pages without duplicates.
+        self.selected_paths = {}
         
     @property
     def mode(self): return self._mode
@@ -118,9 +119,9 @@ class GalleryState(QObject):
         
     def toggle_selection(self, path):
         if path in self.selected_paths:
-            self.selected_paths.remove(path)
+            del self.selected_paths[path]
         else:
-            self.selected_paths.add(path)
+            self.selected_paths[path] = None
         self.selection_changed.emit()
         
     def clear_selection(self):

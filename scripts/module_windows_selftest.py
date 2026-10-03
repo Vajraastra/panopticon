@@ -108,7 +108,7 @@ class ModuleWindows(unittest.TestCase):
         self.main.setup_integrations()
         self.main.switch_to_module(gallery)
         paths = {'C:/private/uno.png', 'C:/private/dos.png'}
-        gallery.state.selected_paths = paths.copy()
+        gallery.state.selected_paths = dict.fromkeys(paths)
         for index, target in enumerate((optimizer, pickler)):
             def choose(menu, point, index=index):
                 self.assertEqual(len(menu.actions()), 2)
@@ -124,13 +124,13 @@ class ModuleWindows(unittest.TestCase):
             self.assertTrue(window.isVisible())
             target.edit.setText('session retained')
             window.close()
-            gallery.state.selected_paths = {'C:/private/tres.png'}
+            gallery.state.clear_selection(); gallery.state.toggle_selection('C:/private/tres.png')
             with patch('modules.gallery.module.QMenu', Menu):
                 gallery.show_send_menu()
             self.assertIs(self.main.module_windows[target.name], window)
             self.assertEqual(target.received, ['C:/private/tres.png'])
             self.assertEqual(target.edit.text(), 'session retained')
-            gallery.state.selected_paths = paths.copy()
+            gallery.state.selected_paths = dict.fromkeys(paths)
 
     def test_gallery_unavailable_target_and_late_navigation_do_not_open_windows(self):
         gallery = GalleryModule()
@@ -138,7 +138,7 @@ class ModuleWindows(unittest.TestCase):
         self.main.loaded_modules[gallery.name] = gallery
         self.main.setup_integrations()
         self.main.switch_to_module(gallery)
-        gallery.state.selected_paths = {'C:/private/uno.png'}
+        gallery.state.toggle_selection('C:/private/uno.png')
         delivered = []
         gallery.request_open_optimizer.connect(delivered.append)
         def choose(menu, point):
