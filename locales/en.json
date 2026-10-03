@@ -1919,6 +1919,8 @@
   "pickler.recovery": "Review interrupted transfers…",
   "pickler.recovery_tip": "Restore the source of a pending transfer, keeping its current curation. Verified copy undo can resume; confirmed transfers are retained.",
   "pickler.processing": "Processing…",
+  "tool.pickler.selection_busy": "The new image set was not loaded because Pickler is processing another operation. Send the set again after it finishes.",
+  "tool.pickler.selection_busy_tip": "Close this notice. The current operation continues.",
   "pickler.recovery_done": "Recovery verified. Reload the folder to update the set.",
   "pickler.recovery_list_tip": "Choose the pending operation to resolve; modified or ambiguous files remain protected.",
   "pickler.recovery_empty": "No pending transfers in this reviewed set.",

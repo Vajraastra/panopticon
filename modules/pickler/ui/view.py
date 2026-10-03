@@ -709,5 +709,16 @@ class PicklerView(StandardToolLayout):
 
     # ── Interfaz estándar (pipeline — fase 2) ─────────────────────────
     def load_images(self, paths: list) -> None:
-        if self._closing or self._worker is not None:return
+        if self._closing:return
+        if self._worker is not None:
+            dialog=QMessageBox(QMessageBox.Warning,self.tr('tool.pickler.name','Pickler'),
+                self.tr('tool.pickler.selection_busy',
+                    'The new image set was not loaded because Pickler is processing another operation. '
+                    'Send the set again after it finishes.'),QMessageBox.Ok,self)
+            dialog.button(QMessageBox.Ok).setToolTip(self.tr('tool.pickler.selection_busy_tip',
+                'Close this notice. The current operation continues.'))
+            self._dialogs.append(dialog)
+            try:dialog.exec()
+            finally:self._dialogs.remove(dialog); dialog.deleteLater()
+            return
         self._start_job('images',(tuple(paths),))

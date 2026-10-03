@@ -12,7 +12,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 from PySide6.QtCore import QSettings,QThread,QCoreApplication,QEvent,QTimer,QObject,Qt
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QApplication,QPushButton,QListWidget
+from PySide6.QtWidgets import QApplication,QPushButton,QListWidget,QMessageBox
 from core.event_bus import EventBus
 from core.library_service import LibraryService
 from core.native_threads import native_threads_ready
@@ -83,17 +83,58 @@ class PicklerUI(unittest.TestCase):
     def test_io_stays_off_gui_and_repeated_action_is_not_admitted(self):
         entered=threading.Event(); release=threading.Event(); threads=[]; transfer=transfers.transfer
         self.addCleanup(release.set)
+        incoming=self.folder/'incoming.png'; incoming.write_bytes(self.source.read_bytes())
         def blocked(*args,**kwargs):
             threads.append(threading.get_ident()); entered.set(); release.wait(4)
             return transfer(*args,**kwargs)
         with patch('modules.pickler.logic.transfers.transfer',side_effect=blocked):
             self.view._pick_current(); self.assertTrue(pump(entered.is_set))
-            active=self.view._worker; self.view._pick_current(); self.view._next(); self.view.load_images([])
+            active=self.view._worker; self.view._pick_current(); self.view._next()
+            messages=[]
+            def dismiss(dialog):
+                self.assertTrue(dialog.button(QMessageBox.Ok).toolTip())
+                messages.append(dialog.text())
+            with patch.object(QMessageBox,'exec',dismiss):
+                self.module.load_image_set([str(self.folder/'incoming.png')])
+            self.assertEqual(len(messages),1)
+            self.assertIn('Send the set again',messages[0])
+            self.assertEqual(self.view._dialogs,[])
             self.assertIs(self.view._worker,active); self.assertEqual(self.view._index,0)
             ticks=[]; QTimer.singleShot(0,lambda:ticks.append(True)); self.assertTrue(pump(lambda:bool(ticks),.5))
             self.assertFalse(self.view._btn_primary.isEnabled()); self.assertEqual(self.view._kept,0); self.assertEqual(self.notices,[])
             release.set(); self.wait()
         self.assertNotEqual(threads[0],threading.get_ident()); self.assertEqual(self.view._kept,1)
+        self.assertEqual(self.view._images,[])
+        self.module.load_image_set([str(incoming)]); self.wait()
+        self.assertEqual(self.view._images,[incoming])
+
+    def test_handoff_preserves_the_complete_input_order(self):
+        incoming=self.folder/'incoming.png'; incoming.write_bytes(self.source.read_bytes())
+        another=self.folder/'another.png'; another.write_bytes(self.source.read_bytes())
+        paths=[incoming,self.source,another]
+        self.module.load_image_set([str(path) for path in paths]); self.wait()
+        self.assertEqual(self.view._images,paths)
+        self.assertEqual(self.service.read('get_file_id',str(self.source)),self.key)
+        self.assertEqual(self.view._index,0)
+
+
+    def test_busy_handoff_warning_closes_with_view_without_starting_new_job(self):
+        entered=threading.Event(); release=threading.Event(); transfer=transfers.transfer
+        self.addCleanup(release.set)
+        def blocked(*args,**kwargs):
+            entered.set(); release.wait(4); return transfer(*args,**kwargs)
+        with patch('modules.pickler.logic.transfers.transfer',side_effect=blocked):
+            self.view._pick_current(); self.assertTrue(pump(entered.is_set))
+            active=self.view._worker; seen=[]
+            def close_warning():
+                seen.append(len(self.view._dialogs)); self.module.on_unload()
+            QTimer.singleShot(0,close_warning)
+            self.module.load_image_set([str(self.folder/'incoming.png')])
+            self.assertEqual(seen,[1]); self.assertIs(self.view._worker,active)
+            self.assertEqual(self.view._dialogs,[])
+            release.set(); self.assertTrue(pump(self.module.shutdown_ready))
+        self.assertTrue(self.source.exists())
+        self.assertEqual(self.view._images,[self.source])
 
     def test_failure_keeps_counters_set_and_undo_state(self):
         with patch('modules.pickler.logic.transfers.transfer',side_effect=OSError('private failure')):
