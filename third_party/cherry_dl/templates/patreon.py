@@ -32,7 +32,7 @@ import random
 import re
 from datetime import datetime
 from typing import AsyncIterator
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import urlencode
 
 import httpx
 
@@ -42,6 +42,7 @@ from ..auth.patreon import (
     ensure_patreon_session,
     refresh_patreon_cookies,
 )
+from .patreon_contract import validate_page
 from .base import ArtistInfo, FileInfo, SiteTemplate, parse_date_utc
 from ..site_policy import ScanPolicy, SourceCategory, TransferPolicy
 
@@ -275,6 +276,8 @@ class PatreonTemplate(SiteTemplate):
         """
         client = await self._get_client()
         cursor: str | None = None
+        seen_cursors: set[str] = set()
+        rate_limit_attempts = 0
 
         while True:
             params: dict = {
@@ -309,7 +312,13 @@ class PatreonTemplate(SiteTemplate):
 
             # Rate limit — esperar y reintentar la misma página
             if resp.status_code == 429:
-                wait = int(resp.headers.get("retry-after", 60))
+                rate_limit_attempts += 1
+                if rate_limit_attempts >= 3:
+                    raise RuntimeError("Patreon mantiene el límite 429; se conserva el recorrido pendiente.")
+                try:
+                    wait = max(0, int(resp.headers.get("retry-after", 60)))
+                except (TypeError, ValueError):
+                    wait = 60
                 await asyncio.sleep(wait)
                 continue
 
@@ -322,15 +331,16 @@ class PatreonTemplate(SiteTemplate):
                 )
 
             resp.raise_for_status()
+            rate_limit_attempts = 0
             body = resp.json()
+            posts, included, next_cursor = validate_page(body, campaign_id, seen_cursors)
 
             # Construir mapa de included: (type, id) → attributes
             included_map: dict[tuple[str, str], dict] = {}
-            for item in body.get("included", []):
+            for item in included:
                 key = (item["type"], str(item["id"]))
                 included_map[key] = item.get("attributes", {})
 
-            posts = body.get("data", [])
             if not posts:
                 break
 
@@ -343,16 +353,10 @@ class PatreonTemplate(SiteTemplate):
                         return  # posts sorted newest-first → parar
                 yield post, included_map
 
-            # Seguir cursor de la próxima página
-            next_url = body.get("links", {}).get("next")
-            if not next_url:
+            if next_cursor is None:
                 break
+            cursor = next_cursor
 
-            qs = parse_qs(urlparse(next_url).query)
-            cursor_list = qs.get("page[cursor]")
-            if not cursor_list:
-                break
-            cursor = cursor_list[0]
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

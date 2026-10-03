@@ -28,6 +28,27 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Patreon: contrato de paginación y retiro de API pública v1 (2026-10-03)
+
+Cherry usa el sitio autenticado: `/api/campaigns?filter[vanity]` y
+`/api/posts?filter[campaign_id]`, cookie `session_id` obtenida por login guiado,
+y URLs de medios/adjuntos entregadas por el servidor. No usa OAuth público,
+`/api/oauth2/api`, webhooks ni lectura de comentarios/repositorios externos.
+La retirada del 7 de octubre se refiere a la API pública v1, no a esas rutas.
+La API pública v2 requiere OAuth y `campaigns.posts`; su contrato publicado
+de Post no ofrece las relaciones images/audio/video/attachments que usa este
+consumidor. No hay paridad verificada que justifique sustituir la sesión vigente.
+Referencia revisada: https://docs.patreon.com/#migrating-from-api-v1-to-api-v2
+y https://docs.patreon.com/#post-v2 . Esto no garantiza estabilidad futura del sitio.
+
+Una página sin `data`, con errores o continuación inválida podía parecer fin
+normal, adelantando la frontera; un cursor repetido o 429 persistente podía
+retener el recorrido indefinidamente. Se rechazan páginas/campañas incoherentes,
+continuaciones ajenas y ciclos, y se acotan los 429 consecutivos a tres intentos.
+401/403 conservan el login guiado; no se consulta otro dominio ni se cambia
+la frontera ante esos fallos. Contratos sintéticos, sin credenciales ni red:
+`scripts/cherry_patreon_contract_selftest.py`.
+
 ### Mantenimiento: progreso por fases y escrituras por diferencias (2026-10-03)
 
 El mantenimiento conserva proyecto/fase/avance en la GUI con eventos limitados
