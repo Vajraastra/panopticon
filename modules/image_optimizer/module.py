@@ -624,6 +624,7 @@ class ImageOptimizerModule(BaseModule):
     def load_image_set(self, paths: list):
         """Standard interface for receiving image sets from Librarian."""
         if paths and not self._closed:
+            self.get_view()
             self.queue = list(paths)
             self._update_ui()
 

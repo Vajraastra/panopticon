@@ -70,6 +70,21 @@ class OptimizerData(helpers.Fixture):
         self.modules.append(module)
         return module
 
+    def test_receive_images_before_first_view_preserves_order(self):
+        module = product.ImageOptimizerModule()
+        module.on_load(dict(data_service=self.service, theme_manager=ThemeManager()))
+        paths = ['C:/fixture/second.png', 'C:/fixture/first.png']
+        self.assertIsNone(module.view)
+        try:
+            module.load_image_set(paths)
+            self.assertIsNotNone(module.view)
+            self.assertEqual(module.queue, paths)
+            self.assertIsNot(module.queue, paths)
+            self.assertEqual(module.list_preview.count(), len(paths))
+        finally:
+            module.get_view()
+            self.modules.append(module)
+
     def start(self, module):
         with patch.object(QFileDialog, 'getExistingDirectory', return_value=self.settings()['export_path']):
             module._run_all()
