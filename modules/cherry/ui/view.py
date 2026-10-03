@@ -97,6 +97,7 @@ class CherryView(QWidget):
     _archives_finished = Signal(str, object, str)
     _archives_progress = Signal(str)
     _archive_batch_profile = Signal(int, int, int, str)
+    _maintenance_progress = Signal(object)
     _load_failed    = Signal(str)
 
     def __init__(self, context: dict | None = None, runtime: CherryRuntime | None = None) -> None:
@@ -121,6 +122,8 @@ class CherryView(QWidget):
         self._started = False
         self._auth_boxes: dict[int, QMessageBox] = {}
         self._archive_check_busy = False
+        self._maintenance_label = ""
+        self._maintenance_log_phase = None
         self._maintenance_busy = False
         self._maintenance_future = None
         self._preparing_download = False
@@ -184,6 +187,7 @@ class CherryView(QWidget):
         self._archives_finished.connect(self._on_archives_finished)
         self._archives_progress.connect(self._on_archives_progress)
         self._archive_batch_profile.connect(self._on_archive_batch_profile)
+        self._maintenance_progress.connect(self._on_maintenance_progress)
         self._load_failed.connect(self._on_load_failed)
         self._bridge.auth_required.connect(self._on_auth_required)
         self._bridge.auth_aborted.connect(self._on_auth_aborted)
@@ -1195,6 +1199,7 @@ class CherryView(QWidget):
         self._update_actions()
         self._btn_console.setChecked(True)
         folder = str(profile["folder_path"])
+        self._on_archive_batch_profile(1, 1, profile["id"], profile.get("display_name") or "artist")
         self._panel.append_log(self.tr(
             "cherry.archives_start", "Organizing project: {folder}").format(folder=folder))
         try:
@@ -1246,7 +1251,7 @@ class CherryView(QWidget):
             result = await process_profiles(
                 profiles,
                 on_profile=self._archive_batch_profile.emit,
-                on_file=self._archives_progress.emit,
+                on_progress=self._maintenance_progress.emit,
             )
         except asyncio.CancelledError:
             error = self.tr("cherry.archives_cancelled", "Cancelled. Run the action again to resume.")
@@ -1258,9 +1263,11 @@ class CherryView(QWidget):
     async def _archives_async(self, folder: str, artist: str) -> None:
         import asyncio
         from third_party.cherry_dl.archives import process_project
+        from third_party.cherry_dl.maintenance_progress import ProgressReporter
         result, error = None, ""
         try:
-            result = await process_project(Path(folder), artist, self._archives_progress.emit)
+            result = await process_project(
+                Path(folder), artist, progress=ProgressReporter(self._maintenance_progress.emit))
         except asyncio.CancelledError:
             error = self.tr("cherry.archives_cancelled", "Cancelled. Run the action again to resume.")
         except Exception as exc:
@@ -1274,6 +1281,35 @@ class CherryView(QWidget):
         self._panel.append_log(text)
         self._set_status(text)
 
+    def _on_maintenance_progress(self, event) -> None:
+        labels = {
+            "catalog_read": self.tr("tool.cherry.maintenance_catalog_read", "Reading catalog"),
+            "organize": self.tr("tool.cherry.maintenance_organize", "Organizing files"),
+            "extract": self.tr("tool.cherry.maintenance_extract", "Extracting archives"),
+            "inventory": self.tr("tool.cherry.maintenance_inventory", "Inventorying files"),
+            "hash": self.tr("tool.cherry.maintenance_hash", "Checking hashes"),
+            "plan": self.tr("tool.cherry.maintenance_plan", "Planning changes"),
+            "backup": self.tr("tool.cherry.maintenance_backup", "Backing up catalog"),
+            "deduplicate": self.tr("tool.cherry.maintenance_deduplicate", "Retiring duplicates"),
+            "stage": self.tr("tool.cherry.maintenance_stage", "Staging renames"),
+            "rename": self.tr("tool.cherry.maintenance_rename", "Renaming files"),
+            "catalog_write": self.tr("tool.cherry.maintenance_catalog_write", "Updating catalog"),
+            "receipts": self.tr("tool.cherry.maintenance_receipts", "Updating receipts"),
+            "verify": self.tr("tool.cherry.maintenance_verify", "Verifying files"),
+        }
+        count = (self.tr("tool.cherry.maintenance_unknown", "{done} / …").format(done=event.done)
+                 if event.total is None else f"{event.done}/{event.total}")
+        text = self.tr("tool.cherry.maintenance_status", "{project} | {phase} | {count}").format(
+            project=self._maintenance_label, phase=labels[event.phase], count=count)
+        if event.filename:
+            text += " | " + event.filename
+        self._panel.set_phase(text)
+        self._set_status(text)
+        # Preserve readable history without adding one console line per file.
+        if self._maintenance_log_phase != event.phase:
+            self._panel.append_log(text)
+            self._maintenance_log_phase = event.phase
+
     def _on_archive_batch_profile(
         self, position: int, total: int, profile_id: int, name: str,
     ) -> None:
@@ -1281,6 +1317,8 @@ class CherryView(QWidget):
         text = self.tr(
             "cherry.archives_batch_progress", "Maintenance {position}/{total}: {name}",
         ).format(position=position, total=total, name=name)
+        self._maintenance_label = text
+        self._maintenance_log_phase = None
         self._panel.set_phase(text)
         self._panel.append_log(text)
         self._set_status(text)

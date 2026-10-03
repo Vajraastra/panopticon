@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from .maintenance_progress import ProgressReporter
 from . import catalog
 from .downloads import build_filename
 from .file_routing import LAYOUT_VERSION, category, route, routed_name
@@ -210,12 +211,13 @@ async def _process(folder, artist, row, known, state, result, emit):
         result.processed += 1
 
 
-async def organize_project(folder: Path):
+async def organize_project(folder: Path, *, progress: ProgressReporter | None = None):
     """Organiza archivos catalogados sin extraer ni eliminar comprimidos.
 
 El llamador debe excluir descargas/fusiones durante toda la operación.
 No recorre otros proyectos ni descarga nada.
 """
+    progress = progress or ProgressReporter()
     folder = folder.resolve()
     if not (folder / catalog.CATALOG_NAME).is_file():
         raise ValueError("El proyecto no tiene catálogo")
@@ -224,8 +226,13 @@ No recorre otros proyectos ni descarga nada.
     result = ArchiveResult()
     await catalog.init_catalog(folder)
     await _recover_move(folder, state / "move.json")
+    progress("catalog_read")
     rows = await catalog.get_all_files(folder)
-    for row in rows:
+    progress("organize", 0, len(rows))
+    for position, row in enumerate(rows):
+        progress("organize", position, len(rows), row["filename"])
+        if position % 128 == 0:
+            await asyncio.sleep(0)
         path = _inside(folder, row["filename"])
         group = category(row["filename"])
         if path.parent == folder and group and path.is_file():
@@ -234,6 +241,7 @@ No recorre otros proyectos ni descarga nada.
                 continue
             await _move(folder, state, row, f"{group}/{path.name}")
             result.organized += 1
+    progress("organize", len(rows), len(rows))
     return result
 
 
@@ -243,21 +251,27 @@ async def process_project(
     emit: Callable[[str], None] = lambda _: None,
     *,
     force_audit: bool = False,
+    progress: ProgressReporter | None = None,
 ):
     """Organiza, extrae, deduplica por hash y compacta un perfil.
 
     El llamador debe excluir descargas/fusiones durante toda la operación.
     """
+    progress = progress or ProgressReporter()
     folder = folder.resolve()
-    result = await organize_project(folder)
+    result = await organize_project(folder, progress=progress)
     state = _inside(folder, STATE_DIR)
+    progress("catalog_read")
     rows = await catalog.get_all_files(folder)
     known = {row["hash"]: row for row in rows}
     compressed = _inside(folder, "Comprimidos")
     # Se admiten también paquetes que el usuario colocó manualmente aquí.
     by_name = {row["filename"]: row for row in rows}
     compressed_files = sorted(compressed.iterdir()) if compressed.exists() else []
-    for path in compressed_files:
+    compressed_files = [p for p in compressed_files if p.is_file() and p.suffix.lower() in ARCHIVES]
+    progress("extract", 0, len(compressed_files))
+    for position, path in enumerate(compressed_files):
+        progress("extract", position, len(compressed_files), path.name)
         if not path.is_file() or path.suffix.lower() not in ARCHIVES:
             continue
         row = None
@@ -284,10 +298,11 @@ async def process_project(
                     saved = json.loads(receipt.read_text(encoding="utf-8"))
                     saved.update(state="error", error=str(exc))
                     _write(receipt, saved)
+    progress("extract", len(compressed_files), len(compressed_files))
     try:
         from .project_maintenance import maintain_project
         maintenance, _ = await maintain_project(
-            folder, artist, force_audit=force_audit, emit=emit,
+            folder, artist, force_audit=force_audit, emit=emit, progress=progress,
         )
         result.audited += maintenance.audited
         result.duplicates_removed += maintenance.duplicates_removed

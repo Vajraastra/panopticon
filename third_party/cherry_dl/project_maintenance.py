@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from .maintenance_progress import ProgressReporter
 from . import catalog
 from .file_routing import COUNTER_NAMESPACES, LAYOUT_VERSION, route
 
@@ -70,17 +71,25 @@ def _renumber(relative: str, counter: int) -> str:
     return (path.parent / name).as_posix()
 
 
-def _physical_files(folder: Path) -> list[Path]:
+async def _physical_files(folder: Path, progress: ProgressReporter) -> list[Path]:
     files = []
-    for path in folder.rglob("*"):
-        if not path.is_file() or path.is_symlink():
-            continue
-        relative = path.relative_to(folder)
-        if any(part.startswith(".cherry-") for part in relative.parts):
-            continue
-        if path.name == catalog.CATALOG_NAME or _number(relative.as_posix()) is None:
-            continue
-        files.append(path)
+    visited = 0
+    progress("inventory")
+    def fail(error):
+        raise error
+    for root, dirs, names in os.walk(folder, followlinks=False, onerror=fail):
+        dirs[:] = [name for name in dirs if not name.startswith(".cherry-")
+                   and not (Path(root) / name).is_symlink()]
+        for name in names:
+            path = Path(root) / name
+            visited += 1
+            if not path.is_symlink() and _number(name) is not None and path.is_file():
+                files.append(path)
+            progress("inventory", visited)
+            if visited % 128 == 0:
+                await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    progress("inventory", visited, visited)
     return sorted(files, key=lambda item: item.relative_to(folder).as_posix().casefold())
 
 
@@ -126,13 +135,15 @@ def _update_receipts(folder: Path, state: Path, files: list[dict]) -> None:
         archive = data.get("archive") or {}
         if archive.get("hash") in mapping:
             item = mapping[archive["hash"]]
-            archive.update(filename=item["new"], counter=item["counter"])
-            changed = True
+            if (archive.get("filename"), archive.get("counter")) != (item["new"], item["counter"]):
+                archive.update(filename=item["new"], counter=item["counter"])
+                changed = True
         for entry in data.get("entries") or []:
             if entry.get("hash") in mapping:
                 item = mapping[entry["hash"]]
-                entry.update(target=item["new"], counter=item["counter"])
-                changed = True
+                if (entry.get("target"), entry.get("counter")) != (item["new"], item["counter"]):
+                    entry.update(target=item["new"], counter=item["counter"])
+                    changed = True
         if changed:
             backup = backup_dir / path.name
             backup.parent.mkdir(parents=True, exist_ok=True)
@@ -147,17 +158,20 @@ async def plan_project(
     *,
     force_audit: bool = False,
     emit: Callable[[str], None] = lambda _: None,
+    progress: ProgressReporter | None = None,
 ) -> dict:
     """Construye un plan sin modificar archivos ni bases."""
+    progress = progress or ProgressReporter()
     folder = folder.resolve()
     if not (folder / catalog.CATALOG_NAME).is_file():
         raise ValueError("El proyecto no tiene catálogo")
+    progress("catalog_read")
     rows = await catalog.get_all_files(folder)
     by_name: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
         by_name[str(row["filename"]).casefold()].append(row)
     by_hash = {row["hash"]: row for row in rows}
-    physical = _physical_files(folder)
+    physical = await _physical_files(folder, progress)
     initial_audit = (
         await catalog.get_meta_int(folder, AUDIT_META_KEY) or 0
     ) < AUDIT_VERSION
@@ -165,7 +179,11 @@ async def plan_project(
     entries: list[dict] = []
     hashed = 0
 
-    for path in physical:
+    progress("hash", 0, len(physical))
+    for position, path in enumerate(physical, 1):
+        progress("hash", position - 1, len(physical), path.name)
+        if position % 128 == 0:
+            await asyncio.sleep(0)
         relative = path.relative_to(folder).as_posix()
         candidates = by_name.get(relative.casefold(), [])
         emit(relative)
@@ -196,6 +214,8 @@ async def plan_project(
             "hash_verified": must_hash,
         })
 
+    progress("hash", len(physical), len(physical))
+    progress("plan")
     grouped: dict[str, list[dict]] = defaultdict(list)
     for item in entries:
         grouped[item["hash"]].append(item)
@@ -262,8 +282,9 @@ async def plan_project(
     }
 
 
-async def apply_plan(plan: dict) -> dict:
+async def apply_plan(plan: dict, *, progress: ProgressReporter | None = None) -> dict:
     """Aplica o reanuda un plan persistido, verificándolo antes de borrar."""
+    progress = progress or ProgressReporter()
     if plan.get("errors"):
         raise ValueError("El plan contiene errores; no se puede aplicar")
     folder = Path(plan["folder"]).resolve()
@@ -271,6 +292,7 @@ async def apply_plan(plan: dict) -> dict:
     state.mkdir(exist_ok=True)
     plan_path = state / PLAN_NAME
     _write(plan_path, plan)
+    progress("backup")
     _backup_db(folder, state)
     stage = state / "stage"
     quarantine = state / "duplicates"
@@ -284,7 +306,11 @@ async def apply_plan(plan: dict) -> dict:
     plan["status"] = "applying"
     _write(plan_path, plan)
 
+    progress("deduplicate", 0, len(plan["duplicates"]))
     for index, item in enumerate(plan["duplicates"]):
+        progress("deduplicate", index, len(plan["duplicates"]), item["old"])
+        if index % 128 == 0:
+            await asyncio.sleep(0)
         source = _inside(folder, item["old"])
         parked = quarantine / f"{index:06d}-{item['hash']}{Path(item['old']).suffix}"
         if parked.is_file():
@@ -296,9 +322,13 @@ async def apply_plan(plan: dict) -> dict:
         else:
             raise FileNotFoundError(item["old"])
 
-    for item in plan["files"]:
-        if item["old"] == item["new"]:
-            continue
+    progress("deduplicate", len(plan["duplicates"]), len(plan["duplicates"]))
+    renamed = [item for item in plan["files"] if item["old"] != item["new"]]
+    progress("stage", 0, len(renamed))
+    for position, item in enumerate(renamed):
+        progress("stage", position, len(renamed), item["new"])
+        if position % 128 == 0:
+            await asyncio.sleep(0)
         source = _inside(folder, item["old"])
         temporary = stage / f"{item['hash']}{Path(item['old']).suffix}"
         target = _inside(folder, item["new"])
@@ -315,9 +345,12 @@ async def apply_plan(plan: dict) -> dict:
         else:
             raise FileNotFoundError(item["old"])
 
-    for item in plan["files"]:
-        if item["old"] == item["new"]:
-            continue
+    progress("stage", len(renamed), len(renamed))
+    progress("rename", 0, len(renamed))
+    for position, item in enumerate(renamed):
+        progress("rename", position, len(renamed), item["new"])
+        if position % 128 == 0:
+            await asyncio.sleep(0)
         temporary = stage / f"{item['hash']}{Path(item['old']).suffix}"
         target = _inside(folder, item["new"])
         if temporary.is_file():
@@ -326,21 +359,30 @@ async def apply_plan(plan: dict) -> dict:
                 raise FileExistsError(item["new"])
             temporary.replace(target)
 
+    progress("rename", len(renamed), len(renamed))
+    progress("catalog_write")
     await catalog.apply_project_maintenance(
         folder,
         plan["files"],
         plan["counters"],
         int(plan.get("audit_version") or 0),
+        progress=progress,
     )
+    progress("receipts")
     _update_receipts(folder, state, plan["files"])
 
-    for item in plan["files"]:
+    progress("verify", 0, len(plan["files"]))
+    for position, item in enumerate(plan["files"]):
+        progress("verify", position, len(plan["files"]), item["new"])
+        if position % 128 == 0:
+            await asyncio.sleep(0)
         target = _inside(folder, item["new"])
         if not target.is_file() or target.stat().st_size != int(item["size"]):
             raise ValueError(f"Falló la verificación final: {item['new']}")
         if item.get("hash_verified") and await _hash(target) != item["hash"]:
             raise ValueError(f"Falló el hash final: {item['new']}")
 
+    progress("verify", len(plan["files"]), len(plan["files"]))
     plan["status"] = "verified"
     _write(plan_path, plan)
     shutil.rmtree(quarantine)
@@ -356,20 +398,22 @@ async def maintain_project(
     force_audit: bool = False,
     apply: bool = True,
     emit: Callable[[str], None] = lambda _: None,
+    progress: ProgressReporter | None = None,
 ) -> tuple[MaintenanceResult, dict]:
     """Planea y opcionalmente aplica la auditoría/compactación del perfil."""
+    progress = progress or ProgressReporter()
     folder = folder.resolve()
     pending = folder / STATE_DIR / PLAN_NAME
     if pending.is_file():
         saved = json.loads(pending.read_text(encoding="utf-8"))
         if saved.get("status") != "completed":
-            plan = await apply_plan(saved) if apply else saved
+            plan = await apply_plan(saved, progress=progress) if apply else saved
         else:
-            plan = await plan_project(folder, artist, force_audit=force_audit, emit=emit)
+            plan = await plan_project(folder, artist, force_audit=force_audit, emit=emit, progress=progress)
     else:
-        plan = await plan_project(folder, artist, force_audit=force_audit, emit=emit)
+        plan = await plan_project(folder, artist, force_audit=force_audit, emit=emit, progress=progress)
     if apply and plan.get("status") != "completed":
-        plan = await apply_plan(plan)
+        plan = await apply_plan(plan, progress=progress)
     result = MaintenanceResult(
         audited=(int(plan.get("reviewed") or 0) if plan.get("audit_version")
                  else int(plan.get("hashed") or 0)),

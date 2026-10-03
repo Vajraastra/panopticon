@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from third_party.cherry_dl.maintenance_progress import MaintenanceProgress, ProgressReporter
+
 
 @dataclass
 class ArchiveBatchResult:
@@ -41,6 +43,7 @@ async def process_profiles(
     force_audit: bool = False,
     on_profile: Callable[[int, int, int, str], None] = lambda *_: None,
     on_file: Callable[[str], None] = lambda _: None,
+    on_progress: Callable[[MaintenanceProgress], None] = lambda _: None,
 ) -> ArchiveBatchResult:
     """Itera exactamente la misma operación que usa un perfil individual."""
     from third_party.cherry_dl.archives import process_project
@@ -58,6 +61,7 @@ async def process_profiles(
         try:
             result = await process_project(
                 folder, name, on_file, force_audit=force_audit,
+                progress=ProgressReporter(on_progress),
             )
         except asyncio.CancelledError:
             raise

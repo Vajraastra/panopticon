@@ -28,6 +28,18 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Mantenimiento: progreso por fases y escrituras por diferencias (2026-10-03)
+
+El mantenimiento conserva proyecto/fase/avance en la GUI con eventos limitados
+a cinco por segundo dentro de cada fase, más sus límites. El inventario excluye
+directorios internos y cede al runtime para atender cancelación. La API de progreso
+es opcional y no depende de Qt. La consola conserva transiciones de fase.
+El catálogo compara nombre, tamaño y contador dentro de la transacción y escribe
+sólo filas y metadatos modificados; los recibos idénticos tampoco se reescriben.
+Se mantienen planes, respaldos, historial y verificación final para reanudación.
+Motivo: las corridas sin cambios emitían por archivo y repetían dos escrituras
+por copia conservada, ocultando el proyecto activo y amplificando el trabajo.
+
 ### Pawchive: caudal compatible con la ventana y reserva estricta (2026-10-02)
 
 David autorizó 4 MiB/s agregados y el default de 25 GiB / 2 horas; 2 MiB/s

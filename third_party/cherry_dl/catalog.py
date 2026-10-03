@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 import aiosqlite
+from .maintenance_progress import ProgressReporter
 from .url_receipts import CREATE as _CREATE_URL_RECEIPTS, write_receipt, merge_download_history
 
 CATALOG_NAME = "catalog.db"
@@ -482,17 +483,33 @@ async def apply_project_maintenance(
     files: list[dict],
     counters: dict[str, int],
     audit_version: int,
+    *,
+    progress: ProgressReporter | None = None,
 ) -> None:
     """Confirma deduplicación/compactación física en una transacción."""
+    progress = progress or ProgressReporter()
     db_path = artist_dir / CATALOG_NAME
     async with _db(db_path) as db:
         await db.execute("BEGIN IMMEDIATE")
-        for item in files:
+        # Compare under the same write transaction, including resumed plans.
+        async with db.execute("SELECT hash, filename, file_size, counter FROM files") as cur:
+            existing = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
+        occupied = {}
+        for file_hash, (filename, _size, _counter) in existing.items():
+            occupied.setdefault(filename, set()).add(file_hash)
+        changed = [item for item in files if existing.get(item["hash"]) != (
+            item["new"], int(item["size"]), int(item["counter"]))]
+        conflicts = [item for item in files
+                     if occupied.get(item["new"], set()) - {item["hash"]}]
+        progress("catalog_write", 0, len(conflicts) + len(changed))
+        for position, item in enumerate(conflicts):
             await db.execute(
                 "UPDATE files SET filename = '_purged_' || hash "
                 "WHERE filename = ? AND hash != ?",
                 (item["new"], item["hash"]),
             )
+            progress("catalog_write", position + 1, len(conflicts) + len(changed))
+        for position, item in enumerate(changed):
             await db.execute(
                 """
                 INSERT INTO files
@@ -506,17 +523,18 @@ async def apply_project_maintenance(
                 (item["hash"], item["new"], int(time.time()),
                  int(item["size"]), int(item["counter"])),
             )
-        await db.executemany(
-            "INSERT INTO meta (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [("counter" if name == "legacy" else f"counter:{name}", int(value))
-             for name, value in counters.items()],
-        )
+            progress("catalog_write", len(conflicts) + position + 1, len(conflicts) + len(changed))
+        async with db.execute("SELECT key, value FROM meta") as cur:
+            metadata = dict(await cur.fetchall())
+        desired = [("counter" if name == "legacy" else f"counter:{name}", int(value))
+                   for name, value in counters.items()]
         if audit_version:
-            await db.execute(
-                "INSERT INTO meta (key, value) VALUES ('maintenance_hash_audit', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (audit_version,),
+            desired.append(("maintenance_hash_audit", audit_version))
+        updates = [(key, value) for key, value in desired if metadata.get(key) != value]
+        if updates:
+            await db.executemany(
+                "INSERT INTO meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value", updates,
             )
         await db.commit()
 
