@@ -154,6 +154,15 @@ uv run python main.py
 
 ## Cherry downloads and the library
 
+Pawchive uses two download workers sharing a 4 MiB/s bandwidth cap. The default
+rolling quota is 500 completed files or 25 GiB per two hours, whichever comes
+first; change the quotas in Cherry Settings. Active downloads reserve their
+size: a file that would exceed the byte quota waits for enough previous usage
+to expire. A file larger than the entire quota stays deferred until you raise
+the quota explicitly. The 500-file limit resumes after 50 slots expire by
+default. These limits allow 25 GiB in two hours but do not guarantee that volume:
+available files, network speed and the file-count quota can limit throughput.
+
 Downloaded images in watched folders enter the central library even when
 Librarian has not been opened. Cherry announces each completed, failed or
 cancelled profile; core reads committed catalog entries and registers only

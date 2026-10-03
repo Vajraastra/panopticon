@@ -90,7 +90,7 @@ no congelar el trabajo restante. Los archivos fallidos mantienen su
 comportamiento FIFO: pasan al fondo mediante `queue_position`, mientras una
 cuota no altera sus posiciones.
 
-Valor actual: 500 archivos o 25 GB cada 3 horas, lo que ocurra primero. Ambos
+Valor actual: 500 archivos o 25 GiB cada 2 horas, lo que ocurra primero. Ambos
 límites y las horas se editan desde Ajustes.
 
 ### Nombre de artista desde una fuente Pawchive (2026-09-09)
@@ -322,9 +322,9 @@ una ventana móvil configurable, global para Pawchive y persistente en
 `~/.cherry-dl/site_throttle.json`. Cada worker reserva cupo antes de pedir; dos workers no pueden
 cruzar juntos el límite y un intento fallido devuelve su reserva.
 
-Los valores recomendados son **500 archivos o 25 GiB / 3 h** y viven en `[pawchive]`
+Los valores recomendados son **500 archivos o 25 GiB / 2 h** y viven en `[pawchive]`
 (`downloads_per_window`, `gigabytes_per_window`, `window_hours`) dentro de `config.toml`. El cambio
-sólo afecta a Pawchive. Su techo agregado de **2 MiB/s** permanece fijo en el template; los demás
+sólo afecta a Pawchive. Su techo agregado de **4 MiB/s** permanece fijo en el template; los demás
 servicios continúan bajo sus propias políticas.
 
 El cortacircuitos cuenta únicamente cinco firmas CDP `no_http_failed` dentro de dos minutos. El
@@ -369,7 +369,7 @@ La compuerta es global entre workers y se coordina con el pacer: desde la
 archivo, y después sigue aplicándose el turno de una petición por segundo. Si
 otro worker termina mientras uno esperaba turno, el turno se descarta y la
 pausa vuelve a contarse desde esa finalización. Se mantienen además 2 workers y
-2 MB/s agregados; Pawchive no tiene un tope diario propio.
+4 MiB/s agregados (política actualizada el 2026-10-02); Pawchive no tiene un tope diario propio.
 
 ### `engine.py` — un 403 del CDN ya no se toma por bloqueo de Cloudflare (2026-09-05)
 
@@ -574,7 +574,8 @@ y aun así bajaba los 20 archivos. Ahora la verdad es `blocked_sites` y la racha
 regalaba un turno y un burst enteros por fuente, y un perfil con 43 de Pawchive son 172 MB fuera
 de todo límite.
 
-Cifra de Pawchive que **no** es un acuerdo sino nuestra estimación de lo razonable: 2 MB/s. Puede
+Cifra de Pawchive que **no** es un acuerdo sino nuestra estimación de lo razonable: 4 MiB/s
+(política actualizada el 2026-10-02; validación viva pendiente). Puede
 moverse hacia abajo sin preguntar. El presupuesto diario quedó desactivado después de validar el
 transporte conservador; si el volumen acumulado resulta problemático se reactivará con evidencia.
 
