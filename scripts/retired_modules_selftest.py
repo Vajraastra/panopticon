@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -67,6 +68,11 @@ class Retirement(unittest.TestCase):
                     self.assertFalse(window.module_windows)
                 finally:
                     window.close()
+                    deadline = time.monotonic() + 5
+                    while not window._shutdown_finished and time.monotonic() < deadline:
+                        QApplication.processEvents()
+                        time.sleep(.005)
+                    self.assertTrue(window._shutdown_finished, 'dashboard shutdown did not drain')
                     window.deleteLater()
                     QApplication.processEvents()
             close_library_services()

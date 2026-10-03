@@ -53,15 +53,23 @@ class ModuleLoader:
             module_path = f"modules.{module_name}.module"
             imported_module = importlib.import_module(module_path)
 
-            # Inspección de miembros para encontrar la clase que hereda de BaseModule
-            for name, obj in inspect.getmembers(imported_module):
-                if inspect.isclass(obj) and issubclass(obj, BaseModule) and obj is not BaseModule:
-                    instance = obj()
-                    # Inyección de dependencias
-                    instance.on_load(context)
-                    self._retheme_accent(instance, context)
-                    self.loaded_modules[module_name] = instance
-                    return instance
+            # Sólo la clase concreta definida por este punto de entrada.
+            # Una clase importada o un alias no debe alterar la selección.
+            candidates = {
+                obj for _, obj in inspect.getmembers(imported_module, inspect.isclass)
+                if obj is not BaseModule and issubclass(obj, BaseModule)
+                and obj.__module__ == imported_module.__name__
+                and not inspect.isabstract(obj)
+            }
+            if len(candidates) != 1:
+                raise ValueError(
+                    f"Expected one local BaseModule entry point, found {len(candidates)}"
+                )
+            instance = candidates.pop()()
+            instance.on_load(context)
+            self._retheme_accent(instance, context)
+            self.loaded_modules[module_name] = instance
+            return instance
         except Exception as e:
             log.error("Error cargando módulo %s: %s", module_name, e)
             return None
