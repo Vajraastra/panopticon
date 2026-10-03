@@ -119,7 +119,7 @@ class SettingsDialog(QDialog):
         self._pawchive_gigabytes.setRange(0.1, 10000.0)
         self._pawchive_gigabytes.setDecimals(1)
         self._pawchive_gigabytes.setSingleStep(5.0)
-        self._pawchive_gigabytes.setSuffix(" GB")
+        self._pawchive_gigabytes.setSuffix(" GiB")
         self._pawchive_gigabytes.setValue(
             current["pawchive_gigabytes_per_window"])
         self._pawchive_hours = QDoubleSpinBox()
@@ -133,8 +133,8 @@ class SettingsDialog(QDialog):
         pawchive_tip = self.tr(
             "cherry.settings_pawchive_tip",
             "Pawchive only. It pauses at whichever comes first: the file "
-            "count or transferred GB. Its combined bandwidth remains capped "
-            "at 2 MB/s.",
+            "count or transferred GiB, including active reservations. A file "
+            "that does not fit waits. Shared bandwidth: 4 MiB/s.",
         )
         self._pawchive_downloads.setToolTip(pawchive_tip)
         self._pawchive_gigabytes.setToolTip(pawchive_tip)
@@ -168,8 +168,8 @@ class SettingsDialog(QDialog):
 
         recommended = QLabel(self.tr(
             "cherry.settings_pawchive_recommended",
-            "Recommended default: 500 downloads or 25 GB / 3 hours · fixed "
-            "2 MB/s shared by Pawchive workers · resumes after 50 slots.",
+            "Recommended default: 500 downloads or 25 GiB / 2 hours · "
+            "4 MiB/s shared by Pawchive workers · resumes after 50 slots.",
         ))
         recommended.setWordWrap(True)
         recommended.setStyleSheet(

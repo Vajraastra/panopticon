@@ -62,7 +62,7 @@ def save(
     pawchive_downloads_per_window: int = 500,
     pawchive_resume_headroom: int = 50,
     pawchive_gigabytes_per_window: float = 25.0,
-    pawchive_window_hours: float = 3.0,
+    pawchive_window_hours: float = 2.0,
 ) -> dict:
     """Guarda los ajustes conservando el resto del TOML.
 

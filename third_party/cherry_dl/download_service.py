@@ -1331,6 +1331,18 @@ async def run_profile_download(
                             _counters()
                             continue
 
+                        if (throttle is not None and throttle.byte_limit
+                                and int(fi.remote_size or 0) > throttle.byte_limit):
+                            await defer_pending_to_next_session(folder, fi.dedup_key)
+                            summ.deferred += 1
+                            emit(WorkerDone(slot_id, fi.filename, "⏸"))
+                            emit(Log(
+                                f"⏸ {fi.filename[:55]}  [el archivo supera la cuota "
+                                "completa; aumentar la cuota para descargarlo]", "warn",
+                            ))
+                            _counters()
+                            continue
+
                         counter, final_name, download_folder, catalog_name = await _reserve_destination(
                             folder, artist_info.name, fi.filename)
                         emit(WorkerStart(slot_id, fi.filename))
@@ -1353,6 +1365,9 @@ async def run_profile_download(
                             )
                             _emit_quota_status(force=True)
 
+                        async def _reserve_http_size(size: int) -> int:
+                            return await throttle.resize(throttle_permit, size)
+
                         async def _download_current_file():
                             return await asyncio.wait_for(
                                 engine.download(
@@ -1360,6 +1375,9 @@ async def run_profile_download(
                                     dest_dir=download_folder,
                                     filename=final_name,
                                     on_progress=make_cb(slot_id),
+                                    **({"max_file_bytes": throttle_permit.reserved_bytes,
+                                        "on_file_size": _reserve_http_size}
+                                       if throttle is not None and throttle.byte_limit else {}),
                                     extra_headers=fi.extra_headers or None,
                                     total_timeout=300.0,
                                     transport=download_transport,

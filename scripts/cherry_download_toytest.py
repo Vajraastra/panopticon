@@ -41,6 +41,7 @@ sys.path.insert(0, str(ROOT / "third_party"))
 
 from cherry_dl.config import NetworkConfig, UserConfig      # noqa: E402
 from cherry_dl.engine import DownloadEngine, ErrorKind      # noqa: E402
+from cherry_dl.site_throttle import SiteThrottle             # noqa: E402
 
 # La consola de Windows es cp1252: sin esto, el primer ✓ mata el script.
 for _stream in (sys.stdout, sys.stderr):
@@ -165,6 +166,17 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         size = self._size()
+        if path.startswith("/unknown"):
+            self.send_response(200)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                for part in body_chunks(size):
+                    self.wfile.write(part)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            self.close_connection = True
+            return
         rng = self.headers.get("Range")
 
         def send(desde: int, hasta: int, lento: bool = False) -> None:
@@ -285,6 +297,54 @@ async def run() -> None:
             check(not (tmp / "limpia.bin.tmp").exists(), "no queda .tmp huérfano")
             check(("transfer_http", 200) in observations,
                   "la métrica observa el HTTP 200")
+
+            print("\n[1b] Reserva estricta: cabeceras, streaming y Range")
+            r = await eng.download(f"{base}/ok/{size}", tmp, "over-budget.bin",
+                                   max_file_bytes=size - 1)
+            check(r.error_kind == ErrorKind.QUOTA,
+                  "un Content-Length superior a la reserva se difiere")
+            check(not (tmp / "over-budget.bin").exists()
+                  and not (tmp / "over-budget.bin.tmp").exists(),
+                  "no se publica ni conserva un parcial fuera de cuota")
+            r = await eng.download(f"{base}/unknown/{size}", tmp, "unknown.bin",
+                                   max_file_bytes=128 * 1024)
+            check(r.error_kind == ErrorKind.QUOTA,
+                  "un stream sin Content-Length tampoco puede superar la reserva")
+            check(not (tmp / "unknown.bin").exists()
+                  and not (tmp / "unknown.bin.tmp").exists(),
+                  "el stream fuera de cuota limpia su temporal")
+            r = await eng.download(f"{base}/unknown/{size}", tmp, "unknown-fit.bin",
+                                   max_file_bytes=size)
+            check(r.ok and r.file_hash == body_hash(size),
+                  "un tamaño desconocido que cabe se publica completo")
+            r = await eng.download(f"{base}/trunc/{size}", tmp, "range-fit.bin",
+                                   max_file_bytes=size)
+            check(r.ok and r.file_hash == body_hash(size),
+                  "Range conserva la reserva sobre el tamaño total, sin duplicarlo")
+
+            gate = SiteThrottle(
+                "pawchive", limit=500, byte_limit=2 * size, window_seconds=7200,
+                failure_threshold=5, failure_window_seconds=120,
+                cooldowns=(900,), path=tmp / "quota.json",
+            )
+            permit = await gate.acquire(expected_bytes=size // 2)
+            r = await eng.download(
+                f"{base}/ok/{size}", tmp, "corrected-size.bin",
+                max_file_bytes=permit.reserved_bytes,
+                on_file_size=lambda total: gate.resize(permit, total),
+            )
+            check(r.ok and permit.reserved_bytes == size,
+                  "cabeceras corrigen un tamaño menor sin descartar un archivo que cabe")
+            await gate.finish(permit, success=True, transferred_bytes=r.file_size)
+            permit = await gate.acquire(expected_bytes=size // 2)
+            r = await eng.download(
+                f"{base}/ok/{size + 1}", tmp, "corrected-over.bin",
+                max_file_bytes=permit.reserved_bytes,
+                on_file_size=lambda total: gate.resize(permit, total),
+            )
+            check(r.error_kind == ErrorKind.QUOTA and not (tmp / "corrected-over.bin").exists(),
+                  "cabeceras que exceden el espacio real dejan el archivo diferido")
+            await gate.abandon(permit)
 
             # ── 2. Conexión truncada → reanudar por Range ────────────────
             print("\n[2] Conexión truncada a la mitad (reanuda por Range)")

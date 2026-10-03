@@ -201,6 +201,58 @@ async def main() -> int:
         check(fake.sleeps == before,
               "el batch continúa sin dormir durante la ventana")
 
+        print("\n[2b] Techo estricto: 24.5 GiB + 700 MiB queda esperando")
+        example_state = tmp / "strict-window.json"
+        example = make(example_state, fake, limit=500, byte_limit=25 * 1024**3)
+        example.window_seconds = 7200
+        first = await example.acquire(expected_bytes=int(24.5 * 1024**3))
+        await example.finish(first, success=True, transferred_bytes=first.reserved_bytes)
+        restarted = make(example_state, fake, limit=500, byte_limit=25 * 1024**3)
+        restarted.window_seconds = 7200
+        try:
+            await restarted.acquire(expected_bytes=700 * 1024**2, wait=False)
+            check(False, "700 MiB quedan en standby después de reiniciar")
+        except ThrottleDeferred as exc:
+            check(exc.kind == "quota_bytes" and exc.seconds == 7200,
+                  "700 MiB quedan en standby después de reiniciar")
+        fitting = await restarted.acquire(expected_bytes=512 * 1024**2)
+        snap = restarted.snapshot()
+        check(snap.used_bytes + fitting.reserved_bytes == snap.byte_limit,
+              "un archivo que llega exactamente a 25 GiB sí cabe")
+        await restarted.abandon(fitting)
+        fake.now += 7200
+        resumed = await restarted.acquire(expected_bytes=700 * 1024**2, wait=False)
+        check(resumed.active, "los 700 MiB reanudan al liberarse espacio real")
+        await restarted.abandon(resumed)
+        try:
+            await restarted.acquire(expected_bytes=26 * 1024**3)
+            check(False, "un archivo mayor que toda la ventana no tiene excepción")
+        except ValueError:
+            check(True, "un archivo mayor que toda la ventana no tiene excepción")
+        unknown = await restarted.acquire()
+        check(unknown.reserved_bytes == restarted.byte_limit,
+              "sin tamaño se reserva espacio para validar el cuerpo HTTP")
+        waiting_unknown = asyncio.create_task(restarted.acquire(expected_bytes=1))
+        await asyncio.sleep(0)
+        check(not waiting_unknown.done(), "la reserva sin tamaño protege al segundo worker")
+        waiting_unknown.cancel()
+        try:
+            await waiting_unknown
+        except asyncio.CancelledError:
+            pass
+        resized = await restarted.resize(unknown, 700 * 1024**2)
+        check(resized == 700 * 1024**2,
+              "las cabeceras reales liberan la reserva sin tamaño sobrante")
+        other = await restarted.acquire(expected_bytes=24 * 1024**3)
+        check(await restarted.resize(unknown, 2 * 1024**3) == 0,
+              "corregir el tamaño no puede invadir la reserva del otro worker")
+        check(unknown.reserved_bytes == 700 * 1024**2,
+              "una corrección rechazada conserva la reserva hasta el cierre")
+        await restarted.abandon(other)
+        await restarted.abandon(unknown)
+        check(restarted.snapshot().active_files == 0,
+              "cancelar standby no deja reservas ni pierde consumo")
+
         print("\n[3] Sólo la firma específica arma la racha")
         state.unlink(missing_ok=True)
         fake.now += 1

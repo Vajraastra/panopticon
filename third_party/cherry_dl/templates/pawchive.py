@@ -79,6 +79,10 @@ El techo de caudal es nuestra estimación de lo razonable, no una cifra dada por
 el administrador. Puede moverse hacia abajo sin preguntar; subirlo requiere una
 nueva prueba deliberada.
 
+David autorizó 4 MiB/s compartidos y 25 GiB / 2 horas (2026-10-02):
+el cap anterior impedía alcanzar el volumen. La cuota sigue siendo estricta,
+incluidas las reservas concurrentes; un archivo que no cabe espera.
+
 El 2026-09-16 el operador cambió la política del host de archivos: los clientes
 automatizados deben identificarse y no fingir ser un navegador. El transporte
 CDP empezó a recibir `reason=Failed` sin estado HTTP; la misma URL respondió
@@ -172,11 +176,11 @@ class PawchiveTemplate(SiteTemplate):
         max_workers=2,
         min_request_interval=1.0,
         post_download_delay=5.0,
-        max_bytes_per_sec=2 * 1024**2,
+        max_bytes_per_sec=4 * 1024**2,
         daily_byte_budget=0,
         # Fallbacks; download_service usa la ventana ajustable de config.
         download_window_limit=500,
-        download_window_seconds=3 * 60 * 60,
+        download_window_seconds=2 * 60 * 60,
         # HTTP directo conserva estados reales; no se arma un circuito con
         # errores ambiguos de red. Los 403/429 siguen su manejo normal.
         throttle_failure_codes=frozenset(),
@@ -362,10 +366,10 @@ def _download_user_agent(engine) -> str:
     pawchive = getattr(config, "pawchive", None)
     count = int(getattr(pawchive, "downloads_per_window", 500))
     gib = float(getattr(pawchive, "gigabytes_per_window", 25.0))
-    hours = float(getattr(pawchive, "window_hours", 3.0))
+    hours = float(getattr(pawchive, "window_hours", 2.0))
     hour_word = "hour" if hours == 1 else "hours"
     return (
-        f"{_DOWNLOAD_USER_AGENT_BASE}; policy: 2 MiB/s sustained bandwidth; "
+        f"{_DOWNLOAD_USER_AGENT_BASE}; policy: 4 MiB/s sustained bandwidth; "
         f"max 2 concurrent downloads; max {count} files or {gib:g} GiB "
         f"per {hours:g} {hour_word})"
     )

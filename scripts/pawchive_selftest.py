@@ -183,8 +183,8 @@ async def main() -> int:
         "espera 5 s desde el final de un archivo antes de iniciar otro")
     chk(PawchiveTemplate.download_window_limit == 500,
         "máximo de 500 transferencias por ventana")
-    chk(PawchiveTemplate.download_window_seconds == 3 * 60 * 60,
-        "la ventana móvil dura 3 horas")
+    chk(PawchiveTemplate.download_window_seconds == 2 * 60 * 60,
+        "la ventana móvil dura 2 horas")
     chk(PawchiveTemplate.throttle_failure_codes == frozenset(),
         "HTTP directo no arma circuito con fallos ambiguos de red")
     chk(PawchiveTemplate.throttle_failure_streak == 5,
@@ -254,8 +254,8 @@ async def main() -> int:
     user_agent = z.extra_headers.get("User-Agent", "")
     chk(user_agent.startswith("Cherry-DL/"),
         "se identifica como descargador, sin fingir ser navegador")
-    chk(("policy: 2 MiB/s sustained bandwidth; max 2 concurrent downloads; "
-         "max 500 files or 25 GiB per 3 hours") in user_agent,
+    chk(("policy: 4 MiB/s sustained bandwidth; max 2 concurrent downloads; "
+         "max 500 files or 25 GiB per 2 hours") in user_agent,
         "declara en inglés los límites efectivos por defecto")
     legacy_headers = t.transfer_headers(a, {"Referer": a.url})
     chk(legacy_headers.get("User-Agent") == user_agent,
@@ -348,8 +348,8 @@ async def main() -> int:
     chk(gate.ready(), "al abrir, el siguiente archivo ya puede pedir turno")
 
     print("\n[11] El caudal, que es lo que el acuerdo no cubría")
-    chk(PawchiveTemplate.max_bytes_per_sec == 2 * 1024**2,
-        "techo de 2 MB/s agregado")
+    chk(PawchiveTemplate.max_bytes_per_sec == 4 * 1024**2,
+        "techo de 4 MiB/s agregado")
     chk(PawchiveTemplate.daily_byte_budget == 0,
         "sin presupuesto diario; mandan caudal, pool y pausa")
     chk(PawchiveTemplate.download_transport == "http",
@@ -357,13 +357,16 @@ async def main() -> int:
     chk(not PawchiveTemplate.browser_origin,
         "Pawchive ya no finge una sesión de navegador")
     # La aritmética que justifica que existan: cumplir 1 petición/s con los
-    # archivos de esa tarde daba diez veces el caudal que ahora se permite.
+    # archivos de esa tarde superaba el caudal que ahora se permite.
     medido = 3854 * 2**20 / 360          # 3.854 MB en 6 minutos, medidos en disco
-    chk(medido / PawchiveTemplate.max_bytes_per_sec > 5,
-        f"lo medido el 2026-09-05 ({medido / 2**20:.1f} MB/s) es >5x el techo")
+    chk(medido / PawchiveTemplate.max_bytes_per_sec > 2,
+        f"lo medido el 2026-09-05 ({medido / 2**20:.1f} MB/s) es >2x el techo")
     daily_gib = 86400 * PawchiveTemplate.max_bytes_per_sec / 1024**3
-    chk(abs(daily_gib - 168.75) < 0.01,
-        "el techo continuo equivale a 168.75 GiB/día, sin corte artificial")
+    chk(abs(daily_gib - 337.5) < 0.01,
+        "el cap equivale a 337.5 GiB/día antes de aplicar la ventana")
+
+    capacity = 2 * 60 * 60 * PawchiveTemplate.max_bytes_per_sec / 1024**3
+    chk(capacity >= 25, "el caudal permite completar 25 GiB dentro de dos horas")
 
     print("\n[12] El cubo de fichas reparte, no reserva")
     # Mismo reloj falso: se mide el tiempo devengado, no se duerme de verdad.

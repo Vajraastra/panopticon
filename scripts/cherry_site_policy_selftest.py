@@ -123,14 +123,14 @@ def main() -> None:
           "Pawchive conserva una transferencia iniciada por segundo")
     check(transfer.workers == 2 and transfer.max_workers == 2,
           "Pawchive conserva dos workers y su tope")
-    check(transfer.max_bytes_per_sec == 2 * 1024**2,
-          "Pawchive conserva 2 MiB/s agregados")
+    check(transfer.max_bytes_per_sec == 4 * 1024**2,
+          "Pawchive permite 4 MiB/s agregados")
     check(transfer.post_download_delay == 5.0,
           "Pawchive conserva cinco segundos post-descarga")
     check(transfer.download_window_limit == 500,
           "Pawchive conserva la ventana recomendada de 500")
-    check(transfer.download_window_seconds == 3 * 60 * 60,
-          "Pawchive conserva la ventana de tres horas")
+    check(transfer.download_window_seconds == 2 * 60 * 60,
+          "Pawchive usa la ventana de dos horas")
     check(transfer.throttle_failure_codes == frozenset(),
           "Pawchive no trata errores ambiguos de red como bloqueo")
     check(transfer.transport == "http",

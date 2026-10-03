@@ -210,7 +210,7 @@ class SiteThrottle:
             used = sum(item["bytes"] for item in transfers)
             projected = used + self._reserved_bytes
             blocked = projected >= self.byte_limit or (
-                expected_bytes > 0 and projected > 0
+                expected_bytes > 0
                 and projected + expected_bytes > self.byte_limit
             )
             if blocked:
@@ -220,7 +220,7 @@ class SiteThrottle:
                     remaining -= item["bytes"]
                     projected_after = remaining + self._reserved_bytes
                     if (projected_after < self.byte_limit
-                            and (expected_bytes <= 0 or projected_after == 0
+                            and (expected_bytes <= 0
                                  or projected_after + expected_bytes
                                  <= self.byte_limit)):
                         until = item["at"] + self.window_seconds
@@ -287,12 +287,23 @@ class SiteThrottle:
             _write(self.path, data)
             self._condition.notify_all()
 
+    def _bytes_to_reserve(self, state: dict, expected: int) -> int:
+        # Sin tamaño anunciado, reservar el espacio libre y validar el cuerpo
+        # HTTP contra esa reserva antes de publicarlo.
+        if expected or not self.byte_limit:
+            return expected
+        return max(0, self.byte_limit
+                   - sum(v["bytes"] for v in state["transfers"])
+                   - self._reserved_bytes)
+
     async def acquire(
         self, on_wait: WaitFn | None = None, *, expected_bytes: int | None = None,
         wait: bool = True,
     ) -> Permit:
         """Espera lo necesario y reserva un intento; cancelable con la task."""
         reserved_bytes = max(0, int(expected_bytes or 0))
+        if self.byte_limit and reserved_bytes > self.byte_limit:
+            raise ValueError("El archivo supera la cuota completa de bytes")
         while True:
             wait_for: float | None = None
             wait_kind = ""
@@ -319,6 +330,7 @@ class SiteThrottle:
                         elif not self._probe_in_flight:
                             self._probe_in_flight = True
                             self._reservations += 1
+                            reserved_bytes = self._bytes_to_reserve(state, reserved_bytes)
                             self._reserved_bytes += reserved_bytes
                             _write(self.path, data)
                             return Permit(probe=True, reserved_bytes=reserved_bytes)
@@ -336,6 +348,7 @@ class SiteThrottle:
                         wait_for = max(0.01, wait_until - now)
                     else:
                         self._reservations += 1
+                        reserved_bytes = self._bytes_to_reserve(state, reserved_bytes)
                         self._reserved_bytes += reserved_bytes
                         _write(self.path, data)
                         return Permit(reserved_bytes=reserved_bytes)
@@ -346,6 +359,28 @@ class SiteThrottle:
                 raise ThrottleDeferred(wait_kind, wait_for)
             self._notice(on_wait, wait_kind, wait_until, now)
             await self._sleep(wait_for)
+
+    async def resize(self, permit: Permit, announced_bytes: int) -> int:
+        """Revalida la reserva con cabeceras reales, sin esperar con HTTP abierto.
+
+        Cero rechaza el cuerpo: el archivo sigue en cola y una Sync posterior
+        puede admitirlo cuando quepa. Un tamaño desconocido conserva la reserva.
+        """
+        async with self._condition:
+            if not permit.active:
+                return 0
+            if announced_bytes <= 0 or not self.byte_limit:
+                return permit.reserved_bytes
+            _data, state = self._read()
+            self._prune(state, self._clock())
+            other_bytes = self._reserved_bytes - permit.reserved_bytes
+            used = sum(v["bytes"] for v in state["transfers"])
+            if used + other_bytes + announced_bytes > self.byte_limit:
+                return 0
+            self._reserved_bytes = other_bytes + announced_bytes
+            permit.reserved_bytes = announced_bytes
+            self._condition.notify_all()
+            return announced_bytes
 
     async def finish(
         self,

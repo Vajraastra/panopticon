@@ -44,7 +44,7 @@ class TemplateConfig(BaseModel):
 class PawchiveConfig(BaseModel):
     """Frenos ajustables del archivo público Pawchive.
 
-    El techo de caudal permanece en el template: 2 MiB/s entre todos los
+    El techo de caudal permanece en el template: 4 MiB/s entre todos los
     workers. La ventana móvil se detiene cuando llegue primero a su cantidad
     de descargas o a sus GB transferidos.
     """
@@ -52,7 +52,7 @@ class PawchiveConfig(BaseModel):
     downloads_per_window: int = Field(500, ge=1, le=100_000)
     resume_headroom: int = Field(50, ge=0, le=99_999)
     gigabytes_per_window: float = Field(25.0, gt=0, le=10_000)
-    window_hours: float = Field(3.0, gt=0, le=168)
+    window_hours: float = Field(2.0, gt=0, le=168)
 
 
 class UserConfig(BaseModel):

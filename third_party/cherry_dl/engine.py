@@ -19,7 +19,7 @@ import random
 import re
 import time
 from pathlib import Path
-from typing import AsyncIterator, BinaryIO, Callable
+from typing import AsyncIterator, Awaitable, BinaryIO, Callable
 from urllib.parse import urlsplit
 
 import httpx
@@ -100,11 +100,12 @@ class ErrorKind:
     NETWORK      = "network"      # error de conexión; reintentar
     TIMEOUT      = "timeout"      # tiempo de espera; reintentar
     STALL        = "stall"        # descarga iniciada pero sin datos por N s; diferir
+    QUOTA        = "quota_bytes"  # el cuerpo no cabe en la reserva; diferir
     UNKNOWN      = "unknown"      # otro error no clasificado
 
     # Tipos que deben ir a la cola diferida en lugar de descartarse
     DEFERRABLE = {"stall", "timeout", "network", "server_error", "cloudflare",
-                  "rate_limit"}
+                  "rate_limit", "quota_bytes"}
 
 
 # ── Constantes ─────────────────────────────────────────────────────────────────
@@ -521,12 +522,17 @@ class DownloadEngine:
         max_retries: int | None = None,
         transport: str = "http",
         browser_origin: str | None = None,
+        max_file_bytes: int | None = None,
+        on_file_size: Callable[[int], Awaitable[int]] | None = None,
     ) -> DownloadResult:
         """
         Descarga un archivo al directorio destino.
         Respeta el semáforo del pool (max N descargas simultáneas).
         Retorna DownloadResult con hash SHA-256 y tamaño.
 
+        max_file_bytes: reserva estricta para el cuerpo HTTP; valida cabeceras
+                        y bytes antes de escribir, sin publicar un parcial.
+        on_file_size: revalida la reserva con cada respuesta HTTP, antes del cuerpo.
         on_progress:  callback(bytes_done, total_bytes) por chunk.
         extra_headers: headers adicionales por archivo (ej. Referer de Pixiv).
                        Se fusionan con los headers base del cliente.
@@ -555,7 +561,7 @@ class DownloadEngine:
                 result = await self._do_download(
                     url, dest_dir, filename, progress, task_id,
                     on_progress, extra_headers, total_timeout, on_status,
-                    on_observation, max_retries,
+                    on_observation, max_retries, max_file_bytes, on_file_size,
                 )
             # Una respuesta fallida también termina un intento de archivo. Si
             # el sitio acaba de decir 403/429, arrancar el siguiente al ritmo
@@ -808,6 +814,8 @@ class DownloadEngine:
         on_status: Callable[[str], None] | None = None,
         on_observation: Callable[[str, int], None] | None = None,
         max_retries: int | None = None,
+        max_file_bytes: int | None = None,
+        on_file_size: Callable[[int], Awaitable[int]] | None = None,
     ) -> DownloadResult:
         """
         Descarga un archivo con retry y soporte de Range requests para CDNs
@@ -1101,6 +1109,15 @@ class DownloadEngine:
                             if progress and task_id is not None:
                                 progress.update(task_id, total=full_size or None)
 
+                        if on_file_size is not None:
+                            max_file_bytes = await on_file_size(full_size)
+                        if max_file_bytes is not None and full_size > max_file_bytes:
+                            return DownloadResult(
+                                url=url, filename=filename,
+                                error="El tamaño HTTP supera la reserva de la ventana",
+                                error_kind=ErrorKind.QUOTA,
+                            )
+
                         # ── Leer chunks del stream ─────────────────────────────
                         # Watchdog de progreso: asyncio.timeout se reprograma con
                         # CADA chunk recibido. Si pasan más de stall_timeout segundos
@@ -1125,6 +1142,13 @@ class DownloadEngine:
                         _next_resched = _loop.time() + _resched_every
                         async with asyncio.timeout(_stall) as _wd:
                             async for chunk in resp.aiter_bytes(chunk_size=65536):
+                                if (max_file_bytes is not None
+                                        and written + buf_len + len(chunk) > max_file_bytes):
+                                    return DownloadResult(
+                                        url=url, filename=filename,
+                                        error="El cuerpo HTTP supera la reserva de la ventana",
+                                        error_kind=ErrorKind.QUOTA,
+                                    )
                                 # Techo de caudal del sitio, si lo hay. Va antes
                                 # de reprogramar el watchdog a propósito: lo que
                                 # se duerme aquí es decisión nuestra, no falta de

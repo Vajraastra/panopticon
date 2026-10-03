@@ -28,6 +28,25 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Pawchive: caudal compatible con la ventana y reserva estricta (2026-10-02)
+
+David autorizó 4 MiB/s agregados y el default de 25 GiB / 2 horas; 2 MiB/s
+sólo permitían 14,06 GiB en ese tiempo. Se conservan dos workers, 1 petición/s,
+500 archivos y el margen de reanudación por archivos. El User-Agent y Ajustes
+declaran la política nueva, sin cambiar la configuración existente del usuario.
+
+Un archivo anunciado no inicia si consumo + reservas + tamaño supera la cuota:
+24,5 GiB + 700 MiB espera a que expire consumo real de la ventana móvil.
+Se retira la excepción que dejaba pasar archivos mayores que toda la cuota:
+éstos quedan diferidos y requieren aumentar explícitamente el presupuesto.
+Sin tamaño anunciado se reserva el espacio libre; el transporte HTTP verifica
+cabeceras y cuerpo contra la reserva antes de publicar. Las cabeceras corrigen
+la reserva si el tamaño real cabe, liberando espacio para el otro worker. Tamaños inconsistentes
+o cuerpos que no caben quedan diferidos para otra Sync, sin parcial publicado.
+El contrato conserva el conteo de transferencias completadas; no redefine el
+consumo de red de intentos fallidos ni garantiza cuota si faltan archivos elegibles.
+
+
 ### Frontera incremental confirmada por descubrimiento (2026-10-01)
 
 Guardar `artist_id` o `file_count` adelantaba `last_synced` antes de terminar
