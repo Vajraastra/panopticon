@@ -88,6 +88,7 @@ class DownloadBridge(QObject):
         self._task: Optional[asyncio.Task] = None
         self._future = None  # concurrent.futures.Future de la descarga en curso
         self._busy = False
+        self._run_token: object | None = None
         self._auth_futures: dict[int, asyncio.Future] = {}
         self._auth_token = 0
         self._last_progress: dict[int, float] = {}
@@ -129,8 +130,10 @@ class DownloadBridge(QObject):
             return False
 
         self._busy = True
+        token = self._run_token = object()
         self._last_progress.clear()
         coro = self._runner(
+            token,
             profile,
             workers=workers,
             ext_filter=ext_filter or set(),
@@ -143,15 +146,17 @@ class DownloadBridge(QObject):
             config=config,
         )
         try:
-            self._future = self._runtime.submit(coro)
+            future = self._runtime.submit(coro)
+            if self._run_token is token:
+                self._future = future
         except RuntimeError as exc:
-            self._busy = False
+            self._release(token)
             log.error("cherry: no se pudo encolar la descarga: %s", exc)
             return False
         # Red de seguridad para el caso en que la task muera ANTES de ejecutar
         # una sola línea del runner (cancelada mientras estaba encolada): ahí
         # el `finally` del runner nunca corre y el puente quedaría ocupado.
-        self._future.add_done_callback(self._on_future_done)
+        future.add_done_callback(lambda fut: self._on_future_done(fut, token))
         self.started_signal.emit()
         return True
 
@@ -205,46 +210,57 @@ class DownloadBridge(QObject):
 
     # ── lo que corre en el hilo del loop ────────────────────────────────────
 
-    async def _runner(self, profile: dict, **kwargs) -> None:
-        # Import perezoso: arrastra httpx y todo el motor, no se paga al abrir
-        # la app sino al primer uso del módulo.
-        from third_party.cherry_dl.download_service import run_profile_download
-
+    async def _runner(self, token: object, profile: dict, **kwargs) -> None:
+        if self._run_token is not token:
+            return  # Cancelada antes de que el runner tomara posesión.
         self._task = asyncio.current_task()
+        terminal = None
         try:
+            # Import perezoso dentro del contrato de error y limpieza.
+            from third_party.cherry_dl.download_service import run_profile_download
+
             summary = await run_profile_download(
                 profile,
                 emit=self._on_event,
                 resolve_auth=self._resolve_auth,
                 **kwargs,
             )
-            self.finished_signal.emit(summary)
+            terminal = (self.finished_signal, (summary,))
         except asyncio.CancelledError:
-            self.cancelled_signal.emit()
+            terminal = (self.cancelled_signal, ())
             raise
         except Exception as exc:  # el motor ya loguea los errores por fuente
             log.exception("cherry: la descarga falló")
-            self.failed_signal.emit(f"{type(exc).__name__}: {exc}")
+            terminal = (self.failed_signal, (f"{type(exc).__name__}: {exc}",))
         finally:
-            # Se libera ANTES de que la GUI procese la señal de fin (que va en
-            # cola), así el slot que reciba `finished_signal` ya puede lanzar
-            # la siguiente descarga.
-            self._release()
+            # La GUI puede procesar la señal mientras emit() aún no retorna.
+            # Liberar antes de emitir, y no tocar después el estado del próximo.
+            if self._release(token) and terminal is not None:
+                signal, args = terminal
+                signal.emit(*args)
 
-    def _release(self) -> None:
-        """Deja el puente libre. Idempotente: lo llaman el runner y, si la task
-        murió sin llegar a correr, el callback del future."""
-        self._busy = False
+    def _release(self, token: object) -> bool:
+        """Libera sólo la ejecución propietaria; ignora callbacks atrasados."""
+        if self._run_token is not token:
+            return False
         self._task = None
         self._future = None
         self._abort_pending_auth()
+        self._run_token = None
+        self._busy = False
+        return True
 
-    def _on_future_done(self, fut) -> None:
-        if not self._busy:
-            return  # camino normal: el runner ya se liberó
-        self._release()
-        if fut.cancelled():
-            self.cancelled_signal.emit()
+    def _on_future_done(self, fut, token: object) -> None:
+        if self._run_token is not token or self._task is not None:
+            # Future.cancel() acusa recibo antes de la limpieza de la task.
+            # El runner conserva la propiedad hasta que esa limpieza termine.
+            return
+        if self._release(token):
+            if fut.cancelled():
+                self.cancelled_signal.emit()
+            elif fut.exception() is not None:
+                error = fut.exception()
+                self.failed_signal.emit(f"{type(error).__name__}: {error}")
 
     def _on_event(self, ev) -> None:
         """`emit` del motor. Corre en el hilo del loop: aquí NO se toca la GUI,
