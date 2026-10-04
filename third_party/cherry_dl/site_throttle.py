@@ -61,6 +61,7 @@ class ThrottleDeferred(Exception):
 
 
 WaitFn = Callable[[str, float], None]
+StateFn = Callable[[str, float | None], None]
 
 
 def _load(path: Path) -> dict:
@@ -325,6 +326,7 @@ class SiteThrottle:
     async def acquire(
         self, on_wait: WaitFn | None = None, *, expected_bytes: int | None = None,
         wait: bool = True,
+        on_state: StateFn | None = None,
     ) -> Permit:
         """Espera lo necesario y reserva un intento; cancelable con la task."""
         reserved_bytes = max(0, int(expected_bytes or 0))
@@ -349,6 +351,10 @@ class SiteThrottle:
                         if quota is not None:
                             wait_kind, wait_until_value = quota
                             if wait_until_value is None:
+                                if not wait:
+                                    raise ThrottleDeferred(wait_kind, 0.0)
+                                if on_state is not None:
+                                    on_state(wait_kind, None)
                                 await self._condition.wait()
                                 continue
                             wait_until = wait_until_value
@@ -361,6 +367,10 @@ class SiteThrottle:
                             _write(self.path, data)
                             return Permit(probe=True, reserved_bytes=reserved_bytes)
                         else:
+                            if not wait:
+                                raise ThrottleDeferred("circuit", 0.0)
+                            if on_state is not None:
+                                on_state("circuit", None)
                             await self._condition.wait()
                             continue
                 else:
@@ -368,6 +378,10 @@ class SiteThrottle:
                     if quota is not None:
                         wait_kind, wait_until_value = quota
                         if wait_until_value is None:
+                            if not wait:
+                                raise ThrottleDeferred(wait_kind, 0.0)
+                            if on_state is not None:
+                                on_state(wait_kind, None)
                             await self._condition.wait()
                             continue
                         wait_until = wait_until_value
@@ -385,6 +399,8 @@ class SiteThrottle:
 
             if not wait:
                 raise ThrottleDeferred(wait_kind, wait_for)
+            if on_state is not None:
+                on_state(wait_kind, wait_until)
             self._notice(on_wait, wait_kind, wait_until, now)
             await self._wait_for_change(changed, wait_for)
 

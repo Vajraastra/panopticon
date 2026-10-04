@@ -14,6 +14,9 @@ Dos detalles que existen por una razón, no por adorno:
 
 from __future__ import annotations
 
+import math
+import time
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox, QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QProgressBar,
@@ -28,6 +31,7 @@ class _WorkerRow(QWidget):
 
     def __init__(self, slot: int, dim: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._filename = "—"
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
@@ -38,6 +42,8 @@ class _WorkerRow(QWidget):
         lay.addWidget(self._num)
 
         self._name = QLabel("—")
+        self._name.setWordWrap(True)
+        self._name.setMinimumWidth(0)
         self._name.setStyleSheet(f"color: {dim}; font-size: 11px;")
         lay.addWidget(self._name, stretch=1)
 
@@ -50,6 +56,7 @@ class _WorkerRow(QWidget):
         lay.addWidget(self._bar)
 
     def start(self, filename: str) -> None:
+        self._filename = filename
         self._name.setText(filename)
         self._bar.setRange(0, 100)
         self._bar.setValue(0)
@@ -72,6 +79,9 @@ class _WorkerRow(QWidget):
         self._bar.setRange(0, 100)
         self._bar.setValue(0)
 
+    def status(self, text: str) -> None:
+        self._name.setText(f"{self._filename} · {text}" if text else self._filename)
+
 
 class DownloadPanel(QWidget):
     """Estado en vivo de la descarga. `bind()` la engancha al puente y la cola."""
@@ -82,15 +92,24 @@ class DownloadPanel(QWidget):
         self._lm = locale
         self._rows: list[_WorkerRow] = []
         self._cooldown_left = 0
+        self._cooldown_until = 0.0
+        self._worker_states = {}
+        self._worker_activity = {}
         self._quota_state = None
         self._quota_in_flight = 0
         self._quota_next_release = 0
+        self._quota_release_at = 0.0
 
         self._build_ui()
 
         self._cooldown_timer = QTimer(self)
         self._cooldown_timer.setInterval(1000)
         self._cooldown_timer.timeout.connect(self._tick_cooldown)
+
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(1000)
+        self._status_timer.timeout.connect(self._render_worker_states)
+        self._status_timer.start()
 
         self._quota_timer = QTimer(self)
         self._quota_timer.setInterval(1000)
@@ -206,6 +225,7 @@ class DownloadPanel(QWidget):
         bridge.worker_progress.connect(self._on_worker_progress)
         bridge.worker_done.connect(self._on_worker_done)
         bridge.worker_idle.connect(self._on_worker_idle)
+        bridge.worker_state.connect(self._on_worker_state)
         bridge.counters.connect(self._on_counters)
         bridge.source_done.connect(self._on_source_done)
         bridge.site_blocked.connect(self._on_site_blocked)
@@ -229,6 +249,12 @@ class DownloadPanel(QWidget):
         self.refresh_pawchive_quota()
 
     def set_phase(self, text: str) -> None:
+        self._stop_cooldown()
+        for state in self._worker_states.values():
+            if state.slot < len(self._rows):
+                self._rows[state.slot].idle()
+        self._worker_states.clear()
+        self._worker_activity.clear()
         self._phase.setText(text)
 
     def append_log(self, message: str, level: str = "info") -> None:
@@ -312,6 +338,7 @@ class DownloadPanel(QWidget):
         self._quota_next_release = max(
             0, int(round(snapshot.next_release_seconds)),
         )
+        self._quota_release_at = time.time() + snapshot.next_release_seconds
         self._render_quota()
         self._quota.setVisible(True)
 
@@ -363,7 +390,7 @@ class DownloadPanel(QWidget):
     def _tick_quota(self) -> None:
         if self._quota_state is None or self._quota_next_release <= 0:
             return
-        self._quota_next_release -= 1
+        self._quota_next_release = max(0, math.ceil(self._quota_release_at - time.time()))
         if self._quota_next_release <= 0:
             self.refresh_pawchive_quota()
         else:
@@ -444,12 +471,80 @@ class DownloadPanel(QWidget):
         self._batch_bar.setVisible(total > 1)
 
     def _on_worker_start(self, slot: int, filename: str) -> None:
+        self._stop_cooldown()
         self._ensure_slots(slot + 1)
         self._rows[slot].start(filename)
 
     def _on_worker_progress(self, slot: int, done: int, total: int) -> None:
+        self._worker_activity[slot] = time.time()
         if slot < len(self._rows):
             self._rows[slot].progress(done, total)
+        self._render_worker_states()
+
+    def _on_worker_state(self, state) -> None:
+        self._stop_cooldown()
+        self._worker_states[state.slot] = state
+        if state.phase == "downloading":
+            self._worker_activity[state.slot] = time.time()
+        self._render_worker_states()
+
+    def _wait_description(self, state) -> str:
+        key, default = {
+            "quota_count": ("cherry.dl_wait_count", "Waiting for file quota"),
+            "quota_count_recovery": ("cherry.dl_wait_recovery", "Waiting to recover file slots"),
+            "quota_bytes": ("cherry.dl_wait_bytes", "Waiting for volume quota"),
+            "circuit": ("cherry.dl_wait_server", "Waiting to probe the server"),
+        }.get(state.reason, ("cherry.dl_wait_reservation", "Waiting for another transfer to release capacity"))
+        reason = self.tr(key, default)
+        reservation_wait = state.reason == "quota_bytes" and any(
+            s.phase == "downloading" for s in self._worker_states.values()
+        )
+        if state.until is None or reservation_wait:
+            return self.tr(
+                "cherry.dl_wait_no_time", "{reason} · rechecks when another transfer finishes",
+            ).format(reason=reason)
+        remaining = max(0, math.ceil(state.until - time.time()))
+        if not remaining:
+            return self.tr("cherry.dl_wait_rechecking", "{reason} · rechecking capacity…").format(reason=reason)
+        return self.tr(
+            "cherry.dl_wait_timed", "{reason} · rechecks in {duration} (at {at})",
+        ).format(reason=reason, duration=self._format_duration(remaining),
+                 at=time.strftime("%H:%M:%S", time.localtime(state.until)))
+
+    def _render_worker_states(self) -> None:
+        if not self._worker_states:
+            return
+        active = [s for s in self._worker_states.values() if s.phase == "downloading"]
+        waiting = [s for s in self._worker_states.values() if s.phase == "waiting"]
+        for state in active + waiting:
+            if state.slot >= len(self._rows):
+                continue
+            if state.phase == "waiting":
+                text = self._wait_description(state)
+            else:
+                age = max(0, int(time.time() - self._worker_activity.get(state.slot, time.time())))
+                text = self.tr("cherry.dl_transfer_active", "Transfer active")
+                if age >= 10:
+                    text += self.tr("cherry.dl_transfer_silent", " · no new bytes for {duration}").format(
+                        duration=self._format_duration(age))
+            self._rows[state.slot].status(text)
+        if active:
+            text = self.tr(
+                "cherry.dl_transfer_summary", "Transferring: {active} active · {waiting} waiting for capacity",
+            ).format(active=len(active), waiting=len(waiting))
+            silent = max(0, int(time.time() - max(
+                self._worker_activity.get(s.slot, time.time()) for s in active
+            )))
+            if silent >= 10:
+                text += self.tr("cherry.dl_transfer_silent", " · no new bytes for {duration}").format(
+                    duration=self._format_duration(silent))
+        elif waiting and not any(s.phase == "preparing" for s in self._worker_states.values()):
+            timed = [s for s in waiting if s.until is not None]
+            state = min(timed, key=lambda s: s.until) if timed else waiting[0]
+            text = "⏸ " + self._wait_description(state)
+        else:
+            text = self.tr("cherry.dl_transfer_preparing", "Preparing the next transfers…")
+        self._phase.setText(text)
 
     def _on_worker_done(self, slot: int, filename: str, icon: str) -> None:
         if slot < len(self._rows):
@@ -460,9 +555,11 @@ class DownloadPanel(QWidget):
             self._rows[slot].idle()
 
     def _on_source_done(self, url_id: int, file_count: int) -> None:
-        self.append_log(self.tr(
+        text = self.tr(
             "cherry.dl_source_done", "Source finished · {n} files in catalog"
-        ).format(n=file_count), "dim")
+        ).format(n=file_count)
+        self.set_phase(text)
+        self.append_log(text, "dim")
 
     def _on_site_blocked(self, site: str, streak: int, detail: str) -> None:
         """El sitio cerró la puerta. Se dice fuerte y se dice entero: lo que el
@@ -487,18 +584,24 @@ class DownloadPanel(QWidget):
 
     # ── Enfriamiento ──────────────────────────────────────────────────────
     def _on_cooldown(self, seconds: float) -> None:
-        self._cooldown_left = int(round(seconds))
+        self._stop_cooldown()
+        if seconds <= 0:
+            self._phase.setText(self.tr("cherry.dl_transfer_preparing", "Preparing the next transfers…"))
+            return
+        self._cooldown_until = time.time() + seconds
         self._tick_cooldown()
         self._cooldown_timer.start()
 
     def _tick_cooldown(self) -> None:
+        self._cooldown_left = max(0, math.ceil(self._cooldown_until - time.time()))
         if self._cooldown_left <= 0:
             self._stop_cooldown()
+            self._phase.setText(self.tr("cherry.dl_transfer_preparing", "Preparing the next transfers…"))
             return
-        self.set_phase(self.tr(
-            "cherry.dl_cooldown", "⏸ Cooling down · {s}s").format(s=self._cooldown_left))
-        self._cooldown_left -= 1
+        self._phase.setText(self.tr(
+            "cherry.dl_cooldown", "⏸ Pause after scanning · {s}s").format(s=self._cooldown_left))
 
     def _stop_cooldown(self) -> None:
         self._cooldown_timer.stop()
         self._cooldown_left = 0
+        self._cooldown_until = 0.0

@@ -65,6 +65,7 @@ class DownloadBridge(QObject):
     worker_progress  = Signal(int, object, object)  # slot, done, total
     worker_done      = Signal(int, str, str)   # slot, filename, icono
     worker_idle      = Signal(int)             # slot
+    worker_state     = Signal(object)          # phase + wait reason + absolute deadline
     counters         = Signal(int, int, int, int)  # bajados, saltados, err, difer.
     source_done      = Signal(int, int)        # url_id, file_count
     site_blocked     = Signal(str, int, str)   # sitio, racha, lo que dijo el server
@@ -268,7 +269,7 @@ class DownloadBridge(QObject):
         from third_party.cherry_dl.download_service import (
             BatchInfo, Cooldown, Counters, FileProgress, Log, ScanComplete, ScanProgress,
             QuotaStatus, SiteBlocked, SiteMetrics, SourceDone, SourceStarted, WorkerDone,
-            WorkerIdle, WorkerProgress, WorkerStart, WorkersResolved,
+            WorkerIdle, WorkerProgress, WorkerStart, WorkersResolved, WorkerState,
         )
 
         cls = type(ev)
@@ -289,6 +290,8 @@ class DownloadBridge(QObject):
             self.worker_done.emit(ev.slot, ev.filename, ev.icon)
         elif cls is WorkerIdle:
             self.worker_idle.emit(ev.slot)
+        elif cls is WorkerState:
+            self.worker_state.emit(ev)
         elif cls is Counters:
             self.counters.emit(ev.downloaded, ev.skipped, ev.errors, ev.deferred)
         elif cls is ScanProgress:

@@ -49,6 +49,21 @@ continuaciones ajenas y ciclos, y se acotan los 429 consecutivos a tres intentos
 la frontera ante esos fallos. Contratos sintéticos, sin credenciales ni red:
 `scripts/cherry_patreon_contract_selftest.py`.
 
+### Esperas de cuota y actividad de transferencias (2026-10-04)
+
+Las reservas transitorias disparaban avisos de cuota con cada archivo y un
+enfriamiento global que seguía visible al reanudarse la transferencia. El motor
+emite ahora estado por trabajador (preparando, transfiriendo, esperando, inactivo),
+con motivo y vencimiento absoluto; incluye esperas sin plazo por reservas/sondas.
+La consola anuncia pausa sólo cuando todos los trabajadores restantes esperan,
+y reanudación al admitir una transferencia. No repite avisos al liberar reservas.
+La interfaz distingue pausa de cuota, pausa posterior al escaneo y transferencia
+sin bytes recientes; los contadores usan hora de vencimiento, no ticks de Qt.
+El modo sin espera también difiere reservas sin plazo en vez de quedarse dormido.
+Sin cambios en topes, ventana, historial ni biblioteca. Banco aislado con HTTP
+local, reinicio con cuota llena, cancelación y reloj adelantado:
+`scripts/cherry_wait_status_selftest.py`.
+
 ### Mantenimiento: progreso por fases y escrituras por diferencias (2026-10-03)
 
 El mantenimiento conserva proyecto/fase/avance en la GUI con eventos limitados

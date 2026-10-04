@@ -24,6 +24,7 @@ from .url_receipts import remember_downloaded_url
 import json
 import logging
 import time
+import math
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -79,6 +80,7 @@ from .site_budget import (
     spent_today as budget_spent_today,
 )
 from .site_throttle import SiteThrottle, ThrottleDeferred
+from .transfer_status import TransferStatus, WorkerState
 from .site_policy import SourceCategory, declared_site_policy, resolve_site_policy
 from .live_metrics import SiteRunMetrics, append_metrics
 from .templates._registry import find_template, get_template
@@ -251,7 +253,7 @@ class QuotaStatus:
 
 DownloadEvent = Union[
     Log, WorkersResolved, SourceStarted, Cooldown, BatchInfo, FileProgress,
-    WorkerStart, WorkerProgress, WorkerDone, WorkerIdle,
+    WorkerStart, WorkerProgress, WorkerDone, WorkerIdle, WorkerState,
     Counters, SourceDone, ScanComplete, ScanProgress, SiteBlocked, SiteMetrics,
     QuotaStatus,
 ]
@@ -587,38 +589,30 @@ async def run_profile_download(
     throttles: dict[str, SiteThrottle] = {}
     throttle_meta: dict[str, dict] = {}
 
-    def _throttle_wait(site: str, kind: str, seconds: float) -> None:
+    def _throttle_wait(site: str, kind: str, until: float | None) -> None:
         meta = throttle_meta[site]
-        emit(Cooldown(seconds))
-        if kind == "quota":
-            msg = (
-                f"⏸ {site}: cuota de {meta['limit']} descargas en "
-                f"{meta['window'] / 3600:g} h alcanzada; reanuda "
-                f"automáticamente en {seconds / 60:.0f} min"
-            )
-        elif kind == "quota_bytes":
-            msg = (
-                f"⏸ {site}: cupo de {meta['gigabytes']:g} GiB en "
-                f"{meta['window'] / 3600:g} h ocupado por consumo o reservas; "
-                f"se reevalúa al liberar reservas o en {seconds / 60:.0f} min"
-            )
-        elif kind == "quota_count":
-            msg = (
-                f"⏸ {site}: cuota de {meta['limit']} descargas en "
-                f"{meta['window'] / 3600:g} h alcanzada; reanuda "
-                f"automáticamente en {seconds / 60:.0f} min"
-            )
+        if kind == "quota_bytes":
+            reason = f"esperando cupo de {meta['gigabytes']:g} GiB por volumen"
         elif kind == "quota_count_recovery":
-            msg = (
-                f"⏸ {site}: cuota de {meta['limit']} descargas alcanzada; "
-                f"acumula {meta['headroom']} slots y reanuda en "
-                f"{seconds / 60:.0f} min"
+            reason = (
+                f"esperando recuperar {meta['headroom']} cupos del límite "
+                f"de {meta['limit']} archivos"
             )
+        elif kind in {"quota", "quota_count"}:
+            reason = f"esperando cupo del límite de {meta['limit']} archivos"
         else:
-            msg = (
-                f"⏸ {site}: servidor de archivos aún sin respuesta; "
-                f"nueva prueba en {seconds / 60:.0f} min"
+            reason = "esperando una sonda del servidor"
+        if until is None:
+            release = "se reevalúa al liberar otra transferencia"
+        else:
+            seconds = max(0, math.ceil(until - time.time()))
+            hours, remainder = divmod(seconds, 3600)
+            minutes, secs = divmod(remainder, 60)
+            duration = f"{hours} h {minutes} min {secs} s" if hours else (
+                f"{minutes} min {secs} s" if minutes else f"{secs} s"
             )
+            release = f"próxima revisión en {duration} ({time.strftime('%H:%M:%S', time.localtime(until))})"
+        msg = f"⏸ {site}: transferencias en espera; {reason}; {release}"
         log.warning(msg)
         emit(Log(msg, "warn"))
 
@@ -633,18 +627,19 @@ async def run_profile_download(
         emit(Log(msg, "warn"))
 
     def _defer_throttled_batch(site: str, exc: ThrottleDeferred) -> None:
+        if site in blocked_sites:
+            return
         meta = throttle_meta[site]
         if exc.kind == "quota_bytes":
-            reason = f"alcanzó {meta['gigabytes']:g} GB en su ventana móvil"
+            reason = f"espera cupo de {meta['gigabytes']:g} GiB por consumo o reservas"
         elif exc.kind in {"quota_count", "quota_count_recovery"}:
-            reason = f"alcanzó {meta['limit']} descargas en su ventana móvil"
+            reason = f"espera cupo del límite de {meta['limit']} archivos"
         else:
             reason = "su sonda de archivos sigue en enfriamiento"
         blocked_sites[site] = reason
         emit(SiteBlocked(site, 0, reason))
         emit(Log(
-            f"⏭ {site}: {reason}; esta pasada continúa sin esperar "
-            f"{exc.seconds / 60:.0f} min. La cola se conserva.",
+            f"⏭ {site}: {reason}; esta pasada continúa sin esperar. La cola se conserva.",
             "warn",
         ))
 
@@ -1117,7 +1112,10 @@ async def run_profile_download(
             if new_this_scan >= threshold:
                 emit(Cooldown(cooldown))
                 emit(Log(f"⏸ Enfriamiento {cooldown:.0f}s antes de descargar…", "warn"))
-                await asyncio.sleep(cooldown)
+                try:
+                    await asyncio.sleep(cooldown)
+                finally:
+                    emit(Cooldown(0))
 
             if scan_only:
                 count = await pending_count(folder, pu_id)
@@ -1271,11 +1269,31 @@ async def run_profile_download(
                     raise
 
             in_progress_hashes: set[str] = set()
+            transfer_status = TransferStatus(src_workers)
+            for state in transfer_status.workers.values():
+                emit(state)
+
+            def _worker_state(
+                slot: int, phase: str, reason: str = "", until: float | None = None,
+            ) -> None:
+                state = WorkerState(slot, phase, reason, until)
+                emit(state)
+                transition = transfer_status.update(state)
+                if transition is None:
+                    return
+                action, waiting = transition
+                if action == "paused":
+                    _throttle_wait(template.name, waiting.reason, waiting.until)
+                else:
+                    msg = f"▶ {template.name}: espera terminada; transferencias reanudadas"
+                    log.info(msg)
+                    emit(Log(msg, "info"))
 
             async def worker_task(slot_id: int) -> None:
                 while True:
                     fi = await file_queue.get()
                     if fi is None:
+                        _worker_state(slot_id, "idle")
                         emit(WorkerIdle(slot_id))
                         break
 
@@ -1357,13 +1375,15 @@ async def run_profile_download(
 
                         if throttle is not None:
                             throttle_permit = await throttle.acquire(
-                                lambda kind, seconds: _throttle_wait(
-                                    template.name, kind, seconds,
-                                ),
                                 expected_bytes=fi.remote_size,
                                 wait=_wait_on_site_throttle(source_categories),
+                                on_state=lambda kind, until: _worker_state(
+                                    slot_id, "waiting", kind, until,
+                                ),
                             )
                             _emit_quota_status(force=True)
+
+                        _worker_state(slot_id, "downloading")
 
                         async def _reserve_http_size(size: int) -> int:
                             return await throttle.resize(throttle_permit, size)
@@ -1665,6 +1685,7 @@ async def run_profile_download(
                     finally:
                         if throttle is not None:
                             await throttle.abandon(locals().get("throttle_permit"))
+                        _worker_state(slot_id, "preparing")
                         if fi.remote_hash:
                             in_progress_hashes.discard(fi.remote_hash)
                         _file_finished()

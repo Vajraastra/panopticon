@@ -95,7 +95,7 @@ class Recorder:
         for name in (
             "log_line", "workers_resolved", "source_started", "cooldown",
             "batch_info", "file_progress", "scan_progress", "scan_complete", "worker_start",
-            "worker_progress", "worker_done", "worker_idle", "counters",
+            "worker_progress", "worker_done", "worker_idle", "worker_state", "counters",
             "source_done", "site_metrics", "quota_status", "unknown_event",
         ):
             getattr(bridge, name).connect(self._make_slot(name))
@@ -168,12 +168,12 @@ def test_index_read(app, runtime) -> list[dict]:
 
 
 def test_event_bridge(app, runtime, bridge, rec) -> None:
-    print("\n[3] Los 16 DownloadEvent cruzan de hilo")
+    print("\n[3] Los 17 DownloadEvent cruzan de hilo")
     import asyncio
     from third_party.cherry_dl.download_service import (
         BatchInfo, Cooldown, Counters, FileProgress, Log, QuotaStatus, ScanComplete,
         ScanProgress, SiteMetrics, SourceDone, SourceStarted, WorkerDone, WorkerIdle,
-        WorkerProgress, WorkerStart, WorkersResolved,
+        WorkerProgress, WorkerStart, WorkersResolved, WorkerState,
     )
     from third_party.cherry_dl.site_throttle import QuotaSnapshot
 
@@ -184,12 +184,13 @@ def test_event_bridge(app, runtime, bridge, rec) -> None:
         WorkerStart(0, "a.jpg"),
         WorkerProgress(0, 5, 10), WorkerDone(0, "a.jpg", "✓"),
         WorkerIdle(0), Counters(1, 2, 3, 4), SourceDone(7, 42),
+        WorkerState(0, "waiting", "quota_count_recovery", 1_800_000_000.),
         ScanComplete(9), SiteMetrics("pixiv", {"files_per_minute": 4.0}),
         QuotaStatus(QuotaSnapshot(
             "pawchive", 20, 500, 1024, 25 * 1024**3, 1, 10_800, 900,
         ), 512),
     ]
-    check("son 16 tipos de evento", len(samples) == 16, f"({len(samples)})")
+    check("son 17 tipos de evento", len(samples) == 17, f"({len(samples)})")
 
     rec.events.clear()
     rec.threads.clear()
@@ -200,15 +201,15 @@ def test_event_bridge(app, runtime, bridge, rec) -> None:
         return threading.get_ident()
 
     emitter_tid = runtime.run_sync(fire(), timeout=5)
-    got_all = pump(app, lambda: len(rec.events) >= 16, timeout=5)
+    got_all = pump(app, lambda: len(rec.events) >= 17, timeout=5)
 
-    check("los 16 llegan a la GUI", got_all, f"(llegaron {len(rec.events)})")
+    check("los 17 llegan a la GUI", got_all, f"(llegaron {len(rec.events)})")
     check("se emitieron desde el hilo del loop", emitter_tid != MAIN_THREAD)
     check("se reciben en el hilo GUI (conexión queued)",
           rec.threads == {MAIN_THREAD}, f"(hilos {rec.threads})")
     faltan = {"log_line", "workers_resolved", "source_started", "cooldown",
               "batch_info", "file_progress", "scan_progress", "worker_start", "worker_progress",
-              "worker_done", "worker_idle", "counters", "source_done",
+              "worker_done", "worker_idle", "worker_state", "counters", "source_done",
               "scan_complete", "site_metrics", "quota_status"} - set(rec.names())
     check("ninguno cae en unknown_event", not faltan and rec.count("unknown_event") == 0,
           f"(faltan {faltan})")
