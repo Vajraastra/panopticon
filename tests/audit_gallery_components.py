@@ -1,25 +1,28 @@
 
 import sys
 import os
-import time
+import tempfile
+from pathlib import Path
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QSize
 
 def test_db_manager():
     print("\n[Audit] Testing DatabaseManager...")
     try:
-        from modules.librarian.logic.db_manager import DatabaseManager
-        db = DatabaseManager()
-        folders = db.get_watched_folders()
-        print(f"  [OK] Database initialized. Watched folders: {len(folders)}")
-        
-        # Test basic query
-        count = db.conn.execute("SELECT count(*) FROM files").fetchone()[0]
-        print(f"  [OK] File count in DB: {count}")
+        from core.database_manager import DatabaseManager
+        from core.library_service import LibraryService
+        with tempfile.TemporaryDirectory() as directory:
+            service = LibraryService(Path(directory) / 'fixture.db')
+            try:
+                db = DatabaseManager(service=service)
+                assert db.get_watched_folders() == []
+                assert db.count_files() == 0
+                print("  [OK] Temporary library is empty and readable.")
+            finally:
+                service.close()
         return True
     except Exception as e:
         print(f"  [FAIL] DatabaseManager error: {e}")
@@ -29,10 +32,11 @@ def test_loader():
     print("\n[Audit] Testing ThumbnailLoader...")
     try:
         from modules.gallery.logic.loader import get_loader
-        loader = get_loader()
-        
-        # We need a qapp for loader signals
+        # Qt must exist before constructing its objects.
         app = QApplication.instance() or QApplication(sys.argv)
+        loader = get_loader()
+        loader.shutdown()
+        assert loader.shutdown_ready()
         
         print("  [OK] Loader instance retrieved.")
         return True

@@ -57,6 +57,12 @@ cache/
 
 # Configuration (user-specific)
 config.json
+theme_config.json
+
+# Local audit reports and working notes (not additional checkouts)
+.work/
+audit-*/
+.session-doc-backups/
 
 # Debug scripts
 debug_*.py

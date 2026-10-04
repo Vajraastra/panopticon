@@ -2,6 +2,7 @@ import colorsys
 import json
 import os
 import logging
+import tempfile
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QColor
 from core.locale_manager import LocaleManager
@@ -184,6 +185,8 @@ class ThemeManager(QObject):
         try:
             with open(self.config_path, 'r') as f:
                 saved = json.load(f)
+            if not isinstance(saved, dict):
+                raise ValueError("Theme configuration must be an object")
         except Exception as e:
             log.warning("Error loading theme config: %s", e)
             return
@@ -212,15 +215,28 @@ class ThemeManager(QObject):
         en overrides que tapaban cualquier retoque posterior de `THEMES` (es lo que
         obligó a la migración de PALETTE_VERSION).
         """
+        temporary = None
         try:
             base = self.THEMES.get(self.current_theme, self.DEFAULTS)
             data = {"current_theme": self.current_theme,
                     "palette_version": self.PALETTE_VERSION}
             data.update({k: v for k, v in self.colors.items() if base.get(k) != v})
-            with open(self.config_path, 'w') as f:
+            with tempfile.NamedTemporaryFile(
+                mode='w', encoding='utf-8',
+                dir=os.path.dirname(os.path.abspath(self.config_path)),
+                prefix='.theme-', suffix='.tmp', delete=False,
+            ) as f:
+                temporary = f.name
                 json.dump(data, f, indent=4)
+            os.replace(temporary, self.config_path)
         except Exception as e:
             log.warning("Error saving theme config: %s", e)
+        finally:
+            if temporary and os.path.exists(temporary):
+                try:
+                    os.unlink(temporary)
+                except OSError as e:
+                    log.warning("Error removing temporary theme config: %s", e)
 
     def set_theme(self, theme_key):
         """Aplica un tema predefinido, guarda la configuración y emite theme_changed."""
