@@ -6,6 +6,17 @@ documentación, manejo de errores) están en el `AGENTS.md` global y no se repit
 **Qué es:** hub modular de creación de datasets de imágenes, GPU-first. PySide6 + SQLite.
 El estado de la biblioteca vive en `panopticon.db` (~294K archivos indexados).
 
+## Copia de trabajo e historial
+
+Decisión de David (2026-10-03): mantener **una sola copia de trabajo**, este
+repositorio, y usar **Git** para el historial y la recuperación del código. Esta
+regla sustituye la indicación anterior de clonar antes de editar. No crear clones,
+ZIP ni bundles como respaldos rutinarios de versiones ya integradas. Retirar los
+residuos que la versión actual no usa; no confundirlos con biblioteca, curación,
+sesiones ni recuperación de operaciones pendientes. Las notas ignoradas por Git
+se mantienen actuales; cuando necesiten respaldo previo, usar una única copia
+rotativa, no una cadena de respaldos históricos.
+
 ## Arrancar y detener
 
 - **`run.bat`** es el launcher (Windows nativo, sin Git Bash). Crea/repara el venv con `uv`
