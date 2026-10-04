@@ -303,6 +303,7 @@ class QtDelivery(unittest.TestCase):
             return original(repo, folder)
 
         state = GalleryState()
+        state.set_mode(state.VIEW_IMAGES)
         grid = GalleryGrid(state, QueryEngine(self.service))
         self.readers.append(grid.reader)
         self.addCleanup(grid.shutdown)
@@ -321,6 +322,60 @@ class QtDelivery(unittest.TestCase):
             release.set()
             self.assertTrue(barrier.result(3))
         self.assertTrue(pump(lambda: self.service.read('get_file_rating', path) == 4))
+
+    def test_grid_rejects_rating_for_replaced_copy_in_all_image_modes(self):
+        for mode in ('images', 'custom', 'filtered'):
+            with self.subTest(mode=mode):
+                path = f'C:/fixture/{mode}.png'
+                self.service.submit('register_files_minimal', [dict(path=path,
+                    filename=mode+'.png', size=1, created=1, hash_original='a'*64)]).result(3)
+                state = GalleryState()
+                if mode == 'images':
+                    state.set_mode(state.VIEW_IMAGES)
+                else:
+                    state.set_mode(state.VIEW_CUSTOM, custom_paths=[path])
+                    if mode == 'filtered':
+                        state.search_terms = [mode]
+                grid = GalleryGrid(state, QueryEngine(self.service))
+                self.readers.append(grid.reader)
+                self.addCleanup(grid.shutdown)
+                self.addCleanup(grid.deleteLater)
+                self.assertTrue(pump(lambda: not grid._loading))
+                thumb = next(grid.grid_layout.itemAt(i).widget()
+                    for i in range(grid.grid_layout.count())
+                    if grid.grid_layout.itemAt(i).widget().path == path)
+                old = self.service.read('get_curation_snapshot', [path], include_revision=True)[0]
+                self.service.submit('archive_copy', old['id'], expected_fingerprint=old['fingerprint']).result(3)
+                archived = self.service.read('get_copy_version_state', old['id'])
+                self.service.submit('make_copy_online', old['id'], expected_fingerprint=archived['fingerprint'],
+                    digest='b'*64, observation=dict(filename=mode+'.png', size=1, created=1)).result(3)
+                with patch.object(QMessageBox, 'warning') as warning:
+                    thumb.rating_changed.emit(path, 5)
+                    self.assertTrue(pump(lambda: warning.called and not grid._loading))
+                current = self.service.read('get_curation_snapshot', [path])[0]
+                self.assertNotEqual(current['id'], old['id'])
+                self.assertEqual(current['rating'], 0)
+                self.assertEqual(self.service.read('get_copy_version_state', old['id'])['state']['file']['rating'], 0)
+                grid.shutdown()
+
+    def test_grid_stale_rating_does_not_overwrite_newer_curation(self):
+        path = 'C:/fixture/concurrent.png'
+        self.service.submit('register_files_minimal', [dict(path=path,
+            filename='concurrent.png', size=1, created=1)]).result(3)
+        state = GalleryState()
+        state.set_mode(state.VIEW_CUSTOM, custom_paths=[path])
+        grid = GalleryGrid(state, QueryEngine(self.service))
+        self.readers.append(grid.reader)
+        self.addCleanup(grid.shutdown)
+        self.addCleanup(grid.deleteLater)
+        self.assertTrue(pump(lambda: not grid._loading))
+        self.service.submit('edit_curation', path, rating=4).result(3)
+        with patch.object(QMessageBox, 'warning') as warning:
+            grid.grid_layout.itemAt(0).widget().rating_changed.emit(path, 1)
+            self.assertTrue(pump(lambda: warning.called and not grid._loading))
+        self.assertEqual(self.service.read('get_file_rating', path), 4)
+        grid.update_rating(path, 5)
+        self.assertTrue(pump(lambda: self.service.read('get_file_rating', path) == 5 and not grid._loading))
 
     def test_sidebar_quoted_text_reaches_metadata_query(self):
         from modules.gallery.ui.sidebar import GallerySidebar

@@ -176,7 +176,8 @@ class External(unittest.TestCase):
         state.tags = ['portrait']
         state.set_mode(state.VIEW_CUSTOM, custom_paths=[self.a] * 10001)
         self.assertTrue(pump(lambda: not grid._loading))
-        self.assertIn('exceeds', grid.lbl_page.text())
+        from core.locale_manager import LocaleManager
+        self.assertEqual(grid.lbl_page.text(), LocaleManager().tr('gallery.external_scope_limit'))
         self.assertIn('read_payload_too_large', grid.lbl_page.toolTip())
         self.assertEqual(grid.grid_layout.count(), 0)
         self.assertFalse(grid.btn_next.isEnabled())

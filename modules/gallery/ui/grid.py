@@ -20,6 +20,8 @@ class GalleryGrid(QWidget):
         self.loader = ThumbnailLoader()
         self._closed = False
         self._loading = False
+        self._image_bindings = {}
+        self._pending_image_page = None
         self.reader = LibraryReader(self.engine.db.service, self)
         self.writer = LibraryWriter(self.engine.db.service, self)
         self.reader.result.connect(self.on_query_result)
@@ -93,6 +95,8 @@ class GalleryGrid(QWidget):
             return
         # 1. Clear Grid
         self.clear_grid()
+        self._image_bindings = {}
+        self._pending_image_page = None
         
         # 2. Fetch Data
         self._loading = True
@@ -116,7 +120,7 @@ class GalleryGrid(QWidget):
                 start = self.state._page * self.state._page_size
                 self._custom_page = tuple(self.state._custom_paths[start:start + self.state._page_size])
                 if self._custom_page:
-                    self.reader.request('get_curation_snapshot', self._custom_page)
+                    self.reader.request('get_curation_snapshot', self._custom_page, include_revision=True)
                 else:
                     self.reader.invalidate()
                     self.on_query_result(0, [], None)
@@ -140,12 +144,24 @@ class GalleryGrid(QWidget):
             self.btn_prev.setEnabled(self.state._page > 0)
             self.btn_next.setEnabled(False)
             return
-        if self.state.mode == self.state.VIEW_CUSTOM and not self._custom_filtered:
+        if self._pending_image_page is not None:
+            total, paths = self._pending_image_page
+            self._pending_image_page = None
+            self._image_bindings = dict(zip(paths, value))
+            rows = [(path, record['rating'] or 0) for path, record in zip(paths, value)]
+        elif self.state.mode == self.state.VIEW_CUSTOM and not self._custom_filtered:
             total = self._custom_total
+            self._image_bindings = dict(zip(self._custom_page, value))
             rows = [(path, record['rating'] or 0)
                     for path, record in zip(self._custom_page, value)]
         else:
             total, rows = value
+            if self.state.mode != self.state.VIEW_ALBUMS and rows:
+                paths = tuple(path for path, _ in rows)
+                self._pending_image_page = (total, paths)
+                self._loading = True
+                self.reader.request('get_curation_snapshot', paths, include_revision=True)
+                return
         self.lbl_page.setToolTip('')
         self.state.set_total_items(total)
         if self.state._page >= self.state.total_pages:
@@ -185,7 +201,9 @@ class GalleryGrid(QWidget):
             
             # Connect signals
             thumb.clicked.connect(self.on_image_clicked)
-            thumb.rating_changed.connect(self.update_rating)
+            binding = self._image_bindings.get(path, {})
+            thumb.rating_changed.connect(
+                lambda p, r, row=binding: self.update_rating(p, r, binding=row))
             
             # Selection state
             if path in self.state.selected_paths:
@@ -225,11 +243,20 @@ class GalleryGrid(QWidget):
         if self.state._page < total_pages - 1:
             self.state.set_page(self.state._page + 1)
 
-    def update_rating(self, path, rating):
-        self.writer.submit('update_file_rating', path, rating)
+    def update_rating(self, path, rating, *, binding=None):
+        if self._closed:
+            return
+        row = binding if binding is not None else self._image_bindings.get(path)
+        if not row or row['id'] is None or not row.get('fingerprint'):
+            self.on_rating_result(0, False, ValueError('gallery_unconfirmed_copy'))
+            return
+        self.writer.submit('edit_curation', path, rating=rating,
+                           expected_copy_id=row['id'], expected_fingerprint=row['fingerprint'])
 
     def on_rating_result(self, ticket, value, error):
-        if error is not None:
+        if self._closed:
+            return
+        if error is not None or value is not True:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, LocaleManager().tr('gallery.db.title', 'Library'),
                                 LocaleManager().tr('gallery.db.write_error', 'Could not save rating.'))
