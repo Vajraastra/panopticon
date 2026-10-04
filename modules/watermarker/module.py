@@ -101,6 +101,12 @@ class WatermarkerModule(BaseModule):
         self.lbl_image_status.setStyleSheet(f"color: {text_dim}; font-size: 10px;")
         layout.addWidget(self.lbl_image_status)
 
+        self.lbl_input_notice = QLabel()
+        self.lbl_input_notice.setTextFormat(Qt.PlainText)
+        self.lbl_input_notice.setWordWrap(True)
+        self.lbl_input_notice.hide()
+        layout.addWidget(self.lbl_input_notice)
+
         layout.addSpacing(10)
 
         # 2. Watermark
@@ -253,10 +259,8 @@ class WatermarkerModule(BaseModule):
             "Images (*.png *.jpg *.jpeg *.webp *.avif)"
         )
         if path and self._alive():
-            self.source_image = path
-            self.lbl_image_status.setText(os.path.basename(path))
             self.last_dir = os.path.dirname(path)
-            self.generate_preview()
+            self.load_image_set([path])
 
     def load_watermark_asset(self):
         if not self._alive():
@@ -299,9 +303,7 @@ class WatermarkerModule(BaseModule):
         paths = [url.toLocalFile() for url in event.mimeData().urls()]
         image_paths = [p for p in paths if p.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.avif'))]
         if image_paths:
-            self.source_image = image_paths[0]
-            self.lbl_image_status.setText(os.path.basename(self.source_image))
-            self.generate_preview()
+            self.load_image_set(image_paths)
 
     def _alive(self):
         return not self._closed and self.view is not None and isValid(self.view)
@@ -455,14 +457,20 @@ class WatermarkerModule(BaseModule):
         return owner_threads_ready(self) and native_done(self._worker)
 
     def load_image_set(self, paths: list):
-        if self._closed:
+        if self._closed or not paths:
             return
-        if paths:
-            self.source_image = paths[0]
-            if hasattr(self, 'lbl_image_status'):
-                self.lbl_image_status.setText(os.path.basename(self.source_image))
-            if hasattr(self, 'lbl_preview'):
-                self.generate_preview()
+        if len(paths) != 1:
+            self.get_view()
+            self.lbl_input_notice.setText(self.tr('tool.watermarker.single_image',
+                'Watermarker edits one image at a time. The set was not loaded. Send a single image.'))
+            self.lbl_input_notice.show()
+            return
+        self.source_image = paths[0]
+        if hasattr(self, 'lbl_image_status'):
+            self.lbl_input_notice.hide()
+            self.lbl_image_status.setText(os.path.basename(self.source_image))
+        if hasattr(self, 'lbl_preview'):
+            self.generate_preview()
 
     def run_headless(self, params: dict, input_data) -> None:
         pass

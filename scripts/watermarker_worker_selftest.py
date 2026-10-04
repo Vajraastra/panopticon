@@ -120,6 +120,51 @@ class WatermarkerQt(unittest.TestCase):
         self.assertLessEqual(module.lbl_preview.pixmap().width(),1600)
         self.assertEqual(list(self.root.glob('.panopticon-watermark-*')),[])
 
+    def test_batch_delivery_rejected_without_replacing_current_image(self):
+        module = self.module()
+        self.select(module)
+        self.settle(module)
+        generation = module._preview_generation
+        module.load_image_set([str(self.asset), str(self.source)])
+        self.assertEqual(module.source_image, str(self.source))
+        self.assertEqual(module._preview_generation, generation)
+        self.assertIsNone(module._worker)
+        self.assertFalse(module.lbl_input_notice.isHidden())
+        module.load_image_set([str(self.asset)])
+        self.settle(module)
+        self.assertEqual(module.source_image, str(self.asset))
+        self.assertTrue(module.lbl_input_notice.isHidden())
+
+    def test_first_batch_shows_limit_without_loading_prefix(self):
+        module = self.module(view=False)
+        module.load_image_set([str(self.source), str(self.asset)])
+        self.assertIsNone(module.source_image)
+        self.assertIsNone(module._preview_pending)
+        self.assertIsNone(module._worker)
+        self.assertFalse(module.lbl_input_notice.isHidden())
+        self.assertFalse(module.btn_save.isEnabled())
+
+    def test_batch_drop_uses_same_complete_rejection(self):
+        from PySide6.QtCore import QMimeData, QUrl
+        from unittest.mock import Mock
+        module = self.module()
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(self.source)), QUrl.fromLocalFile(str(self.asset))])
+        event = Mock()
+        event.mimeData.return_value = mime
+        module._drop(event)
+        self.assertIsNone(module.source_image)
+        self.assertIsNone(module._preview_pending)
+        self.assertFalse(module.lbl_input_notice.isHidden())
+
+    def test_empty_or_late_delivery_does_not_construct_view(self):
+        module = self.module(view=False)
+        module.load_image_set([])
+        self.assertIsNone(module.view)
+        module.on_unload()
+        module.load_image_set([str(self.source), str(self.asset)])
+        self.assertIsNone(module.view)
+
     def test_burst_has_one_running_and_only_latest_preview_pending(self):
         entered,release,calls,context = self.block_preview()
         with context:

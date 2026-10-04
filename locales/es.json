@@ -1872,6 +1872,7 @@
   "wm.selection_changed": "La imagen o los ajustes cambiaron al elegir el destino. Revísalos y vuelve a guardar.",
   "wm.image_filter": "Imágenes (*.png *.jpg *.jpeg *.webp *.avif)",
   "wm.saving_copy": "Guardando copia…",
+  "tool.watermarker.single_image": "Watermarker edita una imagen a la vez. No se cargó el conjunto. Envía una sola imagen.",
   "gallery.thumbnail_unavailable": "No disponible",
   "lib.identity.open": "Revisar identidad de rutas…",
   "lib.identity.open_tip": "Prepara la identidad de nombres según Windows y revisa los IDs en conflicto. Conserva nombres, archivos, curación y carpetas portátiles.",

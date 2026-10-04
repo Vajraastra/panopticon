@@ -18,7 +18,7 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 | **Duplicate Finder** | Reviews exact SHA-256 duplicates with curation priority and recoverable retirement; visual similarity stays review-only. |
 | **Format Scanner** | Analyzes the distribution of image formats across a collection for statistical review. |
 | **Image Optimizer** | Compresses and re-encodes images in batch. Supports AVIF, PNG (via oxipng), and standard formats. |
-| **Watermarker** | Batch watermarking with configurable position, opacity, and scale. Deliberately removes embedded generation metadata from public output files. |
+| **Watermarker** | Adds a watermark or logo to one image at a time, with configurable position, opacity, and scale. Deliberately removes embedded generation metadata from public output files. |
 | **Metadata Hub** | Inspect and edit embedded metadata (EXIF, tags, captions) across your collection. |
 | **Dataset Tagger** | Auto-captions image folders with a local or online vision LLM plus a WD tagger, producing kohya-style `.txt` sidecars for training datasets (booru tags and natural language, per-model templates). |
 | **Pickler** | Manual culling with verified image/caption transfers: moves preserve curated IDs, explicit copies inherit initial curation independently, and guarded undo preserves changed files. |

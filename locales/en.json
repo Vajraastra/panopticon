@@ -1872,6 +1872,7 @@
   "wm.selection_changed": "The image or settings changed while choosing a destination. Review them and save again.",
   "wm.image_filter": "Images (*.png *.jpg *.jpeg *.webp *.avif)",
   "wm.saving_copy": "Saving copy…",
+  "tool.watermarker.single_image": "Watermarker edits one image at a time. The set was not loaded. Send a single image.",
   "gallery.thumbnail_unavailable": "Unavailable",
   "lib.identity.open": "Review path identities…",
   "lib.identity.open_tip": "Prepare Windows naming evidence and review conflicting copy IDs. Preserves names, files, curation and portable folders.",
