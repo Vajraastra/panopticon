@@ -1,5 +1,5 @@
 """Exclusión del dueño central entre procesos Windows, sólo bases temporales."""
-from contextlib import closing
+from contextlib import chdir, closing
 import json
 import os
 from pathlib import Path
@@ -137,12 +137,14 @@ class WriterGuard(helpers.Fixture):
             alias.unlink()
 
     def test_relative_and_windows_case_aliases_share_guard(self):
-        aliases = [os.path.relpath(self.service.db_path)]
-        if os.name == 'nt':
-            aliases.append(self.service.db_path.upper())
-        for alias in aliases:
-            with self.assertRaisesRegex(LibraryError, 'database_writer_active'):
-                LibraryService(alias)
+        # A relative Windows path cannot cross drives (checkout E:, temp C:).
+        with chdir(self.temp.name):
+            aliases = [os.path.relpath(self.service.db_path)]
+            if os.name == 'nt':
+                aliases.append(self.service.db_path.upper())
+            for alias in aliases:
+                with self.assertRaisesRegex(LibraryError, 'database_writer_active'):
+                    LibraryService(alias)
 
     def test_ownership_remains_held_until_sqlite_connection_is_closed(self):
         path = Path(self.temp.name) / 'closing.db'

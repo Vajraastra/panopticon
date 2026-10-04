@@ -64,8 +64,8 @@ async def main() -> None:
                   "la recuperación recomendada debe acumular 50 slots")
             check(defaults.pawchive.gigabytes_per_window == 25.0,
                   "la cuota recomendada debe ser 25 GB")
-            check(defaults.pawchive.window_hours == 3.0,
-                  "la ventana recomendada debe ser de 3 horas")
+            check(defaults.pawchive.window_hours == 2.0,
+                  "la ventana recomendada debe ser de 2 horas")
             custom = defaults.model_copy(update={
                 "pawchive": config.PawchiveConfig(
                     downloads_per_window=425, gigabytes_per_window=18.5,
