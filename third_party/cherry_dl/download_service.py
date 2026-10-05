@@ -1396,11 +1396,16 @@ async def run_profile_download(
                             return await throttle.resize(throttle_permit, size)
 
                         async def _reserve_raw_size(size: int) -> int:
-                            if size == 0:
-                                return throttle_permit.reserved_bytes
                             allowed = await throttle.resize(throttle_permit, size)
                             _emit_quota_status(force=True)
                             return allowed
+
+                        async def _resume_after_quota() -> None:
+                            await throttle.refill(throttle_permit,
+                                on_state=lambda kind, until: _worker_state(
+                                    slot_id, "waiting", kind, until))
+                            _worker_state(slot_id, "downloading")
+                            _emit_quota_status(force=True)
 
                         def _received_raw(amount: int) -> None:
                             throttle.record_raw_bytes(throttle_permit, amount)
@@ -1414,7 +1419,10 @@ async def run_profile_download(
                                     filename=final_name,
                                     on_progress=make_cb(slot_id),
                                     **(({"on_response_size": _reserve_raw_size,
-                                         "on_raw_bytes": _received_raw}
+                                         "on_raw_bytes": _received_raw,
+                                         "on_raw_capacity": lambda: throttle_permit.reserved_bytes,
+                                         "on_quota_pause": _resume_after_quota,
+                                         "expected_hash": fi.remote_hash}
                                         if throttle.raw_traffic else
                                         {"max_file_bytes": throttle_permit.reserved_bytes,
                                          "on_file_size": _reserve_http_size})
@@ -1425,7 +1433,9 @@ async def run_profile_download(
                                     browser_origin=browser_origin,
                                     on_observation=source_metrics.observe,
                                 ),
-                                timeout=7200.0,
+                                # A quota pause can outlive two hours. Engine
+                                # watches actual progress and excludes quota waits.
+                                timeout=None if throttle is not None and throttle.raw_traffic else 7200.0,
                             )
 
                         try:

@@ -28,6 +28,33 @@
 
 ## Divergencias respecto a `befa56d`
 
+### HTTP sin tamaño y continuación por cuota (David, 2026-10-05)
+
+El guard inicial de af9d659 descartaba cuerpos chunked o sin Content-Length,
+dejando originales válidos aplazados en cada Sync. David pidió iniciarlos y
+conservar su parcial durante una pausa por cuota, reanudando después.
+
+`raw_read_guard.py` limita la lectura HTTP/1 antes del socket según la reserva
+del intento. ContextVar separa workers; el backend se instala antes de scans y
+conserva el límite al pasar a TLS. La integración privada pool/network_backend
+de HTTPX está aislada y se verifica con TCP local y delegación TLS. No se cambia
+ninguna dependencia instalada, catálogo Cherry, biblioteca ni sesión autenticada.
+
+Al agotarse la reserva, el engine cierra HTTP, vuelca el parcial y espera volumen
+sin watchdog ni timeout absoluto de dos horas. Reanuda con Range/If-Range,
+comprobando posición e identidad; solicita encoding identity y verifica SHA-256
+del productor cuando existe. Con origen sin identidad segura o Range ignorado,
+reinicia; no mezcla representaciones. El EOF desconocido al agotar el cupo se
+resuelve por SHA o solapamiento validado de un byte. Sólo el archivo completado
+cuenta como éxito; todo cuerpo recibido, incluidos solapamientos/reinicios, cuenta
+como volumen. Cancelar/cerrar conserva el comportamiento previo de borrar el tmp;
+esto no implementa continuación durable entre sesiones.
+
+`awaiting_archive` conserva su circuito de revisión semanal/manual independiente:
+la prueba integrada recibe 404 chunked, conserva la espera sin sumar un éxito,
+repite Sync sin reactivarlo y descarga al publicar/revisar explícitamente.
+Banco: `scripts/cherry_stream_resume_selftest.py`, sólo servidor/datos privados.
+
 ### Pawchive: volumen crudo y cuota adaptativa (David, 2026-10-05)
 
 David confirmó las pruebas vivas de los avisos anteriores y autorizó distinguir
@@ -45,7 +72,8 @@ bytes ya recibidos. No se cambia ningún catálogo Cherry. Ante una salida no li
 las reservas no reconocidas se contabilizan conservadoramente al reiniciar; ante
 un error de escritura no se admite más tráfico ni se borra esa evidencia.
 El historial previo de éxitos se importa una sola vez; no inventa tráfico de
-intentos antiguos. HTTP sin Content-Length verificable se difiere antes del cuerpo.
+intentos antiguos. La restricción inicial de Content-Length se sustituyó por
+lecturas acotadas y continuación por cuota; ver la divergencia anterior.
 
 El engine observa el stream antes de decodificarlo o esperar por caudal/progreso.
 Cambiar la velocidad conserva deuda y tokens del bucket compartido. El medidor

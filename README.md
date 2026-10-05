@@ -161,9 +161,16 @@ returns at 400 live successes (or a stricter recovery margin set in Settings).
 The hard rolling volume budget is 25 GiB of raw HTTP download bodies per two
 hours, including failed, retried and cancelled attempts. Active responses reserve
 their announced size; an attempt that does not fit waits for at least half the
-volume budget to recover and enough space for that file. A response without a
-verifiable HTTP size remains pending. Files larger than the full budget stay
-deferred. File and volume release/recovery timers are separate. Normal cancellation
+volume budget to recover. Unknown HTTP sizes and chunked bodies are accepted.
+If an active transfer exhausts its reserved volume, its partial is flushed to disk,
+the HTTP response closes, and it waits outside progress timeouts. With capacity
+restored, it continues via Range with HTTP identity checks and the producer SHA-256
+when available. A server ignoring Range, changing its representation, or lacking
+safe identity requires a fresh transfer. The partial is retained during the active
+job; cancellation/dashboard exit still remove its temporary. Announced files larger
+than the full budget retain their existing deferral. File and volume timers remain
+separate. Originals not uploaded by Pawchive keep their independent awaiting_archive
+state and weekly/manual recheck. Normal cancellation
 keeps received bytes and releases unused reservations; an unclean exit retains
 unacknowledged reservations conservatively on restart. Existing completion-only
 history seeds the new traffic ledger; old failed attempts cannot be reconstructed.

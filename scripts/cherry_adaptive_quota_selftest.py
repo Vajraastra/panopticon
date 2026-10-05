@@ -248,17 +248,17 @@ class QuotaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gate.snapshot().used_bytes, 24)
         self.assertEqual(gate.snapshot().used_files, 1)
 
-    async def test_chunked_response_cannot_bypass_content_length_reservation(self):
+    async def test_chunked_response_uses_received_body_instead_of_content_length(self):
         read = []
         class Body(httpx.AsyncByteStream):
             async def __aiter__(self):
                 read.append(True)
-                yield b'a' * 1000
+                yield b'a' * 20
         result, gate = await self.download(lambda req: httpx.Response(200,
             headers={'Content-Length': '10', 'Transfer-Encoding': 'chunked'}, stream=Body()))
-        self.assertEqual(result.error_kind, ErrorKind.QUOTA)
-        self.assertEqual(read, [])
-        self.assertEqual(gate.snapshot().used_bytes, 0)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(read, [True])
+        self.assertEqual(gate.snapshot().used_bytes, 20)
 
     async def test_error_body_counts_raw_bytes_without_completing_file(self):
         class Body(httpx.AsyncByteStream):
@@ -270,16 +270,16 @@ class QuotaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gate.snapshot().used_bytes, 13)
         self.assertEqual(gate.snapshot().used_files, 0)
 
-    async def test_unknown_response_size_is_deferred_without_reading_body(self):
+    async def test_unknown_response_size_is_received_and_counted(self):
         read = []
         class Body(httpx.AsyncByteStream):
             async def __aiter__(self):
                 read.append(True)
-                yield b'a' * 1000
+                yield b'a' * 20
         result, gate = await self.download(lambda req: httpx.Response(200, stream=Body()))
-        self.assertEqual(result.error_kind, ErrorKind.QUOTA)
-        self.assertEqual(read, [])
-        self.assertEqual(gate.snapshot().used_bytes, 0)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(read, [True])
+        self.assertEqual(gate.snapshot().used_bytes, 20)
 
     async def test_profile_download_stays_economic_and_keeps_both_histories(self):
         import time

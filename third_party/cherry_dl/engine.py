@@ -43,6 +43,7 @@ from tenacity import (
 from .config import UserConfig, load_session, save_session
 from .site_policy import ScanPolicy, TransferPolicy
 from .raw_traffic import RawQuotaExceeded
+from .raw_read_guard import install_guard, raw_capacity
 
 
 # ── Helpers de I/O en thread ───────────────────────────────────────────────────
@@ -313,15 +314,18 @@ async def _observe_download_response(response):
     traffic = response.request.extensions.get("cherry_raw_traffic")
     if traffic is None:
         return
-    size, received, bucket = traffic
+    size, received, bucket, resumable = traffic
     if size is not None:
         announced = response.headers.get("content-length")
-        if (announced is None or not announced.isdigit()
-                or response.headers.get("transfer-encoding")):
-            raise RawQuotaExceeded("Sin tamaño HTTP verificable; descarga diferida")
-        allowed = await size(int(announced))
-        if int(announced) > allowed:
+        # Chunked/close-delimited responses are valid without a total size.
+        # An unknown length reserves capacity and is bounded before socket reads.
+        known_size = (int(announced) if announced and announced.isdigit()
+                      and not response.headers.get("transfer-encoding") else 0)
+        allowed = await size(known_size)
+        if known_size > allowed and not resumable:
             raise RawQuotaExceeded("El intento HTTP no cabe en la cuota de tráfico crudo")
+        if known_size > allowed and resumable:
+            await size(0)
     response.stream = _TrafficStream(response.stream, received, bucket)
 
 
@@ -387,6 +391,10 @@ class DownloadEngine:
                 pool=self.config.timeout,
             ),
         )
+        # Install before scans create connections that downloads might reuse.
+        for candidate in [self._client._transport, *self._client._mounts.values()]:
+            if candidate is not None:
+                install_guard(candidate)
         return self
 
     async def __aexit__(self, *_) -> None:
@@ -571,6 +579,9 @@ class DownloadEngine:
         on_file_size: Callable[[int], Awaitable[int]] | None = None,
         on_response_size: Callable[[int], Awaitable[int]] | None = None,
         on_raw_bytes: Callable[[int], None] | None = None,
+        on_raw_capacity: Callable[[], int] | None = None,
+        on_quota_pause: Callable[[], Awaitable[None]] | None = None,
+        expected_hash: str | None = None,
     ) -> DownloadResult:
         """
         Descarga un archivo al directorio destino.
@@ -598,6 +609,11 @@ class DownloadEngine:
                       carga el archivo como subrecurso compatible desde
                       ``browser_origin`` y lo extrae por CDP.
         """
+        if on_raw_capacity is not None:
+            # Existing HTTPX mounts include environment proxies; guard every pool.
+            for candidate in [self._client._transport, *self._client._mounts.values()]:
+                if candidate is not None:
+                    install_guard(candidate)
         if on_raw_bytes is not None or on_response_size is not None:
             hooks = self._client.event_hooks["response"]
             if _observe_download_response not in hooks:
@@ -609,12 +625,16 @@ class DownloadEngine:
                     progress, task_id, on_progress, on_status,
                 )
             else:
-                result = await self._do_download(
-                    url, dest_dir, filename, progress, task_id,
-                    on_progress, extra_headers, total_timeout, on_status,
-                    on_observation, max_retries, max_file_bytes, on_file_size,
-                    on_response_size, on_raw_bytes,
-                )
+                token = raw_capacity.set(on_raw_capacity)
+                try:
+                    result = await self._do_download(
+                        url, dest_dir, filename, progress, task_id,
+                        on_progress, extra_headers, total_timeout, on_status,
+                        on_observation, max_retries, max_file_bytes, on_file_size,
+                        on_response_size, on_raw_bytes, on_quota_pause, expected_hash,
+                    )
+                finally:
+                    raw_capacity.reset(token)
             # Una respuesta fallida también termina un intento de archivo. Si
             # el sitio acaba de decir 403/429, arrancar el siguiente al ritmo
             # normal contradice precisamente la pausa de cortesía.
@@ -870,6 +890,8 @@ class DownloadEngine:
         on_file_size: Callable[[int], Awaitable[int]] | None = None,
         on_response_size: Callable[[int], Awaitable[int]] | None = None,
         on_raw_bytes: Callable[[int], None] | None = None,
+        on_quota_pause: Callable[[], Awaitable[None]] | None = None,
+        expected_hash: str | None = None,
     ) -> DownloadResult:
         """
         Descarga un archivo con retry y soporte de Range requests para CDNs
@@ -911,6 +933,10 @@ class DownloadEngine:
         full_size:   int = 0            # tamaño total declarado por el servidor
         error_count: int = 0            # solo errores reales (no range resumes)
         high_water:  int = 0            # máximo progreso entre respuestas
+        resume_validator: str = ""
+        identity_encoding: bool = True
+        quota_resume: bool = False
+        last_byte: bytes = b""
 
         # Tiempo de inicio para timeout total del engine.
         # get_running_loop().time() usa el reloj monotónico del loop.
@@ -934,9 +960,10 @@ class DownloadEngine:
 
         async def _flush() -> None:
             """Vuelca al .tmp lo recibido desde el último volcado."""
-            nonlocal buf, buf_len, written
+            nonlocal buf, buf_len, written, last_byte
             if not buf:
                 return
+            last_byte = buf[-1][-1:]
             await asyncio.to_thread(_write_chunks, fh, hasher, buf)
             written += buf_len
             buf = []
@@ -944,12 +971,13 @@ class DownloadEngine:
 
         def _restart() -> None:
             """Descarta lo bajado y deja el .tmp listo para empezar de cero."""
-            nonlocal buf, buf_len, written, hasher, full_size
+            nonlocal buf, buf_len, written, hasher, full_size, last_byte
             buf = []
             buf_len = 0
             written = 0
             hasher = hashlib.sha256()
             full_size = 0
+            last_byte = b""
             fh.seek(0)
             fh.truncate(0)
 
@@ -1033,7 +1061,10 @@ class DownloadEngine:
                                     "↺ continuando rango…"
                                     if written else "↺ reintentando…"
                                 )
-                            await asyncio.sleep(random.uniform(0.5, 2.0))
+                            if on_raw_bytes is not None:
+                                await self._delay()
+                            else:
+                                await asyncio.sleep(random.uniform(0.5, 2.0))
 
                         # Otro worker pudo terminar mientras este esperaba su
                         # turno del pacer. En ese caso el turno se descarta y se
@@ -1045,14 +1076,29 @@ class DownloadEngine:
 
                     # Añadir Range header si estamos resumiendo un archivo parcial.
                     req_headers = dict(extra_headers or {})
+                    if on_raw_bytes is not None:
+                        req_headers["Accept-Encoding"] = "identity"
+                    if quota_resume and written and (not identity_encoding or
+                            (not resume_validator and not expected_hash)):
+                        # Without stable identity, never stitch representations.
+                        _restart()
+                        quota_resume = False
+                    range_start = written
+                    overlap_pending = bool(quota_resume and written and not expected_hash and not full_size)
+                    if overlap_pending:
+                        # A one-byte overlap also handles a complete unknown body
+                        # whose EOF framing could not be read at an empty quota.
+                        range_start -= 1
                     if written > 0:
-                        req_headers["Range"] = f"bytes={written}-"
+                        req_headers["Range"] = f"bytes={range_start}-"
+                        if resume_validator:
+                            req_headers["If-Range"] = resume_validator
 
                     received_now = 0   # bytes recibidos en ESTE request
 
                     if on_status:
                         on_status("→ conectando…")
-                    traffic = ((on_response_size, on_raw_bytes, lambda: self._bucket)
+                    traffic = ((on_response_size, on_raw_bytes, lambda: self._bucket, on_quota_pause is not None)
                                if on_raw_bytes is not None or on_response_size is not None else None)
                     async with self._client.stream(
                         "GET", url, headers=req_headers,
@@ -1149,6 +1195,11 @@ class DownloadEngine:
 
                         # ── 206 Partial Content — range request aceptado ───────
                         if code == 206:
+                            content_range = resp.headers.get("content-range", "")
+                            if written and not content_range.startswith(f"bytes {range_start}-"):
+                                return DownloadResult(url=url, filename=filename,
+                                    error="El servidor devolvió un rango distinto al parcial conservado",
+                                    error_kind=ErrorKind.NETWORK)
                             cr_total = _parse_content_range_total(
                                 resp.headers.get("content-range", "")
                             )
@@ -1162,9 +1213,24 @@ class DownloadEngine:
                             if written > 0:
                                 # Server no soporta Range: descartar parcial y aceptar todo
                                 _restart()
-                            full_size = int(resp.headers.get("content-length", 0))
+                                overlap_pending = False
+                            full_size = (0 if resp.headers.get("transfer-encoding")
+                                         else int(resp.headers.get("content-length", 0)))
                             if progress and task_id is not None:
                                 progress.update(task_id, total=full_size or None)
+
+                        identity_encoding = resp.headers.get("content-encoding", "identity").lower() == "identity"
+                        validator = resp.headers.get("etag", "")
+                        if validator.startswith("W/"):
+                            validator = ""
+                        validator = validator or resp.headers.get("last-modified", "")
+                        if written and resume_validator and validator and validator != resume_validator:
+                            return DownloadResult(url=url, filename=filename,
+                                error="La identidad HTTP cambió durante la pausa",
+                                error_kind=ErrorKind.NETWORK)
+                        if not written:
+                            resume_validator = validator
+                        quota_resume = False
 
                         if on_file_size is not None:
                             max_file_bytes = await on_file_size(full_size)
@@ -1198,7 +1264,7 @@ class DownloadEngine:
                         _resched_every = max(1.0, _stall / 4)
                         _next_resched = _loop.time() + _resched_every
                         async with asyncio.timeout(_stall) as _wd:
-                            async for chunk in resp.aiter_bytes(chunk_size=65536):
+                            async for chunk in resp.aiter_bytes(chunk_size=None if on_raw_bytes is not None else 65536):
                                 if (max_file_bytes is not None
                                         and written + buf_len + len(chunk) > max_file_bytes):
                                     return DownloadResult(
@@ -1221,6 +1287,15 @@ class DownloadEngine:
                                     if on_status:
                                         on_status("↓ descargando…")
                                     _first_chunk = False
+                                if overlap_pending:
+                                    if chunk[:1] != last_byte:
+                                        return DownloadResult(url=url, filename=filename,
+                                            error="El byte de continuidad no coincide con el parcial",
+                                            error_kind=ErrorKind.NETWORK)
+                                    chunk = chunk[1:]
+                                    overlap_pending = False
+                                    if not chunk:
+                                        continue
                                 buf.append(chunk)
                                 buf_len += len(chunk)
                                 received_now += len(chunk)
@@ -1278,6 +1353,10 @@ class DownloadEngine:
                     # incremental; aquí solo queda cerrar y renombrar, en thread
                     # para no bloquear el event loop.
                     file_hash = hasher.hexdigest()
+                    if expected_hash and file_hash.casefold() != expected_hash.casefold():
+                        return DownloadResult(url=url, filename=filename,
+                            error="El archivo recibido no coincide con el SHA-256 esperado",
+                            error_kind=ErrorKind.NETWORK)
                     await asyncio.to_thread(
                         _finalize_download, fh, tmp_file, dest_file
                     )
@@ -1291,8 +1370,25 @@ class DownloadEngine:
                     )
 
                 except RawQuotaExceeded as exc:
-                    return DownloadResult(url=url, filename=filename,
-                        error=str(exc), error_kind=ErrorKind.QUOTA)
+                    if on_quota_pause is None:
+                        return DownloadResult(url=url, filename=filename,
+                            error=str(exc), error_kind=ErrorKind.QUOTA)
+                    # HTTP is already closed here. Flush before waiting outside
+                    # the watchdog, then request Range without spending a file slot.
+                    await _flush()
+                    if written and expected_hash and hasher.hexdigest().casefold() == expected_hash.casefold():
+                        # Unknown-length EOF may require framing bytes after the
+                        # final quota byte. A matching producer SHA proves completion.
+                        await asyncio.to_thread(_finalize_download, fh, tmp_file, dest_file)
+                        return DownloadResult(url=url, filename=filename, dest=dest_file,
+                            file_hash=hasher.hexdigest(), file_size=written)
+                    await asyncio.to_thread(fh.flush)
+                    quota_resume = True
+                    started_pause = asyncio.get_running_loop().time()
+                    await on_quota_pause()
+                    if total_timeout:
+                        _t_start += asyncio.get_running_loop().time() - started_pause
+                    continue
 
                 except (httpx.TimeoutException, TimeoutError):
                     # httpx.TimeoutException = read/connect timeout del socket.
@@ -1426,6 +1522,8 @@ async def read_short_body(resp: httpx.Response, limit: int = 300) -> str:
             if size >= limit:
                 break
         raw = b"".join(parts)
+    except RawQuotaExceeded:
+        raise
     except Exception:
         return ""
     txt = " ".join(raw[:limit].decode("utf-8", "replace").split())

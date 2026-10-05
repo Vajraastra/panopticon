@@ -488,6 +488,42 @@ class SiteThrottle:
             self._notice(on_wait, wait_kind, wait_until, now)
             await self._wait_for_change(changed, wait_for)
 
+    async def refill(self, permit: Permit, *, on_state: StateFn | None = None) -> int:
+        """Wait for raw volume on an already admitted file; never charge another slot."""
+        if self.traffic is None:
+            return permit.reserved_bytes
+        while True:
+            async with self._condition:
+                if not permit.active:
+                    raise asyncio.CancelledError()
+                data, state = self._read()
+                now = self._clock()
+                self._prune(state, now)
+                events, reserved, _ = self._traffic(state, now)
+                used = sum(v for _, v in events)
+                mode = self._mode(state, now)
+                free = max(0, self.byte_limit - used - reserved + permit.reserved_bytes)
+                recovery = self.adaptive and mode == "standby" and used > self.byte_limit // 2
+                if free and not recovery:
+                    if self.traffic.resize(permit.traffic_token, free, now):
+                        self._reserved_bytes += free - permit.reserved_bytes
+                        permit.reserved_bytes = free
+                        _write(self.path, data)
+                        self._notify_change()
+                        return free
+                target = self.byte_limit // 2 if recovery else max(0, self.byte_limit - reserved - 1)
+                until = release_time(events, used, target, self.window_seconds)
+                kind = "quota_bytes_recovery" if recovery else "quota_bytes"
+                _write(self.path, data)
+                if on_state is not None:
+                    on_state(kind, until or None)
+                if not until:
+                    await self._condition.wait()
+                    continue
+                changed = self._changed
+                seconds = max(.01, until - now)
+            await self._wait_for_change(changed, seconds)
+
     async def resize(self, permit: Permit, announced_bytes: int) -> int:
         """Revalida la reserva con cabeceras reales, sin esperar con HTTP abierto.
 
@@ -497,11 +533,17 @@ class SiteThrottle:
         async with self._condition:
             if not permit.active:
                 return 0
-            if announced_bytes <= 0 or not self.byte_limit:
+            if not self.byte_limit:
+                return permit.reserved_bytes
+            if announced_bytes <= 0 and not self.raw_traffic:
                 return permit.reserved_bytes
             _data, state = self._read()
             self._prune(state, self._clock())
             if self.traffic is not None:
+                if announced_bytes <= 0:
+                    events, reserved, _ = self._traffic(state, self._clock())
+                    announced_bytes = max(0, self.byte_limit - sum(v for _, v in events)
+                                          - reserved + permit.reserved_bytes)
                 if not self.traffic.resize(permit.traffic_token, announced_bytes, self._clock()):
                     return 0
                 self._reserved_bytes += announced_bytes - permit.reserved_bytes
