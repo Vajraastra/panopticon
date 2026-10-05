@@ -44,11 +44,13 @@ class TemplateConfig(BaseModel):
 class PawchiveConfig(BaseModel):
     """Frenos ajustables del archivo público Pawchive.
 
-    El techo de caudal permanece en el template: 4 MiB/s entre todos los
-    workers. La ventana móvil se detiene cuando llegue primero a su cantidad
-    de descargas o a sus GB transferidos.
+    4 MiB/s agregados en normal, hasta 2 MiB/s en económico al superar el
+    umbral de éxitos con más del 50% del volumen disponible. El volumen mide
+    cuerpos HTTP crudos en una ventana móvil, incluidos fallos y cancelación.
+    adaptive_quota=False conserva la pausa rígida de archivos para diagnóstico.
     """
 
+    adaptive_quota: bool = True
     downloads_per_window: int = Field(500, ge=1, le=100_000)
     resume_headroom: int = Field(50, ge=0, le=99_999)
     gigabytes_per_window: float = Field(25.0, gt=0, le=10_000)
@@ -137,6 +139,7 @@ def save_config(config: UserConfig) -> None:
         f"retries_file = {config.network.retries_file}\n",
         f"stall_timeout = {config.network.stall_timeout}\n",
         "\n[pawchive]\n",
+        f"adaptive_quota = {str(config.pawchive.adaptive_quota).lower()}\n",
         f"downloads_per_window = {config.pawchive.downloads_per_window}\n",
         f"resume_headroom = {config.pawchive.resume_headroom}\n",
         f"gigabytes_per_window = {config.pawchive.gigabytes_per_window}\n",

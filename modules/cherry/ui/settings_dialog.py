@@ -11,6 +11,8 @@ que se les grabó al crearlos, y el ajuste solo decide dónde nacen los nuevos.
 
 from __future__ import annotations
 
+import math
+
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -104,16 +106,18 @@ class SettingsDialog(QDialog):
         self._pawchive_downloads.setValue(
             current["pawchive_downloads_per_window"])
         self._pawchive_headroom = QSpinBox()
-        self._pawchive_headroom.setRange(
-            0, max(0, self._pawchive_downloads.value() - 1),
-        )
+        def headroom_range(value):
+            ceiling = max(0, value - 1)
+            minimum = min(ceiling, math.ceil(value * .2)) if current["pawchive_adaptive_quota"] else 0
+            self._pawchive_headroom.setRange(minimum, ceiling)
+        headroom_range(self._pawchive_downloads.value())
         self._pawchive_headroom.setSingleStep(10)
         self._pawchive_headroom.setSuffix(self.tr(
             "cherry.settings_pawchive_slots_suffix", " slots",
         ))
         self._pawchive_headroom.setValue(current["pawchive_resume_headroom"])
         self._pawchive_downloads.valueChanged.connect(
-            lambda value: self._pawchive_headroom.setMaximum(max(0, value - 1))
+            headroom_range
         )
         self._pawchive_gigabytes = QDoubleSpinBox()
         self._pawchive_gigabytes.setRange(0.1, 10000.0)
@@ -132,9 +136,9 @@ class SettingsDialog(QDialog):
         self._pawchive_hours.setValue(current["pawchive_window_hours"])
         pawchive_tip = self.tr(
             "cherry.settings_pawchive_tip",
-            "Pawchive only. It pauses at whichever comes first: the file "
-            "count or transferred GiB, including active reservations. A file "
-            "that does not fit waits. Shared bandwidth: 4 MiB/s.",
+            "Pawchive only. Raw received bytes include failed and cancelled attempts. "
+            "At the file threshold with over 50% volume available, continue at 2 MiB/s. "
+            "Volume recovery requires at least 50% capacity and room for the next file.",
         )
         self._pawchive_downloads.setToolTip(pawchive_tip)
         self._pawchive_gigabytes.setToolTip(pawchive_tip)
@@ -157,9 +161,9 @@ class SettingsDialog(QDialog):
 
         headroom_tip = self.tr(
             "cherry.settings_pawchive_headroom_tip",
-            "After the file limit is reached, Pawchive waits until this many "
-            "real slots have expired before resuming. Set zero to resume one "
-            "file at a time as before.",
+            "File recovery margin. Adaptive mode uses at least 20% of the limit "
+            "(100 of 500), returning to normal at 400. A larger value increases "
+            "the margin. Economic downloads still count when successful.",
         )
         self._pawchive_headroom.setToolTip(headroom_tip)
         form.addRow(self.tr(
@@ -168,8 +172,8 @@ class SettingsDialog(QDialog):
 
         recommended = QLabel(self.tr(
             "cherry.settings_pawchive_recommended",
-            "Recommended default: 500 downloads or 25 GiB / 2 hours · "
-            "4 MiB/s shared by Pawchive workers · resumes after 50 slots.",
+            "500 files: 4 MiB/s normal, 2 MiB/s economic with over 50% volume free · "
+            "normal again at 400 files · max 25 GiB raw / 2 hours.",
         ))
         recommended.setWordWrap(True)
         recommended.setStyleSheet(

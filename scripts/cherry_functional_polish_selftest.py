@@ -159,8 +159,8 @@ async def main() -> None:
             dialog = SettingsDialog()
             check(dialog._pawchive_downloads.value() == 425,
                   "Ajustes debe mostrar la cuota persistida")
-            check(dialog._pawchive_headroom.value() == 40,
-                  "Ajustes debe mostrar el margen persistido")
+            check(dialog._pawchive_headroom.value() == 85,
+                  "Ajustes muestra el margen efectivo mínimo de 20% para 425 archivos")
             check(dialog._pawchive_gigabytes.value() == 18.5,
                   "Ajustes debe mostrar la cuota persistida en GB")
             check(dialog._pawchive_hours.value() == 4.5,

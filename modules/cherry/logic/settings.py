@@ -41,6 +41,7 @@ def load() -> dict:
         "timeout": int(cfg.timeout),
         "daily_limit_enabled": bool(cfg.daily_limit_enabled),
         "daily_limit_gb": float(cfg.daily_limit_gb),
+        "pawchive_adaptive_quota": bool(cfg.pawchive.adaptive_quota),
         "pawchive_downloads_per_window": int(
             cfg.pawchive.downloads_per_window),
         "pawchive_resume_headroom": min(
@@ -63,6 +64,7 @@ def save(
     pawchive_resume_headroom: int = 50,
     pawchive_gigabytes_per_window: float = 25.0,
     pawchive_window_hours: float = 2.0,
+    pawchive_adaptive_quota: bool | None = None,
 ) -> dict:
     """Guarda los ajustes conservando el resto del TOML.
 
@@ -87,13 +89,16 @@ def save(
         raise ValueError("La ventana de Pawchive debe ser mayor que cero")
     from third_party.cherry_dl.config import PawchiveConfig
 
-    cfg = load_config().model_copy(update={
+    previous = load_config()
+    cfg = previous.model_copy(update={
         "download_dir": str(download_dir).strip(),
         "workers": int(workers),
         "timeout": int(timeout),
         "daily_limit_enabled": bool(daily_limit_enabled),
         "daily_limit_gb": float(daily_limit_gb),
         "pawchive": PawchiveConfig(
+            adaptive_quota=(previous.pawchive.adaptive_quota
+                            if pawchive_adaptive_quota is None else bool(pawchive_adaptive_quota)),
             downloads_per_window=int(pawchive_downloads_per_window),
             resume_headroom=int(pawchive_resume_headroom),
             gigabytes_per_window=float(pawchive_gigabytes_per_window),

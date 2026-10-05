@@ -368,10 +368,14 @@ def _download_user_agent(engine) -> str:
     gib = float(getattr(pawchive, "gigabytes_per_window", 25.0))
     hours = float(getattr(pawchive, "window_hours", 2.0))
     hour_word = "hour" if hours == 1 else "hours"
+    if getattr(pawchive, "adaptive_quota", True):
+        return (f"{_DOWNLOAD_USER_AGENT_BASE}; policy: 4 MiB/s normal, 2 MiB/s economic; "
+                f"max 2 concurrent downloads; {count} successful files soft threshold; "
+                f"max {gib:g} GiB raw download bodies per rolling {hours:g} {hour_word})")
     return (
         f"{_DOWNLOAD_USER_AGENT_BASE}; policy: 4 MiB/s sustained bandwidth; "
-        f"max 2 concurrent downloads; max {count} files or {gib:g} GiB "
-        f"per {hours:g} {hour_word})"
+        f"max 2 concurrent downloads; max {count} successful files; "
+        f"max {gib:g} GiB raw download bodies per rolling {hours:g} {hour_word})"
     )
 
 

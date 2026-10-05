@@ -28,6 +28,32 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Pawchive: volumen crudo y cuota adaptativa (David, 2026-10-05)
+
+David confirmó las pruebas vivas de los avisos anteriores y autorizó distinguir
+volumen crudo recibido de archivos terminados correctamente. Al llegar al umbral
+de archivos con más del 50% del volumen disponible, el motor continúa a 2 MiB/s;
+vuelve al caudal normal de 4 MiB/s al bajar al 80% del umbral (400/500), o a un
+margen de archivos más estricto configurado. Los éxitos económicos siguen contando.
+Al agotarse el volumen o no caber el siguiente archivo, espera a recuperar al
+menos el 50% del volumen y capacidad suficiente para ese intento; reanuda en
+económico si aún no recuperó los archivos. Ventana y volumen siguen configurables.
+
+`raw_traffic.py` conserva cuerpos HTTP crudos por segundo en un ledger propio,
+con reservas durables: fallos, reintentos, Range ignorado y cancelación no devuelven
+bytes ya recibidos. No se cambia ningún catálogo Cherry. Ante una salida no limpia,
+las reservas no reconocidas se contabilizan conservadoramente al reiniciar; ante
+un error de escritura no se admite más tráfico ni se borra esa evidencia.
+El historial previo de éxitos se importa una sola vez; no inventa tráfico de
+intentos antiguos. HTTP sin Content-Length verificable se difiere antes del cuerpo.
+
+El engine observa el stream antes de decodificarlo o esperar por caudal/progreso.
+Cambiar la velocidad conserva deuda y tokens del bucket compartido. El medidor
+separa expiración de archivos, bytes y objetivos de recuperación, sin sumar dos
+veces el progreso activo. `adaptive_quota=false` conserva la pausa rígida por
+archivos para diagnóstico; el volumen permanece crudo. Pruebas privadas:
+`scripts/cherry_adaptive_quota_selftest.py`; la política nueva requiere uso vivo.
+
 ### Patreon: contrato de paginación y retiro de API pública v1 (2026-10-03)
 
 Cherry usa el sitio autenticado: `/api/campaigns?filter[vanity]` y

@@ -83,7 +83,7 @@ class RealDownloadWait(unittest.IsolatedAsyncioTestCase):
                     stack.enter_context(patch.object(obj, key, value))
                 cfg = config.UserConfig(download_dir=tmp, workers=2,
                     network=config.NetworkConfig(delay_min=0, delay_max=0, retries_api=1, retries_file=1),
-                    pawchive=config.PawchiveConfig(downloads_per_window=2, resume_headroom=1,
+                    pawchive=config.PawchiveConfig(adaptive_quota=False, downloads_per_window=2, resume_headroom=1,
                                                    gigabytes_per_window=1, window_hours=1 / 3600))
                 events = []
                 summary = await asyncio.wait_for(download_service.run_profile_download(

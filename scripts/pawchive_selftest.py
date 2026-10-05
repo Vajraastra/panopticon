@@ -204,7 +204,7 @@ async def main() -> int:
             window_hours=3.0,
         )
     )))
-    chk("max 500 files or 25 GiB per 3 hours" in custom_ua,
+    chk("max 25 GiB raw download bodies per rolling 3 hours" in custom_ua,
         "el User-Agent refleja los límites ajustados por el usuario")
 
     eng = EngineFalso()
@@ -254,8 +254,8 @@ async def main() -> int:
     user_agent = z.extra_headers.get("User-Agent", "")
     chk(user_agent.startswith("Cherry-DL/"),
         "se identifica como descargador, sin fingir ser navegador")
-    chk(("policy: 4 MiB/s sustained bandwidth; max 2 concurrent downloads; "
-         "max 500 files or 25 GiB per 2 hours") in user_agent,
+    chk(("policy: 4 MiB/s normal, 2 MiB/s economic; max 2 concurrent downloads; "
+         "500 successful files soft threshold; max 25 GiB raw download bodies per rolling 2 hours") in user_agent,
         "declara en inglés los límites efectivos por defecto")
     legacy_headers = t.transfer_headers(a, {"Referer": a.url})
     chk(legacy_headers.get("User-Agent") == user_agent,

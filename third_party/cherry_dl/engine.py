@@ -42,6 +42,7 @@ from tenacity import (
 
 from .config import UserConfig, load_session, save_session
 from .site_policy import ScanPolicy, TransferPolicy
+from .raw_traffic import RawQuotaExceeded
 
 
 # ── Helpers de I/O en thread ───────────────────────────────────────────────────
@@ -290,6 +291,40 @@ class _ByteBucket:
 
 # ── Engine ─────────────────────────────────────────────────────────────────────
 
+class _TrafficStream(httpx.AsyncByteStream):
+    """Observe raw response-body bytes before decoding, progress or cancellation."""
+    def __init__(self, stream, received, bucket):
+        self.stream, self.received, self.bucket = stream, received, bucket
+
+    async def __aiter__(self):
+        async for chunk in self.stream:
+            if self.received is not None:
+                self.received(len(chunk))
+            limiter = self.bucket()
+            if limiter is not None:
+                await limiter.take(len(chunk))
+            yield chunk
+
+    async def aclose(self):
+        await self.stream.aclose()
+
+
+async def _observe_download_response(response):
+    traffic = response.request.extensions.get("cherry_raw_traffic")
+    if traffic is None:
+        return
+    size, received, bucket = traffic
+    if size is not None:
+        announced = response.headers.get("content-length")
+        if (announced is None or not announced.isdigit()
+                or response.headers.get("transfer-encoding")):
+            raise RawQuotaExceeded("Sin tamaño HTTP verificable; descarga diferida")
+        allowed = await size(int(announced))
+        if int(announced) > allowed:
+            raise RawQuotaExceeded("El intento HTTP no cabe en la cuota de tráfico crudo")
+    response.stream = _TrafficStream(response.stream, received, bucket)
+
+
 class DownloadEngine:
     """
     Gestiona un pool de workers async y un cliente HTTP compartido.
@@ -434,7 +469,17 @@ class DownloadEngine:
         if not bytes_per_sec or bytes_per_sec <= 0:
             self._bucket = None
         elif self._bucket is None or self._bucket.rate != bytes_per_sec:
-            self._bucket = _ByteBucket(bytes_per_sec)
+            if self._bucket is None:
+                self._bucket = _ByteBucket(bytes_per_sec)
+            else:
+                # Keep accrued debt and tokens when changing an active rate.
+                now = asyncio.get_running_loop().time()
+                if self._bucket._last:
+                    self._bucket._tokens += (now - self._bucket._last) * self._bucket.rate
+                self._bucket.rate = bytes_per_sec
+                self._bucket.burst = bytes_per_sec * 2
+                self._bucket._tokens = min(self._bucket._tokens, self._bucket.burst)
+                self._bucket._last = now
         # Igual que el pacer, y aquí importa más: el cubo arranca lleno, así
         # que rehacerlo en cada fuente regalaría un burst entero por fuente
         # —con 43 de Pawchive, 172 MB fuera de todo límite—.
@@ -524,6 +569,8 @@ class DownloadEngine:
         browser_origin: str | None = None,
         max_file_bytes: int | None = None,
         on_file_size: Callable[[int], Awaitable[int]] | None = None,
+        on_response_size: Callable[[int], Awaitable[int]] | None = None,
+        on_raw_bytes: Callable[[int], None] | None = None,
     ) -> DownloadResult:
         """
         Descarga un archivo al directorio destino.
@@ -551,6 +598,10 @@ class DownloadEngine:
                       carga el archivo como subrecurso compatible desde
                       ``browser_origin`` y lo extrae por CDP.
         """
+        if on_raw_bytes is not None or on_response_size is not None:
+            hooks = self._client.event_hooks["response"]
+            if _observe_download_response not in hooks:
+                hooks.append(_observe_download_response)
         async with self._semaphore:
             if transport == "browser_image":
                 result = await self._do_browser_download(
@@ -562,6 +613,7 @@ class DownloadEngine:
                     url, dest_dir, filename, progress, task_id,
                     on_progress, extra_headers, total_timeout, on_status,
                     on_observation, max_retries, max_file_bytes, on_file_size,
+                    on_response_size, on_raw_bytes,
                 )
             # Una respuesta fallida también termina un intento de archivo. Si
             # el sitio acaba de decir 403/429, arrancar el siguiente al ritmo
@@ -816,6 +868,8 @@ class DownloadEngine:
         max_retries: int | None = None,
         max_file_bytes: int | None = None,
         on_file_size: Callable[[int], Awaitable[int]] | None = None,
+        on_response_size: Callable[[int], Awaitable[int]] | None = None,
+        on_raw_bytes: Callable[[int], None] | None = None,
     ) -> DownloadResult:
         """
         Descarga un archivo con retry y soporte de Range requests para CDNs
@@ -998,8 +1052,11 @@ class DownloadEngine:
 
                     if on_status:
                         on_status("→ conectando…")
+                    traffic = ((on_response_size, on_raw_bytes, lambda: self._bucket)
+                               if on_raw_bytes is not None or on_response_size is not None else None)
                     async with self._client.stream(
-                        "GET", url, headers=req_headers
+                        "GET", url, headers=req_headers,
+                        extensions={"cherry_raw_traffic": traffic},
                     ) as resp:
                         code = resp.status_code
                         if on_observation is not None:
@@ -1154,7 +1211,7 @@ class DownloadEngine:
                                 # se duerme aquí es decisión nuestra, no falta de
                                 # datos, y contarlo como stall abortaría la
                                 # descarga por ir despacio adrede.
-                                if self._bucket is not None:
+                                if self._bucket is not None and traffic is None:
                                     await self._bucket.take(len(chunk))
                                 _now = _loop.time()
                                 if _now >= _next_resched:
@@ -1232,6 +1289,10 @@ class DownloadEngine:
                         url=url, filename=filename,
                         dest=dest_file, file_hash=file_hash, file_size=total,
                     )
+
+                except RawQuotaExceeded as exc:
+                    return DownloadResult(url=url, filename=filename,
+                        error=str(exc), error_kind=ErrorKind.QUOTA)
 
                 except (httpx.TimeoutException, TimeoutError):
                     # httpx.TimeoutException = read/connect timeout del socket.
@@ -1357,7 +1418,14 @@ async def read_short_body(resp: httpx.Response, limit: int = 300) -> str:
     if "text/" not in ctype and "json" not in ctype:
         return ""
     try:
-        raw = await resp.aread()
+        parts = []
+        size = 0
+        async for chunk in resp.aiter_bytes(chunk_size=limit):
+            parts.append(chunk[:limit - size])
+            size += len(parts[-1])
+            if size >= limit:
+                break
+        raw = b"".join(parts)
     except Exception:
         return ""
     txt = " ".join(raw[:limit].decode("utf-8", "replace").split())

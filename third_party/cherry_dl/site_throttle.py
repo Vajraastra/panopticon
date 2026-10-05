@@ -1,6 +1,7 @@
 """Cuota móvil y cortacircuitos persistente para descargas por sitio.
 
-La cuota cuenta archivos y bytes de transferencias terminadas, no intentos.
+Los archivos cuentan éxitos; Pawchive mide aparte el cuerpo HTTP crudo,
+incluidos intentos cancelados, errores y reintentos.
 Cada worker reserva un cupo y el tamaño anunciado antes de pedir para que la
 concurrencia no pueda cruzar el límite. El
 cortacircuitos abre sólo ante una firma explícita elegida por el template y,
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import Callable
 
 from .config import CHERRY_DIR
+from .raw_traffic import RawTrafficWindow, RawQuotaExceeded
+from .adaptive_quota import update_mode, resume_count, release_time
 
 
 THROTTLE_FILE = CHERRY_DIR / "site_throttle.json"
@@ -27,6 +30,7 @@ class Permit:
     probe: bool = False
     active: bool = True
     reserved_bytes: int = 0
+    traffic_token: str = ""
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,14 @@ class QuotaSnapshot:
     next_release_seconds: float
     recovery_active: bool = False
     resume_at_files: int = 0
+    raw_bytes: bool = False
+    mode: str = "normal"
+    reserved_bytes: int = 0
+    file_release_seconds: float = 0.0
+    byte_release_seconds: float = 0.0
+    file_recovery_seconds: float = 0.0
+    byte_recovery_seconds: float = 0.0
+    adaptive: bool = False
 
 
 class ThrottleDeferred(Exception):
@@ -93,6 +105,8 @@ class SiteThrottle:
         *,
         limit: int,
         byte_limit: int = 0,
+        raw_traffic: bool = False,
+        adaptive: bool = False,
         resume_headroom: int = 0,
         window_seconds: float,
         failure_threshold: int,
@@ -113,6 +127,14 @@ class SiteThrottle:
         self.failure_window_seconds = max(0.0, float(failure_window_seconds))
         self.cooldowns = tuple(max(0.0, float(v)) for v in cooldowns) or (900.0,)
         self.path = path or THROTTLE_FILE
+        self.raw_traffic = bool(raw_traffic and self.byte_limit)
+        self.adaptive = bool(adaptive and self.raw_traffic and self.limit)
+        if self.adaptive:
+            self.resume_headroom = self.limit - resume_count(self.limit, self.resume_headroom)
+        self.traffic = RawTrafficWindow(
+            self.path.with_name(f"{self.path.stem}.{site}.traffic.db"),
+            self.window_seconds, self.byte_limit,
+        ) if self.raw_traffic else None
         self._clock = clock
         self._sleep = sleeper
         self._condition = asyncio.Condition()
@@ -153,6 +175,35 @@ class SiteThrottle:
             and float(v["at"]) > floor
         ]
 
+    def _traffic(self, state: dict, now: float):
+        if self.traffic is not None:
+            return self.traffic.snapshot(now, state["transfers"])
+        return [(v["at"], v["bytes"]) for v in state["transfers"]], self._reserved_bytes, self._reservations
+
+    def _mode(self, state: dict, now: float) -> str:
+        if not self.adaptive:
+            return "normal"
+        events, _, _ = self._traffic(state, now)
+        return update_mode(state, len(state["successes"]), sum(v for _, v in events),
+                           self.limit, self.byte_limit, self.resume_headroom)
+
+    def _permit(self, state: dict, now: float, amount: int, *, probe=False) -> Permit:
+        token = self.traffic.reserve(amount, now) if self.traffic else ""
+        self._reservations += 1
+        self._reserved_bytes += amount
+        return Permit(probe=probe, reserved_bytes=amount, traffic_token=token)
+
+    def record_raw_bytes(self, permit: Permit, amount: int) -> None:
+        """Called synchronously before yielding raw HTTP bytes or awaiting UI/rate work."""
+        if self.traffic is None or amount <= 0:
+            return
+        accepted = self.traffic.receive(permit.traffic_token, amount, self._clock())
+        spent = min(amount, permit.reserved_bytes)
+        permit.reserved_bytes -= spent
+        self._reserved_bytes -= spent
+        if not accepted:
+            raise RawQuotaExceeded("El cuerpo HTTP excedió su reserva de tráfico crudo")
+
     def _count_quota_wait(
         self, state: dict, now: float,
     ) -> tuple[str, float | None] | None:
@@ -162,6 +213,8 @@ class SiteThrottle:
         la marca persistente se conserva hasta recuperar ``resume_headroom``
         slots reales. Con cero se mantiene el comportamiento anterior.
         """
+        if self.adaptive and self._mode(state, now) != "normal":
+            return None
         if not self.limit:
             state["count_recovery"] = False
             return None
@@ -208,26 +261,40 @@ class SiteThrottle:
             waits.append(count_wait)
 
         if self.byte_limit:
-            transfers = sorted(state["transfers"], key=lambda item: item["at"])
+            events, reserved, _ = self._traffic(state, now)
+            transfers = [{"at": at, "bytes": amount} for at, amount in events]
             used = sum(item["bytes"] for item in transfers)
-            projected = used + self._reserved_bytes
+            projected = used + reserved
             blocked = projected >= self.byte_limit or (
                 expected_bytes > 0
                 and projected + expected_bytes > self.byte_limit
             )
+            if self.adaptive and used + expected_bytes > self.byte_limit:
+                state["quota_mode"] = "standby"
+            recovery = self.adaptive and state.get("quota_mode") == "standby"
+            blocked = blocked or recovery
+            if recovery:
+                # Volume recovery may resume economic before files recover.
+                waits.clear()
+            elif self.adaptive and count_wait and state.get("economic_eligible"):
+                economic_at = release_time(events, used, (self.byte_limit - 1) // 2,
+                                           self.window_seconds)
+                if economic_at and (count_wait[1] is None or economic_at < count_wait[1]):
+                    waits[0] = ("quota_economic", economic_at)
             if blocked:
                 until = None
                 remaining = used
                 for item in transfers:
                     remaining -= item["bytes"]
-                    projected_after = remaining + self._reserved_bytes
-                    if (projected_after < self.byte_limit
+                    projected_after = remaining + reserved
+                    if ((not recovery or remaining <= self.byte_limit // 2)
+                            and projected_after < self.byte_limit
                             and (expected_bytes <= 0
                                  or projected_after + expected_bytes
                                  <= self.byte_limit)):
                         until = item["at"] + self.window_seconds
                         break
-                waits.append(("quota_bytes", until))
+                waits.append(("quota_bytes_recovery" if recovery else "quota_bytes", until))
 
         if not waits:
             return None
@@ -243,17 +310,24 @@ class SiteThrottle:
             callback(kind, max(0.0, until - now))
 
     def snapshot(self) -> QuotaSnapshot:
-        """Devuelve el consumo vigente sin alterar la cuota persistida.
+        """Read current usage without writing or recovering orphan reservations.
 
-        ``used_bytes`` contiene sólo transferencias terminadas: los bytes que
-        todavía viajan se añaden en el evento de progreso del servicio. Esto
-        mantiene el medidor auditable contra el JSON y evita contar dos veces
-        un archivo cuando pasa de en vuelo a terminado.
+        With raw traffic, used_bytes already includes active and failed attempts;
+        UI must not add in_flight_bytes again. Legacy gates count completions.
         """
         _data, state = self._read()
         now = self._clock()
         self._prune(state, now)
+        mode = self._mode(state, now)
         count_wait = self._count_quota_wait(state, now)
+        events, reserved, active = self._traffic(state, now)
+        used = sum(amount for _, amount in events)
+        file_expiry = min(state["successes"], default=0) + self.window_seconds if state["successes"] else 0
+        byte_expiry = events[0][0] + self.window_seconds if events else 0
+        target = self.limit - self.resume_headroom
+        file_recovery = release_time([(at, 1) for at in sorted(state["successes"])],
+                                     len(state["successes"]), target, self.window_seconds) or 0
+        byte_recovery = release_time(events, used, self.byte_limit // 2, self.window_seconds) or 0
         expirations = [
             float(value) + self.window_seconds
             for value in state["successes"]
@@ -262,14 +336,24 @@ class SiteThrottle:
             site=self.site,
             used_files=len(state["successes"]),
             file_limit=self.limit,
-            used_bytes=sum(item["bytes"] for item in state["transfers"]),
+            used_bytes=used,
             byte_limit=self.byte_limit,
-            active_files=self._reservations,
+            active_files=active,
             window_seconds=self.window_seconds,
-            next_release_seconds=(
+            raw_bytes=self.raw_traffic,
+            mode=mode,
+            reserved_bytes=reserved,
+            file_release_seconds=max(0, file_expiry - now),
+            byte_release_seconds=max(0, byte_expiry - now),
+            file_recovery_seconds=max(0, file_recovery - now),
+            byte_recovery_seconds=max(0, byte_recovery - now),
+            adaptive=self.adaptive,
+            next_release_seconds=(min(
+                (max(0, at - now) for at in (file_expiry, byte_expiry) if at), default=0,
+            ) if self.raw_traffic else (
                 max(0.0, float(count_wait[1]) - now)
                 if count_wait is not None and count_wait[1] is not None
-                else (max(0.0, min(expirations) - now) if expirations else 0.0)
+                else (max(0.0, min(expirations) - now) if expirations else 0.0))
             ),
             recovery_active=bool(state.get("count_recovery")),
             resume_at_files=max(0, self.limit - self.resume_headroom),
@@ -320,8 +404,8 @@ class SiteThrottle:
         if expected or not self.byte_limit:
             return expected
         return max(0, self.byte_limit
-                   - sum(v["bytes"] for v in state["transfers"])
-                   - self._reserved_bytes)
+                   - sum(amount for _, amount in self._traffic(state, self._clock())[0])
+                   - self._traffic(state, self._clock())[1])
 
     async def acquire(
         self, on_wait: WaitFn | None = None, *, expected_bytes: int | None = None,
@@ -340,6 +424,8 @@ class SiteThrottle:
                 data, state = self._read()
                 now = self._clock()
                 self._prune(state, now)
+                if self.traffic is not None:
+                    self.traffic.initialize(now, state["transfers"])
 
                 if state.get("circuit_open"):
                     wait_until = float(state.get("cooldown_until", 0.0))
@@ -361,11 +447,10 @@ class SiteThrottle:
                             wait_for = max(0.01, wait_until - now)
                         elif not self._probe_in_flight:
                             self._probe_in_flight = True
-                            self._reservations += 1
                             reserved_bytes = self._bytes_to_reserve(state, reserved_bytes)
-                            self._reserved_bytes += reserved_bytes
+                            permit = self._permit(state, now, reserved_bytes, probe=True)
                             _write(self.path, data)
-                            return Permit(probe=True, reserved_bytes=reserved_bytes)
+                            return permit
                         else:
                             if not wait:
                                 raise ThrottleDeferred("circuit", 0.0)
@@ -387,11 +472,10 @@ class SiteThrottle:
                         wait_until = wait_until_value
                         wait_for = max(0.01, wait_until - now)
                     else:
-                        self._reservations += 1
                         reserved_bytes = self._bytes_to_reserve(state, reserved_bytes)
-                        self._reserved_bytes += reserved_bytes
+                        permit = self._permit(state, now, reserved_bytes)
                         _write(self.path, data)
-                        return Permit(reserved_bytes=reserved_bytes)
+                        return permit
 
                 _write(self.path, data)
 
@@ -417,6 +501,13 @@ class SiteThrottle:
                 return permit.reserved_bytes
             _data, state = self._read()
             self._prune(state, self._clock())
+            if self.traffic is not None:
+                if not self.traffic.resize(permit.traffic_token, announced_bytes, self._clock()):
+                    return 0
+                self._reserved_bytes += announced_bytes - permit.reserved_bytes
+                permit.reserved_bytes = announced_bytes
+                self._notify_change()
+                return announced_bytes
             other_bytes = self._reserved_bytes - permit.reserved_bytes
             used = sum(v["bytes"] for v in state["transfers"])
             if used + other_bytes + announced_bytes > self.byte_limit:
@@ -453,10 +544,11 @@ class SiteThrottle:
 
             if success:
                 state["successes"].append(now)
-                state["transfers"].append({
-                    "at": now,
-                    "bytes": max(0, int(transferred_bytes or 0)),
-                })
+                if not self.raw_traffic:
+                    state["transfers"].append({
+                        "at": now,
+                        "bytes": max(0, int(transferred_bytes or 0)),
+                    })
                 if (self.resume_headroom and self.limit
                         and len(state["successes"]) + self._reservations
                         >= self.limit):
@@ -498,6 +590,9 @@ class SiteThrottle:
                     state["cooldown_level"] = 0
                     self._last_notice = None
 
+            if self.traffic is not None:
+                self.traffic.release(permit.traffic_token)
+                self._mode(state, now)
             _write(self.path, data)
             self._notify_change()
         return trip
@@ -507,6 +602,8 @@ class SiteThrottle:
         if permit is None or not permit.active:
             return
         async with self._condition:
+            if self.traffic is not None:
+                self.traffic.release(permit.traffic_token)
             permit.active = False
             self._reservations = max(0, self._reservations - 1)
             self._reserved_bytes = max(

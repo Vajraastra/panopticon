@@ -154,14 +154,19 @@ uv run python main.py
 
 ## Cherry downloads and the library
 
-Pawchive uses two download workers sharing a 4 MiB/s bandwidth cap. The default
-rolling quota is 500 completed files or 25 GiB per two hours, whichever comes
-first; change the quotas in Cherry Settings. Active downloads reserve their
-size: a file that would exceed the byte quota waits for enough previous usage
-to expire. A file larger than the entire quota stays deferred until you raise
-the quota explicitly. The 500-file limit resumes after 50 slots expire by
-default. These limits allow 25 GiB in two hours but do not guarantee that volume:
-available files, network speed and the file-count quota can limit throughput.
+Pawchive uses two workers sharing up to 4 MiB/s in normal mode. At the default
+500 successful-file threshold, it can continue at up to 2 MiB/s if more than
+half of its volume budget remains. Economic downloads still count; normal mode
+returns at 400 live successes (or a stricter recovery margin set in Settings).
+The hard rolling volume budget is 25 GiB of raw HTTP download bodies per two
+hours, including failed, retried and cancelled attempts. Active responses reserve
+their announced size; an attempt that does not fit waits for at least half the
+volume budget to recover and enough space for that file. A response without a
+verifiable HTTP size remains pending. Files larger than the full budget stay
+deferred. File and volume release/recovery timers are separate. Normal cancellation
+keeps received bytes and releases unused reservations; an unclean exit retains
+unacknowledged reservations conservatively on restart. Existing completion-only
+history seeds the new traffic ledger; old failed attempts cannot be reconstructed.
 
 Downloaded images in watched folders enter the central library even when
 Librarian has not been opened. Cherry announces each completed, failed or

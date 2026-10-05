@@ -243,9 +243,9 @@ class SiteMetrics:
 class QuotaStatus:
     """Estado visual de la ventana móvil de un sitio.
 
-    El snapshot persistido sólo contiene transferencias terminadas;
-    ``in_flight_bytes`` hace visible lo recibido por los workers actuales sin
-    adelantarlo en la contabilidad definitiva.
+    En Pawchive, snapshot.used_bytes ya incluye cuerpos HTTP crudos de
+    todos los intentos. in_flight_bytes describe progreso de archivos activos,
+    pero nunca se suma otra vez a esa cuota. Los gates legacy sí lo suman.
     """
     snapshot: object
     in_flight_bytes: int = 0
@@ -591,8 +591,10 @@ async def run_profile_download(
 
     def _throttle_wait(site: str, kind: str, until: float | None) -> None:
         meta = throttle_meta[site]
-        if kind == "quota_bytes":
+        if kind in {"quota_bytes", "quota_bytes_recovery"}:
             reason = f"esperando cupo de {meta['gigabytes']:g} GiB por volumen"
+        elif kind == "quota_economic":
+            reason = "esperando liberar volumen para continuar en modo económico"
         elif kind == "quota_count_recovery":
             reason = (
                 f"esperando recuperar {meta['headroom']} cupos del límite "
@@ -808,8 +810,10 @@ async def run_profile_download(
                 if not force and now - quota_notice_at < 0.25:
                     return
                 quota_notice_at = now
+                snapshot = throttle.snapshot()
+                engine.set_rate(min(rate or 2 * 1024**2, 2 * 1024**2) if snapshot.mode != "normal" else rate)
                 emit(QuotaStatus(
-                    throttle.snapshot(),
+                    snapshot,
                     sum(max(0, value) for value in quota_progress.values()),
                 ))
 
@@ -822,7 +826,8 @@ async def run_profile_download(
                         if template.name == "pawchive" else 0
                     ),
                     "headroom": (
-                        config.pawchive.resume_headroom
+                        (max(config.pawchive.resume_headroom, math.ceil(window_limit * .2))
+                         if config.pawchive.adaptive_quota else config.pawchive.resume_headroom)
                         if template.name == "pawchive" else 0
                     ),
                     "streak": transfer_policy.throttle_failure_streak,
@@ -834,6 +839,8 @@ async def run_profile_download(
                         template.name,
                         limit=window_limit,
                         byte_limit=byte_window_limit,
+                        raw_traffic=template.name == "pawchive",
+                        adaptive=template.name == "pawchive" and config.pawchive.adaptive_quota,
                         resume_headroom=(
                             config.pawchive.resume_headroom
                             if template.name == "pawchive" else 0
@@ -1388,6 +1395,17 @@ async def run_profile_download(
                         async def _reserve_http_size(size: int) -> int:
                             return await throttle.resize(throttle_permit, size)
 
+                        async def _reserve_raw_size(size: int) -> int:
+                            if size == 0:
+                                return throttle_permit.reserved_bytes
+                            allowed = await throttle.resize(throttle_permit, size)
+                            _emit_quota_status(force=True)
+                            return allowed
+
+                        def _received_raw(amount: int) -> None:
+                            throttle.record_raw_bytes(throttle_permit, amount)
+                            _emit_quota_status()
+
                         async def _download_current_file():
                             return await asyncio.wait_for(
                                 engine.download(
@@ -1395,8 +1413,11 @@ async def run_profile_download(
                                     dest_dir=download_folder,
                                     filename=final_name,
                                     on_progress=make_cb(slot_id),
-                                    **({"max_file_bytes": throttle_permit.reserved_bytes,
-                                        "on_file_size": _reserve_http_size}
+                                    **(({"on_response_size": _reserve_raw_size,
+                                         "on_raw_bytes": _received_raw}
+                                        if throttle.raw_traffic else
+                                        {"max_file_bytes": throttle_permit.reserved_bytes,
+                                         "on_file_size": _reserve_http_size})
                                        if throttle is not None and throttle.byte_limit else {}),
                                     extra_headers=fi.extra_headers or None,
                                     total_timeout=300.0,

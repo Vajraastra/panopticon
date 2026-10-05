@@ -169,9 +169,9 @@ class DownloadPanel(QWidget):
         )
         self._quota.setToolTip(self.tr(
             "cherry.dl_pawchive_quota_tip",
-            "Pawchive only. Completed files come from the persistent rolling "
-            "window; bytes still downloading are provisional and are committed "
-            "only when the transfer finishes.",
+            "Raw HTTP bodies count during receipt, including retries, failed and "
+            "cancelled attempts; files count successful completions only. File "
+            "and volume timers show their separate releases and recovery targets.",
         ))
         lay.addWidget(self._quota)
 
@@ -314,6 +314,8 @@ class DownloadPanel(QWidget):
                 "pawchive",
                 limit=cfg.downloads_per_window,
                 byte_limit=int(cfg.gigabytes_per_window * 1024**3),
+                raw_traffic=True,
+                adaptive=cfg.adaptive_quota,
                 resume_headroom=cfg.resume_headroom,
                 window_seconds=cfg.window_hours * 60 * 60,
                 failure_threshold=1,
@@ -334,6 +336,7 @@ class DownloadPanel(QWidget):
         if snapshot.site != "pawchive":
             return
         self._quota_state = snapshot
+        self._quota_received_at = time.time()
         self._quota_in_flight = max(0, int(in_flight_bytes))
         self._quota_next_release = max(
             0, int(round(snapshot.next_release_seconds)),
@@ -346,6 +349,9 @@ class DownloadPanel(QWidget):
         state = self._quota_state
         if state is None:
             self._quota.setVisible(False)
+            return
+        if state.raw_bytes:
+            self._render_raw_quota(state)
             return
         projected = state.used_bytes + self._quota_in_flight
         remaining = max(0, state.byte_limit - projected)
@@ -386,6 +392,43 @@ class DownloadPanel(QWidget):
             recovery=recovery,
             active=active,
         ))
+
+    def _render_raw_quota(self, state) -> None:
+        def deadline(seconds):
+            if seconds <= 0:
+                return self.tr("cherry.dl_quota_ready", "available")
+            remaining = max(0, math.ceil(self._quota_received_at + seconds - time.time()))
+            return self._format_duration(remaining) if remaining else self.tr(
+                "cherry.dl_quota_ready", "available")
+
+        mode_key = state.mode
+        if mode_key == "normal" and state.recovery_active:
+            mode_key = "count_wait"
+        modes = {
+            "normal": ("cherry.dl_mode_normal", "normal · up to 4 MiB/s"),
+            "economic": ("cherry.dl_mode_economic", "economic · up to 2 MiB/s"),
+            "standby": ("cherry.dl_mode_standby", "waiting to recover volume"),
+            "count_wait": ("cherry.dl_mode_count_wait", "waiting to recover file slots"),
+        }
+        mode = self.tr(*modes[mode_key])
+        recovery = ""
+        if state.adaptive and (state.mode != "normal" or state.recovery_active):
+            recovery = self.tr("cherry.dl_quota_targets",
+                " · normal at {target} files: {files_time} · 50% volume available: {bytes_time}").format(
+                    target=state.resume_at_files,
+                    files_time=deadline(state.file_recovery_seconds),
+                    bytes_time=deadline(state.byte_recovery_seconds))
+        self._quota.setText(self.tr("cherry.dl_raw_quota",
+            "Pawchive · {mode} · {used:.3f}/{limit:g} GiB raw ({remaining:.3f} available, {reserved:.3f} reserved) · "
+            "{files}/{file_limit} successful files · {active} active · {hours:g} h rolling window · "
+            "file release: {file_time} · volume release: {byte_time}{recovery}").format(
+                mode=mode, used=state.used_bytes / 2**30, limit=state.byte_limit / 2**30,
+                remaining=max(0, state.byte_limit - state.used_bytes) / 2**30,
+                reserved=state.reserved_bytes / 2**30,
+                files=state.used_files, file_limit=state.file_limit, active=state.active_files,
+                hours=state.window_seconds / 3600,
+                file_time=deadline(state.file_release_seconds),
+                byte_time=deadline(state.byte_release_seconds), recovery=recovery))
 
     def _tick_quota(self) -> None:
         if self._quota_state is None or self._quota_next_release <= 0:
@@ -493,6 +536,8 @@ class DownloadPanel(QWidget):
             "quota_count": ("cherry.dl_wait_count", "Waiting for file quota"),
             "quota_count_recovery": ("cherry.dl_wait_recovery", "Waiting to recover file slots"),
             "quota_bytes": ("cherry.dl_wait_bytes", "Waiting for volume quota"),
+            "quota_bytes_recovery": ("cherry.dl_wait_bytes_recovery", "Waiting to recover at least 50% of volume quota"),
+            "quota_economic": ("cherry.dl_wait_economic", "Waiting for volume to enter economic mode"),
             "circuit": ("cherry.dl_wait_server", "Waiting to probe the server"),
         }.get(state.reason, ("cherry.dl_wait_reservation", "Waiting for another transfer to release capacity"))
         reason = self.tr(key, default)
