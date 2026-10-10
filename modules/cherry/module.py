@@ -1,4 +1,5 @@
 from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import Signal
 
 from core.base_module import BaseModule
 from .logic.runtime import CherryRuntime
@@ -18,6 +19,8 @@ class CherryModule(BaseModule):
     un dueño claro que lo apaga en `on_unload`.
     """
 
+    request_open_module = Signal(str, list)
+
     def __init__(self):
         super().__init__()
         self._name = "Cherry-DL"
@@ -26,6 +29,7 @@ class CherryModule(BaseModule):
         self.accent_color = "#d2455b"  # rojo cereza (fallback; la vista usa el tema)
         self.view = None
         self.runtime = CherryRuntime()
+        self._send_targets = []
 
     def get_view(self) -> QWidget:
         """Construcción perezosa de la interfaz (Regla de Oro #5).
@@ -36,7 +40,14 @@ class CherryModule(BaseModule):
         if self.view:
             return self.view
         self.view = CherryView(self.context, runtime=self.runtime)
+        self.view.set_send_targets(self._send_targets)
+        self.view.image_set_ready.connect(self.request_open_module.emit)
         return self.view
+
+    def set_send_targets(self, targets):
+        self._send_targets = list(targets)
+        if self.view is not None:
+            self.view.set_send_targets(self._send_targets)
 
     def on_unload(self):
         """Cancela el trabajo visible antes de parar su loop propietario."""
@@ -46,4 +57,5 @@ class CherryModule(BaseModule):
             self.runtime.request_stop()
 
     def shutdown_ready(self):
-        return self.runtime.shutdown_ready()
+        return (self.runtime.shutdown_ready()
+                and (self.view is None or self.view.shutdown_ready()))

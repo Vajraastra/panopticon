@@ -14,6 +14,7 @@ from shiboken6 import isValid
 
 # Core Imports
 from core.mod_loader import ModuleLoader
+from core.module_handoff import image_set_consumers
 from core.module_window import ModuleWindow
 from core.theme_manager import ThemeManager
 from core.locale_manager import LocaleManager
@@ -528,6 +529,15 @@ class MainWindow(QMainWindow):
 
     def setup_integrations(self):
         # Wiring up known module connections
+        cherry = self.get_module("Cherry-DL")
+        if cherry:
+            targets = image_set_consumers(self.loaded_modules, cherry)
+            cherry.set_send_targets([
+                (name, self.tr(f"tool.{name.lower().replace(' ', '_')}.name", name), module.icon)
+                for name, module in targets.items()
+            ])
+            cherry.request_open_module.connect(self.open_cherry_image_set)
+
         librarian = self.get_module("Librarian")
         gallery = self.get_module("Gallery")
         optimizer = self.get_module("Image Optimizer")
@@ -577,6 +587,11 @@ class MainWindow(QMainWindow):
             if partial_name.lower() in name.lower():
                 return mod
         return None
+
+    def open_cherry_image_set(self, name, paths):
+        target = image_set_consumers(self.loaded_modules).get(name)
+        if target is not None and paths:
+            self.switch_to_module(target, paths)
 
     def on_navigate(self, target):
         if target == "dashboard":

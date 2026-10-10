@@ -46,18 +46,20 @@ from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter, QTableWidget,
+    QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from core import library_probe
 from core.paths import CachePaths
+from core.native_threads import native_done, owner_threads_ready, start_worker
 from ..logic import ext_filter as ext_logic
 from ..logic import profile_writes as writes
 from ..logic import profiles as profiles_logic
 from ..logic.download_bridge import DownloadBridge
 from ..logic.download_queue import DownloadQueue
 from ..logic.runtime import CherryRuntime
+from ..logic.profile_images import ProfileImagesWorker
 from .download_panel import DownloadPanel
 from .duplicates_dialog import DuplicatesDialog
 from .profile_dialogs import AddUrlDialog, NewProfileDialog
@@ -99,6 +101,7 @@ class CherryView(QWidget):
     _archive_batch_profile = Signal(int, int, int, str)
     _maintenance_progress = Signal(object)
     _load_failed    = Signal(str)
+    image_set_ready = Signal(str, list)
 
     def __init__(self, context: dict | None = None, runtime: CherryRuntime | None = None) -> None:
         self.context = context or {}
@@ -127,6 +130,11 @@ class CherryView(QWidget):
         self._maintenance_busy = False
         self._maintenance_future = None
         self._preparing_download = False
+        self._send_targets = []
+        self._send_worker = None
+        self._send_request = None
+        self._send_delivery = None
+        self._closing = False
 
         super().__init__()
 
@@ -174,6 +182,9 @@ class CherryView(QWidget):
         self._flash_timer.setSingleShot(True)
         self._flash_timer.setInterval(900)
         self._flash_timer.timeout.connect(self._unflash_status)
+        self._send_timer = QTimer(self)
+        self._send_timer.setInterval(25)
+        self._send_timer.timeout.connect(self._finish_send)
 
         self._profiles_ready.connect(self._on_profiles_ready)
         self._detail_ready.connect(self._on_detail_ready)
@@ -251,8 +262,118 @@ class CherryView(QWidget):
 
         table.itemSelectionChanged.connect(self._on_selection_changed)
         table.doubleClicked.connect(self._open_folder)
+        table.setContextMenuPolicy(Qt.CustomContextMenu)
+        table.customContextMenuRequested.connect(self._show_profile_menu)
         table.sortItems(COL_NAME, Qt.AscendingOrder)
         return table
+
+    def set_send_targets(self, targets) -> None:
+        self._send_targets = sorted(
+            targets, key=lambda target: (target[0] != "Pickler", target[1].casefold()))
+
+    def _profile_menu(self, profile) -> QMenu:
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        send = menu.addMenu(self.tr("tool.cherry.send.menu", "Open images in…"))
+        send.setToolTipsVisible(True)
+        send.menuAction().setToolTip(self.tr(
+            "tool.cherry.send.tip",
+            "Read current images from this profile folder and its subfolders, excluding hidden storage and links. Open them in the chosen tool."))
+        enabled = (not self._closing and self._send_worker is None
+                   and bool(profile.get("folder_exists")))
+        send.setEnabled(enabled and bool(self._send_targets))
+        for name, label, icon in self._send_targets:
+            action = send.addAction(f"{icon or ''} {label}".strip())
+            action.setData(name)
+            action.setToolTip(self.tr("tool.cherry.send.target_tip",
+                "Open {profile}'s images in {tool}. Reading the set does not move or copy files.").format(
+                    profile=profile['display_name'], tool=label))
+            action.triggered.connect(
+                lambda checked=False, target=name, selected=dict(profile): self._send_profile(selected, target))
+        if not self._send_targets:
+            menu.addAction(self.tr("tool.cherry.send.no_targets", "No compatible tools available")).setEnabled(False)
+        elif self._send_worker is not None:
+            action = menu.addAction(self.tr("tool.cherry.send.cancel", "Cancel reading images"))
+            action.setToolTip(self.tr("tool.cherry.send.cancel_tip",
+                "Stop preparing the image set. Downloads continue."))
+            action.triggered.connect(self._cancel_send)
+        return menu
+
+    def _cancel_send(self) -> None:
+        if self._send_worker is not None:
+            self._send_worker.stop()
+
+    def _show_profile_menu(self, position) -> None:
+        if self._closing:
+            return
+        item = self._table.itemAt(position)
+        if item is None:
+            return
+        # Use the clicked row's ID after sorting, never a previous selection.
+        self._table.setCurrentCell(item.row(), COL_NAME)
+        self._table.selectRow(item.row())
+        profile = self._current_profile()
+        if profile is None:
+            return
+        menu = self._profile_menu(profile)
+        try:
+            menu.exec(self._table.viewport().mapToGlobal(position))
+        finally:
+            menu.deleteLater()
+
+    def _send_profile(self, profile, target) -> None:
+        if self._closing or self._send_worker is not None:
+            return
+        if not any(name == target for name, _, _ in self._send_targets):
+            return
+        self._send_request = (dict(profile), target)
+        self._send_delivery = None
+        self._send_worker = ProfileImagesWorker(profile['folder_path'])
+        self._send_worker.finished_signal.connect(self._on_send_images)
+        self._set_status(self.tr("tool.cherry.send.reading", "Reading images from {profile}…").format(
+            profile=profile['display_name']))
+        try:
+            start_worker(self._send_worker, self)
+        except Exception as exc:
+            self._send_delivery = (None, str(exc))
+        self._send_timer.start()
+
+    def _on_send_images(self, paths, error) -> None:
+        self._send_delivery = (paths, error)
+        self._finish_send()
+
+    def _finish_send(self) -> None:
+        worker = self._send_worker
+        if worker is None or self._send_delivery is None or not native_done(worker):
+            return
+        paths, error = self._send_delivery
+        if worker.cancelled:
+            paths, error = None, 'profile_images_cancelled'
+        profile, target = self._send_request
+        self._send_worker = self._send_request = self._send_delivery = None
+        self._send_timer.stop()
+        worker.deleteLater()
+        if self._closing:
+            return
+        if error:
+            log.warning("Cherry image-set read failed: %s", error)
+            key, fallback = ("error", "Could not read the complete image set. No images were sent.")
+            if error == 'profile_images_cancelled':
+                key, fallback = "cancelled", "Image-set reading cancelled."
+            elif error == 'profile_images_limit':
+                key, fallback = "limit", "This profile exceeds 500,000 images or 64 MiB of paths. Open a smaller subfolder in the destination tool. No partial set was sent."
+            self._set_status(self.tr(f"tool.cherry.send.{key}", fallback))
+            return
+        current = next((p for p in self._profiles if p['id'] == profile['id']), None)
+        if current is None or current['folder_path'] != profile['folder_path']:
+            self._set_status(self.tr("tool.cherry.send.changed", "The profile changed while reading. Send it again."))
+            return
+        if not paths:
+            self._set_status(self.tr("tool.cherry.send.empty", "This profile has no available images."))
+            return
+        self._set_status(self.tr("tool.cherry.send.opening", "Opening {count} images from {profile}…").format(
+            count=len(paths), profile=profile['display_name']))
+        self.image_set_ready.emit(target, paths)
 
     # ── Zona 1: barra superior ────────────────────────────────────────────
     def _build_topbar(self) -> QWidget:
@@ -635,6 +756,9 @@ class CherryView(QWidget):
 
     def shutdown(self) -> None:
         """La llama el módulo al descargarse: para el loop y su hilo."""
+        self._closing = True
+        if self._send_worker is not None:
+            self._send_worker.stop()
         if self._maintenance_future is not None:
             self._maintenance_future.cancel()
         if self._queue.is_running:
@@ -643,6 +767,9 @@ class CherryView(QWidget):
         if self._bridge.is_busy:
             self._bridge.cancel()
         self._runtime.request_stop()
+
+    def shutdown_ready(self) -> bool:
+        return native_done(self._send_worker) and owner_threads_ready(self)
 
     # ── Carga de datos ────────────────────────────────────────────────────
     def refresh(self) -> None:
