@@ -11,8 +11,9 @@ from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 from PySide6.QtCore import QSettings,QThread,QCoreApplication,QEvent,QTimer,QObject,Qt
-from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QApplication,QPushButton,QListWidget,QMessageBox
+from PySide6.QtGui import QImage,QKeyEvent
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication,QPushButton,QListWidget,QMessageBox,QDialog,QLineEdit
 from core.event_bus import EventBus
 from core.library_service import LibraryService
 from core.native_threads import native_threads_ready
@@ -81,6 +82,7 @@ class PicklerUI(unittest.TestCase):
         self.assertEqual(self.service.read('get_file_id',str(self.source.resolve())),self.key)
 
     def test_io_stays_off_gui_and_repeated_action_is_not_admitted(self):
+        self.show_keyboard()
         entered=threading.Event(); release=threading.Event(); threads=[]; transfer=transfers.transfer
         self.addCleanup(release.set)
         incoming=self.folder/'incoming.png'; incoming.write_bytes(self.source.read_bytes())
@@ -90,6 +92,8 @@ class PicklerUI(unittest.TestCase):
         with patch('modules.pickler.logic.transfers.transfer',side_effect=blocked):
             self.view._pick_current(); self.assertTrue(pump(entered.is_set))
             active=self.view._worker; self.view._pick_current(); self.view._next()
+            for key, modifiers in ((Qt.Key_C,Qt.NoModifier),(Qt.Key_D,Qt.NoModifier),(Qt.Key_Z,Qt.ControlModifier)):
+                QTest.keyClick(self.view,key,modifiers)
             messages=[]
             def dismiss(dialog):
                 self.assertTrue(dialog.button(QMessageBox.Ok).toolTip())
@@ -218,6 +222,121 @@ class PicklerUI(unittest.TestCase):
         self.view._show_recovery(result)
         self.assertEqual(self.view._dialogs,[]); self.assertTrue(pump(self.view.shutdown_ready))
         self.assertTrue(self.source.exists())
+
+    def carousel(self):
+        paths=[self.source]
+        for name in ('second.png','third.png'):
+            path=self.folder/name
+            path.write_bytes(self.source.read_bytes())
+            path.with_suffix('.txt').write_bytes(name.encode())
+            paths.append(path)
+        self.view.load_images([str(path) for path in paths]); self.wait()
+        return paths
+
+    def keys_ready(self):
+        self.assertTrue(pump(lambda:self.view._decision_ready))
+
+    def show_keyboard(self):
+        self.view.resize(1100,850); self.view.show(); self.view.activateWindow()
+        self.view._btn_skip.setFocus()
+        app.processEvents(); self.keys_ready()
+
+    def test_keyboard_discards_and_keeps_with_auto_advance_and_multiple_undo(self):
+        paths=self.carousel(); self.show_keyboard()
+        QTest.keyClick(self.view._btn_skip,Qt.Key_D); self.wait()
+        self.assertEqual(self.view._images,[paths[1],paths[2]])
+        self.assertTrue((self.folder/'discarded'/paths[0].name).exists())
+        self.keys_ready()
+        QTest.keyClick(self.view._canvas,Qt.Key_C); self.wait()
+        self.assertEqual(self.view._images,[paths[2]])
+        self.assertTrue((self.folder/'picked'/paths[1].name).exists())
+        self.view._rb_copy.setChecked(True); self.keys_ready()
+        QTest.keyClick(self.view._canvas,Qt.Key_C); self.wait()
+        self.assertEqual(self.view._images,[]); self.assertTrue(paths[2].exists())
+        self.assertEqual(self.view._keep_dest(),self.folder/'picked')
+        self.assertEqual(self.view._discard_dest(),self.folder/'discarded')
+        with patch('modules.pickler.ui.view.CachePaths.open_folder') as opened:
+            self.view._open_dest(); self.view._open_discarded()
+            self.assertEqual([call.args[0] for call in opened.call_args_list],
+                             [self.folder/'picked',self.folder/'discarded'])
+        self.assertEqual(len(self.view._undo_stack),3)
+        self.assertIn('3',self.view._btn_undo.text())
+        for index in (2,1,0):
+            QTest.keyClick(self.view,Qt.Key_Z,Qt.ControlModifier); self.wait()
+            self.assertEqual(self.view._images,paths[index:])
+            self.assertEqual(self.view._images[self.view._index],paths[index])
+            self.assertEqual(len(self.view._undo_stack),index)
+        self.assertEqual((self.view._kept,self.view._discarded),(0,0))
+        self.assertTrue(all(path.exists() and path.with_suffix('.txt').exists() for path in paths))
+        self.assertEqual(self.service.read('get_file_id',str(self.source.resolve())),self.key)
+
+    def test_keyboard_ignores_repeat_loading_modifiers_and_modal_dialog(self):
+        paths=self.carousel(); self.show_keyboard()
+        QTest.keyPress(self.view._canvas,Qt.Key_C); self.wait(); self.keys_ready()
+        count=len(self.view._undo_stack)
+        repeat=QKeyEvent(QEvent.KeyPress,Qt.Key_C,Qt.NoModifier,'c',True,10)
+        QApplication.sendEvent(self.view._canvas,repeat); app.processEvents()
+        self.assertIsNone(self.view._worker); self.assertEqual(len(self.view._undo_stack),count)
+        QTest.keyRelease(self.view._canvas,Qt.Key_C)
+        QTest.keyClick(self.view._canvas,Qt.Key_D,Qt.ControlModifier)
+        self.assertIsNone(self.view._worker)
+        self.view._next()
+        QTest.keyClick(self.view._canvas,Qt.Key_D)
+        self.assertIsNone(self.view._worker); self.assertEqual(len(self.view._undo_stack),count)
+        self.keys_ready()
+        dialog=QDialog(self.view); dialog.setModal(True); entry=QLineEdit(dialog)
+        dialog.show(); entry.setFocus(); app.processEvents()
+        QTest.keyClick(entry,Qt.Key_C)
+        self.assertEqual(entry.text(),'c'); self.assertIsNone(self.view._worker)
+        dialog.close(); dialog.deleteLater()
+        self.assertTrue(paths[2].exists())
+
+    def test_failed_undo_preserves_entire_history_and_new_input_clears_it(self):
+        paths=self.carousel()
+        self.view._delete_current(); self.wait()
+        self.view._pick_current(); self.wait()
+        pending=list(self.view._undo_stack)
+        paths[1].write_bytes(b'occupied original path')
+        self.view._undo(); self.wait()
+        self.assertEqual(self.view._undo_stack,pending)
+        self.assertEqual(paths[1].read_bytes(),b'occupied original path')
+        self.assertEqual((self.view._kept,self.view._discarded),(1,1))
+        self.view.load_images([str(paths[2])]); self.wait()
+        self.assertEqual(self.view._undo_stack,[])
+        self.assertEqual((self.view._kept,self.view._discarded),(0,0))
+        self.assertFalse(self.view._btn_undo.isEnabled())
+
+    def test_help_tracks_actual_destinations_transfer_setting_and_recovery(self):
+        self.view._custom_dest=self.root/'chosen'; self.view._update_dest_label()
+        self.assertIn(str(self.root/'chosen'),self.view._lbl_keys.text())
+        self.assertIn('D:',self.view._lbl_keys.text()); self.assertIn('C:',self.view._lbl_keys.text())
+        self.view._rb_copy.setChecked(True)
+        self.assertIn('Copy',self.view._lbl_keys.text())
+        self.view._rb_move.setChecked(True)
+        self.assertIn('Move',self.view._lbl_keys.text())
+        self.assertIn('Ctrl+Z',self.view._lbl_recover.text())
+        self.assertIn('discarded/',self.view._lbl_recover.text())
+        self.assertIn('closing Pickler',self.view._btn_undo.toolTip())
+
+    def test_multiple_undo_restores_order_after_skipping_and_processing_from_middle(self):
+        paths=self.carousel()
+        self.view._next(); self.view._delete_current(); self.wait()
+        self.view._copy_mode=True; self.view._pick_current(); self.wait()
+        self.assertEqual(self.view._images,[paths[0]])
+        self.view._undo(); self.wait()
+        self.assertEqual(self.view._images,[paths[0],paths[2]])
+        self.assertEqual(self.view._index,1)
+        self.view._undo(); self.wait()
+        self.assertEqual(self.view._images,paths); self.assertEqual(self.view._index,1)
+
+    def test_unreadable_preview_never_admits_keyboard_decisions(self):
+        broken=self.folder/'broken.png'; broken.write_bytes(b'not an image')
+        self.view.load_images([str(broken)]); self.wait()
+        self.view.show(); self.view.activateWindow(); app.processEvents()
+        self.assertTrue(pump(lambda:'could not be displayed' in self.view._lbl_keyboard_state.text()))
+        for key in (Qt.Key_C,Qt.Key_D):QTest.keyClick(self.view,key)
+        self.assertIsNone(self.view._worker); self.assertFalse(self.view._decision_ready)
+        self.assertTrue(broken.exists()); self.assertEqual(self.view._undo_stack,[])
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

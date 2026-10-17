@@ -6,7 +6,7 @@ from .ui.view import PicklerView
 
 class PicklerModule(BaseModule):
     """
-    Pickler — curación manual rápida de imágenes con dos modos *error-proof*:
+    Pickler — curación manual rápida con decisiones verificadas y recuperables:
 
       • Modo Borrar : mueve la imagen a 'discarded/' dentro de la carpeta del
                       set (recuperable). Nunca borra el original directo.
@@ -14,10 +14,10 @@ class PicklerModule(BaseModule):
                       dentro del set (o a un destino que elijas; toggle
                       Mover/Copiar en el sidebar).
 
-    La acción primaria de cada modo se dispara SOLO por clic derecho (menú
-    contextual) o botón explícito; el teclado solo omite/retrocede. Esa fricción
-    deliberada evita borrados accidentales al curar miles de imágenes en
-    "piloto automático".
+    D descarta y C conserva según Mover/Copiar, sin depender del modo del botón.
+    Ambas avanzan al confirmar la operación; se ignoran las repeticiones y las
+    pulsaciones durante carga/transferencia. Ctrl+Z deshace las decisiones del
+    conjunto en orden inverso y vuelve a la imagen restaurada.
 
     Usa el servicio central para conservar identidad/curación; no importa otros módulos.
     """
