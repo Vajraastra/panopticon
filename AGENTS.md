@@ -48,7 +48,7 @@ core/            base_module · mod_loader · event_bus · paths · theme(_manag
   components/    widgets compartidos: standard_layout · thumbnail · tag_widgets
   metadata/      extractor · stamper · verifier · batch_verifier · bundle
   ai/            helpers de descarga de modelos
-modules/         un módulo por carpeta (12 activos); se descubren solos
+modules/         un módulo por carpeta; se descubren solos
 third_party/     cherry_dl vendorizado, motor canónico (ver VENDORED.md)
 scripts/         utilidades autónomas de una sola vez (p.ej. merge_patreon.py)
 locales/         en.json · es.json

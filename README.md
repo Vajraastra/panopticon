@@ -14,6 +14,7 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 | **Librarian** | Central library manager. Scans folders, builds an indexed collection, provides thumbnails and lazy loading for large sets. |
 | **Gallery** | Visual browser for your collection. Paginates and displays images with filtering and sorting. |
 | **Character Recognizer** | Identifies and tags characters within a set using face recognition (ArcFace + YuNet) with landmark alignment. Supports real photos, 3D renders, and illustration/anime. |
+| **Character Separator (prototype)** | Review all thumbnails in suggested groups, up to 1,000 pending images per batch. Approve or merge groups, or assign and discard individual images. The full pass copies approved images, clear matches, and their .txt captions into named character folders. |
 | **Smart Cropper** | Interactively crops received images to target aspect ratios. Supports standard dataset ratios, monitor formats, and mobile sizes. |
 | **Duplicate Finder** | Reviews exact SHA-256 duplicates with curation priority and recoverable retirement; visual similarity stays review-only. |
 | **Format Scanner** | Analyzes the distribution of image formats across a collection for statistical review. |
@@ -22,6 +23,9 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 | **Metadata Hub** | Inspect and edit embedded metadata (EXIF, tags, captions) across your collection. |
 | **Dataset Tagger** | Auto-captions image folders with a local or online vision LLM plus a WD tagger, producing kohya-style `.txt` sidecars for training datasets (booru tags and natural language, per-model templates). |
 | **Pickler** | Manual culling with verified image/caption transfers: moves preserve curated IDs, explicit copies inherit initial curation independently, and guarded undo preserves changed files. |
+
+Character Separator accepts any folder on disk. The first scan downloads the CCIP model,
+and recognition runs locally. Confirmed references are kept for the current review session.
 
 ---
 
@@ -47,7 +51,7 @@ the Qt event loop alive until the writer has closed its connection and released
 ownership; it does not wait for the writer on the GUI thread, even with a full
 command queue. Pending cancelled commands are skipped and failed transactions
 resolve their futures. Blocking `close()` remains available for CLI/tests.
-All 12 active modules participate in shutdown readiness. The dashboard first
+All active modules participate in shutdown readiness. The dashboard first
 requests cancellation and waits for their retained work and the native thread
 registry, then drains the Cherry ingestor and central writer. Accepted publication
 or database work finishes before its services close. Closing a module window only
