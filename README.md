@@ -27,8 +27,13 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 Character Separator works with local Windows folders independently of the indexed library.
 It shares CCIP embeddings with Character Recognizer. Models download when needed and inference
 runs locally. Each input folder keeps its confirmed characters and review decisions across restarts.
-Review groups with the strongest CCIP matches first. The Confirmed Characters tab removes
-incorrect identities and returns their images to review while preserving files on disk.
+Use the **Unidentified** and **Identified** tabs in the sidebar to review both lists in the same gallery.
+Optional **Autoscan** looks for a newly confirmed character in the unassigned groups of the current batch.
+Later batches show likely matches to known characters as **Name?**. Review the images, then click the name
+to merge the remaining group or reject the suggestion to keep the images pending.
+In **Identified**, select a character to inspect its assignments, including verified exports. Move an image
+to the correct character from the gallery or its enlarged view. A previous exported copy stays on disk
+and the next export can copy the image into the corrected character folder.
 Images and captions are copied when you start the export, including after reopening the review.
 After exporting, select a character to open its verified copies in Gallery, Dataset Tagger, or Pickler.
 

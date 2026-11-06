@@ -1,12 +1,11 @@
 import logging
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import QPersistentModelIndex, QSignalBlocker, QStringListModel, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QPersistentModelIndex, QSettings, QSignalBlocker, QStringListModel, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
-    QComboBox, QCompleter, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+    QCheckBox, QComboBox, QCompleter, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMenu, QMessageBox, QProgressBar, QPushButton, QTabWidget, QToolButton,
     QVBoxLayout, QWidget,
 )
@@ -14,8 +13,9 @@ from PySide6.QtWidgets import (
 from core.components.standard_layout import StandardToolLayout
 from core.native_threads import owner_threads_ready, start_worker
 from core.paths import CachePaths
+from ..logic.confirmed_preview import load_previews, load_samples
 from ..logic.export import ExportError, validate_name
-from ..logic.recognition import ScanCancelled, ordered_review_groups, representatives, scan
+from ..logic.recognition import ScanCancelled, ordered_review_groups, representatives, rescan, scan
 from ..logic.review import Decision, ReviewSession
 from ..logic.review_store import ReviewStore
 from .confirmed_characters import ConfirmedCharacters
@@ -25,6 +25,7 @@ from .photo_review import PhotoReviewDialog
 
 log = logging.getLogger(__name__)
 PREFIX = "tool.character_separator."
+CONFIRMED_PAGE_SIZE = 96
 
 
 @dataclass
@@ -67,12 +68,18 @@ class CharacterSeparatorView(QWidget):
         self.result = None
         self.groups = {}
         self.session = ReviewSession()
+        self.assigned_images = {}
+        self.has_references = False
+        self.confirmed_page = 0
+        self.confirmed_preview_key = None
+        self.confirmed_preview = None
         self.job = None
         self.photo_review = None
         self.delete_dialog = None
         self.closing = False
         self.send_extensions = {}
         self.store = ReviewStore()
+        self.settings = QSettings("Panopticon", "Character Separator")
 
         sidebar = QWidget()
         side = QVBoxLayout(sidebar)
@@ -95,6 +102,12 @@ class CharacterSeparatorView(QWidget):
             "Review up to 1,000 more pending images in filename order. Confirmed identities carry over.",
             self.start_scan,
         )
+        self.autoscan = QCheckBox(self.t("autoscan", "Autoscan"))
+        self.autoscan.setToolTip(self.t(
+            "autoscan_tip", "When you create a character, look for it in the unassigned groups of the current batch.",
+        ))
+        self.autoscan.setChecked(self.settings.value("autoscan", False, type=bool))
+        self.autoscan.toggled.connect(lambda checked: self.settings.setValue("autoscan", checked))
         self.scope_label = QLabel()
         self.scope_label.setTextFormat(Qt.TextFormat.PlainText)
         self.scope_label.setWordWrap(True)
@@ -103,29 +116,58 @@ class CharacterSeparatorView(QWidget):
         self.session_notice = QLabel()
         self.session_notice.setWordWrap(True)
         for widget in (self.folder_button, self.refine_button, self.parent_button,
-                       self.scope_label, self.scan_button, self.batch_notice, self.session_notice):
+                       self.scope_label, self.scan_button, self.autoscan, self.batch_notice, self.session_notice):
             side.addWidget(widget)
-        side.addWidget(QLabel(self.t("review", "Review suggested identities")))
+        self.tabs = QTabWidget()
         self.group_list = QListWidget()
         self.group_list.setToolTip(self.t(
             "groups_tip", "Groups with stronger CCIP evidence appear first. Select a group to see all its images.",
         ))
         self.group_list.currentItemChanged.connect(self.show_group)
-        side.addWidget(self.group_list, 1)
+        review_tab = self.tabs.addTab(self.group_list, self.t("review_tab", "Unidentified"))
+        self.tabs.setTabToolTip(review_tab, self.t(
+            "review_tab_tip", "Review the unassigned groups and suggestions in the current batch.",
+        ))
+        self.confirmed = ConfirmedCharacters(self.t, self.tabs)
+        confirmed_tab = self.tabs.addTab(self.confirmed, self.t("confirmed_tab", "Identified"))
+        self.tabs.setTabToolTip(confirmed_tab, self.t(
+            "confirmed_tab_tip", "Inspect the images assigned to each character and correct their assignments.",
+        ))
+        for button in self.tabs.tabBar().findChildren(QToolButton):
+            button.setToolTip(self.t("scroll_tabs_tip", "Scroll to tabs hidden by the available width."))
+        side.addWidget(self.tabs, 1)
 
         canvas = QWidget()
         main = QVBoxLayout(canvas)
-        help_label = QLabel(self.t(
-            "help", "CCIP groups images by character. Review the proposed groups or decide on individual images. "
-            "Confirmed examples help recognize characters in later batches and in the full run.",
-        ))
-        help_label.setWordWrap(True)
-        main.addWidget(help_label)
+        self.help_label = QLabel()
+        self.help_label.setWordWrap(True)
+        main.addWidget(self.help_label)
+
+        self.suggestion_row = QWidget()
+        suggestions = QHBoxLayout(self.suggestion_row)
+        suggestions.setContentsMargins(0, 0, 0, 0)
+        self.suggested_button = self._button(
+            "suggested_name", "{name}?", "suggested_group_tip",
+            "Merge the remaining images into this character. Review and discard any outliers first.",
+            self.accept_suggestion,
+        )
+        self.reject_suggestion_button = self._button(
+            "reject_suggestion", "Reject suggestion", "reject_suggestion_tip",
+            "Reject this name for these images and keep them in review.",
+            self.reject_suggestion,
+        )
+        suggestions.addWidget(self.suggested_button)
+        suggestions.addWidget(self.reject_suggestion_button)
+        suggestions.addStretch()
+        main.addWidget(self.suggestion_row)
 
         self.identity_names = QStringListModel(self)
         self.name_edit = self.create_name_edit()
-        self.name_edit.returnPressed.connect(self.approve_group)
+        self.name_edit.returnPressed.connect(self.submit_name)
         main.addWidget(self.name_edit)
+        self.group_actions = QWidget()
+        group_actions = QVBoxLayout(self.group_actions)
+        group_actions.setContentsMargins(0, 0, 0, 0)
         decisions = QHBoxLayout()
         self.approve_button = self._button(
             "approve", "Approve group", "approve_tip",
@@ -138,7 +180,7 @@ class CharacterSeparatorView(QWidget):
         )
         decisions.addWidget(self.approve_button)
         decisions.addWidget(self.reject_button)
-        main.addLayout(decisions)
+        group_actions.addLayout(decisions)
         merge_row = QHBoxLayout()
         self.merge_target = QComboBox()
         self.merge_target.setModel(self.identity_names)
@@ -154,7 +196,8 @@ class CharacterSeparatorView(QWidget):
         )
         merge_row.addWidget(self.merge_target, 1)
         merge_row.addWidget(self.merge_button)
-        main.addLayout(merge_row)
+        group_actions.addLayout(merge_row)
+        main.addWidget(self.group_actions)
         self.photo_gallery = PhotoGallery(
             self.t("thumbnail_missing", "Preview unavailable"),
             self.t("photos_tip", "Double-click a thumbnail to enlarge it and review that image."),
@@ -162,6 +205,23 @@ class CharacterSeparatorView(QWidget):
         self.photo_gallery.selectionModel().selectionChanged.connect(self.update_controls)
         self.photo_gallery.doubleClicked.connect(self.open_photo_review)
         main.addWidget(self.photo_gallery, 1)
+        self.page_controls = QWidget()
+        page_controls = QHBoxLayout(self.page_controls)
+        page_controls.setContentsMargins(0, 0, 0, 0)
+        self.prev_page = self._button(
+            "previous_page", "Previous", "previous_page_tip",
+            "Show the previous images assigned to this character.", lambda: self.change_confirmed_page(-1),
+        )
+        self.next_page = self._button(
+            "next_page", "Next", "next_page_tip",
+            "Show the next images assigned to this character.", lambda: self.change_confirmed_page(1),
+        )
+        self.page_notice = QLabel()
+        page_controls.addWidget(self.prev_page)
+        page_controls.addWidget(self.page_notice)
+        page_controls.addWidget(self.next_page)
+        page_controls.addStretch()
+        main.addWidget(self.page_controls)
         photo_actions = QHBoxLayout()
         self.assign_photo_button = self._button(
             "assign_photo", "Assign selected image", "assign_photo_tip",
@@ -224,23 +284,16 @@ class CharacterSeparatorView(QWidget):
         handoff.addWidget(self.exported_character, 1)
         handoff.addWidget(self.send_button)
         footer_layout.addLayout(handoff)
-        self.tabs = QTabWidget()
-        review_tab = self.tabs.addTab(canvas, self.t("review_tab", "Review"))
-        self.tabs.setTabToolTip(review_tab, self.t("review_tab_tip", "Review the current batch and confirm identities."))
-        self.confirmed = ConfirmedCharacters(self.t, self.tabs)
-        confirmed_tab = self.tabs.addTab(self.confirmed, self.t("confirmed_tab", "Confirmed characters"))
-        self.tabs.setTabToolTip(confirmed_tab, self.t(
-            "confirmed_tab_tip", "Review saved characters for this input folder and remove incorrect identities.",
-        ))
-        for button in self.tabs.tabBar().findChildren(QToolButton):
-            button.setToolTip(self.t("scroll_tabs_tip", "Scroll to tabs hidden by the available width."))
+        self.tabs.currentChanged.connect(self.change_identity_tab)
+        self.confirmed.character_list.currentItemChanged.connect(self.select_confirmed_identity)
         self.confirmed.delete_requested.connect(self.request_delete_character)
         context = context or {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(StandardToolLayout(
-            self.tabs, sidebar, footer, context.get("theme_manager"), context.get("event_bus"),
+            canvas, sidebar, footer, context.get("theme_manager"), context.get("event_bus"),
         ))
+        self.change_identity_tab()
         self.apply_scope(None, None, self.session)
         self.status.setText(self.t("review_loading", "Loading saved characters…"))
         self.start_job("load_review", self.restore_scope, on_success=self.show_restored_scope)
@@ -302,6 +355,8 @@ class CharacterSeparatorView(QWidget):
     def apply_scope(self, mother, source, session):
         self.mother, self.source = mother, source
         self.session = session
+        self.confirmed_page = 0
+        self.confirmed_preview_key = self.confirmed_preview = None
         self.show_destinations()
         self.clear_scan()
         if mother is None:
@@ -356,7 +411,7 @@ class CharacterSeparatorView(QWidget):
         if group.rejected:
             return self.t("rejected_group", "{name} · rejected").format(name=name)
         if group.suggested:
-            return self.t("suggested_group", "{name} · suggested · {count} images").format(
+            return self.t("suggested_group", "{name}? · {count} images").format(
                 name=name, count=len(group.members),
             )
         return self.t("group_count", "{name} · {count} images").format(
@@ -378,14 +433,94 @@ class CharacterSeparatorView(QWidget):
         self.show_group()
 
     def show_group(self):
+        if self.reviewing_confirmed():
+            return
         selected = self.selected_id()
         group = self.groups.get(selected)
-        self.name_edit.setText(group.suggested if group else "")
+        self.name_edit.clear()
+        self.suggestion_row.setVisible(bool(group and group.suggested))
+        if group and group.suggested:
+            self.suggested_button.setText(self.t("suggested_name", "{name}?").format(name=group.suggested))
         with QSignalBlocker(self.merge_target):
             self.merge_target.setCurrentIndex(-1)
-        if self.photo_gallery.model().set_members(self.result, group.members if group else ()):
+        self.show_photos(self.result, group.members if group else ())
+
+    def show_photos(self, result, members):
+        if self.photo_gallery.model().set_members(result, members):
             self.photo_gallery.scrollToTop()
         self.update_controls()
+
+    def reviewing_confirmed(self):
+        return self.tabs.currentWidget() is self.confirmed
+
+    def change_identity_tab(self):
+        confirmed = self.reviewing_confirmed()
+        self.group_actions.setVisible(not confirmed)
+        self.assign_photo_button.setText(
+            self.t("move_photo", "Move selected image") if confirmed else
+            self.t("assign_photo", "Assign selected image")
+        )
+        self.assign_photo_button.setToolTip(
+            self.t("move_photo_tip", "Assign the selected image to the character entered above.") if confirmed else
+            self.t("assign_photo_tip", "Give the selected image the entered identity and keep it as a reference for that name.")
+        )
+        self.name_edit.setPlaceholderText(
+            self.t("move_name", "Destination character") if confirmed else
+            self.t("name_placeholder", "Character name")
+        )
+        if confirmed:
+            self.name_edit.clear()
+            self.suggestion_row.hide()
+            self.help_label.setText(self.t(
+                "confirmed_help", "Select a character to review its images. Move a selected image to correct its assignment.",
+            ))
+            self.refresh_confirmed_preview()
+        else:
+            self.page_controls.hide()
+            self.help_label.setText(self.t(
+                "help", "CCIP groups images by character. Review the proposed groups or decide on individual images. "
+                "Confirmed examples help recognize characters in later batches and in the full run.",
+            ))
+            self.show_group()
+
+    def select_confirmed_identity(self):
+        self.confirmed_page = 0
+        if self.reviewing_confirmed():
+            self.name_edit.clear()
+            self.refresh_confirmed_preview()
+
+    def change_confirmed_page(self, step):
+        self.confirmed_page += step
+        self.refresh_confirmed_preview()
+
+    def refresh_confirmed_preview(self):
+        if not self.reviewing_confirmed() or self.job is not None or self.closing:
+            return
+        name = self.confirmed.selected_name()
+        signatures = self.assigned_images.get(name, {})
+        count = len(signatures)
+        last_page = max(0, (count - 1) // CONFIRMED_PAGE_SIZE)
+        self.confirmed_page = min(max(0, self.confirmed_page), last_page)
+        self.page_controls.setVisible(last_page > 0)
+        self.page_notice.setText(self.t("page_notice", "{page} of {total}").format(
+            page=self.confirmed_page + 1, total=last_page + 1,
+        ))
+        offset = self.confirmed_page * CONFIRMED_PAGE_SIZE
+        paths = sorted(signatures, key=lambda path: (path.name.casefold(), path.name))
+        page = {path: signatures[path] for path in paths[offset:offset + CONFIRMED_PAGE_SIZE]}
+        key = name, tuple(page.items())
+        if self.confirmed_preview_key == key:
+            self.show_confirmed_preview(self.confirmed_preview)
+            return
+        self.confirmed_preview_key = key
+        self.show_confirmed_preview(None)
+        if page:
+            self.start_job("preview", lambda cancelled, progress: load_previews(page, cancelled, progress),
+                           on_success=self.show_confirmed_preview)
+
+    def show_confirmed_preview(self, preview):
+        self.confirmed_preview = preview
+        self.show_photos(preview, tuple(range(len(preview.paths))) if preview else ())
 
     def selected_photo(self):
         selection = self.photo_gallery.selectionModel().selectedIndexes()
@@ -394,22 +529,23 @@ class CharacterSeparatorView(QWidget):
     def open_photo_review(self, index):
         if self.photo_review is not None or not self.photo_gallery.isEnabled() or not index.isValid():
             return
-        result, key = self.result, self.selected_id()
+        result = self.photo_gallery.model().result
+        group = None if self.reviewing_confirmed() else self.groups.get(self.selected_id())
         photo = QPersistentModelIndex(index)
         member = photo.data(Qt.ItemDataRole.UserRole)
         dialog = PhotoReviewDialog(
             result.paths[member], result.signatures[member], self.create_character_picker(),
-            self.entered_name, self.t, self,
+            self.entered_name, self.t, self, suggestion=group.suggested if group else None,
         )
         self.photo_review = dialog
-        dialog.finished.connect(lambda code: self.finish_photo_review(code, result, key, photo))
+        dialog.finished.connect(lambda code: self.finish_photo_review(code, result, photo))
         dialog.destroyed.connect(self.clear_photo_review)
         dialog.open()
 
-    def finish_photo_review(self, code, result, key, photo):
-        if self.closing or self.job is not None or result is not self.result:
+    def finish_photo_review(self, code, result, photo):
+        if self.closing or self.job is not None or result is not self.photo_gallery.model().result:
             return
-        if key != self.selected_id() or not photo.isValid():
+        if not photo.isValid():
             return
         if code == QDialog.DialogCode.Accepted and self.photo_review.name is not None:
             self.decide_photo(photo, self.photo_review.name)
@@ -421,29 +557,38 @@ class CharacterSeparatorView(QWidget):
 
     def update_controls(self):
         idle = self.job is None and self.delete_dialog is None and not self.closing
-        group = self.groups.get(self.selected_id())
+        confirmed = self.reviewing_confirmed()
+        group = None if confirmed else self.groups.get(self.selected_id())
         selected = idle and group is not None
         self.folder_button.setEnabled(idle)
         self.refine_button.setEnabled(idle and self.mother is not None)
         self.parent_button.setEnabled(idle and self.source != self.mother)
         self.scan_button.setEnabled(idle and self.source is not None)
-        self.group_list.setEnabled(idle)
-        self.name_edit.setEnabled(selected)
+        self.autoscan.setEnabled(idle)
+        self.tabs.setEnabled(idle)
         self.approve_button.setEnabled(selected)
-        photo_selected = selected and self.selected_photo() is not None
-        self.photo_gallery.setEnabled(selected)
+        gallery_enabled = idle and self.photo_gallery.model().rowCount() > 0
+        photo_selected = gallery_enabled and self.selected_photo() is not None
+        self.name_edit.setEnabled(selected or (confirmed and photo_selected))
+        self.photo_gallery.setEnabled(gallery_enabled)
         self.assign_photo_button.setEnabled(photo_selected)
         self.exclude_photo_button.setEnabled(photo_selected)
-        self.reject_button.setEnabled(selected and not group.rejected)
+        self.reject_button.setEnabled(selected and not group.rejected and not group.suggested)
+        has_suggestion = selected and bool(group.suggested)
+        self.suggested_button.setEnabled(has_suggestion)
+        self.reject_suggestion_button.setEnabled(has_suggestion)
         self.merge_target.setEnabled(selected and self.merge_target.count() > 0)
         self.merge_button.setEnabled(self.merge_target.isEnabled() and self.merge_target.currentIndex() >= 0)
-        self.export_button.setEnabled(idle and self.identity_names.rowCount() > 0)
-        self.cancel_button.setEnabled(self.job is not None and self.job.kind in {"scan", "export"}
+        self.export_button.setEnabled(idle and self.has_references)
+        self.cancel_button.setEnabled(self.job is not None and self.job.kind in {"scan", "autoscan", "export"}
                                       and not self.job.cancel.is_set() and not self.closing)
         self.open_button.setEnabled(idle and self.mother is not None)
         self.exported_character.setEnabled(idle and bool(self.session.destinations) and bool(self.send_menu.actions()))
         self.send_button.setEnabled(self.exported_character.isEnabled() and self.exported_character.currentIndex() >= 0)
         self.confirmed.set_review_enabled(idle and self.source is not None)
+        count = len(self.assigned_images.get(self.confirmed.selected_name(), ())) if confirmed else 0
+        self.prev_page.setEnabled(idle and confirmed and self.confirmed_page > 0)
+        self.next_page.setEnabled(idle and confirmed and (self.confirmed_page + 1) * CONFIRMED_PAGE_SIZE < count)
 
     def entered_name(self, text, feedback):
         try:
@@ -456,6 +601,12 @@ class CharacterSeparatorView(QWidget):
             return
         return next((known for known in self.identity_names.stringList()
                      if known.casefold() == name.casefold()), name)
+
+    def submit_name(self):
+        if self.reviewing_confirmed():
+            self.approve_photo()
+        else:
+            self.approve_group()
 
     def approve_group(self):
         if not self.approve_button.isEnabled() or not (name := self.entered_name(self.name_edit.text(), self.status)):
@@ -474,9 +625,39 @@ class CharacterSeparatorView(QWidget):
             del self.groups[key]
             self.show_session()
             self.refresh_groups(key)
+            self.update_batch_notice()
             self.status.setText(message)
 
-        self.save_decisions(decisions, apply)
+        self.save_decisions(name, decisions, apply)
+
+    def accept_suggestion(self):
+        group = self.groups.get(self.selected_id())
+        if self.suggested_button.isEnabled() and group and group.suggested:
+            name = group.suggested
+            self.confirm_group(name, self.t("merged_status", "Group merged into {name}.").format(name=name))
+
+    def reject_suggestion(self):
+        key = self.selected_id()
+        group = self.groups.get(key)
+        if not self.reject_suggestion_button.isEnabled() or not group or not group.suggested:
+            return
+        name = group.suggested
+        signatures = {self.result.paths[index]: self.result.signatures[index] for index in group.members}
+        mother, source = self.mother, self.source
+
+        def committed(_):
+            for path, signature in signatures.items():
+                self.session.rejections.setdefault(path, {})[name] = signature
+            group.suggested = ""
+            self.refresh_groups(key)
+            self.update_batch_notice()
+            self.status.setText(self.t(
+                "suggestion_rejected", "Suggestion rejected. The images are still available for review.",
+            ))
+
+        self.status.setText(self.t("review_saving", "Saving review…"))
+        self.start_job("save_review", lambda *_: self.store.save_rejections(mother, source, name, signatures),
+                       on_success=committed)
 
     def reject_group(self):
         if not self.reject_button.isEnabled():
@@ -497,23 +678,63 @@ class CharacterSeparatorView(QWidget):
         self.decide_photo(self.selected_photo(), None)
 
     def decide_photo(self, photo, name):
-        key = self.selected_id()
         index = photo.data(Qt.ItemDataRole.UserRole)
-        path = self.result.paths[index]
+        if self.reviewing_confirmed():
+            self.decide_confirmed_photo(index, name)
+            return
+        key, path = self.selected_id(), self.result.paths[index]
         decision = Decision(name, self.result.samples[index], bool(name))
         row = photo.row()
-        self.save_decisions({path: decision}, lambda: self.apply_photo_decision(key, index, row, name))
+        self.save_decisions(name, {path: decision}, lambda: self.apply_photo_decision(key, index, row, name))
 
-    def save_decisions(self, decisions, apply):
-        mother, source = self.mother, self.source
+    def decide_confirmed_photo(self, index, name):
+        previous = self.confirmed.selected_name()
+        if name == previous:
+            self.status.setText(self.t("same_character", "This image is already assigned to {name}.").format(name=name))
+            return
+        preview = self.photo_gallery.model().result
+        path = preview.paths[index]
+        current = self.session.decisions.get(path)
+        decisions = {path: Decision(name, current.sample, bool(name))} if current else {}
+        missing = {} if current else {path: preview.signatures[index]}
 
-        def committed(_):
-            self.session.decisions.update(decisions)
+        def apply():
+            if current and (current.reference or not any(
+                decision.name == previous and decision.reference for decision in self.session.decisions.values()
+            )):
+                for group in self.groups.values():
+                    if group.suggested == previous:
+                        group.suggested = ""
+                if self.result is not None:
+                    self.refresh_groups(self.selected_id())
+                    self.update_batch_notice()
+            self.name_edit.clear()
+            self.show_session()
+            self.show_destinations()
+            self.show_photo_decision(name)
+
+        self.save_decisions(name, decisions, apply, missing_samples=missing)
+
+    def save_decisions(self, name, decisions, apply, *, missing_samples=None):
+        mother, source, session = self.mother, self.source, self.session
+        autoscan = self.autoscan.isChecked() and name and name not in self.identity_names.stringList()
+
+        def persist(cancelled, _):
+            saved = decisions
+            if missing_samples:
+                samples = load_samples(missing_samples, session.cache, cancelled)
+                saved = decisions | {path: Decision(name, sample, bool(name)) for path, sample in samples.items()}
+            self.store.save_decisions(mother, source, saved)
+            return saved
+
+        def committed(saved):
+            session.apply_decisions(saved)
             apply()
+            if autoscan:
+                self.start_autoscan(name)
 
         self.status.setText(self.t("review_saving", "Saving review…"))
-        self.start_job("save_review", lambda *_: self.store.save_decisions(mother, source, decisions),
-                       on_success=committed)
+        self.start_job("save_review", persist, on_success=committed)
 
     def apply_photo_decision(self, key, index, row, name):
         group = self.groups[key]
@@ -527,6 +748,10 @@ class CharacterSeparatorView(QWidget):
         self.photo_gallery.model().remove(row)
         self.show_session()
         self.refresh_groups(key)
+        self.update_batch_notice()
+        self.show_photo_decision(name)
+
+    def show_photo_decision(self, name):
         if name is None:
             self.status.setText(self.t("photo_excluded", "Image discarded from this review."))
         else:
@@ -539,9 +764,14 @@ class CharacterSeparatorView(QWidget):
         self.confirm_group(name, self.t("merged_status", "Group merged into {name}.").format(name=name))
 
     def show_session(self):
-        counts = Counter(decision.name for decision in self.session.decisions.values() if decision.name)
-        names = sorted(counts, key=str.casefold)
-        self.confirmed.set_characters(counts)
+        assigned = sum(decision.name is not None for decision in self.session.decisions.values())
+        self.has_references = bool(assigned)
+        self.assigned_images = self.session.assigned_images()
+        names = sorted(self.assigned_images, key=str.casefold)
+        previous = self.confirmed.selected_name()
+        self.confirmed.set_characters({name: len(paths) for name, paths in self.assigned_images.items()})
+        if self.confirmed.selected_name() != previous:
+            self.confirmed_page = 0
         with QSignalBlocker(self.merge_target):
             self.identity_names.setStringList(names)
             self.merge_target.setPlaceholderText(
@@ -554,8 +784,8 @@ class CharacterSeparatorView(QWidget):
             "{discarded} discarded · {exported} organized.",
         ).format(
             identities=len(names),
-            assigned=sum(counts.values()),
-            discarded=len(self.session.decisions) - sum(counts.values()),
+            assigned=assigned,
+            discarded=len(self.session.decisions) - assigned,
             exported=len(self.session.exported),
         ))
         self.session_notice.setVisible(self.source is not None)
@@ -606,13 +836,41 @@ class CharacterSeparatorView(QWidget):
     def start_scan(self):
         if not self.scan_button.isEnabled():
             return
-        self.clear_scan()
         source, session = self.source, self.session
         self.status.setText(self.t("scanning", "Scanning images and comparing possible identities…"))
         self.start_job("scan", lambda cancelled, progress: scan(
             source, cancelled, progress, excluded_paths=session.next_batch_exclusions(),
-            references=session.references(), cache=session.cache,
+            references=session.references(), cache=session.cache, rejected=session.rejections,
         ))
+
+    def start_autoscan(self, name):
+        members = tuple(index for group in self.groups.values() if not group.suggested for index in group.members)
+        if not members:
+            return
+        result, session = self.result, self.session
+        self.status.setText(self.t("autoscanning", "Looking for {name} in unassigned groups…").format(name=name))
+        self.start_job("autoscan", lambda cancelled, progress: rescan(
+            result, members, session.references(), name, cancelled, progress, rejected=session.rejections,
+        ), on_success=lambda matches: self.show_autoscan(name, matches))
+
+    def show_autoscan(self, name, matches):
+        if matches:
+            matched = set(matches)
+            key = max(self.groups) + 1
+            for group_key, group in tuple(self.groups.items()):
+                remaining = tuple(index for index in group.members if index not in matched)
+                if not remaining:
+                    del self.groups[group_key]
+                elif remaining != group.members:
+                    group.members = remaining
+                    group.references = representatives(self.result, remaining)
+            self.groups = {key: Candidate(matches, representatives(self.result, matches), suggested=name),
+                           **self.groups}
+            self.refresh_groups(key)
+            self.update_batch_notice()
+        self.status.setText(self.t(
+            "autoscan_done", "{name} created · {count} additional images suggested.",
+        ).format(name=name, count=len(matches)))
 
     def start_export(self):
         if not self.export_button.isEnabled():
@@ -689,26 +947,34 @@ class CharacterSeparatorView(QWidget):
                 self.status.setText(self.t("scan_cancelled", "Scan cancelled."))
             else:
                 self.show_scan(job.result)
+        elif job.kind == "autoscan" and job.cancel.is_set():
+            self.status.setText(self.t("scan_cancelled", "Scan cancelled."))
         elif job.on_success is not None:
             job.on_success(job.result)
         self.update_controls()
+        self.refresh_confirmed_preview()
 
     def show_scan(self, result):
         self.result = result
         self.session.seen.update(result.paths)
         self.session.seen.update(result.failed)
-        self.batch_notice.setText(self.t(
-            "batch_notice", "{matched} match confirmed identities · {remaining} remain for later batches.",
-        ).format(matched=len(result.matches), remaining=result.excluded))
-        self.batch_notice.show()
         self.groups = {
             key: Candidate(group, representatives(result, group), suggested=name)
             for key, (group, name) in enumerate(ordered_review_groups(result), 1)
         }
+        self.update_batch_notice()
+        self.batch_notice.show()
         self.refresh_groups()
+        self.tabs.setCurrentWidget(self.group_list)
         self.status.setText(self.t(
             "scan_done", "{images} images scanned · {groups} candidate identities · {failed} unreadable or changed.",
         ).format(images=len(result.paths), groups=len(self.groups), failed=len(result.failed)))
+
+    def update_batch_notice(self):
+        suggested = sum(len(group.members) for group in self.groups.values() if group.suggested)
+        self.batch_notice.setText(self.t(
+            "batch_notice", "{matched} images with suggestions · {remaining} remain for later batches.",
+        ).format(matched=suggested, remaining=self.result.excluded))
 
     def show_export(self, run):
         self.session.apply(run)
@@ -812,7 +1078,7 @@ class CharacterSeparatorView(QWidget):
             self.photo_review.reject()
         if self.delete_dialog is not None:
             self.delete_dialog.reject()
-        if self.job is not None and self.job.kind in {"load_review", "scan", "export"}:
+        if self.job is not None and self.job.kind in {"load_review", "preview", "scan", "autoscan", "export"}:
             self.job.cancel.set()
         self.update_controls()
 

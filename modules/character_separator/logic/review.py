@@ -31,6 +31,8 @@ class ReviewSession:
     exported: set[Path] = field(default_factory=set)
     destinations: dict[str, set[Path]] = field(default_factory=dict)
     receipts: dict[Path, tuple[str, Path]] = field(default_factory=dict)
+    rejections: dict[Path, dict[str, FileSignature]] = field(default_factory=dict)
+    receipt_signatures: dict[Path, FileSignature] = field(default_factory=dict)
 
     def references(self):
         choices = {}
@@ -46,10 +48,43 @@ class ReviewSession:
     def next_batch_exclusions(self):
         return self.seen.union(self.decisions, self.exported)
 
+    def assigned_images(self) -> dict[str, dict[Path, FileSignature]]:
+        """Include verified automatic exports alongside manually identified images."""
+        assignments = {}
+        for path, decision in self.decisions.items():
+            if decision.name is not None:
+                assignments.setdefault(decision.name, {})[path] = decision.sample.signature
+        for path, (name, _) in self.receipts.items():
+            if path not in self.decisions and path in self.receipt_signatures:
+                assignments.setdefault(name, {})[path] = self.receipt_signatures[path]
+        return assignments
+
+    def _forget_receipts(self, paths):
+        removed = set()
+        for path in paths:
+            receipt = self.receipts.pop(path, None)
+            if receipt is not None:
+                removed.add(receipt)
+            self.receipt_signatures.pop(path, None)
+            self.exported.discard(path)
+        if not removed:
+            return
+        for name, destination in removed.difference(self.receipts.values()):
+            self.destinations[name].discard(destination)
+            if not self.destinations[name]:
+                del self.destinations[name]
+
+    def apply_decisions(self, decisions: dict[Path, Decision]):
+        self._forget_receipts(
+            path for path, decision in decisions.items()
+            if path in self.receipts and self.receipts[path][0] != decision.name
+        )
+        self.decisions.update(decisions)
+
     def full_run(self, mother, source, cancelled, progress):
         scanned = classify(
             source, self.references(), self.exported.union(self.decisions),
-            cancelled, progress, cache=self.cache,
+            cancelled, progress, cache=self.cache, rejected=self.rejections,
         )
         assignments = {}
         signatures = {}
@@ -73,6 +108,9 @@ class ReviewSession:
     def apply(self, run):
         self.exported.update(run.output.completed)
         self.receipts.update(zip(run.output.completed, run.output.destinations))
+        self.receipt_signatures.update(
+            (path, run.signatures[path]) for path in run.output.completed if path in run.signatures
+        )
         for name, path in run.output.destinations:
             self.destinations.setdefault(name, set()).add(path)
         if not run.output.cancelled and run.error is None:
@@ -82,14 +120,17 @@ class ReviewSession:
             self.decisions.pop(path, None)
             self.seen.discard(path)
             self.cache.pop(path, None)
+            self._forget_receipts((path,))
 
     def delete_character(self, name):
         assigned = {path for path, decision in self.decisions.items() if decision.name == name}
         organized = {path for path, (character, _) in self.receipts.items() if character == name}
         for path in assigned:
             del self.decisions[path]
-        for path in organized:
-            del self.receipts[path]
+        self._forget_receipts(organized)
+        for path in tuple(self.rejections):
+            rejected = self.rejections[path]
+            rejected.pop(name, None)
+            if not rejected:
+                del self.rejections[path]
         self.seen.difference_update(assigned | organized)
-        self.exported.difference_update(assigned | organized)
-        self.destinations.pop(name, None)

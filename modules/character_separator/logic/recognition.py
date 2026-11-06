@@ -81,7 +81,7 @@ def _folder_images(folder, excluded_paths, cancelled):
     return paths
 
 
-def _thumbnail(rgb):
+def image_thumbnail(rgb):
     try:
         rgb.thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE), Image.Resampling.BILINEAR)
         with BytesIO() as buffer:
@@ -125,7 +125,7 @@ class _Sampler:
         with rgb:
             if sample is None:
                 sample = Sample(before, self.encoder.embed(rgb, lambda: _check_cancelled(self.cancelled)))
-            preview = _thumbnail(rgb) if thumbnail else b""
+            preview = image_thumbnail(rgb) if thumbnail else b""
         try:
             if file_signature(path) != before:
                 return None
@@ -205,8 +205,9 @@ class _ReferenceSet:
         bytes_per_row = 2 * self.vectors.dtype.itemsize * len(vectors)
         self.batch_size = max(1, min(CLASSIFY_BLOCK, SCORE_BYTES // bytes_per_row))
 
-    def match(self, paths, samples, cancelled, *, strengths=None):
+    def match(self, paths, samples, cancelled, *, strengths=None, rejected=None, progress=None):
         matches = {}
+        rejected = rejected or {}
         for start in range(0, len(samples), self.batch_size):
             _check_cancelled(cancelled)
             batch = samples[start:start + self.batch_size]
@@ -224,18 +225,24 @@ class _ReferenceSet:
             if strengths is not None:
                 surplus = np.minimum(best - MIN_SIMILARITY, gap - SIMILARITY_MARGIN)
             for index, sample in enumerate(batch):
-                name = self.anchors.get(sample.signature)
-                if name is not None or clear[index]:
-                    path = paths[start + index]
-                    matches[path] = name if name is not None else self.names[winners[index]]
-                    if strengths is not None:
-                        strengths[path] = float("inf") if name is not None else float(surplus[index])
+                anchor = self.anchors.get(sample.signature)
+                if anchor is None and not clear[index]:
+                    continue
+                name = anchor if anchor is not None else self.names[winners[index]]
+                path = paths[start + index]
+                if rejected.get(path, {}).get(name) == sample.signature:
+                    continue
+                matches[path] = name
+                if strengths is not None:
+                    strengths[path] = float("inf") if anchor is not None else float(surplus[index])
+            if progress is not None:
+                progress(start + len(batch), len(samples))
         return matches
 
 
 def scan(folder: Path, cancelled: Callable[[], bool], progress: Callable[[int, int], None], *,
-         excluded_paths=(), references=None, cache=None) -> ScanResult:
-    """Review one bounded batch and propose only identities not already matched."""
+         excluded_paths=(), references=None, cache=None, rejected=None) -> ScanResult:
+    """Propose known identities and cluster the remaining images in one bounded batch."""
     paths, samples, failed, thumbnails = [], [], [], []
     candidates = _folder_images(folder, excluded_paths, cancelled)
     excluded = max(0, len(candidates) - MAX_IMAGES)
@@ -255,7 +262,11 @@ def scan(folder: Path, cancelled: Callable[[], bool], progress: Callable[[int, i
 
     _check_cancelled(cancelled)
     strengths = {}
-    matches = _ReferenceSet(references).match(paths, samples, cancelled, strengths=strengths) if references else {}
+    matches = {}
+    if references:
+        matches = _ReferenceSet(references).match(
+            paths, samples, cancelled, strengths=strengths, rejected=rejected,
+        )
     unknown = [index for index, path in enumerate(paths) if path not in matches]
     if len(samples) > 1:
         vectors = np.stack([sample.embedding for sample in samples])
@@ -280,9 +291,26 @@ def scan(folder: Path, cancelled: Callable[[], bool], progress: Callable[[int, i
     )
 
 
+def rescan(result: ScanResult, members: Sequence[int], references, name: str,
+           cancelled: Callable[[], bool], progress: Callable[[int, int], None], *,
+           rejected=None) -> tuple[int, ...]:
+    """Find provisional matches to a new character using the batch's embeddings."""
+    _check_cancelled(cancelled)
+    progress(0, len(members))
+    if not members or name not in references:
+        return ()
+    paths = [result.paths[index] for index in members]
+    samples = [result.samples[index] for index in members]
+    matches = _ReferenceSet(references).match(
+        paths, samples, cancelled, rejected=rejected, progress=progress,
+    )
+    _check_cancelled(cancelled)
+    return tuple(index for index, path in zip(members, paths, strict=True) if matches.get(path) == name)
+
+
 def classify(folder: Path, references: dict[str, tuple[Sample, ...]], excluded_paths,
              cancelled: Callable[[], bool], progress: Callable[[int, int], None], *,
-             cache: dict[Path, Sample] | None = None) -> Classification:
+             cache: dict[Path, Sample] | None = None, rejected=None) -> Classification:
     """Compare every eligible file against approved references without discovery."""
     _check_cancelled(cancelled)
     approved = _ReferenceSet(references)
@@ -304,7 +332,7 @@ def classify(folder: Path, references: dict[str, tuple[Sample, ...]], excluded_p
                 samples.append(sample)
                 signatures[path] = sample.signature
             progress(position, total)
-        matches.update(approved.match(paths, samples, cancelled))
+        matches.update(approved.match(paths, samples, cancelled, rejected=rejected))
     _check_cancelled(cancelled)
     return Classification(matches, signatures, tuple(failed), total)
 

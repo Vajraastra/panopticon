@@ -1,4 +1,4 @@
-"""Durable CCIP review decisions and verified exports for each source folder."""
+"""Durable CCIP review decisions, rejected suggestions and verified exports."""
 
 from contextlib import contextmanager, closing
 import json
@@ -12,7 +12,7 @@ from core.ai.ccip import DIMENSIONS, SPACE
 from core.output_paths import safe_path
 from core.path_identity import local_path
 from core.paths import ProjectPaths
-from .export import IMAGE_EXTENSIONS, file_signature, validate_name
+from .export import FileSignature, IMAGE_EXTENSIONS, file_signature, validate_name
 from .recognition import Sample, ScanCancelled
 from .review import Decision, FullRun, ReviewSession
 
@@ -35,6 +35,13 @@ CREATE TABLE IF NOT EXISTS review_decisions (
     embedding BLOB NOT NULL,
     reference INTEGER NOT NULL CHECK(reference IN (0, 1)),
     PRIMARY KEY(scope, filename)
+);
+CREATE TABLE IF NOT EXISTS review_rejections (
+    scope TEXT NOT NULL REFERENCES review_scopes(scope),
+    filename TEXT NOT NULL,
+    name TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    PRIMARY KEY(scope, filename, name)
 );
 CREATE TABLE IF NOT EXISTS review_exports (
     scope TEXT NOT NULL REFERENCES review_scopes(scope),
@@ -144,6 +151,9 @@ class ReviewStore:
                 """SELECT filename, name, signature, embedding, reference
                    FROM review_decisions WHERE scope = ? ORDER BY filename""", (key,),
             ).fetchall()
+            rejections = db.execute(
+                "SELECT filename, name, signature FROM review_rejections WHERE scope = ?", (key,),
+            ).fetchall()
             exports = db.execute(
                 """SELECT filename, name, destination, source_signature, destination_signature
                    FROM review_exports WHERE scope = ?""", (key,),
@@ -164,6 +174,14 @@ class ReviewStore:
             vector = _check_vector(np.frombuffer(embedding, dtype="<f4"))
             session.decisions[path] = Decision(name, Sample(stamp, vector), bool(reference))
 
+        for filename, name, signature in rejections:
+            if cancelled is not None and cancelled():
+                raise ScanCancelled()
+            path = source / filename
+            if filename != _filename(path, source):
+                raise ValueError("invalid_review_path")
+            session.rejections.setdefault(path, {})[validate_name(name)] = _decode_signature(signature)
+
         for filename, name, destination, source_sig, destination_sig in exports:
             if cancelled is not None and cancelled():
                 raise ScanCancelled()
@@ -175,11 +193,13 @@ class ReviewStore:
                 actual = _signature(safe_path(destination))
             except (OSError, ValueError):
                 continue
-            if _signature(path) != _decode_signature(source_sig) or actual != _decode_signature(destination_sig):
+            stamp = _decode_signature(source_sig)
+            if _signature(path) != stamp or actual != _decode_signature(destination_sig):
                 continue
             session.exported.add(path)
             session.destinations.setdefault(name, set()).add(destination)
             session.receipts[path] = name, destination
+            session.receipt_signatures[path] = stamp
 
         if cancelled is not None and cancelled():
             raise ScanCancelled()
@@ -211,12 +231,36 @@ class ReviewStore:
                    embedding = excluded.embedding, reference = excluded.reference""",
                 rows,
             )
+            db.executemany(
+                "DELETE FROM review_exports WHERE scope = ? AND filename = ? AND name IS NOT ?",
+                ((scope, filename, name) for scope, filename, name, *_ in rows),
+            )
+
+    def save_rejections(self, mother: Path, source: Path, name: str,
+                        signatures: dict[Path, FileSignature]) -> None:
+        key, mother, source = _scope(mother, source)
+        name = validate_name(name)
+        rows = []
+        for path, signature in signatures.items():
+            filename = _filename(path, source)
+            if _signature(path) != signature:
+                raise ValueError("source_changed")
+            rows.append((key, filename, name, json.dumps(signature)))
+        with self._transaction() as db:
+            self._ensure_scope(db, key, mother, source)
+            db.executemany(
+                """INSERT INTO review_rejections(scope, filename, name, signature)
+                   VALUES (?, ?, ?, ?) ON CONFLICT(scope, filename, name) DO UPDATE SET
+                   signature = excluded.signature""",
+                rows,
+            )
 
     def delete_character(self, mother: Path, source: Path, name: str) -> None:
         key, _, _ = _scope(mother, source)
         name = validate_name(name)
         with self._transaction() as db:
             db.execute("DELETE FROM review_decisions WHERE scope = ? AND name = ?", (key, name))
+            db.execute("DELETE FROM review_rejections WHERE scope = ? AND name = ?", (key, name))
             db.execute("DELETE FROM review_exports WHERE scope = ? AND name = ?", (key, name))
 
     def save_export(self, mother: Path, source: Path, run: FullRun) -> None:

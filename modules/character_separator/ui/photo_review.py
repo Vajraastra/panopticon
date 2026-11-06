@@ -32,10 +32,11 @@ class PhotoLoadJob(QThread):
 class PhotoReviewDialog(QDialog):
     DISCARDED = 2
 
-    def __init__(self, path, signature, character_picker, entered_name, t, parent):
+    def __init__(self, path, signature, character_picker, entered_name, t, parent, *, suggestion=None):
         super().__init__(parent)
         self.t = t
         self.name = None
+        self.suggestion = suggestion
         self.character_picker = character_picker
         self.entered_name = entered_name
         self.dismissed = False
@@ -64,6 +65,16 @@ class PhotoReviewDialog(QDialog):
         close_button.setToolTip(t("photo_review_close_tip", "Return to the gallery without making a decision."))
         close_button.clicked.connect(self.reject)
         actions = QHBoxLayout()
+        self.suggestion_button = None
+        if suggestion:
+            self.suggestion_button = QPushButton(t("suggested_name", "{name}?").format(name=suggestion))
+            self.suggestion_button.setToolTip(t(
+                "suggested_photo_tip", "Assign only this image to the suggested character.",
+            ))
+            self.suggestion_button.setAutoDefault(False)
+            self.suggestion_button.setEnabled(False)
+            self.suggestion_button.clicked.connect(self.accept_suggestion)
+            actions.addWidget(self.suggestion_button)
         for button in (self.assign_button, self.discard_button, close_button):
             button.setAutoDefault(False)
             actions.addWidget(button)
@@ -97,6 +108,10 @@ class PhotoReviewDialog(QDialog):
             self.feedback.show()
             self.character_picker.setFocus()
 
+    def accept_suggestion(self):
+        self.name = self.suggestion
+        self.accept()
+
     @Slot()
     def show_image(self, failed=False):
         if self.loader is None:
@@ -111,6 +126,8 @@ class PhotoReviewDialog(QDialog):
             self.image_label.setPixmap(QPixmap.fromImage(loader.image))
             self.assign_button.setEnabled(True)
             self.discard_button.setEnabled(True)
+            if self.suggestion_button is not None:
+                self.suggestion_button.setEnabled(True)
 
     def release(self):
         self.dismissed = True

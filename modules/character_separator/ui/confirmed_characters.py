@@ -15,7 +15,7 @@ class ConfirmedCharacters(QWidget):
         self._empty.setWordWrap(True)
         self.character_list = QListWidget()
         self.character_list.setToolTip(t(
-            "confirmed_list_tip", "Select a character to review its assigned image count and remove it from this folder's review.",
+            "confirmed_list_tip", "Select a character to see its assigned images in the gallery.",
         ))
         self.character_list.itemSelectionChanged.connect(self._update_controls)
         self.delete_button = QPushButton(t("confirmed_delete", "Delete character…"))
@@ -25,6 +25,7 @@ class ConfirmedCharacters(QWidget):
         self.delete_button.clicked.connect(self._request_delete)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._empty)
         layout.addWidget(self.character_list, 1)
         layout.addWidget(self.delete_button, alignment=Qt.AlignmentFlag.AlignRight)
@@ -46,7 +47,7 @@ class ConfirmedCharacters(QWidget):
                 item.setToolTip(text)
                 if name == selected:
                     selected_row = self.character_list.row(item)
-            self.character_list.setCurrentRow(selected_row)
+            self.character_list.setCurrentRow(max(0, selected_row) if counts else -1)
         self._empty.setVisible(not counts)
         self.character_list.setVisible(bool(counts))
         self._update_controls()
