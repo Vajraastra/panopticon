@@ -1,48 +1,28 @@
 """Discover character groups and compare them with user-approved CCIP references."""
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from hashlib import file_digest
+from dataclasses import dataclass, field
 from io import BytesIO
 import logging
 import os
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 
-from core.ai.model_downloader import download_file
-from core.paths import CachePaths
+from core.ai.ccip import (
+    CCIPEncoder, MIN_SIMILARITY, SAME_CHARACTER, SIMILARITY_MARGIN, metric_session, similarity_surplus,
+)
+from core.ai.image_input import read_rgb
 from .export import FileSignature, IMAGE_EXTENSIONS, file_signature, signature
 
 
 log = logging.getLogger(__name__)
 MAX_IMAGES = 1000
-MAX_PIXELS = 50_000_000
-SAME_CHARACTER = 0.17847511429108218
-IDENTITY_MARGIN = 0.025
 METRIC_BLOCK = 128
 CLASSIFY_BLOCK = 128
 SCORE_BYTES = 8 * 1024 * 1024
-IMAGE_SIZE = 384
 THUMBNAIL_SIZE = 176
-MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)[:, None, None]
-STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)[:, None, None]
-MODEL_URL = (
-    "https://huggingface.co/deepghs/ccip_onnx/resolve/eb2acdd/"
-    "ccip-caformer-24-randaug-pruned"
-)
-MODEL_HASHES = {
-    "model_feat.onnx": "4ea118d16496274f4f6e08d3afc768cc592389e8f7f32f8732ce2215c228ac5f",
-    "model_metrics.onnx": "7e4646fdfbe369ad485b227ec47ac4092c98b8deef3af44e19fdbd8ba7bc25c1",
-}
-# The pinned CCIP metric maps normalized dot products to clipped distances.
-METRIC_SCALE = 29.18642234802246
-METRIC_WEIGHT = 29.186418533325195
-METRIC_DENOMINATOR = 58.37284469604492
-MIN_SIMILARITY = (METRIC_SCALE - METRIC_DENOMINATOR * SAME_CHARACTER) / METRIC_WEIGHT
-SIMILARITY_MARGIN = METRIC_DENOMINATOR * IDENTITY_MARGIN / METRIC_WEIGHT
 
 
 class ScanCancelled(Exception):
@@ -68,6 +48,7 @@ class ScanResult:
     excluded: int
     samples: tuple[Sample, ...]
     matches: dict[Path, str]
+    match_strengths: dict[Path, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -81,37 +62,6 @@ class Classification:
 def _check_cancelled(cancelled):
     if cancelled():
         raise ScanCancelled()
-
-
-def _digest(path):
-    with path.open("rb") as stream:
-        return file_digest(stream, "sha256").hexdigest()
-
-
-def _verified_model(name):
-    root = CachePaths.get_models_root() / "onnx" / "ccip"
-    model = root / name
-    expected = MODEL_HASHES[name]
-    if model.is_file() and _digest(model) == expected:
-        return model
-
-    root.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(dir=root) as temp:
-        staged = Path(temp) / name
-        download_file(f"{MODEL_URL}/{name}", staged, timeout=30)
-        if _digest(staged) != expected:
-            raise ValueError("model_checksum")
-        os.replace(staged, model)
-    return model
-
-
-def _session(name, cancelled):
-    _check_cancelled(cancelled)
-    model = _verified_model(name)
-    _check_cancelled(cancelled)
-    import onnxruntime as ort
-
-    return ort.InferenceSession(str(model), providers=["CPUExecutionProvider"])
 
 
 def _folder_images(folder, excluded_paths, cancelled):
@@ -141,45 +91,22 @@ def _thumbnail(rgb):
         return b""
 
 
-def _read_image(path, before):
+def read_image(path, before):
+    """Read the oriented RGB image only if it matches the expected file signature."""
     with path.open("rb") as stream:
         if signature(os.fstat(stream.fileno())) != before:
             raise ValueError("source_changed")
-        with Image.open(stream) as image:
-            if image.width * image.height > MAX_PIXELS:
-                raise ValueError("image_size")
-            rgb = ImageOps.exif_transpose(image).convert("RGB")
+        rgb = read_rgb(stream)
         if signature(os.fstat(stream.fileno())) != before:
             raise ValueError("source_changed")
     return rgb
-
-
-def _model_input(rgb):
-    resized = rgb.resize((IMAGE_SIZE, IMAGE_SIZE), Image.Resampling.BILINEAR)
-    data = np.asarray(resized, dtype=np.float32).transpose(2, 0, 1) / 255.0
-    return (data - MEAN) / STD
 
 
 class _Sampler:
     def __init__(self, cancelled, cache):
         self.cancelled = cancelled
         self.cache = cache
-        self.extractor = None
-
-    def _extract(self, rgb):
-        if self.extractor is None:
-            self.extractor = _session("model_feat.onnx", self.cancelled)
-        _check_cancelled(self.cancelled)
-        data = _model_input(rgb)
-        output, = self.extractor.run(["output"], {"input": data[None, ...]})
-        if output.shape != (1, 768):
-            raise ValueError("model_output")
-        norm = float(np.linalg.norm(output[0]))
-        if not np.isfinite(norm) or norm == 0:
-            raise ValueError("model_output")
-        embedding = output[0] / norm
-        embedding.setflags(write=False)
-        return embedding
+        self.encoder = CCIPEncoder()
 
     def read(self, path, *, thumbnail):
         _check_cancelled(self.cancelled)
@@ -190,14 +117,15 @@ class _Sampler:
                 sample = None
             if sample is not None and not thumbnail:
                 return sample, b""
-            rgb = _read_image(path, before)
+            rgb = read_image(path, before)
         except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
             log.debug("CCIP could not read %s", path, exc_info=True)
             return None
 
-        if sample is None:
-            sample = Sample(before, self._extract(rgb))
-        preview = _thumbnail(rgb) if thumbnail else b""
+        with rgb:
+            if sample is None:
+                sample = Sample(before, self.encoder.embed(rgb, lambda: _check_cancelled(self.cancelled)))
+            preview = _thumbnail(rgb) if thumbnail else b""
         try:
             if file_signature(path) != before:
                 return None
@@ -277,7 +205,7 @@ class _ReferenceSet:
         bytes_per_row = 2 * self.vectors.dtype.itemsize * len(vectors)
         self.batch_size = max(1, min(CLASSIFY_BLOCK, SCORE_BYTES // bytes_per_row))
 
-    def match(self, paths, samples, cancelled):
+    def match(self, paths, samples, cancelled, *, strengths=None):
         matches = {}
         for start in range(0, len(samples), self.batch_size):
             _check_cancelled(cancelled)
@@ -291,11 +219,17 @@ class _ReferenceSet:
             rows = np.arange(len(batch))
             best = scores[rows, winners]
             scores[rows, winners] = -np.inf
-            clear = (best >= MIN_SIMILARITY) & (best - scores.max(axis=1) >= SIMILARITY_MARGIN)
+            gap = best - scores.max(axis=1)
+            clear = (best >= MIN_SIMILARITY) & (gap >= SIMILARITY_MARGIN)
+            if strengths is not None:
+                surplus = np.minimum(best - MIN_SIMILARITY, gap - SIMILARITY_MARGIN)
             for index, sample in enumerate(batch):
                 name = self.anchors.get(sample.signature)
                 if name is not None or clear[index]:
-                    matches[paths[start + index]] = name if name is not None else self.names[winners[index]]
+                    path = paths[start + index]
+                    matches[path] = name if name is not None else self.names[winners[index]]
+                    if strengths is not None:
+                        strengths[path] = float("inf") if name is not None else float(surplus[index])
         return matches
 
 
@@ -320,11 +254,12 @@ def scan(folder: Path, cancelled: Callable[[], bool], progress: Callable[[int, i
         progress(index, len(candidates))
 
     _check_cancelled(cancelled)
-    matches = _ReferenceSet(references).match(paths, samples, cancelled) if references else {}
+    strengths = {}
+    matches = _ReferenceSet(references).match(paths, samples, cancelled, strengths=strengths) if references else {}
     unknown = [index for index, path in enumerate(paths) if path not in matches]
     if len(samples) > 1:
         vectors = np.stack([sample.embedding for sample in samples])
-        distances = _distances(_session("model_metrics.onnx", cancelled), vectors, cancelled)
+        distances = _distances(metric_session(lambda: _check_cancelled(cancelled)), vectors, cancelled)
     else:
         distances = np.zeros((len(paths), len(paths)), dtype=np.float32)
         distances.setflags(write=False)
@@ -341,6 +276,7 @@ def scan(folder: Path, cancelled: Callable[[], bool], progress: Callable[[int, i
         excluded=excluded,
         samples=tuple(samples),
         matches=matches,
+        match_strengths=strengths,
     )
 
 
@@ -371,6 +307,28 @@ def classify(folder: Path, references: dict[str, tuple[Sample, ...]], excluded_p
         matches.update(approved.match(paths, samples, cancelled))
     _check_cancelled(cancelled)
     return Classification(matches, signatures, tuple(failed), total)
+
+
+def ordered_review_groups(result: ScanResult) -> tuple[tuple[tuple[int, ...], str], ...]:
+    """Review stronger groups first, using the least certain member or pair as evidence."""
+    suggestions = {}
+    for index, path in enumerate(result.paths):
+        if path in result.matches:
+            suggestions.setdefault(result.matches[path], []).append(index)
+
+    ranked = []
+    for name, members in suggestions.items():
+        strength = min(result.match_strengths.get(result.paths[index], 0.0) for index in members)
+        ranked.append((strength, tuple(members), name))
+    for group in result.groups:
+        strength = float("-inf")
+        if len(group) > 1:
+            worst_distance = float(result.distances[np.ix_(group, group)].max())
+            strength = similarity_surplus(worst_distance)
+        ranked.append((strength, group, ""))
+
+    ranked.sort(key=lambda entry: (-entry[0], -len(entry[1]), entry[1][0]))
+    return tuple((group, name) for _, group, name in ranked)
 
 
 def representatives(result: ScanResult, group: Sequence[int], limit: int = 4) -> tuple[int, ...]:

@@ -2,12 +2,16 @@
 import atexit
 from concurrent.futures import Future
 from dataclasses import dataclass
+from hashlib import sha256
 import os
 from pathlib import Path
 import queue
 import sqlite3
 import threading
 import numpy as np
+
+
+_schema_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -21,10 +25,12 @@ class ProfileSnapshot:
         return tuple((name, np.frombuffer(blob, dtype=np.float32)) for name, blob in self._profiles)
 
 
-def vector_bytes(embedding):
+def vector_bytes(embedding, dimensions=None):
     vector = np.asarray(embedding)
     if vector.ndim != 1 or not 1 <= vector.size <= 4096 or vector.dtype.kind not in 'fi':
         raise ValueError('invalid_embedding')
+    if dimensions is not None and vector.size != dimensions:
+        raise ValueError('embedding_dimension_mismatch')
     with np.errstate(over='ignore', invalid='ignore'):
         vector = vector.astype(np.float32)
     if not np.isfinite(vector).all() or not np.any(vector):
@@ -32,10 +38,12 @@ def vector_bytes(embedding):
     return vector.tobytes()
 
 
-def decode_vector(blob):
+def decode_vector(blob, dimensions=None):
     if not isinstance(blob, bytes) or not blob or len(blob) % 4 or len(blob) > 16384:
         raise ValueError('invalid_stored_embedding')
     vector = np.frombuffer(blob, dtype=np.float32)
+    if dimensions is not None and vector.size != dimensions:
+        raise ValueError('invalid_stored_embedding')
     if not np.isfinite(vector).all() or not np.any(vector):
         raise ValueError('invalid_stored_embedding')
     return vector  # bytes immutable: tampoco puede reactivarse WRITEABLE.
@@ -48,7 +56,17 @@ class ProfileService:
     data_version invalida caché cuando otra conexión confirma cambios.
     close deja terminar trabajos aceptados; wait es para teardown fuera de Qt.
     """
-    def __init__(self, path, capacity=64):
+    def __init__(self, path, capacity=64, *, mode='arcface'):
+        if mode == 'arcface':
+            self._table, self._dimensions = 'characters', None
+        elif mode == 'ccip':
+            from core.ai.ccip import DIMENSIONS, SPACE
+
+            # Hex keeps the versioned SQL identifier independent of the space's syntax.
+            self._table = 'characters_ccip_' + sha256(SPACE.encode('utf-8')).hexdigest()
+            self._dimensions = DIMENSIONS
+        else:
+            raise ValueError('invalid_profile_mode')
         self.path = str(Path(path).absolute())
         self._queue = queue.Queue(capacity)
         self._lock = threading.Lock()
@@ -65,7 +83,7 @@ class ProfileService:
                 name, embedding = args
                 if not isinstance(name, str) or not 1 <= len(name.strip()) <= 256:
                     raise ValueError('invalid_profile_name')
-                payload = (name.strip(), vector_bytes(embedding))
+                payload = (name.strip(), vector_bytes(embedding, self._dimensions))
             elif operation == 'snapshot' and not args:
                 payload = ()
             else:
@@ -93,18 +111,21 @@ class ProfileService:
 
     def _connect(self):
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.path, timeout=1, isolation_level=None)
-        try:
-            conn.execute('PRAGMA journal_mode=WAL')
-            conn.execute('PRAGMA synchronous=FULL')
-            conn.execute('''CREATE TABLE IF NOT EXISTS characters (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL, embedding BLOB NOT NULL,
-                samples_count INTEGER DEFAULT 1)''')
-            return conn
-        except Exception:
-            conn.close()
-            raise
+        # Concurrent first openings may otherwise race the switch to WAL.
+        with _schema_lock:
+            conn = sqlite3.connect(self.path, timeout=1, isolation_level=None)
+            try:
+                conn.execute('PRAGMA journal_mode=WAL')
+                conn.execute('PRAGMA synchronous=FULL')
+                vector_size = '' if self._dimensions is None else f' CHECK(length(embedding) = {self._dimensions * 4})'
+                conn.execute(f'''CREATE TABLE IF NOT EXISTS {self._table} (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL, embedding BLOB NOT NULL{vector_size},
+                    samples_count INTEGER DEFAULT 1)''')
+                return conn
+            except Exception:
+                conn.close()
+                raise
 
     def _snapshot(self, conn):
         version = conn.execute('PRAGMA data_version').fetchone()[0]
@@ -113,12 +134,12 @@ class ProfileService:
         conn.execute('BEGIN')
         try:
             version = conn.execute('PRAGMA data_version').fetchone()[0]
-            rows = conn.execute('SELECT name, embedding, samples_count FROM characters ORDER BY name').fetchall()
+            rows = conn.execute(f'SELECT name, embedding, samples_count FROM {self._table} ORDER BY name').fetchall()
             profiles = []
             for name, blob, count in rows:
                 if not isinstance(name, str) or not name.strip() or type(count) is not int or count < 1:
                     raise ValueError('invalid_stored_profile')
-                decode_vector(blob)
+                decode_vector(blob, self._dimensions)
                 profiles.append((name, blob))
             conn.commit()
         except Exception:
@@ -130,23 +151,23 @@ class ProfileService:
         return self._cache
 
     def _add_reference(self, conn, name, blob):
-        embedding = decode_vector(blob)
+        embedding = decode_vector(blob, self._dimensions)
         conn.execute('BEGIN IMMEDIATE')
         try:
-            row = conn.execute('SELECT embedding, samples_count FROM characters WHERE name=?', (name,)).fetchone()
+            row = conn.execute(f'SELECT embedding, samples_count FROM {self._table} WHERE name=?', (name,)).fetchone()
             if row:
                 old_blob, count = row
-                old = decode_vector(old_blob)
+                old = decode_vector(old_blob, self._dimensions)
                 if type(count) is not int or count < 1 or count >= 2**63 - 1:
                     raise ValueError('invalid_sample_count')
                 if old.shape != embedding.shape:
                     raise ValueError('embedding_dimension_mismatch')
                 # Float64 intermedio evita overflow de float32 * contador.
                 average = (old.astype(np.float64) * count + embedding) / (count + 1)
-                conn.execute('UPDATE characters SET embedding=?, samples_count=? WHERE name=?',
+                conn.execute(f'UPDATE {self._table} SET embedding=?, samples_count=? WHERE name=?',
                     (vector_bytes(average), count + 1, name))
             else:
-                conn.execute('INSERT INTO characters(name, embedding) VALUES (?, ?)', (name, blob))
+                conn.execute(f'INSERT INTO {self._table}(name, embedding) VALUES (?, ?)', (name, blob))
             conn.commit()
         except Exception:
             conn.rollback()
@@ -212,11 +233,11 @@ _services = {}
 _services_lock = threading.Lock()
 
 
-def get_profile_service(path):
-    key = os.path.normcase(os.path.abspath(path))
+def get_profile_service(path, *, mode='arcface'):
+    key = os.path.normcase(os.path.abspath(path)), mode
     with _services_lock:
         if key not in _services:
-            _services[key] = ProfileService(path)
+            _services[key] = ProfileService(path, mode=mode)
         return _services[key]
 
 

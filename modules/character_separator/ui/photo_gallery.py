@@ -9,8 +9,9 @@ TILE_SIZE = QSize(THUMBNAIL_SIZE + 16, THUMBNAIL_SIZE + 16)
 
 
 class PhotoModel(QAbstractListModel):
-    def __init__(self, parent):
+    def __init__(self, review_tip, parent):
         super().__init__(parent)
+        self.review_tip = review_tip
         self.result = None
         self.members = ()
         self.pixmap_keys = {}
@@ -40,7 +41,7 @@ class PhotoModel(QAbstractListModel):
         if role == Qt.ItemDataRole.UserRole:
             return member
         if role == Qt.ItemDataRole.ToolTipRole:
-            return str(self.result.paths[member])
+            return f"{self.result.paths[member]}\n{self.review_tip}"
         if role == Qt.ItemDataRole.AccessibleTextRole:
             return self.result.paths[member].name
         if role == Qt.ItemDataRole.DecorationRole:
@@ -85,8 +86,9 @@ class PhotoTile(QStyledItemDelegate):
 
 
 class PhotoGallery(QListView):
-    def __init__(self, missing_thumbnail):
+    def __init__(self, missing_thumbnail, review_tip):
         super().__init__()
+        self.setToolTip(review_tip)
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setMovement(QListView.Movement.Static)
         self.setResizeMode(QListView.ResizeMode.Adjust)
@@ -94,5 +96,5 @@ class PhotoGallery(QListView):
         self.setGridSize(TILE_SIZE)
         self.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setModel(PhotoModel(self))
+        self.setModel(PhotoModel(review_tip, self))
         self.setItemDelegate(PhotoTile(missing_thumbnail, self))

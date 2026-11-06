@@ -46,31 +46,21 @@ class CharacterRecognizerModule(BaseModule):
         if paths and not self._closed:
             self.get_view().load_images(paths)
 
-    def run_headless(self, paths: list):
+    def run_headless(self, paths: list, *, mode='ccip'):
         """Ejecuta el reconocimiento sin interfaz (para pipelines)."""
+        from core.ai.ccip import CCIPEncoder
+        from .logic.image_analysis import analyze_file, match_embedding
         from .logic.recognition_engine import RecognitionEngine
         from .logic.profile_db import ProfileDB
-        engine = RecognitionEngine()
-        engine.initialize()
-        db = ProfileDB()
+        engine = CCIPEncoder() if mode == 'ccip' else RecognitionEngine()
+        if mode != 'ccip':
+            engine.initialize()
+        db = ProfileDB(mode='ccip') if mode == 'ccip' else ProfileDB()
         profiles = db.get_all_profiles()  # Un snapshot coherente para todo el lote headless.
         results = {}
         for path in paths:
-            import cv2
-            import numpy as np
-            with open(path, "rb") as f:
-                arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
-            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if img is None:
-                continue
-            embedding, _, _ = engine.analyze_image(img)
+            _, embedding, _, _ = analyze_file(path, engine, mode)
             if embedding is None:
                 continue
-            best_name, best_score = None, 0.0
-            for name, ref_emb in profiles:
-                score = engine.compare(embedding, ref_emb)
-                if score > best_score:
-                    best_score = score
-                    best_name = name if score > 0.6 else None
-            results[path] = best_name
+            results[path], _ = match_embedding(engine, embedding, profiles, mode)
         return results

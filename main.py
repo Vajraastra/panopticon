@@ -28,6 +28,9 @@ from core.library_startup import create_library_window
 setup_logging()
 log = logging.getLogger(__name__)
 
+_SEPARATOR_SEND_TARGETS = ("Gallery", "Dataset Tagger", "Pickler")
+
+
 class MainWindow(QMainWindow):
     """
     Ventana principal de Panopticon.
@@ -538,6 +541,20 @@ class MainWindow(QMainWindow):
             ])
             cherry.request_open_module.connect(self.open_cherry_image_set)
 
+        separator = self.get_module("Character Separator")
+        if separator:
+            consumers = image_set_consumers(self.loaded_modules, separator)
+            labels = {
+                name: self.tr(f"tool.{name.lower().replace(' ', '_')}.name", name)
+                for name in _SEPARATOR_SEND_TARGETS if name in consumers
+            }
+            extensions = {
+                name: consumers[name].image_set_extensions
+                for name in labels if hasattr(consumers[name], "image_set_extensions")
+            }
+            separator.set_send_targets(labels, extensions)
+            separator.request_open_images.connect(self.open_separator_image_set)
+
         librarian = self.get_module("Librarian")
         gallery = self.get_module("Gallery")
         optimizer = self.get_module("Image Optimizer")
@@ -591,6 +608,13 @@ class MainWindow(QMainWindow):
     def open_cherry_image_set(self, name, paths):
         target = image_set_consumers(self.loaded_modules).get(name)
         if target is not None and paths:
+            self.switch_to_module(target, paths)
+
+    def open_separator_image_set(self, name, paths):
+        if self._shutting_down or not paths or name not in _SEPARATOR_SEND_TARGETS:
+            return
+        target = image_set_consumers(self.loaded_modules).get(name)
+        if target is not None:
             self.switch_to_module(target, paths)
 
     def on_navigate(self, target):

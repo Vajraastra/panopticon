@@ -422,7 +422,7 @@ class ProfileQt(RecognizerData):
         with patch('modules.character_recognizer.logic.thread_worker.RecognitionEngine', Engine), \
                 patch.object(ProfileDB, 'get_all_profiles', side_effect=OSError('profile_failure')):
             for cls in (RecognitionWorker, AutoScanWorker):
-                worker = cls([self.a])
+                worker = cls([self.a], mode='illustration')
                 if cls is RecognitionWorker:
                     worker.request_next()
                 errors, finished = [], []
@@ -448,7 +448,7 @@ class ProfileQt(RecognizerData):
             def compare(self, *args):
                 return .9
         with patch('modules.character_recognizer.logic.thread_worker.RecognitionEngine', Engine):
-            worker = RecognitionWorker([self.a, self.b])
+            worker = RecognitionWorker([self.a, self.b], mode='illustration')
             rows = []
             worker.image_processed.connect(lambda *args: rows.append(args))
             worker.request_next()
@@ -482,7 +482,7 @@ class ProfileQt(RecognizerData):
             return original(owner)
         with patch('modules.character_recognizer.logic.recognition_engine.RecognitionEngine', Engine), \
                 patch.object(ProfileDB, 'get_all_profiles', snapshot):
-            result = CharacterRecognizerModule().run_headless([self.a, self.b])
+            result = CharacterRecognizerModule().run_headless([self.a, self.b], mode='illustration')
         self.assertEqual(result, {self.a: 'Headless', self.b: 'Headless'})
         self.assertEqual(len(calls), 1)
 
@@ -494,7 +494,7 @@ class ProfileQt(RecognizerData):
             for key in ('reload_profiles', 'reload_profiles_tip', 'profiles_loading', 'profiles_error',
                         'reference_saving', 'reference_error', 'reference_saved'):
                 self.assertTrue(texts['tool.character_recognizer.' + key].format(reason='fixture', name='A'))
-        view = self.view()
+        view = self.view(mode='ccip')
         received = []
         view._profile_reader.result.connect(lambda *args: received.append(threading.get_ident()))
         self.assertTrue(helpers.pump(lambda: not view._profile_read_pending))

@@ -23,10 +23,13 @@ FileSignature = tuple[int, int, int, int, int]
 
 @dataclass(frozen=True)
 class ExportResult:
+    """Source paths for resuming, and verified destination images for handoff."""
+
     copied: int = 0
     skipped: int = 0
     cancelled: bool = False
     completed: tuple[Path, ...] = ()
+    destinations: tuple[tuple[str, Path], ...] = ()
 
 
 class ExportError(Exception):
@@ -129,7 +132,7 @@ def _choose_destination(source, folder, entries, image, caption, cancelled):
         target = folder / name
         siblings = _siblings(target, entries)
         if not siblings:
-            return target
+            return target, False
         names = {entry.name.casefold(): entry for entry in siblings}
         image_name = target.name.casefold()
         caption_name = target.with_suffix(".txt").name.casefold()
@@ -137,7 +140,7 @@ def _choose_destination(source, folder, entries, image, caption, cancelled):
         if (len(siblings) == len(expected) and names.keys() == expected
                 and _same_contents(image, names[image_name], cancelled)
                 and (caption is None or _same_contents(caption, names[caption_name], cancelled))):
-            return None
+            return names[image_name], True
     raise ValueError("destination_conflict")
 
 
@@ -212,6 +215,7 @@ def export(mother: Path, source: Path, assignments: dict[str, tuple[Path, ...]],
            expected: Mapping[Path, FileSignature] | None = None) -> ExportResult:
     copied = skipped = 0
     completed = []
+    destinations = []
     current = source
     try:
         _check_cancel(cancelled)
@@ -233,11 +237,11 @@ def export(mother: Path, source: Path, assignments: dict[str, tuple[Path, ...]],
                 folder = _target_directory(mother, name)
                 if folder.parent != mother:
                     raise ValueError("destination_conflict")
-                work.append((folder, paths))
-        total = sum(len(paths) for _, paths in work)
+                work.append((name, folder, paths))
+        total = sum(len(paths) for _, _, paths in work)
         progress(0, total)
         sources = _by_stem(source)
-        for folder, paths in work:
+        for name, folder, paths in work:
             _check_cancel(cancelled)
             current = folder
             folder.mkdir(exist_ok=True)
@@ -261,21 +265,22 @@ def export(mother: Path, source: Path, assignments: dict[str, tuple[Path, ...]],
                     else:
                         caption_path = _caption(path, sources)
                         caption = inputs.enter_context(PinnedFile(caption_path)) if caption_path else None
-                        target = _choose_destination(path, folder, entries, image, caption, cancelled)
-                        if target is None:
+                        target, exists = _choose_destination(path, folder, entries, image, caption, cancelled)
+                        if exists:
                             skipped += 1
                         else:
                             current = target
                             _copy_pair(target, folder, entries, image, caption, cancelled)
                             copied += 1
                         completed.append(path)
+                        destinations.append((name, target))
                 progress(copied + skipped, total)
     except _Cancelled:
-        return ExportResult(copied, skipped, True, tuple(completed))
+        return ExportResult(copied, skipped, True, tuple(completed), tuple(destinations))
     except (OSError, ValueError) as error:
         code = str(error) if isinstance(error, ValueError) and str(error) in _KNOWN_ERRORS else "copy_failed"
         if isinstance(error, FileExistsError):
             code = "destination_conflict"
-        result = ExportResult(copied, skipped, completed=tuple(completed))
+        result = ExportResult(copied, skipped, completed=tuple(completed), destinations=tuple(destinations))
         raise ExportError(code, result, current) from error
-    return ExportResult(copied, skipped, completed=tuple(completed))
+    return ExportResult(copied, skipped, completed=tuple(completed), destinations=tuple(destinations))

@@ -31,7 +31,9 @@ class CharacterRecognitionView(QWidget):
     def __init__(self, context):
         super().__init__()
         self.context = context
-        self.profile_db = ProfileDB()
+        self._detection_mode = 'ccip'
+        self.profile_db = ProfileDB(mode='ccip')
+        self._profile_databases = {'ccip': self.profile_db}
         self.worker = None
         self.auto_worker = None
         self._auto_suggestion_name = None
@@ -48,6 +50,7 @@ class CharacterRecognitionView(QWidget):
         self._bulk_review_required = False
         self._generation = 0
         self._queued_paths = None
+        self._current_paths = []
         self._retiring = False
         self.current_path = None
         self.db = DatabaseManager(service=context.get('data_service'))
@@ -342,69 +345,20 @@ class CharacterRecognitionView(QWidget):
 
         layout.addSpacing(10)
 
-        # Mode Toggle
+        # Recognition model
         lbl_mode = QLabel(self._tr("cr.mode", "MODE"))
         lbl_mode.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 11px;")
         layout.addWidget(lbl_mode)
 
-        self._detection_mode = 'illustration'
-
-        _btn_active = f"""
-            QPushButton {{
-                background-color: {Theme.ACCENT_MAIN};
-                color: {Theme.BG_MAIN};
-                border-radius: 0px;
-                font-size: 11px;
-                font-weight: bold;
-                padding: 5px 4px;
-            }}"""
-        _btn_inactive = f"""
-            QPushButton {{
-                background-color: {Theme.BG_INPUT};
-                color: {Theme.TEXT_DIM};
-                border-radius: 0px;
-                font-size: 11px;
-                font-weight: normal;
-                padding: 5px 4px;
-            }}
-            QPushButton:hover {{ background-color: {Theme.BG_PANEL}; color: {Theme.TEXT_PRIMARY}; }}"""
-
-        self._style_active = _btn_active
-        self._style_inactive = _btn_inactive
-
-        toggle_frame = QFrame()
-        toggle_frame.setStyleSheet(
-            f"QFrame {{ border: 1px solid {Theme.BORDER}; border-radius: 4px; }}"
-        )
-        toggle_layout = QHBoxLayout(toggle_frame)
-        toggle_layout.setContentsMargins(0, 0, 0, 0)
-        toggle_layout.setSpacing(0)
-
-        self.btn_mode_illustration = QPushButton(self._tr("cr.mode.illustration", "Illustration"))
-        self.btn_mode_illustration.setToolTip(self._tr(
-            "cr.mode_illustration_tip",
-            "Mode for drawings and anime. Uses a detector trained on illustrated faces; "
-            "it does worse on real photos."))
-        self.btn_mode_illustration.setStyleSheet(_btn_active)
-        self.btn_mode_illustration.setToolTip(
-            self._tr("cr.mode.illustration.tooltip", "Illustration / AI art mode (default)")
-        )
-        self.btn_mode_real = QPushButton(self._tr("cr.mode.real", "Real Person"))
-        self.btn_mode_real.setToolTip(self._tr(
-            "cr.mode_real_tip",
-            "Mode for photography. Uses a detector trained on real faces; it does worse "
-            "on drawings."))
-        self.btn_mode_real.setStyleSheet(_btn_inactive)
-        self.btn_mode_real.setToolTip(
-            self._tr("cr.mode.real.tooltip", "Real photograph mode — uses landmark alignment")
-        )
-
-        toggle_layout.addWidget(self.btn_mode_illustration)
-        toggle_layout.addWidget(self.btn_mode_real)
-        layout.addWidget(toggle_frame)
-
-        self.btn_mode_illustration.clicked.connect(lambda: self._set_detection_mode('illustration'))
-        self.btn_mode_real.clicked.connect(lambda: self._set_detection_mode('real'))
+        self.mode_picker = QComboBox()
+        self.mode_picker.addItem(self._tr('cr.mode.ccip', 'CCIP (shared)'), 'ccip')
+        self.mode_picker.addItem(self._tr('cr.mode.illustration', 'ArcFace (illustration)'), 'illustration')
+        self.mode_picker.addItem(self._tr('cr.mode.real', 'ArcFace (photo)'), 'real')
+        self.mode_picker.setToolTip(self._tr(
+            'cr.mode_tip', 'CCIP shares embeddings with Character Separator. Choose ArcFace to use facial recognition and its saved profiles. Changing the model restarts the current set.',
+        ))
+        self.mode_picker.currentIndexChanged.connect(lambda: self._set_detection_mode(self.mode_picker.currentData()))
+        layout.addWidget(self.mode_picker)
 
         layout.addSpacing(10)
 
@@ -535,13 +489,20 @@ class CharacterRecognitionView(QWidget):
         return container
 
     def _set_detection_mode(self, mode):
+        if self._closed or self._pending_edit is not None or mode == self._detection_mode:
+            return
         self._detection_mode = mode
-        if mode == 'illustration':
-            self.btn_mode_illustration.setStyleSheet(self._style_active)
-            self.btn_mode_real.setStyleSheet(self._style_inactive)
-        else:
-            self.btn_mode_real.setStyleSheet(self._style_active)
-            self.btn_mode_illustration.setStyleSheet(self._style_inactive)
+        profile_mode = 'ccip' if mode == 'ccip' else 'arcface'
+        if profile_mode not in self._profile_databases:
+            self._profile_databases[profile_mode] = ProfileDB(mode=profile_mode)
+        self.profile_db = self._profile_databases[profile_mode]
+        self._profile_reader.service = self.profile_db.service
+        self._profile_writer.service = self.profile_db.service
+        self._profile_read_pending = self._profile_read_again = False
+        self.combo_names.clear()
+        self.refresh_profiles()
+        if self._current_paths:
+            self.load_images(self._current_paths)
 
     def refresh_profiles(self):
         if self._closed:
@@ -564,10 +525,14 @@ class CharacterRecognitionView(QWidget):
                 'Cannot read profiles: {reason}').format(reason=str(error) or type(error).__name__))
         else:
             text = self.combo_names.currentText()
+            profiles = snapshot.profiles
             self.combo_names.clear()
-            self.combo_names.addItems([name for name, _ in snapshot.profiles])
+            self.combo_names.addItems([name for name, _ in profiles])
             self.combo_names.setEditText(text)
-            self.lbl_profiles.setText('')
+            self.lbl_profiles.setText(self._tr(
+                'tool.character_recognizer.ccip_no_profiles',
+                'Save a confirmed image to teach the first CCIP reference.',
+            ) if self._detection_mode == 'ccip' and not profiles else '')
         if self._profile_read_again:
             self._profile_read_again = False
             self.refresh_profiles()
@@ -586,6 +551,7 @@ class CharacterRecognitionView(QWidget):
             bool(self._auto_paths or self._bulk_remaining))
         self.btn_retry_tags.setEnabled(idle and bool(self.current_path))
         self.btn_retry_profiles.setEnabled(idle)
+        self.mode_picker.setEnabled(idle)
 
     def _request_curation(self):
         if self._closed or self._pending_edit is not None or not self.current_path:
@@ -752,12 +718,14 @@ class CharacterRecognitionView(QWidget):
         if (not owner_threads_ready(self) or not workers_ready
                 or not self._reader.shutdown_ready()):
             return False
+        services = tuple(db.service for db in self._profile_databases.values())
         if self._closed:
             # Recognition workers may still need their admitted profile snapshot.
             # Close admission only after those native workers finish, then wait
             # for every accepted profile transaction and SQLite cleanup.
-            self.profile_db.service.close()
-        return self.profile_db.service.shutdown_ready()
+            for service in services:
+                service.close()
+        return all(service.shutdown_ready() for service in services)
 
 
     @Slot(str, object, object, str, object, float, object)
@@ -1007,7 +975,7 @@ class CharacterRecognitionView(QWidget):
     def load_images(self, paths):
         if self._closed:
             return
-        self._queued_paths = list(paths)
+        self._queued_paths = self._current_paths = list(paths)
         self._generation += 1
         self.current_path = None
         self._curation_ready = False

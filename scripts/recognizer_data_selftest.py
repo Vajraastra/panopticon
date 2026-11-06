@@ -73,8 +73,10 @@ class RecognizerData(helpers.Fixture):
         from modules.character_recognizer.logic.profile_service import close_profile_services
         close_profile_services()
 
-    def view(self, paths=None):
+    def view(self, paths=None, *, mode='illustration'):
         view = CharacterRecognitionView(dict(data_service=self.service))
+        # These fixtures use legacy profile vectors and ArcFace engine doubles.
+        view.mode_picker.setCurrentIndex(view.mode_picker.findData(mode))
         view.worker = PausedWorker(paths or (self.a, self.b))
         from modules.character_recognizer.logic.copy_bindings import normalized
         view._fixture_ids={normalized(path):self.service.read('get_file_id',path) for path in view.worker.paths}

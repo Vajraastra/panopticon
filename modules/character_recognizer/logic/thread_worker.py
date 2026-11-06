@@ -1,11 +1,11 @@
 import logging
 import threading
 from PySide6.QtCore import QThread, Signal
-import cv2
-import numpy as np
+from core.ai.ccip import CCIPEncoder
 from .recognition_engine import RecognitionEngine
 from .profile_db import ProfileDB
 from .copy_bindings import capture, normalized
+from .image_analysis import RecognitionCancelled, analyze_file, match_embedding
 
 log = logging.getLogger(__name__)
 
@@ -16,15 +16,15 @@ class RecognitionWorker(QThread):
     progress = Signal(int, int)
     error = Signal(str)
 
-    def __init__(self, paths, mode='illustration', *, library_service=None):
+    def __init__(self, paths, mode='ccip', *, library_service=None):
         super().__init__()
         self.paths = paths
         self.mode = mode
         self.library_service = library_service
         self._cancel = threading.Event()
         self.is_running = True
-        self.engine = RecognitionEngine()
-        self.db = ProfileDB()
+        self.engine = CCIPEncoder() if mode == 'ccip' else RecognitionEngine()
+        self.db = ProfileDB(mode='ccip') if mode == 'ccip' else ProfileDB()
         self.current_idx = 0
         self.paused = True
         self._override_next_idx = None  # for go_back navigation
@@ -42,11 +42,12 @@ class RecognitionWorker(QThread):
             return
         log.debug(f"Worker started with {len(self.paths)} items.")
         try:
-            self.engine.initialize()
+            if self.mode != 'ccip':
+                self.engine.initialize()
         except Exception as e:
             self.error.emit(str(e))
             return
-        log.debug("Engine initialized. Starting loop.")
+        log.debug("Starting recognition loop in %s mode.", self.mode)
 
         while self.is_running and self.current_idx < len(self.paths):
             if self.paused:
@@ -65,30 +66,18 @@ class RecognitionWorker(QThread):
             profiles = self.db.get_all_profiles()
 
             try:
-                with open(path, "rb") as stream:
-                    numpyarray = np.asarray(bytearray(stream.read()), dtype=np.uint8)
-                img = cv2.imdecode(numpyarray, cv2.IMREAD_COLOR)
+                img, embedding, bbox, det_score = analyze_file(
+                    path, self.engine, self.mode, preview=True, cancel_event=self._cancel,
+                )
 
                 if img is None:
                     log.warning(f"Failed to load image: {path}")
                     self._advance()
                     continue
 
-                embedding, bbox, det_score = self.engine.analyze_image(img, mode=self.mode)
                 log.debug(f"Analysis complete. Score: {det_score}")
 
-                suggestion = None
-                max_score = 0
-
-                if embedding is not None:
-                    for name, ref_emb in profiles:
-                        score = self.engine.compare(embedding, ref_emb)
-                        if score > max_score:
-                            max_score = score
-                            if score > 0.6:
-                                suggestion = name
-
-                final_confidence = max_score if suggestion else 0.0
+                suggestion, final_confidence = match_embedding(self.engine, embedding, profiles, self.mode)
                 self.image_processed.emit(path, img, embedding, suggestion, bbox, final_confidence, binding)
 
                 self.paused = True
@@ -98,7 +87,11 @@ class RecognitionWorker(QThread):
                 self._advance()
                 self.progress.emit(self.current_idx, len(self.paths))
 
+            except RecognitionCancelled:
+                return
             except Exception as e:
+                if self.mode == 'ccip':
+                    raise
                 log.error(f"Worker error on {path}: {e}")
                 self._advance()
 
@@ -141,14 +134,14 @@ class AutoScanWorker(QThread):
 
     DOMINANCE_THRESHOLD = 0.60  # 60% de las imágenes deben coincidir
 
-    def __init__(self, paths, mode='illustration', *, library_service=None):
+    def __init__(self, paths, mode='ccip', *, library_service=None):
         super().__init__()
         self.paths = paths
         self.mode = mode
         self.library_service = library_service
         self._cancel = threading.Event()
-        self.engine = RecognitionEngine()
-        self.db = ProfileDB()
+        self.engine = CCIPEncoder() if mode == 'ccip' else RecognitionEngine()
+        self.db = ProfileDB(mode='ccip') if mode == 'ccip' else ProfileDB()
         self.is_running = True
 
     def run(self):
@@ -166,7 +159,8 @@ class AutoScanWorker(QThread):
             return
         self.bindings_ready.emit(bindings or {})
         try:
-            self.engine.initialize()
+            if self.mode != 'ccip':
+                self.engine.initialize()
         except Exception as e:
             self.error.emit(str(e))
             return
@@ -179,28 +173,16 @@ class AutoScanWorker(QThread):
                 break
             self.progress.emit(i + 1, total)
             try:
-                with open(path, "rb") as f:
-                    arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
-                img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                if img is None:
-                    continue
-
-                embedding, _, _ = self.engine.analyze_image(img, mode=self.mode)
-                if embedding is None:
-                    continue
-
-                best_name, best_score = None, 0.0
-                for name, ref_emb in profiles:
-                    score = self.engine.compare(embedding, ref_emb)
-                    if score > best_score:
-                        best_score = score
-                        if score > 0.6:
-                            best_name = name
-
+                _, embedding, _, _ = analyze_file(path, self.engine, self.mode, cancel_event=self._cancel)
+                best_name, _ = match_embedding(self.engine, embedding, profiles, self.mode)
                 if best_name:
                     tally[best_name] = tally.get(best_name, 0) + 1
 
+            except RecognitionCancelled:
+                return
             except Exception as e:
+                if self.mode == 'ccip':
+                    raise
                 log.error(f"AutoScan error on {path}: {e}")
 
         if not self.is_running:

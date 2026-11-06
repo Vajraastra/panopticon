@@ -208,7 +208,7 @@ class RecognizerIdentity(helpers.Fixture):
         self.assertEqual(view._bulk_done,1);self.assertEqual(self.service.read('get_curation_snapshot',[self.b])[0]['tags'],())
 
     def test_scope_rejected_before_model_initialization_emits_terminal_once_no_suggestion(self):
-        view=self.view();worker=AutoScanWorker([self.a],library_service=self.service)
+        view=self.view();worker=AutoScanWorker([self.a],mode='illustration',library_service=self.service)
         errors,terminal,suggestions=[],[],[]
         worker.error.connect(errors.append);worker.finished_signal.connect(lambda:terminal.append(True));worker.suggestion.connect(lambda *args:suggestions.append(args))
         with patch('modules.character_recognizer.logic.copy_bindings.MAX_PATHS',0),patch.object(worker.engine,'initialize',side_effect=AssertionError('model initialized')):
@@ -216,7 +216,7 @@ class RecognizerIdentity(helpers.Fixture):
         self.assertEqual(errors,['recognition_copy_scope_limit']);self.assertEqual(terminal,[True]);self.assertEqual(suggestions,[])
 
     def test_cancelled_auto_inference_never_publishes_partial_dominance(self):
-        view=self.view();worker=AutoScanWorker([self.a,self.b],library_service=self.service)
+        view=self.view();worker=AutoScanWorker([self.a,self.b],mode='illustration',library_service=self.service)
         worker.db.add_reference('Alpha',np.ones(3));suggestions=[];worker.suggestion.connect(lambda *args:suggestions.append(args))
         class Engine:
             def initialize(self):pass

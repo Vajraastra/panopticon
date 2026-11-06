@@ -1,20 +1,26 @@
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import QSignalBlocker, QStringListModel, Qt, QThread, Signal
+from PySide6.QtCore import QPersistentModelIndex, QSignalBlocker, QStringListModel, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
-    QComboBox, QCompleter, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QProgressBar, QPushButton, QVBoxLayout, QWidget,
+    QComboBox, QCompleter, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMenu, QMessageBox, QProgressBar, QPushButton, QTabWidget, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
 from core.components.standard_layout import StandardToolLayout
+from core.native_threads import owner_threads_ready, start_worker
 from core.paths import CachePaths
 from ..logic.export import ExportError, validate_name
-from ..logic.recognition import ScanCancelled, representatives, scan
+from ..logic.recognition import ScanCancelled, ordered_review_groups, representatives, scan
 from ..logic.review import Decision, ReviewSession
+from ..logic.review_store import ReviewStore
+from .confirmed_characters import ConfirmedCharacters
 from .photo_gallery import PhotoGallery
+from .photo_review import PhotoReviewDialog
 
 
 log = logging.getLogger(__name__)
@@ -32,10 +38,11 @@ class Candidate:
 class SeparatorJob(QThread):
     progress = Signal(int, int)
 
-    def __init__(self, kind, operation, parent):
+    def __init__(self, kind, operation, parent, on_success=None):
         super().__init__(parent)
         self.kind = kind
         self.operation = operation
+        self.on_success = on_success
         self.cancel = Event()
         self.result = None
         self.error = None
@@ -51,6 +58,8 @@ class SeparatorJob(QThread):
 
 
 class CharacterSeparatorView(QWidget):
+    request_open_images = Signal(str, object)
+
     def __init__(self, translate, context=None):
         super().__init__()
         self.translate = translate
@@ -59,7 +68,11 @@ class CharacterSeparatorView(QWidget):
         self.groups = {}
         self.session = ReviewSession()
         self.job = None
+        self.photo_review = None
+        self.delete_dialog = None
         self.closing = False
+        self.send_extensions = {}
+        self.store = ReviewStore()
 
         sidebar = QWidget()
         side = QVBoxLayout(sidebar)
@@ -94,28 +107,23 @@ class CharacterSeparatorView(QWidget):
             side.addWidget(widget)
         side.addWidget(QLabel(self.t("review", "Review suggested identities")))
         self.group_list = QListWidget()
-        self.group_list.setToolTip(self.t("groups_tip", "Select a group to see all its images."))
+        self.group_list.setToolTip(self.t(
+            "groups_tip", "Groups with stronger CCIP evidence appear first. Select a group to see all its images.",
+        ))
         self.group_list.currentItemChanged.connect(self.show_group)
         side.addWidget(self.group_list, 1)
 
         canvas = QWidget()
         main = QVBoxLayout(canvas)
         help_label = QLabel(self.t(
-            "help", "Review each proposed group or decide on individual images. Confirmed examples "
-            "help recognize characters in later batches and in the full run.",
+            "help", "CCIP groups images by character. Review the proposed groups or decide on individual images. "
+            "Confirmed examples help recognize characters in later batches and in the full run.",
         ))
         help_label.setWordWrap(True)
         main.addWidget(help_label)
 
-        self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText(self.t("name_placeholder", "Character name"))
-        self.name_edit.setToolTip(self.t(
-            "name_tip", "Enter a new character name or choose a name already confirmed in this session.",
-        ))
         self.identity_names = QStringListModel(self)
-        completer = QCompleter(self.identity_names, self.name_edit)
-        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        self.name_edit.setCompleter(completer)
+        self.name_edit = self.create_name_edit()
         self.name_edit.returnPressed.connect(self.approve_group)
         main.addWidget(self.name_edit)
         decisions = QHBoxLayout()
@@ -133,23 +141,26 @@ class CharacterSeparatorView(QWidget):
         main.addLayout(decisions)
         merge_row = QHBoxLayout()
         self.merge_target = QComboBox()
+        self.merge_target.setModel(self.identity_names)
+        self.merge_target.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.merge_target.setToolTip(self.t(
-            "merge_target_tip", "Choose the other group that shows the same character.",
+            "merge_target_tip", "Choose a character already confirmed in this review.",
         ))
         self.merge_target.currentIndexChanged.connect(self.update_controls)
         self.merge_button = self._button(
             "merge", "Merge into", "merge_tip",
-            "Keep the target name and retain examples from both groups as separate references.",
+            "Assign all images in this group to the chosen character and add its representative images as references.",
             self.merge_group,
         )
         merge_row.addWidget(self.merge_target, 1)
         merge_row.addWidget(self.merge_button)
         main.addLayout(merge_row)
-        self.photo_gallery = PhotoGallery(self.t("thumbnail_missing", "Preview unavailable"))
-        self.photo_gallery.setToolTip(self.t(
-            "photos_tip", "Scroll to see every image in the group. Select a thumbnail to assign or discard that image.",
-        ))
+        self.photo_gallery = PhotoGallery(
+            self.t("thumbnail_missing", "Preview unavailable"),
+            self.t("photos_tip", "Double-click a thumbnail to enlarge it and review that image."),
+        )
         self.photo_gallery.selectionModel().selectionChanged.connect(self.update_controls)
+        self.photo_gallery.doubleClicked.connect(self.open_photo_review)
         main.addWidget(self.photo_gallery, 1)
         photo_actions = QHBoxLayout()
         self.assign_photo_button = self._button(
@@ -159,7 +170,7 @@ class CharacterSeparatorView(QWidget):
         )
         self.exclude_photo_button = self._button(
             "exclude_photo", "Discard selected image", "exclude_photo_tip",
-            "Exclude this image from later batches and copies in this session. The original stays on disk.",
+            "Exclude this image from later batches and copies in this review. The original stays on disk.",
             self.reject_photo,
         )
         photo_actions.addWidget(self.assign_photo_button)
@@ -179,7 +190,7 @@ class CharacterSeparatorView(QWidget):
         self.export_button = self._button(
             "export", "Filter and copy full folder", "export_tip",
             "Compare the whole folder with confirmed identities. Copy clear matches and their captions "
-            "into character folders under the parent folder.",
+            "into character folders under the parent folder. You can do this after reopening the review.",
             self.start_export,
         )
         self.cancel_button = self._button(
@@ -194,13 +205,45 @@ class CharacterSeparatorView(QWidget):
         for widget in (self.export_button, self.cancel_button, self.open_button):
             actions.addWidget(widget)
         footer_layout.addLayout(actions)
+
+        handoff = QHBoxLayout()
+        self.exported_character = QComboBox()
+        self.exported_character.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.exported_character.setPlaceholderText(self.t("send_character", "Choose an exported character"))
+        self.exported_character.setToolTip(self.t(
+            "send_character_tip", "Choose which character's verified copies to send from this review.",
+        ))
+        self.exported_character.currentIndexChanged.connect(self.update_controls)
+        self.send_button = QPushButton(self.t("send_copies", "Open copies in…"))
+        self.send_button.setToolTip(self.t(
+            "send_copies_tip", "Send only the verified destination files for this character to another tool.",
+        ))
+        self.send_menu = QMenu(self.send_button)
+        self.send_menu.setToolTipsVisible(True)
+        self.send_button.setMenu(self.send_menu)
+        handoff.addWidget(self.exported_character, 1)
+        handoff.addWidget(self.send_button)
+        footer_layout.addLayout(handoff)
+        self.tabs = QTabWidget()
+        review_tab = self.tabs.addTab(canvas, self.t("review_tab", "Review"))
+        self.tabs.setTabToolTip(review_tab, self.t("review_tab_tip", "Review the current batch and confirm identities."))
+        self.confirmed = ConfirmedCharacters(self.t, self.tabs)
+        confirmed_tab = self.tabs.addTab(self.confirmed, self.t("confirmed_tab", "Confirmed characters"))
+        self.tabs.setTabToolTip(confirmed_tab, self.t(
+            "confirmed_tab_tip", "Review saved characters for this input folder and remove incorrect identities.",
+        ))
+        for button in self.tabs.tabBar().findChildren(QToolButton):
+            button.setToolTip(self.t("scroll_tabs_tip", "Scroll to tabs hidden by the available width."))
+        self.confirmed.delete_requested.connect(self.request_delete_character)
         context = context or {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(StandardToolLayout(
-            canvas, sidebar, footer, context.get("theme_manager"), context.get("event_bus"),
+            self.tabs, sidebar, footer, context.get("theme_manager"), context.get("event_bus"),
         ))
-        self.set_scope(None, None)
+        self.apply_scope(None, None, self.session)
+        self.status.setText(self.t("review_loading", "Loading saved characters…"))
+        self.start_job("load_review", self.restore_scope, on_success=self.show_restored_scope)
 
     def t(self, key, fallback):
         return self.translate(PREFIX + key, fallback)
@@ -211,11 +254,55 @@ class CharacterSeparatorView(QWidget):
         button.clicked.connect(action)
         return button
 
+    def create_name_edit(self):
+        edit = QLineEdit()
+        edit.setPlaceholderText(self.t("name_placeholder", "Character name"))
+        edit.setToolTip(self.t(
+            "name_tip", "Enter a new character name or choose a name already confirmed for this folder.",
+        ))
+        completer = QCompleter(self.identity_names, edit)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        edit.setCompleter(completer)
+        return edit
+
+    def create_character_picker(self):
+        picker = QComboBox()
+        picker.setEditable(True)
+        picker.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        picker.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        picker.setLineEdit(self.create_name_edit())
+        picker.setModel(self.identity_names)
+        picker.setCurrentIndex(-1)
+        picker.setToolTip(self.t(
+            "photo_review_character_tip", "Open the list of confirmed characters or type a new name.",
+        ))
+        return picker
+
     def set_scope(self, mother, source):
-        if (mother, source) == (self.mother, self.source) and self.source is not None:
+        if self.job is not None or self.closing or (mother, source) == (self.mother, self.source):
             return
+        self.status.setText(self.t("review_loading", "Loading saved characters…"))
+        self.start_job("load_review", lambda cancelled, _: self.load_scope(mother, source, cancelled),
+                       on_success=self.show_restored_scope)
+
+    def load_scope(self, mother, source, cancelled):
+        mother, source = mother.resolve(strict=True), source.resolve(strict=True)
+        return mother, source, self.store.load(mother, source, cancelled=cancelled)
+
+    def restore_scope(self, cancelled, _):
+        scope = self.store.last_scope()
+        return self.load_scope(*scope, cancelled) if scope else None
+
+    def show_restored_scope(self, loaded):
+        if loaded is not None:
+            self.apply_scope(*loaded)
+        else:
+            self.status.clear()
+
+    def apply_scope(self, mother, source, session):
         self.mother, self.source = mother, source
-        self.session = ReviewSession()
+        self.session = session
+        self.show_destinations()
         self.clear_scan()
         if mother is None:
             self.scope_label.setText(self.t("choose_prompt", "Choose a parent folder to begin."))
@@ -232,6 +319,11 @@ class CharacterSeparatorView(QWidget):
         self.groups.clear()
         self.batch_notice.hide()
         self.refresh_groups()
+
+    def release_current_scan(self):
+        if self.result is not None:
+            self.session.seen.difference_update(self.result.paths)
+        self.clear_scan()
 
     def choose_mother(self):
         path = QFileDialog.getExistingDirectory(self, self.folder_button.text(), str(self.mother or ""))
@@ -290,11 +382,7 @@ class CharacterSeparatorView(QWidget):
         group = self.groups.get(selected)
         self.name_edit.setText(group.suggested if group else "")
         with QSignalBlocker(self.merge_target):
-            self.merge_target.clear()
-            self.merge_target.addItem(self.t("merge_placeholder", "Choose another identity"), None)
-            for key, other in self.groups.items():
-                if key != selected and not other.rejected:
-                    self.merge_target.addItem(self.group_label(key, other), key)
+            self.merge_target.setCurrentIndex(-1)
         if self.photo_gallery.model().set_members(self.result, group.members if group else ()):
             self.photo_gallery.scrollToTop()
         self.update_controls()
@@ -303,8 +391,36 @@ class CharacterSeparatorView(QWidget):
         selection = self.photo_gallery.selectionModel().selectedIndexes()
         return selection[0] if selection else None
 
+    def open_photo_review(self, index):
+        if self.photo_review is not None or not self.photo_gallery.isEnabled() or not index.isValid():
+            return
+        result, key = self.result, self.selected_id()
+        photo = QPersistentModelIndex(index)
+        member = photo.data(Qt.ItemDataRole.UserRole)
+        dialog = PhotoReviewDialog(
+            result.paths[member], result.signatures[member], self.create_character_picker(),
+            self.entered_name, self.t, self,
+        )
+        self.photo_review = dialog
+        dialog.finished.connect(lambda code: self.finish_photo_review(code, result, key, photo))
+        dialog.destroyed.connect(self.clear_photo_review)
+        dialog.open()
+
+    def finish_photo_review(self, code, result, key, photo):
+        if self.closing or self.job is not None or result is not self.result:
+            return
+        if key != self.selected_id() or not photo.isValid():
+            return
+        if code == QDialog.DialogCode.Accepted and self.photo_review.name is not None:
+            self.decide_photo(photo, self.photo_review.name)
+        elif code == PhotoReviewDialog.DISCARDED:
+            self.decide_photo(photo, None)
+
+    def clear_photo_review(self):
+        self.photo_review = None
+
     def update_controls(self):
-        idle = self.job is None and not self.closing
+        idle = self.job is None and self.delete_dialog is None and not self.closing
         group = self.groups.get(self.selected_id())
         selected = idle and group is not None
         self.folder_button.setEnabled(idle)
@@ -319,36 +435,48 @@ class CharacterSeparatorView(QWidget):
         self.assign_photo_button.setEnabled(photo_selected)
         self.exclude_photo_button.setEnabled(photo_selected)
         self.reject_button.setEnabled(selected and not group.rejected)
-        self.merge_target.setEnabled(selected and not group.rejected and self.merge_target.count() > 1)
-        self.merge_button.setEnabled(self.merge_target.isEnabled() and self.merge_target.currentData() is not None)
+        self.merge_target.setEnabled(selected and self.merge_target.count() > 0)
+        self.merge_button.setEnabled(self.merge_target.isEnabled() and self.merge_target.currentIndex() >= 0)
         self.export_button.setEnabled(idle and self.identity_names.rowCount() > 0)
-        self.cancel_button.setEnabled(self.job is not None and not self.job.cancel.is_set() and not self.closing)
+        self.cancel_button.setEnabled(self.job is not None and self.job.kind in {"scan", "export"}
+                                      and not self.job.cancel.is_set() and not self.closing)
         self.open_button.setEnabled(idle and self.mother is not None)
+        self.exported_character.setEnabled(idle and bool(self.session.destinations) and bool(self.send_menu.actions()))
+        self.send_button.setEnabled(self.exported_character.isEnabled() and self.exported_character.currentIndex() >= 0)
+        self.confirmed.set_review_enabled(idle and self.source is not None)
 
-    def entered_name(self):
+    def entered_name(self, text, feedback):
         try:
-            name = validate_name(self.name_edit.text())
+            name = validate_name(text)
         except ValueError:
-            self.status.setText(self.t("invalid_name", "Enter a valid Windows folder name."))
+            feedback.setText(self.t("invalid_name", "Enter a valid Windows folder name."))
             return
         if self.source != self.mother and self.source.name.casefold() == name.casefold():
-            self.status.setText(self.t("source_name", "Choose a different name from the input subfolder."))
+            feedback.setText(self.t("source_name", "Choose a different name from the input subfolder."))
             return
         return next((known for known in self.identity_names.stringList()
                      if known.casefold() == name.casefold()), name)
 
     def approve_group(self):
-        if not self.approve_button.isEnabled() or not (name := self.entered_name()):
+        if not self.approve_button.isEnabled() or not (name := self.entered_name(self.name_edit.text(), self.status)):
             return
+        self.confirm_group(name, self.t("approved_status", "Approved: {name}").format(name=name))
+
+    def confirm_group(self, name, message):
         key = self.selected_id()
-        group = self.groups.pop(key)
-        for index in group.members:
-            self.session.decisions[self.result.paths[index]] = Decision(
-                name, self.result.samples[index], index in group.references,
-            )
-        self.status.setText(self.t("approved_status", "Approved: {name}").format(name=name))
-        self.show_session()
-        self.refresh_groups(key)
+        group = self.groups[key]
+        decisions = {
+            self.result.paths[index]: Decision(name, self.result.samples[index], index in group.references)
+            for index in group.members
+        }
+
+        def apply():
+            del self.groups[key]
+            self.show_session()
+            self.refresh_groups(key)
+            self.status.setText(message)
+
+        self.save_decisions(decisions, apply)
 
     def reject_group(self):
         if not self.reject_button.isEnabled():
@@ -359,24 +487,36 @@ class CharacterSeparatorView(QWidget):
         self.refresh_groups(key)
 
     def approve_photo(self):
-        if not self.assign_photo_button.isEnabled() or not (name := self.entered_name()):
+        if not self.assign_photo_button.isEnabled() or not (name := self.entered_name(self.name_edit.text(), self.status)):
             return
-        self.decide_photo(name)
-        self.status.setText(self.t("photo_assigned", "Image assigned to {name}.").format(name=name))
+        self.decide_photo(self.selected_photo(), name)
 
     def reject_photo(self):
         if not self.exclude_photo_button.isEnabled():
             return
-        self.decide_photo(None)
-        self.status.setText(self.t("photo_excluded", "Image discarded for this session."))
+        self.decide_photo(self.selected_photo(), None)
 
-    def decide_photo(self, name):
+    def decide_photo(self, photo, name):
         key = self.selected_id()
-        photo = self.selected_photo()
         index = photo.data(Qt.ItemDataRole.UserRole)
-        group = self.groups[key]
         path = self.result.paths[index]
-        self.session.decisions[path] = Decision(name, self.result.samples[index], bool(name))
+        decision = Decision(name, self.result.samples[index], bool(name))
+        row = photo.row()
+        self.save_decisions({path: decision}, lambda: self.apply_photo_decision(key, index, row, name))
+
+    def save_decisions(self, decisions, apply):
+        mother, source = self.mother, self.source
+
+        def committed(_):
+            self.session.decisions.update(decisions)
+            apply()
+
+        self.status.setText(self.t("review_saving", "Saving review…"))
+        self.start_job("save_review", lambda *_: self.store.save_decisions(mother, source, decisions),
+                       on_success=committed)
+
+    def apply_photo_decision(self, key, index, row, name):
+        group = self.groups[key]
         group.members = tuple(member for member in group.members if member != index)
         if not group.members:
             del self.groups[key]
@@ -384,67 +524,140 @@ class CharacterSeparatorView(QWidget):
             group.references = tuple(ref for ref in group.references if ref != index)
             if not group.references:
                 group.references = representatives(self.result, group.members)
-        self.photo_gallery.model().remove(photo.row())
+        self.photo_gallery.model().remove(row)
         self.show_session()
         self.refresh_groups(key)
+        if name is None:
+            self.status.setText(self.t("photo_excluded", "Image discarded from this review."))
+        else:
+            self.status.setText(self.t("photo_assigned", "Image assigned to {name}.").format(name=name))
 
     def merge_group(self):
         if not self.merge_button.isEnabled():
             return
-        source = self.groups.pop(self.selected_id())
-        key = self.merge_target.currentData()
-        target = self.groups[key]
-        target.members = target.members + source.members
-        target.references = target.references + source.references
-        self.status.setText(self.t("merged_status", "Groups merged. References from both groups were retained."))
-        self.refresh_groups(key)
+        name = self.merge_target.currentText()
+        self.confirm_group(name, self.t("merged_status", "Group merged into {name}.").format(name=name))
 
     def show_session(self):
-        names = sorted(self.session.references(), key=str.casefold)
-        self.identity_names.setStringList(names)
+        counts = Counter(decision.name for decision in self.session.decisions.values() if decision.name)
+        names = sorted(counts, key=str.casefold)
+        self.confirmed.set_characters(counts)
+        with QSignalBlocker(self.merge_target):
+            self.identity_names.setStringList(names)
+            self.merge_target.setPlaceholderText(
+                self.t("merge_placeholder", "Choose a confirmed character") if names else
+                self.t("merge_no_characters", "No confirmed characters yet"),
+            )
+            self.merge_target.setCurrentIndex(-1)
         self.session_notice.setText(self.t(
             "session_counts", "{identities} confirmed identities · {assigned} manually assigned · "
             "{discarded} discarded · {exported} organized.",
         ).format(
             identities=len(names),
-            assigned=sum(decision.name is not None for decision in self.session.decisions.values()),
-            discarded=sum(decision.name is None for decision in self.session.decisions.values()),
+            assigned=sum(counts.values()),
+            discarded=len(self.session.decisions) - sum(counts.values()),
             exported=len(self.session.exported),
         ))
         self.session_notice.setVisible(self.source is not None)
+
+    def request_delete_character(self, name):
+        if self.job is not None or self.delete_dialog is not None or self.closing:
+            return
+        if name not in self.identity_names.stringList():
+            return
+        dialog = QMessageBox(QMessageBox.Icon.Warning, self.t("confirmed_delete", "Delete character…"),
+                             self.t("delete_character_question", 'Remove "{name}" from this review?').format(name=name),
+                             parent=self)
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        dialog.setInformativeText(self.t(
+            "delete_character_detail", "Its images return to review. Original files and exported copies stay on disk.",
+        ))
+        remove = dialog.addButton(self.t("delete_character_action", "Delete character"), QMessageBox.ButtonRole.DestructiveRole)
+        remove.setToolTip(self.t("delete_character_action_tip", "Remove the saved identity and release its images for review."))
+        cancel = dialog.addButton(self.t("cancel", "Cancel"), QMessageBox.ButtonRole.RejectRole)
+        cancel.setToolTip(self.t("delete_character_cancel_tip", "Close this dialog and keep the character."))
+        dialog.setDefaultButton(cancel)
+        dialog.setEscapeButton(cancel)
+        dialog.finished.connect(lambda _: self.finish_delete_request(dialog, remove, name))
+        self.delete_dialog = dialog
+        self.update_controls()
+        dialog.open()
+
+    def finish_delete_request(self, dialog, remove, name):
+        self.delete_dialog = None
+        confirmed = dialog.clickedButton() is remove
+        dialog.deleteLater()
+        if confirmed and not self.closing:
+            mother, source = self.mother, self.source
+            self.status.setText(self.t("review_saving", "Saving review…"))
+            self.start_job("save_review", lambda *_: self.store.delete_character(mother, source, name),
+                           on_success=lambda _: self.apply_character_deletion(name))
+        else:
+            self.update_controls()
+
+    def apply_character_deletion(self, name):
+        self.session.delete_character(name)
+        # Pending suggestions may have depended on the removed references.
+        self.release_current_scan()
+        self.show_destinations()
+        self.show_session()
+        self.status.setText(self.t("character_deleted", "{name} was removed. Its images can be reviewed again.").format(name=name))
 
     def start_scan(self):
         if not self.scan_button.isEnabled():
             return
         self.clear_scan()
         source, session = self.source, self.session
+        self.status.setText(self.t("scanning", "Scanning images and comparing possible identities…"))
         self.start_job("scan", lambda cancelled, progress: scan(
             source, cancelled, progress, excluded_paths=session.next_batch_exclusions(),
             references=session.references(), cache=session.cache,
         ))
-        self.status.setText(self.t("scanning", "Scanning images and comparing possible identities…"))
 
     def start_export(self):
         if not self.export_button.isEnabled():
             return
         mother, source, session = self.mother, self.source, self.session
-        self.start_job("export", lambda cancelled, progress: session.full_run(
-            mother, source, cancelled, progress,
-        ))
-        self.status.setText(self.t("exporting", "Filtering the full folder and copying clear matches…"))
 
-    def start_job(self, kind, operation):
+        def copy(cancelled, progress):
+            run = session.full_run(mother, source, cancelled, progress)
+            try:
+                self.store.save_export(mother, source, run)
+            except Exception as error:
+                log.exception("Character Separator could not save export receipts")
+                return run, error
+            return run, None
+
+        self.status.setText(self.t("exporting", "Filtering the full folder and copying clear matches…"))
+        self.start_job("export", copy, on_success=self.finish_export)
+
+    def finish_export(self, result):
+        run, storage_error = result
+        self.show_export(run)
+        if storage_error is not None:
+            self.status.setText(self.status.text() + " " + self.t(
+                "review_export_save_error", "The export results could not be saved for reopening. Copied files are on disk.",
+            ))
+
+    def start_job(self, kind, operation, *, on_success=None):
         if self.job is not None or self.closing:
             return
-        self.job = SeparatorJob(kind, operation, self)
-        self.job.progress.connect(self.set_progress)
-        self.job.finished.connect(self.job_finished)
+        job = self.job = SeparatorJob(kind, operation, self, on_success)
+        job.progress.connect(self.set_progress)
+        job.finished.connect(self.job_finished)
         self.progress.setRange(0, 0)
         self.progress.show()
         self.update_controls()
-        self.job.start()
+        try:
+            start_worker(job, self)
+        except Exception as error:
+            job.cancel.set()
+            self.job_finished(job, error)
 
+    @Slot(int, int)
     def set_progress(self, done, total):
+        if self.sender() is not self.job:
+            return
         self.progress.setRange(0, max(total, 1))
         self.progress.setValue(done)
 
@@ -454,13 +667,19 @@ class CharacterSeparatorView(QWidget):
             self.status.setText(self.t("cancelling", "Cancelling after the current step…"))
             self.update_controls()
 
-    def job_finished(self):
-        job, self.job = self.job, None
+    @Slot()
+    def job_finished(self, job=None, startup_error=None):
+        job = self.sender() if job is None else job
+        if job is None or job is not self.job:
+            return
+        self.job = None
         self.progress.hide()
         job.deleteLater()
         if self.closing:
             return
-        if job.error is not None:
+        if startup_error is not None:
+            self.show_error(startup_error, job.kind)
+        elif job.error is not None:
             if job.kind == "export" and isinstance(job.error, ScanCancelled):
                 self.status.setText(self.t("full_cancelled", "Full run cancelled during analysis."))
             else:
@@ -470,8 +689,8 @@ class CharacterSeparatorView(QWidget):
                 self.status.setText(self.t("scan_cancelled", "Scan cancelled."))
             else:
                 self.show_scan(job.result)
-        else:
-            self.show_export(job.result)
+        elif job.on_success is not None:
+            job.on_success(job.result)
         self.update_controls()
 
     def show_scan(self, result):
@@ -482,16 +701,10 @@ class CharacterSeparatorView(QWidget):
             "batch_notice", "{matched} match confirmed identities · {remaining} remain for later batches.",
         ).format(matched=len(result.matches), remaining=result.excluded))
         self.batch_notice.show()
-        suggested = {}
-        for index, path in enumerate(result.paths):
-            if path in result.matches:
-                suggested.setdefault(result.matches[path], []).append(index)
         self.groups = {
-            key: Candidate(group, representatives(result, group))
-            for key, group in enumerate(result.groups, 1)
+            key: Candidate(group, representatives(result, group), suggested=name)
+            for key, (group, name) in enumerate(ordered_review_groups(result), 1)
         }
-        for key, (name, group) in enumerate(suggested.items(), len(self.groups) + 1):
-            self.groups[key] = Candidate(tuple(group), representatives(result, group), suggested=name)
         self.refresh_groups()
         self.status.setText(self.t(
             "scan_done", "{images} images scanned · {groups} candidate identities · {failed} unreadable or changed.",
@@ -499,6 +712,7 @@ class CharacterSeparatorView(QWidget):
 
     def show_export(self, run):
         self.session.apply(run)
+        self.show_destinations()
         self.clear_scan()
         self.show_session()
         if run.error is not None:
@@ -520,7 +734,50 @@ class CharacterSeparatorView(QWidget):
                 self.status.text() + " " + self.t("open_failed", "The parent folder could not be opened.")
             )
 
+    def set_send_targets(self, targets, extensions):
+        self.send_extensions = extensions
+        self.send_menu.clear()
+        for key, title in targets.items():
+            action = self.send_menu.addAction(title)
+            action.setToolTip(self.t("send_target_tip", "Open the selected copies in {tool}.").format(tool=title))
+            action.triggered.connect(lambda checked=False, target=key: self.send_exported(target))
+        self.update_controls()
+
+    def show_destinations(self):
+        character = self.exported_character.currentData()
+        with QSignalBlocker(self.exported_character):
+            self.exported_character.clear()
+            for name, paths in sorted(self.session.destinations.items(), key=lambda item: item[0].casefold()):
+                label = self.t("group_count", "{name} · {count} images").format(name=name, count=len(paths))
+                self.exported_character.addItem(label, name)
+            self.exported_character.setCurrentIndex(self.exported_character.findData(character))
+
+    def send_exported(self, target):
+        if not self.send_button.isEnabled():
+            return
+        paths = self.session.destinations[self.exported_character.currentData()]
+        accepted = self.send_extensions.get(target)
+        if accepted is not None and any(path.suffix.casefold() not in accepted for path in paths):
+            formats = ", ".join(sorted(ext.removeprefix(".").upper() for ext in accepted))
+            self.status.setText(self.t(
+                "send_unsupported", "This tool accepts {formats}. The character set contains other formats.",
+            ).format(formats=formats))
+            return
+        self.request_open_images.emit(target, sorted(map(str, paths), key=str.casefold))
+
     def show_error(self, error, kind):
+        if kind == "save_review" and isinstance(error, ValueError) and str(error) == "source_changed":
+            self.release_current_scan()
+            self.status.setText(self.t("source_changed", "An input image changed. Scan the folder again."))
+            return
+        if kind in {"load_review", "save_review"}:
+            log.warning("Character Separator %s: %s", kind, error)
+            key, fallback = (
+                ("review_load_error", "Could not open the saved review. Check that the input folder is available.")
+                if kind == "load_review" else ("review_save_error", "Could not save the review. Try again.")
+            )
+            self.status.setText(self.t(key, fallback))
+            return
         if isinstance(error, ScanCancelled):
             self.status.setText(self.t("scan_cancelled", "Scan cancelled."))
             return
@@ -551,8 +808,13 @@ class CharacterSeparatorView(QWidget):
 
     def shutdown(self):
         self.closing = True
-        self.cancel_job()
+        if self.photo_review is not None and self.photo_review.isVisible():
+            self.photo_review.reject()
+        if self.delete_dialog is not None:
+            self.delete_dialog.reject()
+        if self.job is not None and self.job.kind in {"load_review", "scan", "export"}:
+            self.job.cancel.set()
         self.update_controls()
 
     def shutdown_ready(self):
-        return self.job is None
+        return self.job is None and self.photo_review is None and self.delete_dialog is None and owner_threads_ready(self)

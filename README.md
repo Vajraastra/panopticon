@@ -13,8 +13,8 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 | **Cherry-DL** | Downloader for artist collections from Patreon, Pixiv, and Pawchive. Create a project from a URL, queue several artists, and watch progress per worker while it syncs incrementally. Kemono is retired. Builds the raw library the other modules curate. |
 | **Librarian** | Central library manager. Scans folders, builds an indexed collection, provides thumbnails and lazy loading for large sets. |
 | **Gallery** | Visual browser for your collection. Paginates and displays images with filtering and sorting. |
-| **Character Recognizer** | Identifies and tags characters within a set using face recognition (ArcFace + YuNet) with landmark alignment. Supports real photos, 3D renders, and illustration/anime. |
-| **Character Separator (prototype)** | Review all thumbnails in suggested groups, up to 1,000 pending images per batch. Approve or merge groups, or assign and discard individual images. The full pass copies approved images, clear matches, and their .txt captions into named character folders. |
+| **Character Recognizer** | Identifies and tags characters using CCIP by default. ArcFace facial recognition and its existing profiles remain selectable. |
+| **Character Separator** | Uses CCIP to group images by character in batches of up to 1,000. Review enlarged images, confirm groups, or merge them into confirmed characters. The full pass copies approved images, clear matches, and their .txt captions into named character folders. |
 | **Smart Cropper** | Interactively crops received images to target aspect ratios. Supports standard dataset ratios, monitor formats, and mobile sizes. |
 | **Duplicate Finder** | Reviews exact SHA-256 duplicates with curation priority and recoverable retirement; visual similarity stays review-only. |
 | **Format Scanner** | Analyzes the distribution of image formats across a collection for statistical review. |
@@ -24,8 +24,13 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 | **Dataset Tagger** | Auto-captions image folders with a local or online vision LLM plus a WD tagger, producing kohya-style `.txt` sidecars for training datasets (booru tags and natural language, per-model templates). |
 | **Pickler** | Manual culling with verified image/caption transfers: moves preserve curated IDs, explicit copies inherit initial curation independently, and guarded undo preserves changed files. |
 
-Character Separator accepts any folder on disk. The first scan downloads the CCIP model,
-and recognition runs locally. Confirmed references are kept for the current review session.
+Character Separator works with local Windows folders independently of the indexed library.
+It shares CCIP embeddings with Character Recognizer. Models download when needed and inference
+runs locally. Each input folder keeps its confirmed characters and review decisions across restarts.
+Review groups with the strongest CCIP matches first. The Confirmed Characters tab removes
+incorrect identities and returns their images to review while preserving files on disk.
+Images and captions are copied when you start the export, including after reopening the review.
+After exporting, select a character to open its verified copies in Gallery, Dataset Tagger, or Pickler.
 
 ---
 
