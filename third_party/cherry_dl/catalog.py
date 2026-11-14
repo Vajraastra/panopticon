@@ -15,8 +15,9 @@ import json
 import os
 import shutil
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 import aiosqlite
 from .maintenance_progress import ProgressReporter
@@ -843,9 +844,6 @@ class ScanCatalogBatch:
         now = int(time.time())
         self.preview_only_urls.add(url_source)
         self._resolved_previews.discard(url_source)
-        self._buffer.pop(url_source, None)
-        self.pending_payloads.pop(url_source, None)
-        self.pending_positions.pop(url_source, None)
         self._preview_buffer[url_source] = (
             url_source, filename_hint, post_id or "", post_published or "",
             observed_hash or "", content_service or "",
@@ -876,12 +874,8 @@ class ScanCatalogBatch:
 
     async def _flush_buffers(self) -> None:
         if self._preview_buffer:
-            preview_urls = tuple(self._preview_buffer)
-            placeholders = ",".join("?" for _ in preview_urls)
-            await self._db_conn.execute(
-                f"DELETE FROM pending_queue WHERE url_source IN ({placeholders})",
-                preview_urls,
-            )
+            # Una observación de preview puede ser temporal. La primera ruta
+            # del original conserva su identidad y se verifica al transferirla.
             await self._db_conn.executemany(
                 """
                 INSERT INTO preview_only
@@ -1536,6 +1530,54 @@ async def awaiting_archive_count(
     return int(row[0]) if row else 0
 
 
+async def due_preview_posts(
+    artist_dir: Path, profile_url_id: int, limit: int = ARCHIVE_RECHECK_BATCH,
+) -> list[str]:
+    """Devuelve publicaciones con previews que ya necesitan una revisión."""
+    db_path = artist_dir / CATALOG_NAME
+    if not db_path.is_file() or limit <= 0:
+        return []
+    cutoff = int(time.time()) - ARCHIVE_RECHECK_SECONDS
+    async with _db(db_path) as db:
+        async with db.execute(
+            """
+            SELECT post_id FROM preview_only
+            WHERE profile_url_id = ? AND post_id <> ''
+            GROUP BY post_id
+            HAVING MAX(last_seen) <= ?
+            ORDER BY MAX(last_seen), post_id
+            LIMIT ?
+            """,
+            (profile_url_id, cutoff, limit),
+        ) as cur:
+            return [row[0] for row in await cur.fetchall()]
+
+
+async def finish_preview_post_check(
+    artist_dir: Path, profile_url_id: int, post_id: str, *, resolved: bool = False,
+) -> None:
+    """Pospone la revisión o retira los marcadores de una publicación resuelta."""
+    db_path = artist_dir / CATALOG_NAME
+    if not db_path.is_file() or not post_id:
+        return
+    async with _db(db_path) as db:
+        if resolved:
+            await db.execute(
+                "DELETE FROM preview_only WHERE profile_url_id = ? AND post_id = ?",
+                (profile_url_id, post_id),
+            )
+        else:
+            now = int(time.time())
+            await db.execute(
+                """
+                UPDATE preview_only SET last_seen = ?
+                WHERE profile_url_id = ? AND post_id = ? AND last_seen < ?
+                """,
+                (now, profile_url_id, post_id, now),
+            )
+        await db.commit()
+
+
 async def reactivate_awaiting_archive(
     artist_dir: Path,
     profile_url_id: int | None = None,
@@ -1694,6 +1736,168 @@ async def get_pending_files(
             ) as cur:
                 rows = await cur.fetchall()
     return [dict(row) for row in rows]
+
+
+RouteTable = Literal["pending_queue", "awaiting_archive"]
+_ROUTE_TABLES: tuple[RouteTable, ...] = ("pending_queue", "awaiting_archive")
+
+
+@dataclass(frozen=True)
+class FileRoute:
+    table: RouteTable
+    profile_url_id: int | None
+    url_source: str
+    download_url: str
+    remote_hash: str
+    post_id: str | None
+
+
+async def _existing_route_tables(db: aiosqlite.Connection) -> list[RouteTable]:
+    async with db.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?)",
+        _ROUTE_TABLES,
+    ) as cur:
+        names = {row[0] for row in await cur.fetchall()}
+    return [table for table in _ROUTE_TABLES if table in names]
+
+
+async def list_file_routes(artist_dir: Path) -> list[FileRoute]:
+    """Lee las rutas Pawchive activas y en espera sin migrar el catálogo."""
+    path = artist_dir / CATALOG_NAME
+    if not path.is_file():
+        return []
+
+    routes = []
+    async with aiosqlite.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True, timeout=30) as db:
+        await db.execute("BEGIN")
+        for table in await _existing_route_tables(db):
+            async with db.execute(
+                f"""
+                SELECT profile_url_id, url_source, download_url,
+                       COALESCE(remote_hash, ''), post_id
+                FROM {table}
+                WHERE download_url LIKE 'https://%.pawchive.pw/data/%'
+                """,
+            ) as cur:
+                routes.extend(FileRoute(table, *row) for row in await cur.fetchall())
+    return routes
+
+
+async def update_file_routes(artist_dir: Path, changes: list[tuple[FileRoute, str, str]]) -> int:
+    """Actualiza URL y hash de filas que aún coinciden con la lectura inicial."""
+    if any(route.table not in _ROUTE_TABLES for route, _, _ in changes):
+        raise ValueError("La tabla de la ruta no pertenece a la cola de Cherry-DL")
+    path = artist_dir / CATALOG_NAME
+    if not changes or not path.is_file():
+        return 0
+
+    applied = 0
+    async with aiosqlite.connect(f"{path.absolute().as_uri()}?mode=rw", uri=True, timeout=30) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        for table in await _existing_route_tables(db):
+            updates = [
+                (url, file_hash, route.profile_url_id, route.url_source,
+                 route.download_url, route.remote_hash)
+                for route, url, file_hash in changes
+                if route.table == table and (url, file_hash) != (route.download_url, route.remote_hash)
+            ]
+            if not updates:
+                continue
+            async with db.executemany(
+                f"""
+                UPDATE {table}
+                SET download_url = ?, remote_hash = ?
+                WHERE profile_url_id IS ? AND url_source = ?
+                  AND download_url = ? AND COALESCE(remote_hash, '') = ?
+                """,
+                updates,
+            ) as cur:
+                applied += cur.rowcount
+        await db.commit()
+    return applied
+
+
+async def due_archive_routes(
+    artist_dir: Path, profile_url_id: int, *, limit: int = ARCHIVE_RECHECK_BATCH,
+) -> list[FileRoute]:
+    """Lee una muestra vencida con publicación identificable sin activarla."""
+    path = artist_dir / CATALOG_NAME
+    if limit <= 0 or not path.is_file():
+        return []
+    async with aiosqlite.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True, timeout=30) as db:
+        await db.execute("BEGIN")
+        if "awaiting_archive" not in await _existing_route_tables(db):
+            return []
+        async with db.execute(
+            """
+            SELECT profile_url_id, url_source, download_url, COALESCE(remote_hash, ''), post_id
+            FROM awaiting_archive
+            WHERE profile_url_id = ? AND next_check <= ? AND is_preview = 0
+              AND TRIM(COALESCE(post_id, '')) <> ''
+            ORDER BY next_check, first_seen, rowid
+            LIMIT ?
+            """,
+            (profile_url_id, int(time.time()), limit),
+        ) as cur:
+            return [FileRoute("awaiting_archive", *row) for row in await cur.fetchall()]
+
+
+async def resolve_archive_route_checks(
+    artist_dir: Path, routes: list[tuple[FileRoute, str | None, str]],
+) -> int:
+    """Mueve rutas verificadas y pospone la revisión de las demás filas vencidas."""
+    if any(route.table != "awaiting_archive" for route, _, _ in routes):
+        raise ValueError("Solo se pueden revisar rutas de archivos en espera")
+    path = artist_dir / CATALOG_NAME
+    if not routes or not path.is_file():
+        return 0
+
+    now = int(time.time())
+    activated = 0
+    # Conserva la fila si otro proceso ya revisó o cambió la ruta mientras
+    # consultábamos al servidor. El mismo predicado gobierna cada transición.
+    unchanged = """
+        WHERE profile_url_id IS ? AND url_source = ? AND download_url = ?
+          AND COALESCE(remote_hash, '') = ? AND post_id IS ?
+          AND next_check <= ? AND is_preview = 0
+    """
+    async with aiosqlite.connect(f"{path.absolute().as_uri()}?mode=rw", uri=True, timeout=30) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        tables = await _existing_route_tables(db)
+        if any(table not in tables for table in _ROUTE_TABLES):
+            return 0
+        for route, url, file_hash in routes:
+            params = (route.profile_url_id, route.url_source, route.download_url,
+                      route.remote_hash, route.post_id, now)
+            if url is not None:
+                async with db.execute(
+                    """
+                    INSERT INTO pending_queue
+                        (url_source, download_url, filename_hint, post_id, post_published,
+                         remote_hash, content_service, original_filename, content_role,
+                         content_position, remote_size, extra_headers, is_preview,
+                         profile_url_id, discovered_at, queue_position)
+                    SELECT url_source, ?, filename_hint, post_id, post_published,
+                           ?, content_service, original_filename, content_role,
+                           content_position, remote_size, extra_headers, is_preview,
+                           profile_url_id, first_seen,
+                           (SELECT COALESCE(MAX(queue_position), 0) + 1 FROM pending_queue)
+                    FROM awaiting_archive
+                    """ + unchanged + "ON CONFLICT(url_source) DO NOTHING",
+                    (url, file_hash, *params),
+                ) as cur:
+                    added = cur.rowcount
+                if added:
+                    await db.execute("DELETE FROM awaiting_archive " + unchanged, params)
+                    activated += added
+                    continue
+            await db.execute(
+                "UPDATE awaiting_archive SET last_checked = ?, next_check = ?, "
+                "check_count = check_count + 1 " + unchanged,
+                (now, now + ARCHIVE_RECHECK_SECONDS, *params),
+            )
+        await db.commit()
+    return activated
 
 
 async def move_pending_to_back(artist_dir: Path, url_source: str) -> bool:

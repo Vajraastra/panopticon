@@ -232,6 +232,20 @@ async def main() -> None:
         check(marker_count == 1 and queued_count == 0,
               "la preview queda en DB pero nunca en la cola")
 
+        before = next(row for row in await get_pending_files(artist, 7)
+                      if row["url_source"] == "pawchive://10/0")
+        batch = await ScanCatalogBatch.open(artist)
+        try:
+            await batch.stage_preview_only(
+                before["url_source"], "preview.png", post_id=before["post_id"],
+                observed_hash="9" * 64, profile_url_id=7,
+            )
+        finally:
+            await batch.close()
+        after = next((row for row in await get_pending_files(artist, 7)
+                      if row["url_source"] == before["url_source"]), None)
+        check(after == before, "la preview temporal conserva la ruta y el hash del original en cola")
+
         batch = await ScanCatalogBatch.open(artist)
         try:
             check(

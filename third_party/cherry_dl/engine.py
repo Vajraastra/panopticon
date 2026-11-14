@@ -18,6 +18,7 @@ import hashlib
 import random
 import re
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, BinaryIO, Callable
 from urllib.parse import urlsplit
@@ -310,8 +311,7 @@ class _TrafficStream(httpx.AsyncByteStream):
         await self.stream.aclose()
 
 
-async def _observe_download_response(response):
-    traffic = response.request.extensions.get("cherry_raw_traffic")
+async def _observe_download_response(response, traffic):
     if traffic is None:
         return
     size, received, bucket, resumable = traffic
@@ -327,6 +327,10 @@ async def _observe_download_response(response):
         if known_size > allowed and resumable:
             await size(0)
     response.stream = _TrafficStream(response.stream, received, bucket)
+
+
+class _ResponseHeadersTimeout(TimeoutError):
+    pass
 
 
 class DownloadEngine:
@@ -556,7 +560,8 @@ class DownloadEngine:
         publicación de Pawchive y decidir si el original aún no fue archivado.
         """
         await self._delay()
-        response = await self._client.get(url, headers=_DDG_ACCEPT)
+        async with asyncio.timeout(self.config.timeout):
+            response = await self._client.get(url, headers=_DDG_ACCEPT)
         response.raise_for_status()
         return response.text
 
@@ -614,10 +619,6 @@ class DownloadEngine:
             for candidate in [self._client._transport, *self._client._mounts.values()]:
                 if candidate is not None:
                     install_guard(candidate)
-        if on_raw_bytes is not None or on_response_size is not None:
-            hooks = self._client.event_hooks["response"]
-            if _observe_download_response not in hooks:
-                hooks.append(_observe_download_response)
         async with self._semaphore:
             if transport == "browser_image":
                 result = await self._do_browser_download(
@@ -822,7 +823,8 @@ class DownloadEngine:
         for attempt in range(max_attempts):
             try:
                 await self._delay()
-                resp = await self._client.get(url, headers=_DDG_ACCEPT)
+                async with asyncio.timeout(self.config.timeout):
+                    resp = await self._client.get(url, headers=_DDG_ACCEPT)
                 code = resp.status_code
 
                 # 404 — recurso permanentemente ausente
@@ -835,7 +837,8 @@ class DownloadEngine:
                 if code == 403 and _is_cloudflare_block(resp):
                     wait = 60 + attempt * 30
                     last_error = RuntimeError(f"Cloudflare 403 en {url}")
-                    await asyncio.sleep(wait)
+                    if attempt + 1 < max_attempts:
+                        await asyncio.sleep(wait)
                     continue
 
                 # 403 sin CF — acceso denegado permanente
@@ -848,14 +851,16 @@ class DownloadEngine:
                 if code == 429:
                     wait = 35 + attempt * 10
                     last_error = RuntimeError(f"Rate limit 429 en {url}")
-                    await asyncio.sleep(wait)
+                    if attempt + 1 < max_attempts:
+                        await asyncio.sleep(wait)
                     continue
 
                 # 5xx — error de servidor, reintentar
                 if code >= 500:
                     backoff = 2 ** attempt + random.uniform(0, 1)
                     last_error = RuntimeError(f"HTTP {code} en {url}")
-                    await asyncio.sleep(backoff)
+                    if attempt + 1 < max_attempts:
+                        await asyncio.sleep(backoff)
                     continue
 
                 resp.raise_for_status()
@@ -864,14 +869,43 @@ class DownloadEngine:
             except httpx.HTTPStatusError:
                 raise   # 404 / 403 permanente — propagar sin retry
 
-            except (httpx.RequestError, httpx.TimeoutException) as e:
+            except (httpx.RequestError, TimeoutError) as e:
                 last_error = e
                 backoff = 2 ** attempt + random.uniform(0, 1)
-                await asyncio.sleep(backoff)
+                if attempt + 1 < max_attempts:
+                    await asyncio.sleep(backoff)
 
         raise RuntimeError(
             f"Falló tras {max_attempts} intentos ({last_error}): {url}"
         )
+
+    @asynccontextmanager
+    async def _stream_download(
+        self, url: str, headers: dict,
+    ) -> AsyncIterator[httpx.Response]:
+        client = self._client
+        request = client.build_request("GET", url, headers=headers)
+        for hop in range(client.max_redirects + 1):
+            if hop and self._pacer is not None:
+                await self._pacer.wait()
+            try:
+                async with asyncio.timeout(self.config.timeout):
+                    response = await client.send(request, stream=True, follow_redirects=False)
+            except TimeoutError as exc:
+                raise _ResponseHeadersTimeout(
+                    f"Timeout al esperar cabeceras de {request.url.host}",
+                ) from exc
+
+            try:
+                if response.next_request is None:
+                    yield response
+                    return
+                # HTTPX resolves Location and retains the Range request headers.
+                # A redirect's body is unnecessary and can stall or consume quota.
+                request = response.next_request
+            finally:
+                await response.aclose()
+        raise httpx.TooManyRedirects("Demasiadas redirecciones", request=request)
 
     async def _do_download(
         self,
@@ -907,8 +941,7 @@ class DownloadEngine:
           404 / 401  → retorno inmediato, sin retry
           403 origen → retorno inmediato, sin retry (firma vencida o sin acceso)
           403 CF     → esperar 60 s + 30 s por error, luego retry desde 0
-          429        → esperar 35 s + 10 s por error, luego retry desde 0
-          5xx        → backoff exponencial, luego retry desde 0
+          429 / 5xx → backoff, conservar el parcial si hay SHA-256 esperado
           red/timeout → backoff exponencial, preservar progreso si written > 0
 
         total_timeout: si se especifica, el engine retorna DownloadResult(TIMEOUT)
@@ -919,6 +952,7 @@ class DownloadEngine:
         max_errors = max_retries if max_retries is not None else self._file_retries
         last_error: str = ""
         last_kind:  str = ErrorKind.UNKNOWN
+        last_failure_code: str | None = None
 
         # Estado de descarga — persiste entre range resumes.
         # El archivo se vuelca al .tmp según llega y el hash se calcula
@@ -989,6 +1023,7 @@ class DownloadEngine:
                         url=url, filename=filename,
                         error=f"{last_error} (tras {max_errors} intentos)",
                         error_kind=last_kind,
+                        failure_code=last_failure_code,
                     )
 
                 # Timeout total del engine: retornar limpiamente antes de que el
@@ -1020,6 +1055,7 @@ class DownloadEngine:
                             error_kind=ErrorKind.TIMEOUT,
                         )
 
+                last_failure_code = None
                 try:
                     # Delay completo solo en el PRIMER intento del archivo: es
                     # el espaciado entre peticiones que evita el 429, y en un
@@ -1100,10 +1136,7 @@ class DownloadEngine:
                         on_status("→ conectando…")
                     traffic = ((on_response_size, on_raw_bytes, lambda: self._bucket, on_quota_pause is not None)
                                if on_raw_bytes is not None or on_response_size is not None else None)
-                    async with self._client.stream(
-                        "GET", url, headers=req_headers,
-                        extensions={"cherry_raw_traffic": traffic},
-                    ) as resp:
+                    async with self._stream_download(url, req_headers) as resp:
                         code = resp.status_code
                         if on_observation is not None:
                             on_observation("transfer_http", code)
@@ -1131,7 +1164,9 @@ class DownloadEngine:
                             if on_status:
                                 on_status(f"🛡 Cloudflare — esperando {wait}s…")
                             _restart()
-                            await asyncio.sleep(wait)
+                            if error_count < max_errors:
+                                await resp.aclose()
+                                await asyncio.sleep(wait)
                             continue
 
                         # ── 403 del origen: denegación, no bloqueo de CF ───────
@@ -1150,7 +1185,11 @@ class DownloadEngine:
                             # El cuerpo puede ser un mensaje escrito a mano por
                             # el operador del sitio. Cuesta unos cientos de
                             # bytes de una respuesta que ya llegó.
-                            detail = await read_short_body(resp)
+                            try:
+                                async with asyncio.timeout(self.config.timeout):
+                                    detail = await read_short_body(resp, traffic=traffic)
+                            except (TimeoutError, RawQuotaExceeded):
+                                detail = ""
                             return DownloadResult(
                                 url=url, filename=filename,
                                 error=("Acceso denegado (403) - la sesión no da acceso "
@@ -1166,8 +1205,11 @@ class DownloadEngine:
                             error_count += 1
                             if on_status:
                                 on_status(f"⏸ rate limit 429 — esperando {wait}s…")
-                            _restart()
-                            await asyncio.sleep(wait)
+                            if not expected_hash:
+                                _restart()
+                            if error_count < max_errors:
+                                await resp.aclose()
+                                await asyncio.sleep(wait)
                             continue
 
                         # ── Error de servidor ──────────────────────────────────
@@ -1181,8 +1223,11 @@ class DownloadEngine:
                                     f"↺ error {code} — reintentando "
                                     f"({error_count}/{max_errors})…"
                                 )
-                            _restart()
-                            await asyncio.sleep(backoff)
+                            if not expected_hash:
+                                _restart()
+                            if error_count < max_errors:
+                                await resp.aclose()
+                                await asyncio.sleep(backoff)
                             continue
 
                         # ── Otros códigos HTTP no exitosos ─────────────────────
@@ -1240,6 +1285,8 @@ class DownloadEngine:
                                 error="El tamaño HTTP supera la reserva de la ventana",
                                 error_kind=ErrorKind.QUOTA,
                             )
+
+                        await _observe_download_response(resp, traffic)
 
                         # ── Leer chunks del stream ─────────────────────────────
                         # Watchdog de progreso: asyncio.timeout se reprograma con
@@ -1324,7 +1371,8 @@ class DownloadEngine:
                         if written == 0:
                             _restart()
                         # Si written > 0: conservar lo bajado y reintentar Range
-                        await asyncio.sleep(backoff)
+                        if error_count < max_errors:
+                            await asyncio.sleep(backoff)
                         continue
 
                     total = written
@@ -1390,12 +1438,15 @@ class DownloadEngine:
                         _t_start += asyncio.get_running_loop().time() - started_pause
                     continue
 
-                except (httpx.TimeoutException, TimeoutError):
+                except (httpx.TimeoutException, TimeoutError) as exc:
                     # httpx.TimeoutException = read/connect timeout del socket.
                     # TimeoutError = watchdog de progreso (asyncio.timeout) que se
                     # disparó por falta de chunks nuevos. Mismo tratamiento: stall.
                     backoff = 2 ** error_count + random.uniform(0, 1)
                     last_error = "Timeout en descarga"
+                    if isinstance(exc, _ResponseHeadersTimeout):
+                        last_error = str(exc)
+                        last_failure_code = "headers_timeout"
                     last_kind  = ErrorKind.TIMEOUT
                     error_count += 1
                     if on_observation is not None:
@@ -1412,7 +1463,8 @@ class DownloadEngine:
                             f"⏱ stall/timeout — reintentando "
                             f"({error_count}/{max_errors}) en {backoff:.1f}s…"
                         )
-                    await asyncio.sleep(backoff)
+                    if error_count < max_errors:
+                        await asyncio.sleep(backoff)
 
                 except httpx.RequestError as e:
                     # Error de conexión: misma lógica — preservar progreso previo.
@@ -1428,7 +1480,8 @@ class DownloadEngine:
                             f"⚠ red ({type(e).__name__}) — reintentando "
                             f"({error_count}/{max_errors}) en {backoff:.1f}s…"
                         )
-                    await asyncio.sleep(backoff)
+                    if error_count < max_errors:
+                        await asyncio.sleep(backoff)
 
         finally:
             # Cierre garantizado incluso si el worker se cancela: en Windows un
@@ -1499,7 +1552,7 @@ def _signed_url_expiry(url: str) -> float | None:
     return elapsed if elapsed > 0 else None
 
 
-async def read_short_body(resp: httpx.Response, limit: int = 300) -> str:
+async def read_short_body(resp: httpx.Response, limit: int = 300, *, traffic=None) -> str:
     """
     Los primeros bytes del cuerpo de un rechazo, si son texto legible.
 
@@ -1508,11 +1561,13 @@ async def read_short_body(resp: httpx.Response, limit: int = 300) -> str:
     justo la información que explicaba el bloqueo. Se devuelve ya formateado
     para concatenar a un mensaje de error, o cadena vacía.
 
-    No levanta nunca: un cuerpo ilegible no es motivo para perder el error real.
+    Si el cuerpo es ilegible devuelve una cadena vacía. Propaga el límite
+    de tráfico para que quien pidió el diagnóstico decida cómo proceder.
     """
     ctype = resp.headers.get("content-type", "")
     if "text/" not in ctype and "json" not in ctype:
         return ""
+    await _observe_download_response(resp, traffic)
     try:
         parts = []
         size = 0

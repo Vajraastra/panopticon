@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'third_party'))
-from cherry_dl import catalog, download_service as ds, index
+from cherry_dl import catalog, download_service as ds, index, live_metrics
 from cherry_dl.config import UserConfig, NetworkConfig
 from cherry_dl.engine import DownloadResult
 from cherry_dl.templates import _registry
@@ -105,6 +105,7 @@ class FrontierTests(unittest.IsolatedAsyncioTestCase):
         stack.enter_context(patch.object(ds, 'INDEX_DB', self.db))
         stack.enter_context(patch.object(ds, 'DownloadEngine', Engine))
         stack.enter_context(patch.object(ds, '_scan_watermark', return_value=START))
+        stack.enter_context(patch.object(live_metrics, 'METRICS_FILE', self.root / 'metrics.jsonl'))
         self.config = UserConfig(download_dir=str(self.root), workers=1,
             network=NetworkConfig(delay_min=0, delay_max=0, retries_api=1, retries_file=1))
 
@@ -139,6 +140,36 @@ class FrontierTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(task, return_exceptions=True)
         self.addAsyncCleanup(close_task)
         return task
+
+    async def test_pawchive_late_original_keeps_incremental_frontier(self):
+        await self.seed()
+        self.items = []
+        template = _registry._TEMPLATES[0]
+        checked = []
+
+        async def recheck(_template, artist, post_id):
+            checked.append(post_id)
+            return [FileInfo(
+                url='https://n1.pawchive.pw/data/late.png', filename='late.png',
+                artist_id=artist.artist_id, artist_name=artist.name, post_id=post_id,
+                date_published='2020-01-01T00:00:00Z', url_source='pawchive://fixture/late',
+            )], True
+
+        batch = await catalog.ScanCatalogBatch.open(self.folder)
+        try:
+            await batch.stage_preview_only(
+                url_source='pawchive://fixture/late/archive', filename_hint='',
+                post_id='late', profile_url_id=self.uid,
+            )
+        finally:
+            await batch.close()
+        self.sql('UPDATE preview_only SET last_seen = 1', catalog_db=True)
+        with patch.object(template, 'name', 'pawchive'), patch.object(template, 'recheck_preview_post', recheck):
+            await self.run_service()
+        self.assertEqual(checked, ['late'])
+        self.assertEqual(await self.frontier(), START)
+        self.assertEqual([row['url_source'] for row in await self.pending()], ['pawchive://fixture/late'])
+        self.assertEqual(self.sql('SELECT post_id FROM preview_only', catalog_db=True), [])
 
     async def test_artist_and_count_do_not_create_or_advance_frontier(self):
         await index.update_profile_url_sync(self.db, self.uid, artist_id='known', file_count=7)

@@ -180,6 +180,10 @@ class SiteTemplate(ABC):
         """Actualiza encabezados justo antes de transferir una fila en cola."""
         return dict(stored or {})
 
+    def transfer_hash(self, url: str, stored_hash: str) -> str:
+        """Resuelve el hash esperado de una fila ya en cola."""
+        return stored_hash
+
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
         if "category" in cls.__dict__:
@@ -239,6 +243,18 @@ class SiteTemplate(ABC):
         que el original está anunciado pero todavía no disponible.
         """
         return "permanent"
+
+    async def refresh_not_found_route(
+        self, artist: ArtistInfo, file_info: FileInfo,
+    ) -> str | None:
+        """Devuelve una nueva ruta verificada tras diagnosticar un 404."""
+        return None
+
+    async def recheck_preview_post(
+        self, artist: ArtistInfo, post_id: str,
+    ) -> tuple[list[FileInfo], bool] | None:
+        """Devuelve originales disponibles y si terminó la espera del post."""
+        return None
 
     @abstractmethod
     def iter_files(

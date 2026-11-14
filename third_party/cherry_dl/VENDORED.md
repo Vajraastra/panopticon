@@ -28,6 +28,51 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Pawchive: nodos de archivo y redirecciones (2026-11-14)
+
+El listado de publicaciones anuncia `server` por archivo y rutas de la forma
+`/{3 hex}/{2 hex}/{sha256}.{ext}`. Se usa el nodo HTTPS de Pawchive que publica
+la API. Cuando falta el dato se conserva el host genérico. Las rutas antiguas y
+las segmentadas por nodo conservan el SHA-256 para deduplicar y verificar. Las
+filas encoladas con un hash vacío lo recuperan de la URL al transferirse. La
+identidad lógica y el esquema de catálogo siguen siendo los mismos.
+
+Los 302 consumían el cupo con su cuerpo y repetían el origen antes de alcanzar
+el servidor real. HTTP sigue `Location` al ritmo compartido, con plazo para las
+cabeceras de cada salto. Los cuerpos descartados no se leen. El cuerpo del
+archivo mantiene su propio plazo de inactividad y puede reanudar el parcial
+tras 429/5xx si existe un SHA-256 esperado. Pawchive difiere tras tres intentos
+fallidos en vez de siete.
+
+El 404 de un archivo se contrasta con la publicación. El marcador de la página
+o el estado pendiente de la API permiten usar la revisión semanal/manual. Si
+la publicación sigue existiendo y el archivo no está confirmado como pendiente
+de importación, la fila continúa en la cola diferida.
+
+`scripts/cherry_pawchive_refresh.py` consulta los perfiles configurados y
+reemplaza sólo rutas verificadas por publicación y SHA-256. El catálogo aplica
+el cambio sólo si la fila conserva su URL y hash anteriores, tanto para
+pendientes activos como para originales en espera. Un 404 que descubre un nodo
+nuevo mediante el mismo detalle del post actualiza la ruta para el próximo Sync.
+
+Usar `--report RUTA` para consultar y guardar las coincidencias. Ejecutar de
+nuevo con `--report RUTA --apply` para aplicar el informe. El informe conserva
+las rutas previas y se guarda localmente. La actualización conserva el orden
+de la cola y las fechas de revisión.
+
+Las publicaciones aún no archivadas conservan un marcador aunque no anuncien
+adjuntos. Cada Sync incremental revisa hasta cinco publicaciones vencidas por
+fuente en orden de espera. La revisión vence después de una semana y registra
+los originales encontrados antes de cerrar el marcador, aunque la fecha del
+original quede detrás de la frontera incremental. Una comprobación fallida
+conserva el marcador. Una observación posterior de vista previa conserva
+también la ruta y el SHA-256 de un original que ya estaba en cola.
+
+La revisión automática de originales en espera consulta una vez cada
+publicación. Sólo promueve archivos cuyo SHA-256 sigue publicado en un nodo de
+Pawchive. Los demás conservan su identidad, posición de espera y primera fecha
+observada. La revisión manual conserva la comprobación directa de archivos.
+
 ### HTTP sin tamaño y continuación por cuota (David, 2026-10-05)
 
 El guard inicial de af9d659 descartaba cuerpos chunked o sin Content-Length,

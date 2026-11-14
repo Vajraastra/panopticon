@@ -231,11 +231,14 @@ class QuotaTests(unittest.IsolatedAsyncioTestCase):
         await gate.finish(permit, success=result.ok, transferred_bytes=result.file_size)
         return result, gate
 
-    async def test_redirect_body_also_counts_against_raw_volume(self):
+    async def test_redirect_body_is_not_read_or_charged_to_raw_volume(self):
+        reads = []
+
         class Body(httpx.AsyncByteStream):
             def __init__(self, content):
                 self.content = content
             async def __aiter__(self):
+                reads.append(self.content)
                 yield self.content
         def handler(req):
             if req.url.path == '/file':
@@ -245,7 +248,8 @@ class QuotaTests(unittest.IsolatedAsyncioTestCase):
         result, gate = await self.download(handler)
         self.assertTrue(result.ok, result.error)
         self.assertEqual(result.file_size, 20)
-        self.assertEqual(gate.snapshot().used_bytes, 24)
+        self.assertEqual(reads, [b'a' * 20])
+        self.assertEqual(gate.snapshot().used_bytes, 20)
         self.assertEqual(gate.snapshot().used_files, 1)
 
     async def test_chunked_response_uses_received_body_instead_of_content_length(self):

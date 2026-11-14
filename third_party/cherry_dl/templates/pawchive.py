@@ -105,6 +105,7 @@ import html
 import re
 from html.parser import HTMLParser
 from typing import AsyncIterator
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -115,9 +116,12 @@ from ..site_policy import ScanPolicy, SourceCategory, TransferPolicy
 
 _BASE = "https://pawchive.pw"
 
-# Los archivos viven en otro host, y solo bajo /data/. El dominio principal
-# devuelve 404 para esas rutas; `img.pawchive.pw` sirve únicamente miniaturas.
+# El listado actual anuncia un nodo por archivo. Las respuestas antiguas
+# siguen usando el host genérico como punto de entrada.
 _FILES = "https://file.pawchive.pw"
+_FILE_ORIGIN = re.compile(r"https://(?:file|n[0-9]+)\.pawchive\.pw/?", re.IGNORECASE)
+_FILE_NODE = re.compile(r"n[0-9]+\.pawchive\.pw", re.IGNORECASE)
+_HASH_PATH = re.compile(r"/[0-9a-f]{2,3}/[0-9a-f]{2}/([0-9a-f]{64})(?:\.[^/]*)?", re.IGNORECASE)
 _SERVICES = frozenset(["patreon", "fanbox"])
 _DOWNLOAD_USER_AGENT_BASE = (
     "Cherry-DL/0.1 "
@@ -174,6 +178,7 @@ class PawchiveTemplate(SiteTemplate):
     transfer_policy = TransferPolicy(
         workers=2,
         max_workers=2,
+        retries=3,
         min_request_interval=1.0,
         post_download_delay=5.0,
         max_bytes_per_sec=4 * 1024**2,
@@ -192,6 +197,11 @@ class PawchiveTemplate(SiteTemplate):
     provides_file_hashes = True  # el hash SHA-256 viene en el path
     scan_page_delay = 0.0        # lo espacia el pacer; sumar aquí sería doble
 
+    def __init__(self, engine) -> None:
+        super().__init__(engine)
+        self._awaiting_post_pages: set[tuple[str, str, str]] = set()
+        self._post_details: dict[tuple[str, str, str], dict] = {}
+
     def transfer_headers(
         self, artist: ArtistInfo, stored: dict | None = None,
     ) -> dict:
@@ -200,6 +210,10 @@ class PawchiveTemplate(SiteTemplate):
         headers["Referer"] = artist.url or (_BASE + "/")
         headers["User-Agent"] = _download_user_agent(self.engine)
         return headers
+
+    def transfer_hash(self, url: str, stored_hash: str) -> str:
+        """Recupera la identidad de filas guardadas con el formato anterior."""
+        return stored_hash or _file_url_hash(url)
 
     # ── Detección ──────────────────────────────────────────────────────────────
 
@@ -271,27 +285,22 @@ class PawchiveTemplate(SiteTemplate):
     async def classify_not_found(
         self, artist: ArtistInfo, file_info: FileInfo,
     ) -> str:
-        """Consulta la publicación y reconoce solo los avisos de Pawchive.
+        """Distingue publicaciones retiradas, pendientes y fallos de ruta.
 
-        Un ``Server: ddos-guard`` no basta: también sirve 404 genuinos. La
-        evidencia autoritativa es el anuncio humano de la página del post.
-        Si no podemos consultar la página devolvemos ``unknown`` para conservar
-        la fila activa; nunca convertimos un fallo de diagnóstico en pérdida.
+        Un 404 del host de archivos puede venir de un nodo en migración. Se
+        conserva la fila si el post sigue publicado y no confirma la espera.
         """
         if not file_info.post_id:
-            return "permanent"
-        cache = getattr(self, "_not_found_cache", None)
-        if cache is None:
-            cache = self._not_found_cache = {}
-        cache_key = f"{artist.service}:{artist.artist_id}:{file_info.post_id}"
-        if cache_key in cache:
-            return cache[cache_key]
-        post_url = (
-            f"{_BASE}/{artist.service}/user/{artist.artist_id}"
-            f"/post/{file_info.post_id}"
-        )
+            return "unknown"
+        cache_key = (artist.service, artist.artist_id, file_info.post_id)
+        detail = self._post_details.get(cache_key)
+        if detail is not None:
+            return "awaiting" if _post_is_preview(detail) else "unknown"
+        if cache_key in self._awaiting_post_pages:
+            return "awaiting"
+        post_path = f"/{artist.service}/user/{artist.artist_id}/post/{file_info.post_id}"
         try:
-            page = await self.engine.get_text(post_url)
+            page = await self.engine.get_text(f"{_BASE}{post_path}")
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return "permanent"
@@ -299,13 +308,60 @@ class PawchiveTemplate(SiteTemplate):
         except Exception:
             return "unknown"
         text = html.unescape(page).casefold()
-        state = (
-            "awaiting"
-            if any(marker in text for marker in _AWAITING_ARCHIVE_MARKERS)
-            else "permanent"
+        if any(marker in text for marker in _AWAITING_ARCHIVE_MARKERS):
+            self._awaiting_post_pages.add(cache_key)
+            return "awaiting"
+        detail = await self._get_post_detail(artist, file_info.post_id)
+        return "awaiting" if detail and _post_is_preview(detail) else "unknown"
+
+    async def refresh_not_found_route(
+        self, artist: ArtistInfo, file_info: FileInfo,
+    ) -> str | None:
+        """Busca el mismo archivo en los metadatos obtenidos tras el 404."""
+        key = (artist.service, artist.artist_id, file_info.post_id)
+        detail = self._post_details.get(key)
+        if not detail or _post_is_preview(detail) or not _file_url_hash(file_info.url):
+            return None
+        original = _url_location(file_info.url)
+        candidates = [entry for entry in _extract_files_from_post(
+            detail, artist, _download_user_agent(self.engine),
+        ) if _url_location(entry.url) != original]
+        replacement = archive_file_route(artist, file_info.url, file_info.remote_hash, candidates)
+        return replacement[0] if replacement else None
+
+    async def recheck_preview_post(
+        self, artist: ArtistInfo, post_id: str,
+    ) -> tuple[list[FileInfo], bool] | None:
+        """Consulta una publicación en espera y devuelve solo sus originales."""
+        post = await self._get_post_detail(artist, post_id)
+        if post is None:
+            return None
+        if _post_is_preview(post):
+            return [], False
+        entries = list(_extract_files_from_post(post, artist, _download_user_agent(self.engine)))
+        originals = [entry for entry in entries if not entry.is_preview]
+        resolved = (bool(originals) or post.get("has_full") is True) and not any(
+            entry.is_preview for entry in entries
         )
-        cache[cache_key] = state
-        return state
+        return originals, resolved
+
+    async def _get_post_detail(self, artist: ArtistInfo, post_id: str) -> dict | None:
+        key = (artist.service, artist.artist_id, post_id)
+        if key in self._post_details:
+            return self._post_details[key]
+        path = f"/{artist.service}/user/{artist.artist_id}/post/{post_id}"
+        try:
+            post = await self.engine.get_json(f"{_BASE}/api/v1{path}", retries=1)
+        except Exception:
+            return None
+        if not _matches_post(post, artist, post_id) or not _valid_file_metadata(post):
+            return None
+        self._post_details[key] = {
+            key: post.get(key) for key in (
+                "id", "title", "published", "preview_state", "has_full", "file", "attachments",
+            )
+        }
+        return self._post_details[key]
 
     # ── Listado de archivos ────────────────────────────────────────────────────
 
@@ -317,14 +373,15 @@ class PawchiveTemplate(SiteTemplate):
         """
         Itera sobre todos los archivos del artista.
 
-        Paginación por `?o=`, en múltiplos de 50, hasta que la respuesta llega
-        vacía o con 400/404. Con `since`, se corta en el primer post anterior a
-        esa fecha: vienen del más nuevo al más antiguo.
+        Paginación por `?o=`, en múltiplos de 50, hasta una lista vacía o un
+        400/404 en una página posterior. Con `since`, se corta en el primer
+        post anterior a esa fecha: vienen del más nuevo al más antiguo.
         """
         service = artist.service
         creator_id = artist.artist_id
         offset = 0
         download_user_agent = _download_user_agent(self.engine)
+        seen_posts: set[str] = set()
 
         while True:
             url = (
@@ -337,15 +394,32 @@ class PawchiveTemplate(SiteTemplate):
             try:
                 posts = await self.engine.get_json(url)
             except httpx.HTTPStatusError as e:
-                # 400 / 404 en paginación = offset fuera de rango → fin normal
-                if e.response.status_code in (400, 404):
+                if offset and e.response.status_code in (400, 404):
                     break
                 raise
 
+            if not isinstance(posts, list):
+                raise ValueError("Pawchive devolvió una página sin lista de publicaciones")
             if not posts:
                 break
 
+            page_ids = set()
             for post in posts:
+                post_id = post.get("id") if isinstance(post, dict) else None
+                if (not isinstance(post_id, (str, int)) or isinstance(post_id, bool)
+                        or not str(post_id).strip() or not _matches_post(post, artist, str(post_id))
+                        or not _valid_file_metadata(post)
+                        or not isinstance(post.get("published") or "", str)):
+                    raise ValueError("Pawchive devolvió metadatos de publicación no válidos")
+                page_ids.add(str(post_id))
+            if page_ids <= seen_posts:
+                raise ValueError("Pawchive devolvió una página sin publicaciones nuevas")
+
+            for post in posts:
+                post_id = str(post["id"])
+                if post_id in seen_posts:
+                    continue
+                seen_posts.add(post_id)
                 if since is not None:
                     pub = parse_date_utc(post.get("published", ""))
                     if pub is not None and pub < since:
@@ -379,6 +453,64 @@ def _download_user_agent(engine) -> str:
     )
 
 
+def _post_is_preview(post: dict) -> bool:
+    return (str(post.get("preview_state") or "").strip().casefold() == "pending"
+            or post.get("has_full") is False)
+
+
+def archive_file_route(
+    artist: ArtistInfo, old_url: str, old_hash: str, candidates: list[FileInfo],
+) -> tuple[str, str] | None:
+    """Devuelve una ruta respaldada por el SHA y el nodo que anuncia el post."""
+    file_hash = _file_url_hash(old_url)
+    if not file_hash or old_hash.casefold() not in ("", file_hash):
+        return None
+    for candidate in candidates:
+        if (candidate.is_preview or candidate.artist_id != artist.artist_id
+                or candidate.content_service != artist.service
+                or candidate.remote_hash != file_hash):
+            continue
+        if (_file_url_hash(candidate.url) == file_hash
+                and _FILE_NODE.fullmatch(urlsplit(candidate.url).netloc)):
+            return candidate.url, file_hash
+    return None
+
+
+def _file_url_hash(url: str) -> str:
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return ""
+    if (parts.path.startswith("/data/")
+            and _FILE_ORIGIN.fullmatch(f"{parts.scheme}://{parts.netloc}")):
+        return _hash_from_path(parts.path.removeprefix("/data")) or ""
+    return ""
+
+
+def _url_location(url: str) -> tuple[str | None, str]:
+    parts = urlsplit(url)
+    return parts.hostname, parts.path
+
+
+def _matches_post(post: object, artist: ArtistInfo, post_id: str) -> bool:
+    return (isinstance(post, dict) and str(post.get("id")) == post_id
+            and str(post.get("user", artist.artist_id)) == artist.artist_id
+            and post.get("service", artist.service) == artist.service)
+
+
+def _valid_file_metadata(post: dict) -> bool:
+    file = post.get("file")
+    attachments = post.get("attachments")
+    if file is not None and not isinstance(file, dict):
+        return False
+    if attachments is not None and (not isinstance(attachments, list)
+                                    or any(not isinstance(entry, dict) for entry in attachments)):
+        return False
+    entries = [file, *(attachments or [])] if file else attachments or []
+    return all(isinstance(entry.get("path") or "", str)
+               and isinstance(entry.get("name") or "", str) for entry in entries)
+
+
 def _extract_files_from_post(
     post: dict, artist: ArtistInfo, download_user_agent: str,
 ):
@@ -396,8 +528,7 @@ def _extract_files_from_post(
         "Referer": artist.url,
         "User-Agent": download_user_agent,
     }
-    preview_state = str(post.get("preview_state") or "").strip().casefold()
-    post_is_preview = preview_state == "pending" or post.get("has_full") is False
+    post_is_preview = _post_is_preview(post)
 
     entradas: list[tuple[str, int, dict]] = []
     main_file = post.get("file")
@@ -408,6 +539,15 @@ def _extract_files_from_post(
         for position, entry in enumerate(post.get("attachments") or [], start=1)
     )
 
+    if post_is_preview and post_id and not any(entry.get("path") for _, _, entry in entradas):
+        yield FileInfo(
+            url="", filename="", artist_id=artist.artist_id, artist_name=artist.name,
+            post_id=post_id, content_service=artist.service, content_role="post_archive",
+            url_source=f"pawchive://{artist.service}/{artist.artist_id}/post/{post_id}/archive",
+            is_preview=True, post_title=post_title, date_published=date_published,
+        )
+        return
+
     for role, position, entrada in entradas:
         path = entrada.get("path")
         if not path:
@@ -415,11 +555,11 @@ def _extract_files_from_post(
         is_preview = bool(entrada.get("preview_only")) or post_is_preview
         original_name = entrada.get("name") or _name_from_path(path)
         filename = _safe_filename(original_name)
+        server = entrada.get("server")
+        origin = (server.rstrip("/") if isinstance(server, str)
+                  and _FILE_ORIGIN.fullmatch(server) else _FILES)
         yield FileInfo(
-            # El `?f=` es el nombre que el sitio sugiere al navegador. Se manda
-            # porque es lo que hace su propia página, y así la petición no se
-            # distingue de una normal.
-            url=f"{_FILES}/data{path}?f={filename}",
+            url=f"{origin}/data{quote(path)}?f={quote(filename)}",
             url_source=(
                 f"pawchive://{artist.service}/{artist.artist_id}/post/"
                 f"{post_id}/{role}/{position}"
@@ -442,21 +582,9 @@ def _extract_files_from_post(
 
 
 def _hash_from_path(path: str) -> str | None:
-    """
-    Extrae el hash SHA-256 del path.
-
-    Formato: /{2 chars}/{2 chars}/{sha256}.{ext}
-    Retorna el hash en minúsculas, o None si el path no tiene esa forma.
-    """
-    parts = [p for p in path.split("/") if p]
-    if len(parts) >= 3 and len(parts[0]) == 2 and len(parts[1]) == 2:
-        candidate = parts[2].split(".")[0]
-    else:
-        return None
-
-    if len(candidate) == 64 and all(c in "0123456789abcdef" for c in candidate.lower()):
-        return candidate.lower()
-    return None
+    """Extrae el SHA-256 en rutas originales y segmentadas por nodo."""
+    match = _HASH_PATH.fullmatch(path)
+    return match[1].lower() if match else None
 
 
 def _name_from_path(path: str) -> str:

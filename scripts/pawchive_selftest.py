@@ -26,6 +26,8 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "third_party"))
@@ -96,6 +98,18 @@ PAGINA_0 = [
         "attachments": [{"name": "x.png", "path": "/11/22/" + "a" * 64 + ".png"},
                         {"name": "y: raro?.png", "path": "/33/44/" + "b" * 64 + ".png"}],
     },
+    {
+        "id": "168200000", "published": "2026-08-31T10:00:00",
+        "file": {"name": "directo #1.png", "path": f"/151/bf/{H1}.png",
+                 "server": "https://n2.pawchive.pw"},
+        "attachments": [{"name": "otro.zip", "path": f"/157/1f/{H2}.zip",
+                         "server": "https://n4.pawchive.pw.ejemplo.test"}],
+    },
+    {
+        "id": "168100000", "published": "2026-08-30T10:00:00",
+        "preview_state": "pending", "has_full": True,
+        "file": {}, "attachments": [],
+    },
 ]
 
 
@@ -165,6 +179,8 @@ async def main() -> int:
     print("\n[3] Hash desde el path")
     chk(_hash_from_path(f"/51/bf/{H1}.png") == H1,
         "extrae el sha256 con la extensión pegada (formato de pawchive)")
+    chk(_hash_from_path(f"/151/bf/{H1.upper()}.png") == H1,
+        "extrae el sha256 de la ruta segmentada por nodo")
     chk(_hash_from_path("/ad/93/no-es-un-hash.jpg") is None, "rechaza lo que no es hash")
     chk(_hash_from_path("/data/ab/cd/xyz") is None, "rechaza un path con otra forma")
 
@@ -177,6 +193,8 @@ async def main() -> int:
     # que falle.
     chk(PawchiveTemplate.max_workers == 2, "max_workers = 2 (tope rígido)")
     chk(PawchiveTemplate.workers == 2, "workers = 2 por defecto")
+    chk(PawchiveTemplate.transfer_policy.retries == 3,
+        "un archivo se difiere tras tres intentos fallidos")
     chk(PawchiveTemplate.min_request_interval == 1.0,
         "min_request_interval = 1 s (1 petición/s)")
     chk(PawchiveTemplate.post_download_delay == 5.0,
@@ -235,15 +253,19 @@ async def main() -> int:
 
     print("\n[6] Archivos del artista")
     files = [f async for f in t.iter_files(a)]
-    chk(len(files) == 6, f"salen 6 estados de archivo, incluidos previews ({len(files)})")
+    chk(len(files) == 9, f"salen 9 estados de archivo y publicación ({len(files)})")
     nombres = [f.filename for f in files]
     chk("NC_Senpai-San.zip" in nombres, "incluye el adjunto libre")
-    previews = {f.filename: f for f in files if f.is_preview}
+    previews = {f.filename: f for f in files if f.is_preview and f.url}
     chk(set(previews) == {"Notice0904.png", "a.jpg", "b.jpg"},
         f"detecta preview legado y estado nuevo ({set(previews)})")
     chk(all(f.url.startswith("https://file.pawchive.pw/data/")
             for f in previews.values()),
         "la preview conserva la URL final sólo como metadata, sin descargarla")
+    markers = [f for f in files if f.content_role == "post_archive"]
+    chk(len(markers) == 1 and markers[0].is_preview and not markers[0].url
+        and markers[0].dedup_key == "pawchive://patreon/30500811/post/168100000/archive",
+        "un post pendiente sin archivos deja un marcador estable sin URL")
 
     z = next(f for f in files if f.filename == "NC_Senpai-San.zip")
     chk(z.url.startswith("https://file.pawchive.pw/data/57/1f/"),
@@ -264,12 +286,55 @@ async def main() -> int:
         "la identidad Pawchive es estable entre preview y original")
     raro = next(f for f in files if f.filename.startswith("y"))
     chk(raro.filename == "y_ raro_.png", f"sanea el nombre ({raro.filename})")
+    directo = next(f for f in files if f.filename == "directo #1.png")
+    chk(directo.url == f"https://n2.pawchive.pw/data/151/bf/{H1}.png?f=directo%20%231.png",
+        "usa el nodo anunciado y codifica el nombre en la URL")
+    chk(directo.remote_hash == H1 and t.transfer_hash(directo.url, "") == H1,
+        "los nuevos archivos y la cola previa comparten SHA-256 verificable")
+    anterior = directo.url.replace("n2.pawchive.pw", "file.pawchive.pw")
+    chk(t.transfer_hash(anterior, "") == H1,
+        "una fila previa con ruta nueva recupera el hash al salir de la cola")
+    chk(t.transfer_hash(directo.url.replace("n2.pawchive.pw", "otro.test"), "") == "",
+        "no extrae un hash de una URL ajena")
+    otro = next(f for f in files if f.filename == "otro.zip")
+    chk(otro.url.startswith("https://file.pawchive.pw/data/"),
+        "un servidor fuera de Pawchive recurre al host genérico")
 
     print("\n[7] Paginación")
     paginas = [u for u in eng.llamadas if "/posts?o=" in u]
     chk(len(paginas) == 2, f"pide páginas hasta la vacía ({len(paginas)})")
     chk(paginas[0].endswith("o=0") and paginas[1].endswith("o=50"),
         "el offset avanza de 50 en 50")
+    class Paginado:
+        def __init__(self, responses):
+            self.responses = iter(responses)
+
+        async def get_json(self, url):
+            response = next(self.responses)
+            if isinstance(response, int):
+                request = httpx.Request("GET", url)
+                raise httpx.HTTPStatusError("respuesta de prueba", request=request,
+                                            response=httpx.Response(response, request=request))
+            return response
+
+    for responses, expected in (
+        ([400], httpx.HTTPStatusError),
+        ([404], httpx.HTTPStatusError),
+        ([{}], ValueError),
+        ([[{**PAGINA_0[0], "attachments": "invalid"}]], ValueError),
+        ([[{**PAGINA_0[0], "user": "otro"}]], ValueError),
+        ([PAGINA_0, list(reversed(PAGINA_0))], ValueError),
+    ):
+        try:
+            [item async for item in PawchiveTemplate(Paginado(responses)).iter_files(a)]
+        except expected:
+            chk(True, "falla el escaneo ante una primera página fallida o datos no válidos")
+        else:
+            chk(False, "la anomalía de paginación no debe aparentar un final correcto")
+    continued = [item async for item in PawchiveTemplate(
+        Paginado([PAGINA_0, 404]),
+    ).iter_files(a)]
+    chk(continued == files, "un 404 posterior conserva el final de paginación histórico")
     chk(sum(1 for u in respaldo.llamadas if u.endswith("/creators")) == 1,
         "el respaldo pide el índice de creadores UNA sola vez por sesión")
 

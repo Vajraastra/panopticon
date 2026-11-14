@@ -45,12 +45,15 @@ from .file_routing import (
 )
 from .archives import organize_project
 from .catalog import (
-    ARCHIVE_RECHECK_BATCH,
+    FileRoute,
     ScanCatalogBatch,
     add_content_alias,
     add_file,
     defer_pending_to_next_session,
     defer_until_archived,
+    due_archive_routes,
+    due_preview_posts,
+    finish_preview_post_check,
     clean_pending_catalog_overlap,
     content_alias_hash,
     get_meta_int,
@@ -60,9 +63,10 @@ from .catalog import (
     ensure_layout_version,
     reserve_destination as _reserve_destination,
     pending_count,
-    reactivate_awaiting_archive,
     remove_pending,
+    resolve_archive_route_checks,
     set_meta_int,
+    update_file_routes,
     url_exists,
 )
 from .index import (
@@ -85,6 +89,7 @@ from .site_policy import SourceCategory, declared_site_policy, resolve_site_poli
 from .live_metrics import SiteRunMetrics, append_metrics
 from .templates._registry import find_template, get_template
 from .templates.base import FileInfo, parse_date_utc
+from .templates.pawchive import PawchiveTemplate, archive_file_route
 from .auth.patreon import NeedsManualAuth
 from .auth.pixiv import NeedsPixivAuth
 
@@ -296,6 +301,7 @@ async def _resolve_required_auth(
 # cinco rechazos entre los últimos ocho resultados ya son el sitio hablando.
 _BLOCK_STREAK = 5
 _BLOCK_WINDOW = 8
+_PAWCHIVE_PREVIEW_RECHECK_BATCH = 5
 
 # Pawchive devuelve este texto cuando el bloqueo no es un fallo de un archivo,
 # sino una petición humana de detener toda la sesión. No se esperan otros cuatro
@@ -936,15 +942,26 @@ async def run_profile_download(
             if cleaned:
                 emit(Log(f"⊘ {cleaned} ya descargadas eliminadas de la cola", "dim"))
 
-            if template.name == "pawchive":
-                due = await reactivate_awaiting_archive(
-                    folder, pu_id, limit=ARCHIVE_RECHECK_BATCH, due_only=True,
-                )
-                if due:
-                    emit(Log(
-                        f"↺ {due} original(es) de Pawchive vuelven a revisión semanal",
-                        "dim",
-                    ))
+            if isinstance(template, PawchiveTemplate) and pu_id is not None:
+                archive_checks = await due_archive_routes(folder, pu_id)
+                by_post: dict[str, list[FileRoute]] = {}
+                for route in archive_checks:
+                    if route.post_id:
+                        by_post.setdefault(route.post_id, []).append(route)
+                for post_id, routes in by_post.items():
+                    checked = await template.recheck_preview_post(artist_info, post_id)
+                    decisions = []
+                    for route in routes:
+                        replacement = archive_file_route(
+                            artist_info, route.download_url, route.remote_hash, checked[0],
+                        ) if checked is not None else None
+                        url, file_hash = replacement or (None, "")
+                        decisions.append((route, url, file_hash))
+                    promoted = await resolve_archive_route_checks(folder, decisions)
+                    if promoted:
+                        emit(Log(f"↺ {promoted} original(es) disponibles en Pawchive", "dim"))
+                    if checked is None:
+                        break
 
             existing_pending = await pending_count(folder, pu_id)
 
@@ -979,11 +996,108 @@ async def run_profile_download(
                 emit(Log(f"↺ {existing_pending} en cola de sesiones previas", "dim"))
 
             seen_scan: set[str] = set()
+            resolved_preview_posts: set[str] = set()
             scan_files_seen = 0
             scan_ok = True
             auth_retried = False
             scan_catalog = await ScanCatalogBatch.open(folder)
+
+            async def _stage_discovered(fi: FileInfo) -> None:
+                nonlocal new_this_scan, preview_markers
+                if fi.is_preview and fi.post_id in resolved_preview_posts:
+                    return
+                key = fi.dedup_key
+                if key in seen_scan:
+                    return
+                seen_scan.add(key)
+                matched_hash = scan_catalog.find_downloaded_hash(
+                    key,
+                    fi.remote_hash,
+                    service=fi.content_service or artist_info.service,
+                    post_id=fi.post_id,
+                    original_filename=(
+                        fi.original_filename or fi.filename
+                    ),
+                    position=fi.content_position,
+                    remote_size=fi.remote_size,
+                )
+                if fi.is_preview:
+                    if matched_hash:
+                        scan_catalog.resolve_preview_only(key)
+                    elif await scan_catalog.stage_preview_only(
+                            url_source=key,
+                            filename_hint=fi.filename,
+                            post_id=fi.post_id,
+                            post_published=fi.date_published,
+                            observed_hash=fi.remote_hash,
+                            content_service=(
+                                fi.content_service or artist_info.service
+                            ),
+                            original_filename=(
+                                fi.original_filename or fi.filename
+                            ),
+                            content_role=fi.content_role,
+                            content_position=fi.content_position,
+                            profile_url_id=pu_id,
+                    ):
+                        preview_markers += 1
+                    return
+                if matched_hash:
+                    scan_catalog.resolve_preview_only(key)
+                    await scan_catalog.stage_downloaded_url(key, matched_hash)
+                    await scan_catalog.stage_content_alias(
+                        matched_hash,
+                        fi.content_service or artist_info.service,
+                        fi.post_id,
+                        fi.original_filename or fi.filename,
+                        fi.content_role,
+                        fi.content_position,
+                        fi.remote_size,
+                    )
+                    return
+                if await scan_catalog.stage_pending(
+                        url_source=key,
+                        download_url=fi.url,
+                        filename_hint=fi.filename,
+                        post_id=fi.post_id,
+                        post_published=fi.date_published,
+                        remote_hash=fi.remote_hash,
+                        content_service=(
+                            fi.content_service or artist_info.service
+                        ),
+                        original_filename=(
+                            fi.original_filename or fi.filename
+                        ),
+                        content_role=fi.content_role,
+                        content_position=fi.content_position,
+                        remote_size=fi.remote_size,
+                        extra_headers=(
+                            json.dumps(fi.extra_headers)
+                            if fi.extra_headers else None
+                        ),
+                        profile_url_id=pu_id,
+                ):
+                    new_this_scan += 1
+
             try:
+                if template.name == "pawchive" and pu_id is not None and not need_full:
+                    preview_posts = await due_preview_posts(
+                        folder, pu_id, limit=_PAWCHIVE_PREVIEW_RECHECK_BATCH,
+                    )
+                    if preview_posts:
+                        emit(Log(f"◷ Verificando {len(preview_posts)} publicaciones de Pawchive con vista previa", "dim"))
+                    for post_id in preview_posts:
+                        checked = await template.recheck_preview_post(artist_info, post_id)
+                        if checked is None:
+                            await finish_preview_post_check(folder, pu_id, post_id)
+                            break
+                        candidates, resolved = checked
+                        for fi in candidates:
+                            await _stage_discovered(fi)
+                        await scan_catalog.flush()
+                        await finish_preview_post_check(folder, pu_id, post_id, resolved=resolved)
+                        if resolved:
+                            resolved_preview_posts.add(post_id)
                 while True:
                     try:
                         async for fi in template.iter_files(artist_info, since=scan_since):
@@ -991,78 +1105,7 @@ async def run_profile_download(
                             # Señal de vida durante el paginado (Fase 1 no descarga).
                             if scan_files_seen % 25 == 0:
                                 emit(ScanProgress(scan_files_seen, new_this_scan))
-                            key = fi.dedup_key
-                            if key in seen_scan:
-                                continue
-                            seen_scan.add(key)
-                            matched_hash = scan_catalog.find_downloaded_hash(
-                                key,
-                                fi.remote_hash,
-                                service=fi.content_service or artist_info.service,
-                                post_id=fi.post_id,
-                                original_filename=(
-                                    fi.original_filename or fi.filename
-                                ),
-                                position=fi.content_position,
-                                remote_size=fi.remote_size,
-                            )
-                            if fi.is_preview:
-                                if matched_hash:
-                                    scan_catalog.resolve_preview_only(key)
-                                elif await scan_catalog.stage_preview_only(
-                                        url_source=key,
-                                        filename_hint=fi.filename,
-                                        post_id=fi.post_id,
-                                        post_published=fi.date_published,
-                                        observed_hash=fi.remote_hash,
-                                        content_service=(
-                                            fi.content_service or artist_info.service
-                                        ),
-                                        original_filename=(
-                                            fi.original_filename or fi.filename
-                                        ),
-                                        content_role=fi.content_role,
-                                        content_position=fi.content_position,
-                                        profile_url_id=pu_id,
-                                ):
-                                    preview_markers += 1
-                                continue
-                            if matched_hash:
-                                scan_catalog.resolve_preview_only(key)
-                                await scan_catalog.stage_downloaded_url(key, matched_hash)
-                                await scan_catalog.stage_content_alias(
-                                    matched_hash,
-                                    fi.content_service or artist_info.service,
-                                    fi.post_id,
-                                    fi.original_filename or fi.filename,
-                                    fi.content_role,
-                                    fi.content_position,
-                                    fi.remote_size,
-                                )
-                                continue
-                            if await scan_catalog.stage_pending(
-                                    url_source=key,
-                                    download_url=fi.url,
-                                    filename_hint=fi.filename,
-                                    post_id=fi.post_id,
-                                    post_published=fi.date_published,
-                                    remote_hash=fi.remote_hash,
-                                    content_service=(
-                                        fi.content_service or artist_info.service
-                                    ),
-                                    original_filename=(
-                                        fi.original_filename or fi.filename
-                                    ),
-                                    content_role=fi.content_role,
-                                    content_position=fi.content_position,
-                                    remote_size=fi.remote_size,
-                                    extra_headers=(
-                                        json.dumps(fi.extra_headers)
-                                        if fi.extra_headers else None
-                                    ),
-                                    profile_url_id=pu_id,
-                            ):
-                                new_this_scan += 1
+                            await _stage_discovered(fi)
                     except asyncio.CancelledError:
                         raise
                     except (NeedsManualAuth, NeedsPixivAuth) as scan_auth:
@@ -1157,6 +1200,8 @@ async def run_profile_download(
                 item["url_source"] for item in pending_list
                 if int(item.get("deferred_attempts") or 0) > 0
             }
+            stored_pending_hashes = {item["url_source"]: item.get("remote_hash") or ""
+                                     for item in pending_list}
 
             engine.set_transfer_policy(transfer_policy)
             engine.set_pace(pace)
@@ -1240,7 +1285,9 @@ async def run_profile_download(
                             artist_name=artist_info.name,
                             post_id=pf.get("post_id") or "",
                             date_published=pf.get("post_published") or "",
-                            remote_hash=pf.get("remote_hash") or "",
+                            remote_hash=template.transfer_hash(
+                                pf["download_url"], pf.get("remote_hash") or "",
+                            ),
                             content_service=(
                                 pf.get("content_service") or artist_info.service
                             ),
@@ -1557,15 +1604,23 @@ async def run_profile_download(
                                         "archivó el original]", "warn",
                                     ))
                                 elif state == "unknown":
-                                    await defer_pending_to_next_session(
-                                        folder, fi.dedup_key,
-                                    )
+                                    fresh_url = await template.refresh_not_found_route(artist_info, fi)
+                                    updated = 0
+                                    if fresh_url and fi.remote_hash:
+                                        previous = FileRoute(
+                                            "pending_queue", pu_id, fi.dedup_key, fi.url,
+                                            stored_pending_hashes[fi.dedup_key], fi.post_id,
+                                        )
+                                        updated = await update_file_routes(
+                                            folder, [(previous, fresh_url, fi.remote_hash)],
+                                        )
+                                    if not updated:
+                                        await defer_pending_to_next_session(folder, fi.dedup_key)
                                     summ.deferred += 1
                                     emit(WorkerDone(slot_id, fi.filename, "⏸"))
-                                    emit(Log(
-                                        f"⏸ {fi.filename[:45]}  [404 sin poder "
-                                        "comprobar la publicación — se conserva]", "warn",
-                                    ))
+                                    detail = ("ruta actualizada para la próxima sincronización" if updated
+                                              else "404 de archivo — se conserva en cola")
+                                    emit(Log(f"⏸ {fi.filename[:45]}  [{detail}]", "warn"))
                                 else:
                                     summ.dropped += 1
                                     await remove_pending(folder, fi.dedup_key)

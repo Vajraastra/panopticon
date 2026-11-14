@@ -1,15 +1,18 @@
-"""Unknown HTTP lengths and quota-paused Range resumes; real local TCP, private state."""
+"""HTTP deadlines, redirects and quota-paused Range resumes with private state."""
 
 import asyncio
-from contextlib import ExitStack
+from contextlib import closing, ExitStack
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+
+import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -40,6 +43,8 @@ class StreamResume(unittest.IsolatedAsyncioTestCase):
         self.original_payload = b'published original' * 800
         self.post_checks = 0
         self.cancelled = asyncio.Event()
+        self.redirect_requests = []
+        self.header_connection_closed = threading.Event()
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -47,6 +52,21 @@ class StreamResume(unittest.IsolatedAsyncioTestCase):
             def log_message(self, *args):
                 pass
             def do_GET(self):
+                if self.path.startswith('/stalled'):
+                    # Leave TCP connected without an HTTP response.
+                    self.rfile.read(1)
+                    owner.header_connection_closed.set()
+                    return
+                if self.path.startswith('/redirect'):
+                    owner.redirect_requests.append(self.headers.get('Range'))
+                    self.send_response(302)
+                    location = '/stalled?secret=local' if self.path == '/redirect-stall' else '/file'
+                    self.send_header('Location', location)
+                    self.send_header('Content-Length', '1048576')
+                    self.end_headers()
+                    # Deliberately leave the redirect body unfinished.
+                    self.rfile.read(1)
+                    return
                 if '/post/' in self.path:
                     owner.post_checks += 1
                     page = b"<html>We haven't archived this post yet. Previews only.</html>"
@@ -119,7 +139,7 @@ class StreamResume(unittest.IsolatedAsyncioTestCase):
             adaptive=True, window_seconds=100, failure_threshold=1, failure_window_seconds=0,
             cooldowns=(0,), path=self.root / 'quota.json', clock=lambda: self.now, sleeper=sleep)
 
-    async def download(self, *, budget=65536, expected=True, timeout=None, hook=None):
+    async def download(self, *, budget=65536, expected=True, timeout=None, hook=None, path='/file'):
         self.quota = self.gate(budget)
         self.permit = await self.quota.acquire(expected_bytes=None)
         cfg = UserConfig(network=NetworkConfig(delay_min=0, delay_max=0, retries_file=2))
@@ -144,13 +164,103 @@ class StreamResume(unittest.IsolatedAsyncioTestCase):
             self.assertLessEqual(snapshot.used_bytes, budget)
         with patch('third_party.cherry_dl.engine.load_session', return_value={}):
             async with DownloadEngine(cfg) as engine:
-                result = await engine.download(f'http://127.0.0.1:{self.server.server_port}/file',
+                result = await engine.download(f'http://127.0.0.1:{self.server.server_port}{path}',
                     self.root, 'out.bin', on_response_size=lambda n: self.quota.resize(self.permit, n),
                     on_raw_bytes=received, on_raw_capacity=lambda: self.permit.reserved_bytes,
                     on_quota_pause=pause, total_timeout=timeout,
                     expected_hash=hashlib.sha256(self.payload).hexdigest() if expected else None)
         await self.quota.finish(self.permit, success=result.ok, transferred_bytes=result.file_size)
         return result
+
+    async def test_redirect_body_is_ignored_and_range_reaches_the_destination(self):
+        self.style = 'known'
+        result = await asyncio.wait_for(self.download(path='/redirect'), 4)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual((self.root / 'out.bin').read_bytes(), self.payload)
+        self.assertEqual([start for start, _, _ in self.requests], [0, 65536])
+        self.assertEqual(self.redirect_requests, [None, 'bytes=65536-'])
+        self.assertEqual(sum(self.received), len(self.payload))
+
+    async def test_stalled_headers_after_redirect_close_socket_without_final_backoff(self):
+        cfg = UserConfig(network=NetworkConfig(delay_min=0, delay_max=0))
+        cfg = cfg.model_copy(update={'timeout': .15})
+        with patch('third_party.cherry_dl.engine.load_session', return_value={}):
+            async with DownloadEngine(cfg) as engine:
+                url = f'http://127.0.0.1:{self.server.server_port}/redirect-stall'
+                result = await asyncio.wait_for(engine.download(url, self.root, 'out.bin', max_retries=1), 1)
+                self.assertEqual(result.error_kind, ErrorKind.TIMEOUT)
+                self.assertEqual(result.failure_code, 'headers_timeout')
+                self.assertIn('127.0.0.1', result.error)
+                self.assertNotIn('secret', result.error)
+                self.assertTrue(await asyncio.to_thread(self.header_connection_closed.wait, 1))
+        self.assertFalse((self.root / 'out.bin.tmp').exists())
+
+    async def test_transfer_body_can_outlive_headers_deadline(self):
+        class SlowBody(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                await asyncio.sleep(.1)
+                yield b'payload'
+
+        cfg = UserConfig(network=NetworkConfig(delay_min=0, delay_max=0))
+        cfg = cfg.model_copy(update={'timeout': .025})
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=SlowBody()))
+        with patch('third_party.cherry_dl.engine.load_session', return_value={}):
+            engine = DownloadEngine(cfg)
+        async with httpx.AsyncClient(transport=transport) as engine._client:
+            result = await engine.download('https://fixture.test/file', self.root, 'out.bin', max_retries=1)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual((self.root / 'out.bin').read_bytes(), b'payload')
+
+    async def test_transient_http_error_keeps_the_verified_partial(self):
+        payload = b'payload'
+        expected_hash = hashlib.sha256(payload).hexdigest()
+        cfg = UserConfig(network=NetworkConfig(delay_min=0, delay_max=0, retries_file=3))
+
+        for code in (429, 503):
+            with self.subTest(code=code):
+                offsets = []
+                reservations = []
+
+                def serve(request):
+                    offsets.append(request.headers.get('range'))
+                    replies = (
+                        httpx.Response(206, headers={'Content-Range': 'bytes 0-2/7'}, content=payload[:3]),
+                        httpx.Response(code, headers={'Content-Length': '1048576'}),
+                        httpx.Response(206, headers={'Content-Range': 'bytes 3-6/7'}, content=payload[3:]),
+                    )
+                    return replies[len(offsets) - 1]
+
+                async def reserve(amount):
+                    reservations.append(amount)
+                    return amount
+
+                with patch('third_party.cherry_dl.engine.load_session', return_value={}):
+                    engine = DownloadEngine(cfg)
+                async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as engine._client:
+                    with patch('third_party.cherry_dl.engine.asyncio.sleep'):
+                        result = await engine.download(
+                            'https://fixture.test/file', self.root, 'out.bin', expected_hash=expected_hash,
+                            on_response_size=reserve,
+                        )
+                self.assertTrue(result.ok, result.error)
+                self.assertEqual(offsets, [None, 'bytes=3-', 'bytes=3-'])
+                self.assertEqual(reservations, [3, 4])
+                self.assertEqual((self.root / 'out.bin').read_bytes(), payload)
+
+    async def test_quota_exhaustion_during_forbidden_details_preserves_auth_status(self):
+        async def reserve(amount):
+            raise RawQuotaExceeded('sin cuota para el mensaje del servidor')
+
+        cfg = UserConfig(network=NetworkConfig(delay_min=0, delay_max=0))
+        transport = httpx.MockTransport(lambda request: httpx.Response(
+            403, headers={'Content-Type': 'text/plain'}, content=b'Forbidden',
+        ))
+        with patch('third_party.cherry_dl.engine.load_session', return_value={}):
+            engine = DownloadEngine(cfg)
+        async with httpx.AsyncClient(transport=transport) as engine._client:
+            result = await engine.download('https://fixture.test/file', self.root, 'out.bin',
+                                           on_response_size=reserve)
+        self.assertEqual(result.error_kind, ErrorKind.AUTH)
 
     async def test_unknown_chunked_file_completes_without_false_deferral(self):
         self.payload = self.payload[:20000]
@@ -189,7 +299,6 @@ class StreamResume(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.quota.snapshot().used_files, 1)
 
     async def test_quota_wait_is_excluded_from_engine_total_timeout(self):
-        import httpx
         self.quota = self.gate(100)
         permit = await self.quota.acquire(expected_bytes=100)
         calls = 0
@@ -344,6 +453,98 @@ class StreamResume(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(third.downloaded, 1)
             self.assertEqual(quota.used_files, 2)
             self.assertEqual(await awaiting_archive_count(folder), 0)
+
+    async def test_due_original_checks_metadata_before_requesting_the_file(self):
+        from third_party.cherry_dl import catalog, config, download_service, live_metrics, site_budget, site_throttle
+
+        folder = self.root / 'Artist'
+        source = 'https://pawchive.pw/patreon/user/7'
+        source_key = 'pawchive://patreon/7/post/10/primary/0'
+        content = self.original_payload
+        file_hash = hashlib.sha256(content).hexdigest()
+        old_path = f'/{file_hash[:2]}/{file_hash[2:4]}/{file_hash}.png'
+        current_path = f'/1{old_path[1:]}'
+        details = []
+        transfers = []
+        archived = False
+
+        def handle(request):
+            path = request.url.path
+            if request.url.host == 'pawchive.pw':
+                if path == '/patreon/user/7':
+                    return httpx.Response(200, text='<meta name="artist_name" content="Artist">')
+                if path == '/api/v1/patreon/user/7/posts':
+                    return httpx.Response(200, json=[])
+                if path == '/api/v1/patreon/user/7/post/10':
+                    details.append(path)
+                    file = {'path': current_path, 'server': 'https://n2.pawchive.pw'} if archived else {}
+                    return httpx.Response(200, json={'id': '10', 'user': '7', 'service': 'patreon',
+                        'has_full': True, 'preview_state': 'scraped' if archived else 'pending', 'file': file})
+            if request.url.host == 'n2.pawchive.pw' and path == '/data' + current_path:
+                transfers.append(request.url)
+                return httpx.Response(200, content=content)
+            raise AssertionError(f'petición no esperada en la prueba: {request.url}')
+
+        async def open_fixture(engine):
+            engine._client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+            return engine
+
+        def make_due():
+            with closing(sqlite3.connect(folder / catalog.CATALOG_NAME)) as db, db:
+                db.execute('UPDATE awaiting_archive SET next_check = 0 WHERE url_source = ?', (source_key,))
+                db.execute("UPDATE preview_only SET last_seen = 0 WHERE post_id = '10'")
+
+        await catalog.init_catalog(folder)
+        await catalog.set_meta_int(folder, 'full_scan_done', 1)
+        await catalog.add_pending(folder, source_key, 'https://file.pawchive.pw/data' + old_path,
+                                  'sample.png', post_id='10', remote_hash=file_hash, profile_url_id=1)
+        await catalog.defer_until_archived(folder, source_key)
+        batch = await catalog.ScanCatalogBatch.open(folder)
+        try:
+            await batch.stage_preview_only('pawchive://patreon/7/post/10/archive', '',
+                                           post_id='10', content_role='post_archive', profile_url_id=1)
+        finally:
+            await batch.close()
+        make_due()
+
+        with ExitStack() as stack:
+            for obj, key, value in (
+                (download_service, 'INDEX_DB', self.root / 'index.db'),
+                (config, 'SESSION_FILE', self.root / 'session.json'),
+                (site_throttle, 'THROTTLE_FILE', self.root / 'quota.json'),
+                (site_budget, 'BUDGET_FILE', self.root / 'budget.json'),
+                (live_metrics, 'METRICS_FILE', self.root / 'metrics.jsonl'),
+                (DownloadEngine, '__aenter__', open_fixture),
+            ):
+                stack.enter_context(patch.object(obj, key, value))
+            cfg = UserConfig(download_dir=str(self.root), workers=2,
+                network=NetworkConfig(delay_min=0, delay_max=0, retries_file=1))
+            profile = {'id': -1, 'folder_path': str(folder), 'urls': [
+                {'id': 1, 'url': source, 'site': 'pawchive', 'enabled': True,
+                 'last_synced': '2026-10-01 00:00:00', 'file_count': 0}]}
+
+            async def run():
+                return await asyncio.wait_for(download_service.run_profile_download(
+                    profile, workers=2, ext_filter=set(), emit=lambda _event: None,
+                    config=cfg, finalize_profile=False), 12)
+
+            first = await run()
+            self.assertEqual(first.downloaded, 0)
+            self.assertEqual(await catalog.awaiting_archive_count(folder), 1)
+            self.assertEqual(await catalog.pending_count(folder), 0)
+            self.assertEqual(len(details), 1)
+            self.assertEqual(transfers, [])
+
+            archived = True
+            make_due()
+            second = await run()
+            self.assertEqual(second.downloaded, 1)
+            self.assertEqual(await catalog.awaiting_archive_count(folder), 0)
+            self.assertEqual(await catalog.pending_count(folder), 0)
+            self.assertEqual(len(details), 2)
+            self.assertEqual(len(transfers), 1)
+            self.assertTrue(await catalog.url_exists(folder, source_key))
+            self.assertEqual([image.read_bytes() for image in folder.rglob('*.png')], [content])
 
 
 class ReadGuard(unittest.IsolatedAsyncioTestCase):

@@ -1,22 +1,10 @@
 """
-Una sola petición a Pawchive, para saber si el bloqueo sigue puesto.
+Consulta las cabeceras de una ruta de Pawchive encolada con el host genérico.
 
-El 2026-09-05 el host de archivos empezó a devolver 403 y el motor, que trataba
-cada 403 como problema de un archivo, siguió pidiendo a una petición por segundo
-durante trece minutos: 774 rechazos. El freno del motor ya impide que eso se
-repita, pero queda una pregunta que solo el servidor puede contestar: **¿sigue
-cerrada la puerta, y por qué?**
-
-Este script la hace una vez. Literalmente una:
-
-  - Toma una fila de `pending_queue` de un proyecto que use Pawchive —la más
-    pequeña que encuentre— y pide **un solo byte** con `Range: bytes=0-0`.
-  - Imprime el código, las cabeceras que importan y **el cuerpo entero** si es
-    texto: el 403 traía 143 bytes escritos a mano y nadie los había leído.
-  - No escribe nada: ni en el catálogo, ni en el índice, ni en disco.
-
-Si contesta 206 o 200, el bloqueo se levantó. Si contesta 403, no — y el cuerpo
-dirá si es la misma queja de antes o algo nuevo.
+Envía una petición Range con la identidad actual de Cherry-DL. Muestra el
+estado, las cabeceras de transferencia y el host de cualquier redirección.
+Cierra la respuesta tras las cabeceras, sin seguir el salto ni leer el cuerpo.
+El índice y los catálogos se abren en modo de solo lectura.
 
 Uso:  venv/Scripts/python.exe scripts/cherry_pawchive_probe.py
 """
@@ -26,15 +14,18 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "third_party"))
 
-import httpx   # noqa: E402
+import httpx  # noqa: E402
 
-from cherry_dl.config import CHERRY_DIR   # noqa: E402
+from third_party.cherry_dl.config import CHERRY_DIR, load_config  # noqa: E402
+from third_party.cherry_dl.templates.base import ArtistInfo  # noqa: E402
+from third_party.cherry_dl.templates.pawchive import PawchiveTemplate  # noqa: E402
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -42,79 +33,67 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, OSError):
         pass
 
-_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
-
-def una_url_pendiente() -> tuple[str, str] | None:
-    """Una URL de file.pawchive.pw de la cola, con su nombre. Solo lectura."""
+def una_url_pendiente() -> str | None:
+    """Toma una URL del host canónico de archivos en la cola activa."""
     index = CHERRY_DIR / "index.db"
     if not index.exists():
-        print(f"✗ no está {index}")
         return None
 
-    con = sqlite3.connect(f"file:{index}?mode=ro", uri=True)
-    carpetas = [Path(r[0]) for r in con.execute(
-        "SELECT DISTINCT folder_path FROM profiles WHERE folder_path IS NOT NULL")]
-    con.close()
+    with closing(sqlite3.connect(f"{index.as_uri()}?mode=ro", uri=True)) as con:
+        carpetas = [Path(r[0]) for r in con.execute(
+            "SELECT DISTINCT folder_path FROM profiles WHERE folder_path IS NOT NULL"
+        )]
 
     for carpeta in carpetas:
-        db = carpeta / "catalog.db"
+        db = carpeta.absolute() / "catalog.db"
         if not db.exists():
             continue
         try:
-            cat = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-            fila = cat.execute(
-                "SELECT download_url, filename_hint FROM pending_queue "
-                "WHERE download_url LIKE '%file.pawchive.pw%' LIMIT 1"
-            ).fetchone()
-            cat.close()
+            with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)) as cat:
+                fila = cat.execute(
+                    "SELECT download_url FROM pending_queue "
+                    "WHERE download_url LIKE 'https://file.pawchive.pw/data/%' LIMIT 1"
+                ).fetchone()
         except sqlite3.Error:
             continue
         if fila:
-            print(f"  fuente: {carpeta.name}")
-            return fila[0], fila[1] or "?"
+            return fila[0]
     return None
 
 
 async def main() -> int:
-    dato = una_url_pendiente()
-    if not dato:
-        print("✗ no hay ninguna URL de pawchive en las colas pendientes")
+    try:
+        url = una_url_pendiente()
+    except sqlite3.Error as exc:
+        print(f"No se pudo leer el índice de Cherry-DL ({type(exc).__name__}).")
+        return 1
+    if not url:
+        print("No hay rutas al host genérico de Pawchive en las colas pendientes.")
         return 1
 
-    url, nombre = dato
-    print(f"  archivo: {nombre}")
-    print(f"  URL:     {url[:100]}…\n")
-    print("→ UNA petición, un solo byte (Range: bytes=0-0)\n")
+    template = PawchiveTemplate(SimpleNamespace(config=load_config()))
+    headers = template.transfer_headers(ArtistInfo("", "", "", template.name))
+    headers.update({"Range": "bytes=0-0", "Accept-Encoding": "identity"})
+    print("Una petición a file.pawchive.pw con Range: bytes=0-0\n")
 
     async with httpx.AsyncClient(
-        timeout=30.0, follow_redirects=True,
-        headers={"User-Agent": _UA, "Accept-Language": "en-US,en;q=0.9"},
+        timeout=15.0, follow_redirects=False,
     ) as cli:
         try:
-            r = await cli.get(url, headers={"Range": "bytes=0-0"})
-        except httpx.HTTPError as e:
-            print(f"✗ ni siquiera conectó: {type(e).__name__}: {e}")
+            async with asyncio.timeout(20.0):
+                async with cli.stream("GET", url, headers=headers) as response:
+                    print(f"  {response.http_version} {response.status_code}")
+                    if response.next_request is not None:
+                        print(f"  host de destino: {response.next_request.url.host}")
+                    for name in ("server", "content-type", "content-length",
+                                 "content-range", "accept-ranges", "retry-after"):
+                        if name in response.headers:
+                            print(f"  {name}: {response.headers[name]}")
+        except (httpx.HTTPError, httpx.InvalidURL, TimeoutError) as exc:
+            print(f"No se pudieron obtener las cabeceras ({type(exc).__name__}).")
             return 1
 
-    print(f"  HTTP {r.status_code}")
-    for h in ("server", "content-type", "content-length", "content-range",
-              "retry-after", "cf-mitigated", "ddg-cache-status"):
-        if h in r.headers:
-            print(f"  {h}: {r.headers[h]}")
-
-    cuerpo = r.text.strip() if "text" in r.headers.get("content-type", "") else ""
-    if cuerpo:
-        print(f"\n  el servidor dice:\n  «{cuerpo[:600]}»")
-
-    print()
-    if r.status_code in (200, 206):
-        print("✓ la puerta está abierta otra vez")
-    elif r.status_code == 403:
-        print("⛔ sigue bloqueado — no insistir; el cuerpo de arriba es la pista")
-    else:
-        print(f"? respuesta inesperada ({r.status_code})")
     return 0
 
 

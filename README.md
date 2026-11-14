@@ -183,10 +183,11 @@ when available. A server ignoring Range, changing its representation, or lacking
 safe identity requires a fresh transfer. The partial is retained during the active
 job; cancellation/dashboard exit still remove its temporary. Announced files larger
 than the full budget retain their existing deferral. File and volume timers remain
-separate. Originals not uploaded by Pawchive keep their independent awaiting_archive
-state and weekly/manual recheck. Normal cancellation
-keeps received bytes and releases unused reservations; an unclean exit retains
-unacknowledged reservations conservatively on restart. Existing completion-only
+separate. Cherry keeps Pawchive originals that are still awaiting archival in a
+separate queue. The weekly check reads the post and retries an original when
+Pawchive publishes a matching SHA-256. Manual checks request the file directly.
+Normal cancellation keeps received bytes and releases unused reservations. An
+unclean exit retains unacknowledged reservations on restart. Existing completion-only
 history seeds the new traffic ledger; old failed attempts cannot be reconstructed.
 
 Downloaded images in watched folders enter the central library even when
