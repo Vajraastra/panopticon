@@ -1165,3 +1165,15 @@ class LibraryRepository:
     def make_copy_online(self, copy_id, **kwargs):
         from core.library_versions import make_online
         return make_online(self.conn, copy_id, update_fts=self._fts_sync_file, **kwargs)
+
+    def prepare_copy_reconciliations(self):
+        from core.library_reconciliations import prepare
+        return prepare(self.conn)
+
+    def reconcile_copy_versions_batch(self, operation_id, requests):
+        from core.library_reconciliations import reconcile
+        return reconcile(self, operation_id, requests)
+
+    def get_copy_reconciliation_receipt(self, operation_id):
+        from core.library_reconciliations import receipt
+        return receipt(self.conn, operation_id)

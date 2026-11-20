@@ -41,6 +41,7 @@ READS = frozenset({
     'get_library_overview', 'get_library_selection', 'get_library_page',
     'resolve_library_selection', 'check_fts',
     'get_copy_versions_page', 'get_copy_version_state',
+    'get_copy_reconciliation_receipt',
     'get_transfer_status', 'get_transfer_receipt', 'get_transfer_sources',
     'get_maintenance_copies', 'has_maintenance_history',
     'get_duplicate_snapshot',
@@ -76,6 +77,7 @@ READ_BUDGET_SECONDS = {
     'get_phash_states': 10,
 }
 WRITES = frozenset({
+    'prepare_copy_reconciliations', 'reconcile_copy_versions_batch',
     'prepare_path_identity', 'store_path_identity_batch',
     'prepare_transfers', 'approve_transfer', 'commit_transfer', 'abort_transfer', 'retire_transfer_copy', 'approve_transfer_restore',
     'commit_maintenance_relocation',
@@ -258,6 +260,10 @@ class LibraryService:
                             from core.library_transfers import status
                             if not status(conn)['prepared']:
                                 backup_database(conn, self.db_path, 'transfers')
+                        if operation == 'prepare_copy_reconciliations':
+                            from core.library_reconciliations import status
+                            if not status(conn)['prepared']:
+                                backup_database(conn, self.db_path, 'copy-reconciliations')
                         if operation != 'vacuum_database':
                             phase = time.perf_counter()
                             try:
@@ -276,9 +282,15 @@ class LibraryService:
                             self._metrics.observe('commit', time.perf_counter() - phase)
                         repo.finish_path_ingest(True)
                         repo.finish_derived_paths(True, operation)
+                        if operation == 'reconcile_copy_versions_batch':
+                            from core.library_reconciliations import finish
+                            finish(repo, True)
                         self._metrics.finish_write('committed', started)
                         started = None
                     except BaseException as exc:
+                        if operation == 'reconcile_copy_versions_batch':
+                            from core.library_reconciliations import finish
+                            finish(repo, False)
                         repo.finish_path_ingest(False)
                         repo.finish_derived_paths(False, operation)
                         conn.rollback()
