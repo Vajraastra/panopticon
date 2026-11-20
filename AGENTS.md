@@ -4,7 +4,8 @@ Lo que sorprendería a alguien que llega al repo. Las reglas globales (comunicac
 documentación, manejo de errores) están en el `AGENTS.md` global y no se repiten aquí.
 
 **Qué es:** hub modular de creación de datasets de imágenes, GPU-first. PySide6 + SQLite.
-El estado de la biblioteca vive en `panopticon.db` (~294K archivos indexados).
+El estado de la biblioteca, sus identidades y curación viven en `panopticon.db`
+(datos locales, no versionados).
 
 ## Copia de trabajo e historial
 
@@ -85,12 +86,14 @@ carpeta sola: no hay que registrar nada en el core.
 
 1. **Los módulos nunca se importan entre sí.** Se comunican por `EventBus` o por
    `load_image_set`. Si un widget se necesita en dos módulos, se mueve a `core/components/` — no
-   se importa del vecino. Format Converter está retirado: `core/mod_loader.py` lo excluye de descubrimiento/carga;
-   su código legacy y salidas se conservan. El servicio central de datos vive en `core/`: los módulos
+   se importa del vecino. Format Converter y Character Separator están retirados:
+   `core/mod_loader.py` rechaza su descubrimiento y carga. Se conservan el código
+   legacy y las salidas de Format Converter; el Separador no se debe reconstruir.
+   Character Recognizer usa ArcFace + YuNet. El servicio central de datos vive en `core/`: los módulos
    usan su fachada o `context["data_service"]`; nunca reciben conexiones SQLite.
 2. **Nunca modificar el archivo original.** La salida va a `CachePaths.get_tool_cache("mi_tool")`
    o a una carpeta nueva. Al terminar un proceso, abrir la carpeta con `CachePaths.open_folder()`.
-   Tres excepciones, deliberadas y ninguna imitable sin pensarlo: **Metadata Hub**, que para
+   Excepciones deliberadas, ninguna imitable sin pensarlo: **Metadata Hub**, que para
    eso existe, y **la fusión de proyectos de Cherry-DL**, que mueve archivos entre carpetas y
    puede borrar los repetidos — por eso pide confirmación enseñando los números antes de tocar
    nada, y por eso se prueba con carpetas de juguete (`scripts/cherry_merge_toytest.py`);
@@ -173,7 +176,7 @@ la API de alto nivel del motor** (`profiles.create_profile`, `add_url_to_profile
 cada descarga. Lo que sigue prohibido es exactamente lo que la regla protege: SQL nuestro contra
 sus tablas y cualquier cambio de schema.
 
-**El segundo y último punto que escribe (2026-09-03):** `modules/cherry/logic/merge.py`, la
+**El segundo punto que escribe (2026-09-03):** `modules/cherry/logic/merge.py`, la
 fusión de proyectos repetidos. Escribe más que ningún otro —mueve archivos entre carpetas, borra
 los repetidos si se le pide, y deja un perfil menos en `index.db`— pero por la misma puerta:
 `catalog.migrate_unique_files`, `index.merge_profiles` y `dedup.handle_orphans`, todas del motor.
@@ -192,6 +195,29 @@ disco ni el catálogo de lo ya descargado.
 escribe por su cuenta, delega en `profile_writes.add_url`.
 
 Esos tres archivos son los únicos de Panopticon que escriben ahí.
+
+### Mantenimiento con una biblioteca Native indexada
+
+El motor mantiene archivos y catálogos Cherry; no reconcilia por sí solo los IDs
+centrales. Al llamar a `archives.process_project`, usar `maintenance_before_apply`
+y `maintenance_move_file` con revisión vigente, SHA/identidad física, diario
+durable y servicio Native. Los callbacks son
+opcionales: el CLI batch genérico no los conecta. Reindexar después no repara
+renombrados ni evita atribuir un contenido nuevo a una identidad anterior.
+Conservar IDs, curación e historial; ante contenido distinto, mantener la versión
+anterior offline y admitir una identidad independiente.
+
+La compactación abarca raíz y carpetas administradas inmediatas. Los nombres del
+artista en carpetas curadas/manuales reservan sus números sin entrar en la
+deduplicación ni moverse. No aplicar planes históricos ni purgar sus diarios.
+
+Una purga manual autorizada de comprimidos ya extraídos exige el manifiesto
+completo ligado al SHA del paquete y todos los SHA/tamaños de sus miembros
+catalogados. Las retiradas posteriores cuentan como historial y no se restauran
+por inferencia (David, 2026-11-19). Registrar miembros nuevos antes de borrar;
+conservar catálogo, recibos y evidencia de la eliminación por handle verificado.
+El registro del ZIP por sí solo no acredita sus miembros. Los paquetes cifrados
+sin manifiesto comprobable se conservan.
 
 La fusión está oficializada; el trabajo de producto pendiente está en `TASKS.md` y las
 decisiones cerradas en `CHERRY_FUSION_DESIGN.md`.

@@ -198,6 +198,11 @@ the project root; other cataloged files move to `Comprimidos/`, `Proyectos/`, `V
 `Audio/`, `Documentos/` or `Otros/`. ZIP/RAR files in `Comprimidos/` are extracted and deduplicated
 by SHA-256, using Cherry's existing numbering and catalog.
 
+Maintenance compacts numbered files only in the project root and its immediate
+routed folders. Files in `picked/`, `discarded/` and other manually managed
+subfolders stay in place. Matching artist filenames there reserve their numbers
+during compaction.
+
 An archive is deleted only after every extracted file is verified. Its download
 record and `.cherry-archives/` manifest remain, preventing a new download. Keep that
 folder alongside `catalog.db`. Failed, password-protected or split archives stay
