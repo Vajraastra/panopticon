@@ -1279,6 +1279,14 @@ incomplete review; it never represents that prefix as a complete inventory.
 Previews use the shared bounded asynchronous decoder, and closure waits for
 actual worker completion without GUI joins. Receipts are historical acknowledgments;
 filesystem publication and SQLite remain separate, journaled operations.
+
+Pickler accepts one verified active identity even when older offline identities
+share its path. If `transfer_source_digest_changed` appears, the file's SHA-256
+differs from the library's recorded source version and the transfer stops before
+publication. Review and reconcile the current content while retaining earlier IDs
+and curation offline, then retry from a fresh selection. The error alone does not
+identify which tool caused the disagreement or when it began.
+
 Portable Cherry catalogs/receipts are never rewritten or removed. Live Windows
 and Cherry validation remains open.
 
