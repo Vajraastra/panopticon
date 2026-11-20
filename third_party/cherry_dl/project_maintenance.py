@@ -19,11 +19,12 @@ from collections import defaultdict
 from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable
 
 from .maintenance_progress import ProgressReporter
 from . import catalog
-from .file_routing import COUNTER_NAMESPACES, LAYOUT_VERSION, route
+from .downloads import build_filename
+from .file_routing import COUNTER_NAMESPACES, LAYOUT_VERSION, ROUTES, route, routed_name
 
 STATE_DIR = ".cherry-maintenance"
 PLAN_NAME = "plan.json"
@@ -77,9 +78,13 @@ async def _physical_files(folder: Path, progress: ProgressReporter) -> list[Path
     progress("inventory")
     def fail(error):
         raise error
+    managed = {spec.folder for spec in ROUTES if spec.folder}
     for root, dirs, names in os.walk(folder, followlinks=False, onerror=fail):
-        dirs[:] = [name for name in dirs if not name.startswith(".cherry-")
-                   and not (Path(root) / name).is_symlink()]
+        # Pickler/curation and manually managed subtrees are not Cherry output.
+        dirs[:] = ([name for name in dirs if name in managed
+                    and not (Path(root) / name).is_symlink()
+                    and not (Path(root) / name).is_junction()]
+                   if Path(root) == folder else [])
         for name in names:
             path = Path(root) / name
             visited += 1
@@ -91,6 +96,39 @@ async def _physical_files(folder: Path, progress: ProgressReporter) -> list[Path
         await asyncio.sleep(0)
     progress("inventory", visited, visited)
     return sorted(files, key=lambda item: item.relative_to(folder).as_posix().casefold())
+
+
+async def _reserved_numbers(
+    folder: Path, artist: str, layout_v2: bool, progress: ProgressReporter,
+) -> dict[str, set[int]]:
+    """Excluded named copies keep their numbers, without becoming dedup inputs."""
+    reserved: dict[str, set[int]] = defaultdict(set)
+    managed = {spec.folder for spec in ROUTES if spec.folder}
+    visited = 0
+    def fail(error):
+        raise error
+    for root, dirs, names in os.walk(folder, followlinks=False, onerror=fail):
+        dirs[:] = [name for name in dirs if not name.startswith('.cherry-')
+                   and not (Path(root) / name).is_symlink()
+                   and not (Path(root) / name).is_junction()]
+        relative = Path(root).relative_to(folder)
+        if relative == Path('.') or (len(relative.parts) == 1 and relative.name in managed):
+            continue
+        for name in names:
+            visited += 1
+            number = _number(name)
+            if number and name.casefold() in {
+                build_filename(artist, number, name).casefold(),
+                routed_name(artist, number, name).casefold(),
+            }:
+                path = Path(root) / name
+                if not path.is_symlink() and path.is_file():
+                    reserved[route(name).key if layout_v2 else 'legacy'].add(number)
+            if visited % 128 == 0:
+                progress('inventory', visited)
+                await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    return reserved
 
 
 async def _hash(path: Path) -> str:
@@ -242,15 +280,24 @@ async def plan_project(
     ) >= LAYOUT_VERSION
     counters = ({name: 0 for name in COUNTER_NAMESPACES}
                 if layout_v2 else {"legacy": 0})
+    reserved = await _reserved_numbers(folder, artist, layout_v2, progress)
+    for key, numbers in reserved.items():
+        counters[key] = max(numbers)
     by_route: dict[str, list[dict]] = defaultdict(list)
     for item in keepers:
         by_route[route(item["old"]).key if layout_v2 else "legacy"].append(item)
     for key, items in by_route.items():
         items.sort(key=lambda item: (item["counter"], item["old"].casefold()))
-        for counter, item in enumerate(items, 1):
+        counter = 0
+        for item in items:
+            counter += 1
+            # A copied selection may share its original's existing number.
+            # Keep that binding; never reuse a selected number for another file.
+            while counter in reserved.get(key, ()) and counter != item["counter"]:
+                counter += 1
             item["new"] = _renumber(item["old"], counter)
             item["counter"] = counter
-        counters[key] = len(items)
+        counters[key] = max(counters[key], counter)
 
     occupied = {
         path.relative_to(folder).as_posix().casefold(): path
@@ -278,11 +325,17 @@ async def plan_project(
         "files": keepers,
         "duplicates": duplicates,
         "counters": counters,
+        "reserved_counters": {key: sorted(values) for key, values in reserved.items()},
         "errors": sorted(set(errors)),
     }
 
 
-async def apply_plan(plan: dict, *, progress: ProgressReporter | None = None) -> dict:
+async def apply_plan(
+    plan: dict,
+    *,
+    progress: ProgressReporter | None = None,
+    move_file: Callable[[Path, Path, dict], Awaitable[bool]] | None = None,
+) -> dict:
     """Aplica o reanuda un plan persistido, verificándolo antes de borrar."""
     progress = progress or ProgressReporter()
     if plan.get("errors"):
@@ -303,6 +356,7 @@ async def apply_plan(plan: dict, *, progress: ProgressReporter | None = None) ->
         plan["status"] = "completed"
         _write(plan_path, plan)
         return plan
+    resuming = plan.get("status") == "applying"
     plan["status"] = "applying"
     _write(plan_path, plan)
 
@@ -325,25 +379,37 @@ async def apply_plan(plan: dict, *, progress: ProgressReporter | None = None) ->
     progress("deduplicate", len(plan["duplicates"]), len(plan["duplicates"]))
     renamed = [item for item in plan["files"] if item["old"] != item["new"]]
     progress("stage", 0, len(renamed))
-    for position, item in enumerate(renamed):
-        progress("stage", position, len(renamed), item["new"])
-        if position % 128 == 0:
-            await asyncio.sleep(0)
-        source = _inside(folder, item["old"])
-        temporary = stage / f"{item['hash']}{Path(item['old']).suffix}"
-        target = _inside(folder, item["new"])
-        if target.is_file():
-            if temporary.exists() or await _hash(target) != item["hash"]:
-                raise FileExistsError(f"Estado ambiguo: {item['old']}")
-            continue
-        if temporary.is_file():
-            if await _hash(temporary) != item["hash"]:
-                raise ValueError(f"Staging dañado: {temporary.name}")
-            continue
-        if source.is_file():
-            source.replace(temporary)
-        else:
-            raise FileNotFoundError(item["old"])
+    if not plan.get("staging_complete"):
+        movable = {os.path.normcase(str(_inside(folder, item["old"]))) for item in renamed}
+        # Validate the complete set first. Targets occupied by another planned
+        # source are normal; a separate publication phase vacates them all.
+        for item in renamed:
+            source = _inside(folder, item["old"])
+            temporary = stage / f"{item['hash']}{Path(item['old']).suffix}"
+            target = _inside(folder, item["new"])
+            if temporary.exists():
+                if not temporary.is_file() or await _hash(temporary) != item["hash"]:
+                    raise ValueError(f"Staging dañado: {temporary.name}")
+                if source.exists():
+                    raise FileExistsError(f"Origen reaparecido: {item['old']}")
+            elif not source.is_file():
+                raise FileNotFoundError(item["old"])
+            if target.exists() and os.path.normcase(str(target)) not in movable:
+                raise FileExistsError(f"Destino ocupado: {item['new']}")
+        for position, item in enumerate(renamed):
+            progress("stage", position, len(renamed), item["new"])
+            if position % 128 == 0:
+                await asyncio.sleep(0)
+            source = _inside(folder, item["old"])
+            temporary = stage / f"{item['hash']}{Path(item['old']).suffix}"
+            if temporary.is_file():
+                continue
+            if move_file is None or not await move_file(source, temporary, item):
+                source.rename(temporary)
+        # This one durable boundary distinguishes old sources from targets
+        # already published after a cancellation/crash, without per-file writes.
+        plan["staging_complete"] = True
+        _write(plan_path, plan)
 
     progress("stage", len(renamed), len(renamed))
     progress("rename", 0, len(renamed))
@@ -354,10 +420,15 @@ async def apply_plan(plan: dict, *, progress: ProgressReporter | None = None) ->
         temporary = stage / f"{item['hash']}{Path(item['old']).suffix}"
         target = _inside(folder, item["new"])
         if temporary.is_file():
+            if resuming and await _hash(temporary) != item["hash"]:
+                raise ValueError(f"Staging dañado: {temporary.name}")
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
                 raise FileExistsError(item["new"])
-            temporary.replace(target)
+            if move_file is None or not await move_file(temporary, target, item):
+                temporary.rename(target)
+        elif not target.is_file() or await _hash(target) != item["hash"]:
+            raise ValueError(f"Destino pendiente o modificado: {item['new']}")
 
     progress("rename", len(renamed), len(renamed))
     progress("catalog_write")
@@ -399,6 +470,8 @@ async def maintain_project(
     apply: bool = True,
     emit: Callable[[str], None] = lambda _: None,
     progress: ProgressReporter | None = None,
+    move_file: Callable[[Path, Path, dict], Awaitable[bool]] | None = None,
+    before_apply: Callable[[dict], Awaitable[None]] | None = None,
 ) -> tuple[MaintenanceResult, dict]:
     """Planea y opcionalmente aplica la auditoría/compactación del perfil."""
     progress = progress or ProgressReporter()
@@ -407,13 +480,15 @@ async def maintain_project(
     if pending.is_file():
         saved = json.loads(pending.read_text(encoding="utf-8"))
         if saved.get("status") != "completed":
-            plan = await apply_plan(saved, progress=progress) if apply else saved
+            plan = saved
         else:
             plan = await plan_project(folder, artist, force_audit=force_audit, emit=emit, progress=progress)
     else:
         plan = await plan_project(folder, artist, force_audit=force_audit, emit=emit, progress=progress)
     if apply and plan.get("status") != "completed":
-        plan = await apply_plan(plan, progress=progress)
+        if before_apply is not None:
+            await before_apply(plan)
+        plan = await apply_plan(plan, progress=progress, move_file=move_file)
     result = MaintenanceResult(
         audited=(int(plan.get("reviewed") or 0) if plan.get("audit_version")
                  else int(plan.get("hashed") or 0)),

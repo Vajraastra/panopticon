@@ -252,6 +252,8 @@ async def process_project(
     *,
     force_audit: bool = False,
     progress: ProgressReporter | None = None,
+    maintenance_move_file=None,
+    maintenance_before_apply=None,
 ):
     """Organiza, extrae, deduplica por hash y compacta un perfil.
 
@@ -303,6 +305,7 @@ async def process_project(
         from .project_maintenance import maintain_project
         maintenance, _ = await maintain_project(
             folder, artist, force_audit=force_audit, emit=emit, progress=progress,
+            move_file=maintenance_move_file, before_apply=maintenance_before_apply,
         )
         result.audited += maintenance.audited
         result.duplicates_removed += maintenance.duplicates_removed

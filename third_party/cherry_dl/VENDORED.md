@@ -28,6 +28,28 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Mantenimiento: staging completo y alcance administrado (2026-11-19)
+
+La compactación separa el traslado de todos los originales al staging de la
+publicación de sus nombres finales; un destino ocupado por otro original del
+plan no es un conflicto externo. Una frontera durable permite reanudar ambas
+fases sin sobrescribir destinos ni confundir archivos reaparecidos con originales.
+El inventario incluye sólo la raíz y las carpetas inmediatas del layout de
+`file_routing`; no compacta `picked`, `discarded`, repositorios externos ni
+subcarpetas manuales. Un callback opcional de movimiento permite al llamador
+conservar las identidades Native durante ambos traslados de cada archivo.
+Los archivos físicos excluidos con nombre del mismo artista reservan sus
+números por espacio de contador (global en layout legacy), sin entrar en la
+deduplicación ni moverse. Se saltan esos huecos al compactar y el contador
+conserva el máximo reservado; una selección copiada puede conservar el número
+que su original ya ocupa. Así no se reutilizan los números de imágenes curadas
+ni se renumera toda la raíz por haber trasladado selecciones fuera de ella.
+Otro callback valida el plan vigente justo antes de aplicarlo, también al
+reanudar un plan pendiente, para que el llamador conserve evidencia y rechace
+conflictos antes de los cambios físicos.
+Pruebas con swap, huecos, interrupciones y destinos externos en
+`scripts/cherry_maintenance_progress_selftest.py`.
+
 ### Pawchive: nodos de archivo y redirecciones (2026-11-14)
 
 El listado de publicaciones anuncia `server` por archivo y rutas de la forma

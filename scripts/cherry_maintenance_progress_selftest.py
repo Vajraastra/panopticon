@@ -132,6 +132,193 @@ class MaintenanceTests(unittest.IsolatedAsyncioTestCase):
             await maintenance.maintain_project(self.folder, 'Test', progress=ProgressReporter(cancel))
         self.assertEqual(sorted(p.name for p in self.folder.iterdir()), before)
 
+    async def test_swap_stages_all_sources_before_publishing(self):
+        plan = await maintenance.plan_project(self.folder, 'Test')
+        plan['files'][0]['new'], plan['files'][1]['new'] = (
+            plan['files'][1]['old'], plan['files'][0]['old'])
+        expected = {item['new']: (self.folder / item['old']).read_bytes()
+                    for item in plan['files']}
+        await maintenance.apply_plan(plan)
+        self.assertEqual({name: (self.folder / name).read_bytes() for name in expected}, expected)
+
+    async def test_gaps_do_not_depend_on_plan_order(self):
+        (self.folder / self.files[1]['old']).unlink()
+        plan = await maintenance.plan_project(self.folder, 'Test')
+        expected = {item['new']: (self.folder / item['old']).read_bytes()
+                    for item in plan['files']}
+        plan['files'].reverse()
+        await maintenance.apply_plan(plan)
+        self.assertEqual({name: (self.folder / name).read_bytes() for name in expected}, expected)
+
+    async def test_only_managed_layout_files_are_compacted(self):
+        protected = {}
+        for relative in ('picked/Test_00000.png', 'discarded/Test_00008.png',
+                         'mega/Test_00009.png', 'manual/Test_00010.png',
+                         'Proyectos/manual/Test_00011.psd'):
+            path = self.folder / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'curated-copy')
+            protected[path] = (path.read_bytes(), path.stat().st_mtime_ns)
+        managed = self.folder / 'Proyectos/Design_00009.psd'
+        managed.write_bytes(b'managed-project')
+        plan = await maintenance.plan_project(self.folder, 'Test')
+        self.assertEqual({item['old'] for item in plan['files']},
+                         {item['old'] for item in self.files} | {'Proyectos/Design_00009.psd'})
+        self.assertFalse(plan['duplicates'])
+        await maintenance.apply_plan(plan)
+        self.assertEqual({path: (path.read_bytes(), path.stat().st_mtime_ns)
+                          for path in protected}, protected)
+
+    async def test_picked_gap_is_reserved_and_repeat_stays_unchanged(self):
+        (self.folder / self.files[1]['old']).unlink()
+        (self.folder / self.files[3]['old']).unlink()
+        selected = self.folder / 'picked/Test_00002.png'
+        selected.parent.mkdir()
+        selected.write_bytes(b'curated-selected-image')
+        before = (selected.read_bytes(), selected.stat().st_mtime_ns)
+        result, plan = await maintenance.maintain_project(self.folder, 'Test')
+        self.assertEqual(result.compacted, 0)
+        self.assertEqual(plan['counters'], {'legacy': 3})
+        self.assertEqual(plan['reserved_counters'], {'legacy': [2]})
+        self.assertEqual({item['new'] for item in plan['files']}, {'Test_00001.png', 'Test_00003.png'})
+        self.assertFalse(plan['duplicates'])
+        repeated, _ = await maintenance.maintain_project(self.folder, 'Test')
+        self.assertEqual(repeated.compacted, 0)
+        self.assertEqual((selected.read_bytes(), selected.stat().st_mtime_ns), before)
+        self.assertEqual(await catalog.next_counter(self.folder), 4)
+
+    async def test_all_excluded_same_artist_copies_reserve_only_their_numbers(self):
+        for relative in ('discarded/nested/Test_00020.png', 'mega/Test_00008.png',
+                         'Proyectos/manual/Test_00009.psd', 'manual/Other_00002.png'):
+            path = self.folder / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'protected-file')
+        _, plan = await maintenance.maintain_project(self.folder, 'Test')
+        self.assertEqual(plan['reserved_counters'], {'legacy': [8, 9, 20]})
+        self.assertEqual(plan['counters'], {'legacy': 20})
+        self.assertEqual(await catalog.next_counter(self.folder), 21)
+
+    async def test_layout_namespaces_reserve_selected_gaps_independently(self):
+        await catalog.set_meta_int(self.folder, 'layout_version', 2)
+        (self.folder / self.files[1]['old']).unlink()
+        for relative in ('picked/Test_00002.png', 'picked/pro-Test-00002.psd',
+                         'discarded/doc-Test-00009.pdf', 'Proyectos/pro-Test-00001.psd',
+                         'Proyectos/pro-Test-00003.psd'):
+            path = self.folder / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(relative.encode())
+        result, plan = await maintenance.maintain_project(self.folder, 'Test')
+        self.assertEqual(result.compacted, 0)
+        self.assertEqual(plan['reserved_counters'], {'visual': [2], 'project': [2], 'document': [9]})
+        self.assertEqual((plan['counters']['visual'], plan['counters']['project'],
+                          plan['counters']['document'], plan['counters']['audio']), (4, 3, 9, 0))
+        repeated, _ = await maintenance.maintain_project(self.folder, 'Test')
+        self.assertEqual(repeated.compacted, 0)
+
+    async def test_copied_selection_retains_existing_original_number(self):
+        picked = self.folder / 'picked'
+        picked.mkdir()
+        (picked / self.files[1]['old']).write_bytes((self.folder / self.files[1]['old']).read_bytes())
+        result, plan = await maintenance.maintain_project(self.folder, 'Test')
+        self.assertEqual(result.compacted, 0)
+        self.assertFalse(plan['duplicates'])
+        self.assertEqual(plan['counters'], {'legacy': 4})
+
+    async def test_external_target_aborts_without_overwrite(self):
+        plan = await maintenance.plan_project(self.folder, 'Test')
+        plan['files'][0]['new'] = 'External_00009.png'
+        external = self.folder / 'External_00009.png'
+        external.write_bytes(b'external-edit')
+        with self.assertRaises(FileExistsError):
+            await maintenance.apply_plan(plan)
+        self.assertEqual(external.read_bytes(), b'external-edit')
+        for item in self.files:
+            self.assertTrue((self.folder / item['old']).is_file())
+
+    async def test_stage_and_publish_interruptions_resume(self):
+        for phase in ('stage', 'rename'):
+            with self.subTest(phase=phase):
+                plan = await maintenance.plan_project(self.folder, 'Test')
+                plan['files'][0]['new'], plan['files'][1]['new'] = (
+                    plan['files'][1]['old'], plan['files'][0]['old'])
+                expected = {item['new']: (self.folder / item['old']).read_bytes()
+                            for item in plan['files']}
+                def cancel(event):
+                    if event.phase == phase and event.done == 1:
+                        raise asyncio.CancelledError()
+                with patch('third_party.cherry_dl.maintenance_progress.monotonic', side_effect=range(1000)):
+                    with self.assertRaises(asyncio.CancelledError):
+                        await maintenance.apply_plan(plan, progress=ProgressReporter(cancel))
+                result, resumed = await maintenance.maintain_project(self.folder, 'Test')
+                self.assertFalse(result.errors)
+                self.assertEqual(resumed['status'], 'completed')
+                self.assertEqual({name: (self.folder / name).read_bytes()
+                                  for name in expected}, expected)
+
+    async def test_external_source_after_partial_staging_is_preserved(self):
+        plan = await maintenance.plan_project(self.folder, 'Test')
+        plan['files'][0]['new'], plan['files'][1]['new'] = (
+            plan['files'][1]['old'], plan['files'][0]['old'])
+        def cancel(event):
+            if event.phase == 'stage' and event.done == 1:
+                raise asyncio.CancelledError()
+        with patch('third_party.cherry_dl.maintenance_progress.monotonic', side_effect=range(1000)):
+            with self.assertRaises(asyncio.CancelledError):
+                await maintenance.apply_plan(plan, progress=ProgressReporter(cancel))
+        source = self.folder / plan['files'][0]['old']
+        source.write_bytes(b'external-replacement')
+        with self.assertRaises(FileExistsError):
+            await maintenance.maintain_project(self.folder, 'Test')
+        self.assertEqual(source.read_bytes(), b'external-replacement')
+
+    async def test_move_callback_covers_both_phases_and_fallback(self):
+        (self.folder / self.files[1]['old']).unlink()
+        calls = []
+        async def move(source, target, item):
+            calls.append((source, target, source.stat().st_ino))
+            if len(calls) % 2:
+                source.rename(target)
+                self.assertEqual(target.stat().st_ino, calls[-1][2])
+                return True
+            return False
+        result, plan = await maintenance.maintain_project(self.folder, 'Test', move_file=move)
+        self.assertFalse(result.errors)
+        self.assertEqual(plan['status'], 'completed')
+        self.assertEqual(len(calls), 4)
+        stage = self.folder.resolve() / maintenance.STATE_DIR / 'stage'
+        self.assertTrue(all(target.parent == stage for _, target, _ in calls[:2]))
+        self.assertTrue(all(source.parent == stage for source, _, _ in calls[2:]))
+
+    async def test_before_apply_runs_once_before_moves(self):
+        (self.folder / self.files[1]['old']).unlink()
+        events = []
+        async def prepare(plan):
+            self.assertEqual(plan['status'], 'planned')
+            self.assertFalse((self.folder / maintenance.STATE_DIR).exists())
+            events.append('prepare')
+        async def move(source, target, item):
+            self.assertTrue(events and events[0] == 'prepare')
+            events.append('move')
+            return False
+        await maintenance.maintain_project(self.folder, 'Test', before_apply=prepare, move_file=move)
+        self.assertEqual(events, ['prepare', 'move', 'move', 'move', 'move'])
+
+    async def test_before_apply_failure_does_not_apply_saved_or_current_plan(self):
+        plan = await maintenance.plan_project(self.folder, 'Test')
+        plan['files'][0]['new'] = 'Different_00001.png'
+        async def reject(current):
+            self.assertEqual(current['status'], 'planned')
+            raise ValueError('preview_requires_review')
+        for saved in (False, True):
+            with self.subTest(saved=saved):
+                if saved:
+                    maintenance._write(self.folder / maintenance.STATE_DIR / maintenance.PLAN_NAME, plan)
+                with self.assertRaisesRegex(ValueError, 'preview_requires_review'):
+                    await maintenance.maintain_project(self.folder, 'Test', before_apply=reject)
+                self.assertFalse((self.folder / 'Different_00001.png').exists())
+                for item in self.files:
+                    self.assertTrue((self.folder / item['old']).is_file())
+
     async def test_repeat_benchmark_2000(self):
         # Deliberately test SQL cost independently of disk traversal and hashing.
         items = [dict(hash=f'benchmark-{n}', new=f'Bench_{n:05d}.png', size=10, counter=n) for n in range(2000)]

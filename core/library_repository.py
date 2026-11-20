@@ -1022,6 +1022,14 @@ class LibraryRepository:
         from core.generation_history import commit
         return commit(self.conn, copy_id, update_fts=self._fts_sync_file, **kwargs)
 
+    def get_maintenance_copies(self, paths):
+        from core.library_maintenance import copies
+        return copies(self.conn, paths)
+
+    def commit_maintenance_relocation(self, values):
+        from core.library_maintenance import relocate
+        return relocate(self, values)
+
     def get_transfer_sources(self, paths):
         from core.library_transfers import sources
         return sources(self.conn, paths, self._normalize_path)
