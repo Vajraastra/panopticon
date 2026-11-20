@@ -83,6 +83,9 @@ class MainWindow(QMainWindow):
         from core.cherry_ingest import CherryIngestor
         self._cherry_ingestor = CherryIngestor(self.context['data_service'], self.event_bus, self)
         self.context['cherry_ingestor'] = self._cherry_ingestor
+        self._cherry_ingestor.review_required.connect(lambda folder, accepted, conflicts: self.statusBar().showMessage(
+            self.tr('cherry.ingest_review_required', '{conflicts} entries need review; {accepted} unaffected images indexed.').format(
+                conflicts=conflicts, accepted=accepted), 15000))
         self._cherry_ingestor.failed.connect(lambda error: self.statusBar().showMessage(
             self.tr('cherry.ingest_pending', 'Downloaded images await library indexing: {error}').format(error=error), 15000))
 

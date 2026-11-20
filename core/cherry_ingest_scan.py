@@ -47,11 +47,14 @@ def scope(service, folder, event):
     return None
 
 
-def reconcile(service, folder, event):
+def reconcile(service, folder, event, *, on_review=None):
     """Never remove/archive files or alter Cherry rows, even on a complete pass."""
     selected = scope(service, folder, event)
     if selected is None:
         return 0
+    from core.library_batch import commit_control
+    if commit_control(service, 'prepare_ingest_reviews', event) is not True:
+        raise RuntimeError('ingest_review_preparation_unconfirmed')
     watch, parent, initial = selected
     errors, count = [], 0
 
@@ -93,9 +96,14 @@ def reconcile(service, folder, event):
                         if (file.status != 'resolved' or file.kind != 'file' or
                                 not within(file.canonical, root.canonical)):
                             raise ValueError('cherry_ingest_file_requires_review')
-                    if register(WatchedService(service, watch), batch, event) is not True:
+                    watched = WatchedService(service, watch)
+                    if register(watched, batch, event) is not True:
                         raise RuntimeError('cherry_ingest_unconfirmed_batch')
-                    count += len(batch)
+                    from core.ingest_review import review_notice
+                    notice = review_notice(service.read('get_ingest_review_receipt', watched.operation_id))
+                    count += notice['accepted']
+                    if notice['requires_review'] and on_review is not None:
+                        on_review(folder, notice['accepted'], notice['conflicts'])
                 if not source.complete:
                     onerror(source.issues[0] if source.issues else source.status.value)
         if not same_directory(initial, directory(folder, event)):

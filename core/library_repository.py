@@ -19,6 +19,13 @@ class LibraryRepository:
         self._path_coverage_cache = path_coverage_cache
         self._path_ingest_transition = None
         self._folder_scope_context = None
+        self._maintenance_writer = False
+        self._maintenance_owner_nonce = None
+        self._maintenance_bound_roots = set()
+        self._maintenance_bound_versions = {}
+        self._maintenance_context_lock = None
+        self._maintenance_pending_fences = None
+        self._maintenance_pending_versions = None
         self._derived_paths = None
         if cache_derived_paths:
             from core.derived_paths import DerivedPaths
@@ -194,6 +201,10 @@ class LibraryRepository:
     def _normalize_path(self, path):
         return os.path.normpath(path).replace('\\', '/')
 
+    def get_source_names_page(self, roots, **kwargs):
+        from core.library_source_names import page
+        return page(self.conn, roots, **kwargs)
+
     def get_folder_scope_metadata(self, **kwargs):
         from core.folder_queries import metadata
         return metadata(self, **kwargs)
@@ -216,7 +227,12 @@ class LibraryRepository:
 
     # --- Phase 1: Robust Registration ---
 
-    def register_files_minimal(self, files_data):
+    def register_files_minimal(self, files_data, operation_id=None):
+        from core.ingest_review import dispatch
+        return dispatch(self, files_data, observed=False, producer='inventory', operation_id=operation_id,
+                        apply=lambda accepted: self._register_files_minimal_storage(accepted))
+
+    def _register_files_minimal_storage(self, files_data):
         """
         Phase 1: Fast Bulk Insert of basic file info.
         files_data: list of dicts {'path', 'filename', 'size', 'created'}
@@ -254,7 +270,7 @@ class LibraryRepository:
         updates = []
         for path, f in observations:
             # Inventario no verifica bytes ni identifica la versión que está viendo.
-            if path in historical:
+            if path in historical and path not in current:
                 continue
             old = current.get(path)
             values = (f['filename'], f['size'], f['created'],
@@ -337,9 +353,9 @@ class LibraryRepository:
 
     # --- Discovery / Existence ---
 
-    def register_files_observed(self, records):
+    def register_files_observed(self, records, operation_id=None):
         from core.library_path_ingest import write
-        return write(self, records)
+        return write(self, records, operation_id=operation_id)
 
     def register_external_copy_observed(self, records, **metadata):
         from core.external_registration import write
@@ -426,9 +442,21 @@ class LibraryRepository:
 
     # --- Standard Queries (Gallery/Search) ---
 
-    def register_catalog_files_observed(self, records, watched_folder):
+    def register_catalog_files_observed(self, records, watched_folder, operation_id=None):
         from core.cherry_ingest_queue import register_catalog_files
-        return register_catalog_files(self, records, watched_folder)
+        return register_catalog_files(self, records, watched_folder, operation_id=operation_id)
+
+    def prepare_ingest_reviews(self):
+        from core.ingest_review import prepare
+        return prepare(self)
+
+    def get_ingest_review_receipt(self, operation_id):
+        from core.ingest_review import receipt
+        return receipt(self.conn, operation_id)
+
+    def get_ingest_review_status(self, **kwargs):
+        from core.ingest_review import status
+        return status(self.conn, **kwargs)
 
     def get_watched_folders(self):
         cursor = self.conn.cursor()
@@ -1177,3 +1205,104 @@ class LibraryRepository:
     def get_copy_reconciliation_receipt(self, operation_id):
         from core.library_reconciliations import receipt
         return receipt(self.conn, operation_id)
+
+
+    def prepare_maintenance_operations(self):
+        from core.library_maintenance_operations import prepare
+        return prepare(self)
+
+    def finish_maintenance_state(self, committed):
+        from core.library_maintenance_operations import finish_state
+        finish_state(self, committed)
+
+    def maintenance_ack_relocations(self, *args, **kwargs):
+        from core.library_maintenance_operations import write_command
+        return write_command('maintenance_ack_relocations')(self, *args, **kwargs)
+
+    def maintenance_activate(self, *args, **kwargs):
+        from core.library_maintenance_operations import write_command
+        return write_command('maintenance_activate')(self, *args, **kwargs)
+
+    def maintenance_admit_descendants(self, *args, **kwargs):
+        from core.library_maintenance_operations import write_command
+        return write_command('maintenance_admit_descendants')(self, *args, **kwargs)
+
+    def maintenance_bind_scope_owner(self, *args, **kwargs):
+        from core.library_maintenance_operations import write_command
+        return write_command('maintenance_bind_scope_owner')(self, *args, **kwargs)
+
+    def maintenance_cancel_ready(self, *args, **kwargs):
+        from core.library_maintenance_operations import write_command
+        return write_command('maintenance_cancel_ready')(self, *args, **kwargs)
+
+    def maintenance_complete(self, *args, **kwargs):
+        from core.library_maintenance_operations import write_command
+        return write_command('maintenance_complete')(self, *args, **kwargs)
+
+    def maintenance_intent(self, *args, **kwargs):
+        from core.library_maintenance_operations import write_command
+        return write_command('maintenance_intent')(self, *args, **kwargs)
+
+    def maintenance_mark_review(self, *args, **kwargs):
+        from core.library_maintenance_operations import write_command
+        return write_command('maintenance_mark_review')(self, *args, **kwargs)
+
+    def maintenance_plan_batch(self, *args, **kwargs):
+        from core.library_maintenance_operations import write_command
+        return write_command('maintenance_plan_batch')(self, *args, **kwargs)
+
+    def maintenance_prepare_admissions(self, *args, **kwargs):
+        from core.library_maintenance_operations import write_command
+        return write_command('maintenance_prepare_admissions')(self, *args, **kwargs)
+
+    def maintenance_reserve(self, *args, **kwargs):
+        from core.library_maintenance_operations import write_command
+        return write_command('maintenance_reserve')(self, *args, **kwargs)
+
+    def maintenance_resume(self, *args, **kwargs):
+        from core.library_maintenance_operations import write_command
+        return write_command('maintenance_resume')(self, *args, **kwargs)
+
+    def maintenance_unbind_scope_owner(self, *args, **kwargs):
+        from core.library_maintenance_operations import write_command
+        return write_command('maintenance_unbind_scope_owner')(self, *args, **kwargs)
+
+    def maintenance_verify_batch(self, *args, **kwargs):
+        from core.library_maintenance_operations import write_command
+        return write_command('maintenance_verify_batch')(self, *args, **kwargs)
+
+    def get_maintenance_status(self, *args, **kwargs):
+        from core.library_maintenance_operations import status
+        return status(self.conn)
+
+    def get_maintenance_operation(self, *args, **kwargs):
+        from core.library_maintenance_operations import operation
+        return operation(self, *args, **kwargs)
+
+    def get_maintenance_step(self, *args, **kwargs):
+        from core.library_maintenance_operations import step
+        return step(self, *args, **kwargs)
+
+    def get_maintenance_steps(self, *args, **kwargs):
+        from core.library_maintenance_operations import steps
+        return steps(self, *args, **kwargs)
+
+    def get_maintenance_receipt(self, *args, **kwargs):
+        from core.library_maintenance_operations import receipt
+        return receipt(self, *args, **kwargs)
+
+    def get_maintenance_reservation_snapshot(self, *args, **kwargs):
+        from core.library_maintenance_operations import snapshot
+        return snapshot(self)
+
+    def get_maintenance_copy_states(self, *args, **kwargs):
+        from core.library_maintenance_operations import copy_states
+        return copy_states(self, *args, **kwargs)
+
+    def get_maintenance_scope_members(self, *args, **kwargs):
+        from core.library_maintenance_operations import scope_members
+        return scope_members(self, *args, **kwargs)
+
+    def get_maintenance_pending(self, root_identity):
+        from core.library_maintenance_operations import pending
+        return pending(self, root_identity)

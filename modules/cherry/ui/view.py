@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from pathlib import Path
+from threading import Event
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
@@ -100,6 +101,7 @@ class CherryView(QWidget):
     _archives_progress = Signal(str)
     _archive_batch_profile = Signal(int, int, int, str)
     _maintenance_progress = Signal(object)
+    _maintenance_recovery_ready = Signal(object)
     _load_failed    = Signal(str)
     image_set_ready = Signal(str, list)
 
@@ -111,7 +113,7 @@ class CherryView(QWidget):
 
         # El runtime lo inyecta el módulo (es suyo: lo para en `on_unload`).
         self._runtime = runtime or CherryRuntime()
-        self._bridge = DownloadBridge(self._runtime)
+        self._bridge = DownloadBridge(self._runtime, data_service=self.context.get("data_service"))
         self._queue = DownloadQueue(self._bridge)
 
         self._profiles: list[dict] = []
@@ -129,6 +131,9 @@ class CherryView(QWidget):
         self._maintenance_log_phase = None
         self._maintenance_busy = False
         self._maintenance_future = None
+        self._maintenance_cancel_event = None
+        self._maintenance_started_event = None
+        self._maintenance_generation = 0
         self._preparing_download = False
         self._send_targets = []
         self._send_worker = None
@@ -199,6 +204,7 @@ class CherryView(QWidget):
         self._archives_progress.connect(self._on_archives_progress)
         self._archive_batch_profile.connect(self._on_archive_batch_profile)
         self._maintenance_progress.connect(self._on_maintenance_progress)
+        self._maintenance_recovery_ready.connect(self._on_maintenance_recovery_ready)
         self._load_failed.connect(self._on_load_failed)
         self._bridge.auth_required.connect(self._on_auth_required)
         self._bridge.auth_aborted.connect(self._on_auth_aborted)
@@ -757,9 +763,12 @@ class CherryView(QWidget):
     def shutdown(self) -> None:
         """La llama el módulo al descargarse: para el loop y su hilo."""
         self._closing = True
+        if self._maintenance_cancel_event is not None:
+            self._maintenance_cancel_event.set()
         if self._send_worker is not None:
             self._send_worker.stop()
-        if self._maintenance_future is not None:
+        if (self._maintenance_future is not None and self._maintenance_started_event is not None
+                and self._maintenance_started_event.is_set()):
             self._maintenance_future.cancel()
         if self._queue.is_running:
             self._queue.cancel()
@@ -1323,6 +1332,9 @@ class CherryView(QWidget):
         if not self._runtime.start():
             return
         self._maintenance_busy = True
+        self._maintenance_cancel_event = Event()
+        self._maintenance_started_event = Event()
+        self._maintenance_generation += 1
         self._update_actions()
         self._btn_console.setChecked(True)
         folder = str(profile["folder_path"])
@@ -1331,7 +1343,8 @@ class CherryView(QWidget):
             "cherry.archives_start", "Organizing project: {folder}").format(folder=folder))
         try:
             self._maintenance_future = self._runtime.submit(self._archives_async(
-                folder, profile.get("display_name") or "artist"))
+                folder, profile.get("display_name") or "artist", self._maintenance_cancel_event,
+                self._maintenance_started_event))
         except Exception as exc:
             self._on_archives_finished(folder, None, str(exc))
 
@@ -1350,9 +1363,9 @@ class CherryView(QWidget):
             self.tr(
                 "cherry.archives_batch_body",
                 "{n} visible projects will be processed in table order. ZIP/RAR files "
-                "will be extracted, exact duplicates will keep the lowest number and "
-                "each file counter will be compacted. Every project keeps a recovery "
-                "plan and catalog backup. Continue?",
+                "will be extracted and retained. File counters will be compacted; "
+                "duplicate removal requires a separate review. Every project keeps "
+                "a recovery plan and catalog backup. Continue?",
             ).format(n=len(profiles)),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
@@ -1360,57 +1373,178 @@ class CherryView(QWidget):
         if answer != QMessageBox.StandardButton.Yes or not self._runtime.start():
             return
         self._maintenance_busy = True
+        self._maintenance_cancel_event = Event()
+        self._maintenance_started_event = Event()
+        self._maintenance_generation += 1
         self._on_active_profile_changed(profiles[0]["id"])
         self._update_actions()
         self._btn_console.setChecked(True)
         try:
             self._maintenance_future = self._runtime.submit(
-                self._archives_batch_async(profiles)
+                self._archives_batch_async(profiles, self._maintenance_cancel_event, self._maintenance_started_event)
             )
         except Exception as exc:
             self._on_archives_finished("", None, str(exc))
 
-    async def _archives_batch_async(self, profiles: list[dict]) -> None:
+    async def _archives_batch_async(self, profiles: list[dict], cancel_event=None, started_event=None) -> None:
+        if started_event is not None:
+            started_event.set()
         import asyncio
         from ..logic.archive_batch import MaintenanceBlocked, process_profiles
-        result, error = None, ""
+        result, error, recovery = None, "", None
+        cancel_event = cancel_event or Event()
+        generation = self._maintenance_generation
         try:
+            if cancel_event.is_set():
+                raise asyncio.CancelledError()
             result = await process_profiles(
                 profiles,
                 on_profile=self._archive_batch_profile.emit,
                 on_progress=self._maintenance_progress.emit,
                 data_service=self.context.get('data_service'),
+                cancel_event=cancel_event,
             )
         except MaintenanceBlocked as exc:
             error = self._maintenance_blocked_message(exc.reason)
+            recovery = self._review_maintenance_recovery(exc, cancel_event, generation)
         except asyncio.CancelledError:
-            error = self.tr("cherry.archives_cancelled", "Cancelled. Run the action again to resume.")
+            error = self.tr("cherry.archives_cancelled", "Cancelled. Pending maintenance requires a fresh review and confirmation.")
         except Exception as exc:
             error = str(exc)
         finally:
+            if cancel_event.is_set():
+                result = None
+                error = self.tr("cherry.archives_cancelled", "Cancelled. Pending maintenance requires a fresh review and confirmation.")
             self._archives_finished.emit("", result, error)
+            if recovery is not None and not cancel_event.is_set():
+                self._maintenance_recovery_ready.emit(recovery)
 
-    async def _archives_async(self, folder: str, artist: str) -> None:
+    async def _archives_async(self, folder: str, artist: str, cancel_event=None, started_event=None) -> None:
+        if started_event is not None:
+            started_event.set()
         import asyncio
         from ..logic.archive_batch import MaintenanceBlocked, process_unindexed_project
         from third_party.cherry_dl.maintenance_progress import ProgressReporter
-        result, error = None, ""
-        notify_folder = folder
+        result, error, recovery = None, "", None
+        cancel_event = cancel_event or Event()
+        generation = self._maintenance_generation
         try:
+            if cancel_event.is_set():
+                raise asyncio.CancelledError()
             result = await process_unindexed_project(
                 Path(folder), artist, progress=ProgressReporter(self._maintenance_progress.emit),
-                data_service=self.context.get('data_service'))
+                data_service=self.context.get('data_service'), cancel_event=cancel_event)
         except MaintenanceBlocked as exc:
             error = self._maintenance_blocked_message(exc.reason)
-            notify_folder = ""
+            recovery = self._review_maintenance_recovery(exc, cancel_event, generation)
         except asyncio.CancelledError:
-            error = self.tr("cherry.archives_cancelled", "Cancelled. Run the action again to resume.")
+            error = self.tr("cherry.archives_cancelled", "Cancelled. Pending maintenance requires a fresh review and confirmation.")
         except Exception as exc:
             error = str(exc)
         finally:
-            self._archives_finished.emit(notify_folder, result, error)
+            if cancel_event.is_set():
+                result = None
+                error = self.tr("cherry.archives_cancelled", "Cancelled. Pending maintenance requires a fresh review and confirmation.")
+            self._archives_finished.emit(folder if result is not None and not error else "", result, error)
+            if recovery is not None and not cancel_event.is_set():
+                self._maintenance_recovery_ready.emit(recovery)
+
+    def _review_maintenance_recovery(self, blocked, cancel_event, generation):
+        """Runtime-only: all SQL and physical revalidation finish before delivery."""
+        if (blocked.reason != 'recovery_required' or not blocked.operation_id
+                or cancel_event.is_set() or self._closing):
+            return None
+        import asyncio
+        from ..logic.native_maintenance import review_native_recovery
+        try:
+            service = self.context['data_service']
+            operation = service.read('get_maintenance_operation', blocked.operation_id)['operation']
+            if operation is None or operation['phase'] not in ('ready', 'active', 'review', 'complete'):
+                return None
+            folder = operation['root']
+            reviewed = review_native_recovery(folder, blocked.operation_id,
+                data_service=service, cancel_event=cancel_event)
+            if cancel_event.is_set() or self._closing:
+                return None
+            return dict(folder=folder, operation_id=blocked.operation_id,
+                review_token=reviewed['review_token'], counts=dict(reviewed['counts']), generation=generation)
+        except asyncio.CancelledError:
+            return None
+        except Exception:
+            log.exception('cherry: pending maintenance needs a fresh recovery review')
+            return None
+
+    def _maintenance_other_job_busy(self):
+        return (self._maintenance_busy or self._preparing_download or self._queue.is_running
+                or self._bridge.is_busy or self._archive_check_busy or self._send_worker is not None)
+
+    def _on_maintenance_recovery_ready(self, reviewed):
+        if (self._closing or self._maintenance_other_job_busy()
+                or reviewed['generation'] != self._maintenance_generation):
+            return
+        counts = reviewed['counts']
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(self.tr('tool.cherry.maintenance_recovery_title', 'Resume reviewed maintenance'))
+        box.setText(self.tr('tool.cherry.maintenance_recovery_body',
+            'Project: {folder}\nPending operation: {operation_id}\n\n'
+            'Current verification: {entries} entries, {remaining} remaining changes and '
+            '{admissions} new files. Archives to delete: {packages_deleted}.\n\n'
+            'Resume this operation after checking these files again?').format(
+                folder=reviewed['folder'], operation_id=reviewed['operation_id'], **counts))
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        box.button(QMessageBox.StandardButton.Yes).setToolTip(self.tr(
+            'tool.cherry.maintenance_recovery_continue_tip',
+            'Check this review again and resume only if the same files and operation still match.'))
+        box.button(QMessageBox.StandardButton.Cancel).setToolTip(self.tr(
+            'tool.cherry.maintenance_recovery_cancel_tip',
+            'Keep the pending operation and its recovery evidence without changing files.'))
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+        if (self._closing or self._maintenance_other_job_busy()
+                or reviewed['generation'] != self._maintenance_generation or not self._runtime.start()):
+            return
+        self._maintenance_cancel_event = Event()
+        self._maintenance_started_event = Event()
+        self._maintenance_generation += 1
+        self._maintenance_busy = True
+        self._update_actions()
+        self._btn_console.setChecked(True)
+        try:
+            self._maintenance_future = self._runtime.submit(
+                self._resume_maintenance_async(reviewed, self._maintenance_cancel_event, self._maintenance_started_event))
+        except Exception as exc:
+            self._on_archives_finished('', None, str(exc))
+
+    async def _resume_maintenance_async(self, reviewed, cancel_event, started_event=None):
+        if started_event is not None:
+            started_event.set()
+        import asyncio
+        from ..logic.native_maintenance import resume_native_recovery
+        result, error = None, ''
+        try:
+            if cancel_event.is_set():
+                raise asyncio.CancelledError()
+            report = await resume_native_recovery(reviewed['folder'], reviewed['operation_id'],
+                reviewed['review_token'], data_service=self.context['data_service'], cancel_event=cancel_event)
+            if (report.get('complete') is not True or report.get('operation_id') != reviewed['operation_id']):
+                raise ValueError('maintenance_recovery_not_confirmed')
+            result = dict(native_recovery=True, report=report)
+        except asyncio.CancelledError:
+            error = self.tr('cherry.archives_cancelled', 'Cancelled. Pending maintenance requires a fresh review and confirmation.')
+        except Exception as exc:
+            error = str(exc)
+        finally:
+            if cancel_event.is_set():
+                result = None
+                error = self.tr('cherry.archives_cancelled', 'Cancelled. Pending maintenance requires a fresh review and confirmation.')
+            self._archives_finished.emit(reviewed['folder'] if result is not None else '', result, error)
 
     def _maintenance_blocked_message(self, reason):
+        if reason == 'recovery_required':
+            return self.tr('tool.cherry.maintenance_recovery_required',
+                'This project has pending maintenance. Its current files must be reviewed before resuming.')
         if reason == 'indexed':
             return self.tr('tool.cherry.maintenance_native_blocked',
                 'This folder belongs to the library. Maintenance that preserves the library '
@@ -1470,8 +1604,16 @@ class CherryView(QWidget):
     def _on_archives_finished(self, folder: str, result, error: str) -> None:
         self._maintenance_busy = False
         self._maintenance_future = None
+        self._maintenance_cancel_event = None
+        self._maintenance_started_event = None
+        if self._closing:
+            return
         self._on_active_profile_changed(None)
-        if result is not None:
+        if isinstance(result, dict) and result.get('native_recovery'):
+            text = self.tr('tool.cherry.maintenance_recovery_done',
+                'The reviewed maintenance operation completed and the library was verified.')
+            self._panel.append_log(text, 'ok')
+        elif result is not None:
             text = self.tr(
                 "cherry.archives_done",
                 "Archives: {p} processed, {a} files added, {d} archive duplicates; "
@@ -1832,8 +1974,11 @@ class CherryView(QWidget):
         return {"ext_filter": ext_logic.effective(stored)}
 
     def _cancel(self) -> None:
+        if self._maintenance_cancel_event is not None:
+            self._maintenance_cancel_event.set()
         if self._maintenance_future is not None:
-            self._maintenance_future.cancel()
+            if self._maintenance_started_event is not None and self._maintenance_started_event.is_set():
+                self._maintenance_future.cancel()
             self._btn_cancel.setEnabled(False)
             self._panel.set_phase(self.tr("cherry.dl_cancelling", "Cancelling…"))
             return
@@ -1900,8 +2045,9 @@ class CherryView(QWidget):
                  a=getattr(totals, "awaiting_archive", 0))
         self._panel.set_phase(text)
         self._panel.append_log(text, "ok")
+        from .operation_errors import operation_error
         for name, message in totals.failed:
-            self._panel.append_log(f"✗ {name}: {message}", "error")
+            self._panel.append_log(f"✗ {name}: {operation_error(message, self.tr)}", "error")
         self._update_actions()
         # `last_checked` y los contadores por fuente cambiaron: la tabla ya no
         # dice la verdad.

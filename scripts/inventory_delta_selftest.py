@@ -31,10 +31,13 @@ class InventoryDelta(unittest.TestCase):
         self.repo = LibraryRepository(self.conn)
         self.repo.create_schema()
         self.repo.run_transformations()
+        if not self.conn.in_transaction:self.conn.execute('BEGIN IMMEDIATE')
+        self.repo.prepare_ingest_reviews()
         self.conn.commit()
 
     def register(self, batch):
         with self.conn:
+            if not self.conn.in_transaction:self.conn.execute('BEGIN IMMEDIATE')
             self.assertIs(self.repo.register_files_minimal(batch), True)
 
     def row(self, path='C:/fixture/a.png'):
@@ -47,7 +50,8 @@ class InventoryDelta(unittest.TestCase):
         sequence = self.conn.execute('SELECT * FROM sqlite_sequence').fetchall()
         trace = []
         self.conn.set_trace_callback(trace.append)
-        with patch.object(self.repo, '_fts_sync_file', wraps=self.repo._fts_sync_file) as sync:
+        with patch.object(self.repo, '_fts_sync_file', wraps=self.repo._fts_sync_file) as sync, \
+                patch('core.ingest_review.state', side_effect=AssertionError('noop must not read full curation')):
             self.register(batch)
         self.conn.set_trace_callback(None)
         self.assertEqual(self.conn.total_changes, before)
@@ -55,9 +59,11 @@ class InventoryDelta(unittest.TestCase):
         self.assertEqual(sync.call_count, 0)
         selects = [sql for sql in trace if sql.startswith('SELECT path,')]
         self.assertEqual(len(selects), 4)
+        gate_selects = [sql for sql in trace if sql.startswith('SELECT id,path,is_offline,file_size,')]
+        self.assertEqual(len(gate_selects), 4)  # One minimal read per 256 inputs.
         self.assertFalse(any(sql.lstrip().startswith(('INSERT', 'UPDATE', 'DELETE')) for sql in trace))
 
-    def test_non_searchable_changes_keep_identity_curation_and_fts(self):
+    def test_conflicting_version_keeps_entire_identity_curation_and_fts(self):
         self.register([observation(hash_original='original', origin_url='old', artist='old artist')])
         self.assertTrue(self.repo.edit_curation('C:/fixture/a.png', add_tags=['keep'], rating=5))
         self.assertTrue(self.repo.update_file_metadata('C:/fixture/a.png',
@@ -75,19 +81,20 @@ class InventoryDelta(unittest.TestCase):
         self.assertEqual(after[0], before[0])
         names = [c[1] for c in self.conn.execute('PRAGMA table_info(files)')]
         data = dict(zip(names, after))
-        self.assertEqual((data['file_size'], data['created_date']), (99, 3.5))
+        self.assertEqual(after, before)
+        self.assertEqual((data['file_size'], data['created_date']), (13, 1.25))
         self.assertEqual((data['hash_original'], data['hash_mod'], data['phash']),
                          ('original', 'current', 'perceptual'))
         self.assertEqual((data['rating'], data['meta_positive'], data['meta_model']),
                          (5, 'kept prompt', 'kept model'))
         self.assertEqual((data['origin_url'], data['origin_site'], data['artist']),
-                         ('new', 'patreon', 'new artist'))
+                         ('old', None, 'old artist'))
         self.assertEqual(sync.call_count, 0)
         self.assertEqual(self.conn.execute('SELECT * FROM files_fts').fetchall(), fts)
         self.assertEqual(self.conn.execute('SELECT * FROM file_tags').fetchall(), links)
         self.assertEqual(self.conn.execute('SELECT * FROM sqlite_sequence').fetchall(), sequence)
 
-    def test_repeated_existing_path_keeps_first_hash_and_latest_non_null_origin(self):
+    def test_repeated_existing_path_with_ambiguous_versions_keeps_prior_observation(self):
         self.register([observation()])
         before_id = self.repo.get_file_id('C:/fixture/a.png')
         sequence = self.conn.execute('SELECT * FROM sqlite_sequence').fetchall()
@@ -97,7 +104,8 @@ class InventoryDelta(unittest.TestCase):
                            observation(hash_original=None, artist='last artist', size=40)])
         self.assertEqual(sync.call_count, 0)
         self.assertEqual(self.conn.execute('SELECT id,hash_original,origin_url,artist,file_size FROM files').fetchone(),
-                         (before_id, 'first', 'url', 'last artist', 40))
+                         (before_id, None, None, None, 13))
+        self.assertEqual(self.repo.get_ingest_review_status()['open_count'], 3)
         self.assertEqual(self.conn.execute('SELECT * FROM sqlite_sequence').fetchall(), sequence)
 
     def test_new_and_renamed_only_sync_searchable_rows(self):
@@ -123,7 +131,7 @@ class InventoryDelta(unittest.TestCase):
     def test_missing_optional_values_do_not_erase_origin(self):
         self.register([observation(hash_original='first', origin_url='url', origin_site='site', artist='artist')])
         before = self.conn.total_changes
-        self.register([observation(hash_original='ignored', origin_url=None, origin_site=None, artist=None)])
+        self.register([observation(hash_original='first', origin_url=None, origin_site=None, artist=None)])
         self.assertEqual(self.conn.total_changes, before)
         self.assertEqual(self.conn.execute('SELECT hash_original,origin_url,origin_site,artist FROM files').fetchone(),
                          ('first', 'url', 'site', 'artist'))
@@ -135,26 +143,28 @@ class InventoryDelta(unittest.TestCase):
             before = self.conn.total_changes
             self.register([observation(hash_original='second')])
         self.assertEqual(sync.call_count, 0)
-        self.assertEqual(self.conn.total_changes, before)
+        self.assertGreater(self.conn.total_changes, before)  # Only durable review evidence.
+        self.assertEqual(self.repo.get_ingest_review_status()['open_count'], 1)
         self.assertEqual(self.conn.execute('SELECT hash_original FROM files').fetchone(), ('first',))
 
     def test_empty_values_remain_values_not_null(self):
         self.register([observation(hash_original='', origin_url='url')])
-        self.register([observation(hash_original='replacement', origin_url='')])
+        self.register([observation(hash_original='', origin_url='')])
         self.assertEqual(self.conn.execute('SELECT hash_original,origin_url FROM files').fetchone(), ('', ''))
         before = self.conn.total_changes
-        self.register([observation(hash_original='replacement', origin_url=None)])
+        self.register([observation(hash_original='', origin_url=None)])
         self.assertEqual(self.conn.total_changes, before)
 
-    def test_duplicate_normalized_paths_keep_order_and_sync_once(self):
+    def test_duplicate_normalized_paths_with_conflicting_hashes_are_not_coalesced(self):
         a = observation('C:/fixture/child/../a.png', hash_original='first', origin_url='first-url')
         b = observation('C:/fixture/a.png', hash_original='second', origin_url=None, size=25)
         c = observation('C:/fixture/a.png', artist='last artist', origin_url='last-url', size=25)
         with patch.object(self.repo, '_fts_sync_file', wraps=self.repo._fts_sync_file) as sync:
             self.register([a, b, c])
-        self.assertEqual(sync.call_count, 1)
-        self.assertEqual(self.conn.execute('SELECT path,hash_original,origin_url,artist,file_size FROM files').fetchall(),
-                         [('C:/fixture/a.png', 'first', 'last-url', 'last artist', 25)])
+        self.assertEqual(sync.call_count, 0)
+        self.assertEqual(self.conn.execute('SELECT path FROM files').fetchall(), [])
+        self.assertEqual(self.repo.get_ingest_review_status()['open_count'], 3)
+        self.register([c])  # A fresh unambiguous observation can create its own clean ID.
         before = self.conn.total_changes
         self.register([c, c])
         self.assertEqual(self.conn.total_changes, before)
@@ -195,6 +205,7 @@ class InventoryServiceDelta(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.service = LibraryService(self.root / 'central.db')
         self.addCleanup(self.service.close)
+        self.service.submit('prepare_ingest_reviews').result(3)
         self.conn = sqlite3.connect(self.service.db_path)
         self.addCleanup(self.conn.close)
         self.db = DatabaseManager(service=self.service)
@@ -223,7 +234,7 @@ class InventoryServiceDelta(unittest.TestCase):
             self.service.submit('register_files_minimal', batch).result(3)
         self.assertEqual(self.conn.execute('SELECT path,file_size FROM files').fetchall(), [(self.path, 13)])
         self.assertEqual(self.conn.execute('SELECT count(*) FROM files_fts').fetchone(), (1,))
-        self.assertTrue(self.service.submit('register_files_minimal', [dict(self.seed, size=17)]).result(3))
+        self.assertTrue(self.service.submit('register_files_minimal', [dict(self.seed, filename='recovered.png')]).result(3))
 
     def test_fts_failure_rolls_back_files_sequence_and_curation(self):
         self.assertTrue(self.service.submit('edit_curation', self.path, add_tags=['keep'], rating=5).result(3))
@@ -245,12 +256,12 @@ class InventoryServiceDelta(unittest.TestCase):
         self.assertTrue(self.service.submit('register_files_minimal', [other]).result(3))
         before = self.conn.execute('SELECT * FROM files ORDER BY id').fetchall()
         sequence = self.conn.execute('SELECT * FROM sqlite_sequence').fetchall()
-        self.conn.execute("CREATE TRIGGER reject_update BEFORE UPDATE ON files WHEN NEW.file_size=999 "
+        self.conn.execute("CREATE TRIGGER reject_update BEFORE UPDATE ON files WHEN NEW.filename='reject.png' "
                           "BEGIN SELECT RAISE(ABORT,'fixture update rejection'); END")
         self.conn.commit()
         with self.assertRaisesRegex(LibraryError, 'fixture update rejection'):
-            self.service.submit('register_files_minimal', [dict(self.seed, size=50),
-                observation((self.root / 'new.png').as_posix()), dict(other, size=999)]).result(3)
+            self.service.submit('register_files_minimal', [dict(self.seed, filename='changed.png'),
+                observation((self.root / 'new.png').as_posix()), dict(other, filename='reject.png')]).result(3)
         self.assertEqual(self.conn.execute('SELECT * FROM files ORDER BY id').fetchall(), before)
         self.assertEqual(self.conn.execute('SELECT * FROM sqlite_sequence').fetchall(), sequence)
         self.assertEqual(self.conn.execute('SELECT count(*) FROM files_fts').fetchone(), (2,))

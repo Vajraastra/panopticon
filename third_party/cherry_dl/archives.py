@@ -135,7 +135,120 @@ async def _extract(source: Path, stage: Path):
     return json.loads((stage / "entries.json").read_text(encoding="utf-8"))
 
 
-async def _process(folder, artist, row, known, state, result, emit):
+
+async def _native_move(hooks,source,target,item):
+    if await hooks.move_file(source,target,item) is not True:
+        raise ValueError("Movimiento Native no confirmado; no hay movimiento alternativo")
+
+
+async def _organize_native(folder, native_hooks, progress):
+    native_hooks.begin_phase()
+    folder=folder.resolve()
+    if not (folder/catalog.CATALOG_NAME).is_file():
+        raise ValueError("El proyecto no tiene catálogo")
+    state=_inside(folder, STATE_DIR)
+    if (state/"move.json").exists():
+        raise ValueError("Movimiento histórico: se requiere recuperación Native vigente")
+    rows=await catalog.get_all_files(folder)
+    files=[]
+    for row in rows:
+        native_hooks.check_cancel()
+        source=_inside(folder,row["filename"])
+        group=category(row["filename"])
+        if source.parent==folder and group and source.is_file():
+            group=file_category(source)
+            if group:
+                files.append(dict(old=row["filename"],new=f"{group}/{source.name}",hash=row["hash"],
+                                  size=source.stat().st_size,catalog_size=row.get("file_size"),counter=row.get("counter") or 0))
+    plan=dict(folder=str(folder),files=files,duplicates=[],errors=[],status="planned")
+    if not files:
+        return ArchiveResult()
+    await native_hooks.before_apply(plan,"organize")
+    for item in files:
+        temporary=Path(item["native_staging"])
+        await _native_move(native_hooks,_inside(folder,item["old"]),temporary,item)
+    for item in files:
+        await _native_move(native_hooks,Path(item["native_staging"]),_inside(folder,item["new"]),item)
+        await catalog.relocate_file(folder,item["catalog_hash"],item["new"])
+    await native_hooks.after_apply(plan)
+    return ArchiveResult(organized=len(files))
+
+
+async def _process_native(folder, artist, row, known, state, result, emit, hooks):
+    hooks.begin_phase()
+    source=_inside(folder,row["filename"])
+    # A fresh pinned package stays open throughout extraction and publication.
+    # Native always keeps the package, including encrypted/incomplete manifests.
+    with hooks.archive_source(source,row):
+        receipt=state/(row["hash"]+".native.json")
+        if receipt.exists():
+            prior=json.loads(receipt.read_text(encoding="utf-8"))
+            if prior.get("state")!="completed_keep_package":
+                raise ValueError("Extracción Native pendiente: revisar recibo vigente")
+            if prior.get("archive",{}).get("hash")!=row["hash"]:
+                raise ValueError("El manifiesto no corresponde al paquete")
+            entries=[]
+            current=[]
+            for previous in prior["entries"]:
+                existing=known.get(previous["hash"])
+                if existing is None:
+                    raise ValueError("Miembro retirado o sin catálogo: se conserva historial sin restaurar")
+                entry=dict(previous,target=existing["filename"],known=True)
+                disposition=await hooks.completed_member(row,entry,existing)
+                if disposition is not None:entry["native_disposition"]=disposition
+                else:current.append(entry)
+                entries.append(entry)
+            await hooks.before_members(row,current,Path(prior["stage"]),known)
+            for entry in current:
+                entry["native_current"]=await hooks.member_known(entry,known[entry["hash"]])
+            await hooks.after_members(row,current)
+            prior["entries"]=entries
+            _write(receipt,prior)
+            result.processed+=1
+            return
+        state.mkdir(exist_ok=True)
+        stage=Path(tempfile.mkdtemp(prefix="native-extract-",dir=state))
+        entries=await _extract(source,stage)
+        if len({entry["hash"] for entry in entries})!=len(entries):
+            raise ValueError("Miembros repetidos: requieren revisión; se conserva el paquete")
+        await hooks.prepare_extraction_counters(artist)
+        for entry in entries:
+            hooks.check_cancel()
+            existing=known.get(entry["hash"])
+            if existing:
+                entry.update(target=existing["filename"],known=True)
+            else:
+                layout_v2=(await catalog.get_meta_int(folder,"layout_version") or 0)>=LAYOUT_VERSION
+                counter=await catalog.next_counter(folder,route(entry["name"]).key) if layout_v2 else await catalog.next_counter(folder)
+                name=routed_name(artist,counter,entry["name"]) if layout_v2 else build_filename(artist,counter,entry["name"])
+                entry.update(target=(Path(category(name))/name).as_posix(),counter=counter,known=False)
+        # Every target and original-member SHA is known before the first rename.
+        saved=dict(archive=row,state="planned_keep_package",stage=str(stage),entries=entries)
+        _write(receipt,saved)
+        await hooks.before_members(row,entries,stage,known)
+        for index,entry in enumerate(entries):
+            hooks.check_cancel()
+            if entry["known"]:
+                entry["native_current"]=await hooks.member_known(entry,known[entry["hash"]])
+                result.duplicates+=1
+            else:
+                if await hooks.publish_member(stage/f"{index}.bin",_inside(folder,entry["target"]),entry,row) is not True:
+                    raise ValueError("Publicación Native no confirmada")
+                await catalog.add_file(folder,entry["hash"],entry["target"],url_source=row.get("url_source"),
+                    file_size=entry["size"],counter=entry["counter"],content_service=row.get("content_service",""),
+                    post_id=row.get("post_id",""),content_role="archive_member")
+                known[entry["hash"]]=dict(hash=entry["hash"],filename=entry["target"])
+                result.added+=1
+            _write(receipt,saved)
+        await hooks.after_members(row,entries)
+        saved["state"]="completed_keep_package"
+        _write(receipt,saved)
+        result.processed+=1
+
+
+async def _process(folder, artist, row, known, state, result, emit, native_hooks=None):
+    if native_hooks is not None:
+        return await _process_native(folder,artist,row,known,state,result,emit,native_hooks)
     source = _inside(folder, row["filename"])
     receipt = state / (row["hash"] + ".json")
     saved = json.loads(receipt.read_text(encoding="utf-8")) if receipt.exists() else {}
@@ -211,13 +324,15 @@ async def _process(folder, artist, row, known, state, result, emit):
         result.processed += 1
 
 
-async def organize_project(folder: Path, *, progress: ProgressReporter | None = None):
+async def organize_project(folder: Path, *, progress: ProgressReporter | None = None, native_hooks=None):
     """Organiza archivos catalogados sin extraer ni eliminar comprimidos.
 
 El llamador debe excluir descargas/fusiones durante toda la operación.
 No recorre otros proyectos ni descarga nada.
 """
     progress = progress or ProgressReporter()
+    if native_hooks is not None:
+        return await _organize_native(folder,native_hooks,progress)
     folder = folder.resolve()
     if not (folder / catalog.CATALOG_NAME).is_file():
         raise ValueError("El proyecto no tiene catálogo")
@@ -254,6 +369,7 @@ async def process_project(
     progress: ProgressReporter | None = None,
     maintenance_move_file=None,
     maintenance_before_apply=None,
+    native_hooks=None,
 ):
     """Organiza, extrae, deduplica por hash y compacta un perfil.
 
@@ -261,7 +377,7 @@ async def process_project(
     """
     progress = progress or ProgressReporter()
     folder = folder.resolve()
-    result = await organize_project(folder, progress=progress)
+    result = await organize_project(folder, progress=progress, native_hooks=native_hooks)
     state = _inside(folder, STATE_DIR)
     progress("catalog_read")
     rows = await catalog.get_all_files(folder)
@@ -273,6 +389,9 @@ async def process_project(
     compressed_files = [p for p in compressed_files if p.is_file() and p.suffix.lower() in ARCHIVES]
     progress("extract", 0, len(compressed_files))
     for position, path in enumerate(compressed_files):
+        if native_hooks is not None:
+            native_hooks.check_cancel()
+            native_hooks.begin_phase()
         progress("extract", position, len(compressed_files), path.name)
         if not path.is_file() or path.suffix.lower() not in ARCHIVES:
             continue
@@ -289,10 +408,12 @@ async def process_project(
                     await catalog.add_file(folder, file_hash, relative, file_size=path.stat().st_size)
                     row = {"hash": file_hash, "filename": relative, "file_size": path.stat().st_size}
                     known[file_hash] = row
-            await _process(folder, artist, row, known, state, result, emit)
+            await _process(folder, artist, row, known, state, result, emit, native_hooks)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if native_hooks is not None:
+                raise
             result.errors.append(f"{path.name}: {exc}")
             if row is not None:
                 receipt = state / (row["hash"] + ".json")
@@ -302,10 +423,17 @@ async def process_project(
                     _write(receipt, saved)
     progress("extract", len(compressed_files), len(compressed_files))
     try:
+        if native_hooks is not None:
+            native_hooks.begin_phase()
         from .project_maintenance import maintain_project
         maintenance, _ = await maintain_project(
             folder, artist, force_audit=force_audit, emit=emit, progress=progress,
-            move_file=maintenance_move_file, before_apply=maintenance_before_apply,
+            move_file=native_hooks.move_file if native_hooks is not None else maintenance_move_file,
+            before_apply=native_hooks.before_apply if native_hooks is not None else maintenance_before_apply,
+            after_apply=native_hooks.after_apply if native_hooks is not None else None,
+            native_review=native_hooks is not None,
+            native_observation=native_hooks.plan_observation if native_hooks is not None else None,
+            native_reserved=native_hooks.reserved_numbers if native_hooks is not None else None,
         )
         result.audited += maintenance.audited
         result.duplicates_removed += maintenance.duplicates_removed
@@ -315,6 +443,8 @@ async def process_project(
     except asyncio.CancelledError:
         raise
     except Exception as exc:
+        if native_hooks is not None:
+            raise
         result.errors.append(f"Mantenimiento: {exc}")
     return result
 

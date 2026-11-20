@@ -236,11 +236,15 @@ async def main():
         check(not (recovery / '.cherry-maintenance/duplicates').exists(),
               'verified duplicate quarantine is removed')
         batch_steps = []
-        batch = await process_profiles([
-            {'id': 1, 'display_name': 'Audit', 'folder_path': str(audit)},
-            {'id': 2, 'display_name': 'Recovery', 'folder_path': str(recovery)},
-        ], on_profile=lambda position, total, profile_id, name: batch_steps.append(
-            (position, total, profile_id, name)))
+        from core.library_service import LibraryService
+        service=LibraryService(base/'batch-native.db')
+        try:
+            batch = await process_profiles([
+                {'id': 1, 'display_name': 'Audit', 'folder_path': str(audit)},
+                {'id': 2, 'display_name': 'Recovery', 'folder_path': str(recovery)},
+            ], on_profile=lambda position, total, profile_id, name: batch_steps.append(
+                (position, total, profile_id, name)),data_service=service)
+        finally:service.close()
         check(batch.profiles == 2 and not batch.errors, batch.errors)
         check(batch_steps == [(1, 2, 1, 'Audit'), (2, 2, 2, 'Recovery')],
               'batch iterates the same per-project operation in order')
@@ -419,8 +423,11 @@ def ui_test():
     os.environ['QT_QPA_PLATFORM'] = 'offscreen'
     from PySide6.QtWidgets import QApplication
     from modules.cherry.ui.view import CherryView
+    from core.library_service import LibraryService
     app = QApplication.instance() or QApplication([])
-    view = CherryView()
+    native_tmp=tempfile.TemporaryDirectory()
+    service=LibraryService(Path(native_tmp.name)/'ui-native.db')
+    view = CherryView(context={'data_service':service})
     view._started = True
     view._reload_detail = lambda: None
     view._announce_folder = lambda profile: notified.append(profile['folder_path'])
@@ -467,6 +474,7 @@ def ui_test():
             wait_until(lambda: not view._maintenance_busy)
             check(not source.exists() and (folder / 'Selected_00001.png').exists(),
                   'manual action extracts and compacts')
+            check((folder/'Comprimidos/manual.zip').exists(),'Native maintenance keeps the package')
             check(notified == [tmp], 'notifies original selected project')
             check(view._btn_download.isEnabled(), 'controls restored')
 
@@ -476,6 +484,7 @@ def ui_test():
             async def pause_extraction(*args):
                 awaitable_started.append(True)
                 await asyncio.sleep(30)
+            source=folder/'cancel.zip'
             with zipfile.ZipFile(source, 'w') as z:
                 z.writestr('another.png', b'new UI image')
             asyncio.run(register(folder, source.name, source.read_bytes()))
@@ -485,13 +494,14 @@ def ui_test():
                 wait_until(lambda: bool(awaitable_started))
                 view._cancel()
                 wait_until(lambda: not view._maintenance_busy)
-            check((folder / 'Comprimidos/manual.zip').exists(), 'UI cancel keeps archive')
+            check((folder / 'Comprimidos/cancel.zip').exists(), 'UI cancel keeps archive')
             check(view._btn_download.isEnabled(), 'cancel restores download controls')
     finally:
         view.shutdown()
         wait_until(view._runtime.shutdown_ready)
         view.close()
         app.processEvents()
+        service.close();native_tmp.cleanup()
     print(f'Archives + UI: {checks} checks passed')
 
 

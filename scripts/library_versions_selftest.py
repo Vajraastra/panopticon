@@ -25,11 +25,17 @@ def digest(data):
 
 
 class Versions(unittest.TestCase):
+    def seed_legacy_alias(self, data):
+        # Model a pre-fix alias; current raw ingestion must never create it.
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            with conn:
+                LibraryRepository(conn)._register_files_minimal_storage([data])
+
 
     def test_prepared_parent_case_change_detects_existing_active_alias_before_restore(self):
         self.action('archive_copy')
         alias=str(self.image).upper()
-        self.service.submit('register_files_minimal',[dict(path=alias,filename='SAME.PNG',size=11,created=1)]).result(3)
+        self.seed_legacy_alias(dict(path=alias,filename='SAME.PNG',size=11,created=1))
         self.service.backfill_path_identity(); before=self.state()
         self.folder.rename(self.folder.with_name(self.folder.name.upper()))
         with self.assertRaisesRegex(ValueError,'occupied'): self.action('make_copy_online')
@@ -125,7 +131,7 @@ class Versions(unittest.TestCase):
     def test_prepared_online_canonical_occupied_alias_preserves_offline_id(self):
         self.action('archive_copy')
         alias=str(self.image).upper().replace('SAME.PNG','same.png')
-        self.service.submit('register_files_minimal',[dict(path=alias,filename='same.png',size=11,created=1)]).result(3)
+        self.seed_legacy_alias(dict(path=alias,filename='same.png',size=11,created=1))
         self.service.backfill_path_identity(); before=self.state()
         with self.assertRaisesRegex((ValueError,LibraryError),'occupied'): self.action('make_copy_online')
         self.assertEqual(self.state(),before)
@@ -242,6 +248,7 @@ class Versions(unittest.TestCase):
         self.assertNotEqual(self.db.get_file_id(str(self.image)), self.key)
 
     def test_inventory_neither_reactivates_nor_inherits_curation(self):
+        self.service.submit('prepare_ingest_reviews').result(3)
         self.action('archive_copy')
         before = self.state()
         self.assertTrue(self.db.register_files_minimal([dict(path=str(self.image), filename='same.png',

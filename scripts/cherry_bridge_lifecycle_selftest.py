@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import threading
+import tempfile
 import time
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, Qt
 from modules.cherry.logic.download_bridge import DownloadBridge
+from core.library_service import LibraryService
 from modules.cherry.logic.download_queue import DownloadQueue
 from modules.cherry.logic.runtime import CherryRuntime
 from third_party.cherry_dl.download_service import DownloadSummary
@@ -37,9 +39,21 @@ class BridgeLifecycle(unittest.TestCase):
     def setUp(self):
         self.runtime = CherryRuntime()
         self.runtime.start()
-        self.bridge = DownloadBridge(self.runtime)
+        folder = Path(__file__).resolve().parents[1] / ".work"
+        folder.mkdir(exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(dir=folder)
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.service = LibraryService(self.root / "native.db")
+        self.addCleanup(self.service.close)
+        self.bridge = DownloadBridge(self.runtime, data_service=self.service)
         self.gates = []
         self.addCleanup(self.cleanup)
+
+    def profile(self, pid):
+        folder = self.root / str(pid)
+        folder.mkdir(exist_ok=True)
+        return dict(profile(pid), folder_path=str(folder))
 
     def cleanup(self):
         for gate in self.gates:
@@ -73,13 +87,14 @@ class BridgeLifecycle(unittest.TestCase):
         terminal.connect(pause_emitter, Qt.DirectConnection)
 
         async def download(prof, **kwargs):
+            self.assertTrue(callable(kwargs.get('prepare_artist')))
             calls.append(prof["id"])
             if failed and len(calls) == 1:
                 raise ValueError("synthetic first-profile failure")
             return DownloadSummary()
 
         with patch("third_party.cherry_dl.download_service.run_profile_download", download):
-            self.assertTrue(queue.start([profile(1), profile(2)]))
+            self.assertTrue(queue.start([self.profile(1), self.profile(2)]))
             self.assertTrue(blocked.wait(1))
             self.assertTrue(pump(lambda: bool(done) or queue._current is not None
                                  and queue._current.state.profile["id"] == 2))
@@ -116,14 +131,14 @@ class BridgeLifecycle(unittest.TestCase):
         self.bridge.finished_signal.connect(queued.append)
         with patch("third_party.cherry_dl.download_service.run_profile_download", download), \
                 patch.object(self.bridge, "_on_future_done", delayed):
-            self.assertTrue(self.bridge.start(profile(1)))
+            self.assertTrue(self.bridge.start(self.profile(1)))
             self.assertTrue(first.wait(1))
             self.assertTrue(pump(lambda: bool(queued)))
-            self.assertTrue(self.bridge.start(profile(2)))
+            self.assertTrue(self.bridge.start(self.profile(2)))
             release.set()
             self.assertTrue(entered.wait(1))
             self.assertTrue(self.bridge.is_busy)
-            self.assertFalse(self.bridge.start(profile(3)))
+            self.assertFalse(self.bridge.start(self.profile(3)))
             self.assertTrue(self.bridge.cancel())
             self.assertTrue(pump(lambda: not self.bridge.is_busy))
 
@@ -143,12 +158,12 @@ class BridgeLifecycle(unittest.TestCase):
                 cleaned.set()
 
         with patch("third_party.cherry_dl.download_service.run_profile_download", download):
-            self.assertTrue(self.bridge.start(profile(1)))
+            self.assertTrue(self.bridge.start(self.profile(1)))
             self.assertTrue(entered.wait(1))
             self.assertTrue(self.bridge._future.cancel())
             self.assertTrue(cleaning.wait(1))
             self.assertTrue(self.bridge.is_busy)
-            self.assertFalse(self.bridge.start(profile(2)))
+            self.assertFalse(self.bridge.start(self.profile(2)))
             QCoreApplication.processEvents()
             self.assertEqual(cancelled, [])
             release.set()
@@ -168,7 +183,7 @@ class BridgeLifecycle(unittest.TestCase):
             return DownloadSummary()
 
         with patch("third_party.cherry_dl.download_service.run_profile_download", download):
-            self.assertTrue(self.bridge.start(profile(1)))
+            self.assertTrue(self.bridge.start(self.profile(1)))
             self.assertTrue(self.bridge.cancel())
             self.assertTrue(pump(lambda: bool(cancelled)))
             self.assertFalse(self.bridge.is_busy)
@@ -176,6 +191,42 @@ class BridgeLifecycle(unittest.TestCase):
             self.runtime.run_sync(asyncio.sleep(0), timeout=2)
             QCoreApplication.processEvents()
             self.assertEqual(cancelled, [1])
+            self.assertEqual(calls, [])
+
+    def test_missing_profile_never_recreates_folder_or_enters_engine(self):
+        failed, calls = [], []
+        missing = self.root / 'unavailable'
+        self.bridge.failed_signal.connect(failed.append)
+        async def download(prof, **kwargs):
+            calls.append(prof)
+            return DownloadSummary()
+        with patch('third_party.cherry_dl.download_service.run_profile_download', download):
+            self.assertTrue(self.bridge.start(dict(profile(1), folder_path=str(missing))))
+            self.assertTrue(pump(lambda: bool(failed)))
+            self.assertIn('cherry_profile_missing', failed[0])
+            self.assertFalse(missing.exists())
+            self.assertEqual(calls, [])
+
+    def test_pending_native_maintenance_prevents_engine_start(self):
+        import hashlib
+        from uuid import uuid4
+        from modules.cherry.logic.profile_scope import profile_scope
+        prof = self.profile(1)
+        self.service.submit('prepare_maintenance_operations').result(5)
+        with profile_scope(prof['folder_path']) as ticket:
+            identity = list(ticket.identity)
+            self.service.submit('maintenance_reserve', str(uuid4()), 1, ticket.canonical, identity,
+                [dict(path=ticket.canonical, root_identity=identity)],
+                hashlib.sha256(b'').hexdigest(), 0).result(5)
+        calls, failed = [], []
+        self.bridge.failed_signal.connect(failed.append)
+        async def download(prof, **kwargs):
+            calls.append(prof)
+            return DownloadSummary()
+        with patch('third_party.cherry_dl.download_service.run_profile_download', download):
+            self.assertTrue(self.bridge.start(prof))
+            self.assertTrue(pump(lambda: bool(failed)))
+            self.assertIn('cherry_profile_recovery_required', failed[0])
             self.assertEqual(calls, [])
 
 

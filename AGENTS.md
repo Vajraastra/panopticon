@@ -109,6 +109,8 @@ carpeta sola: no hay que registrar nada en el core.
    Mover conserva ID; copiar conserva curación inicial en ID independiente (David,
    2026-10-01). Deshacer jamás sobrescribe una ruta ocupada ni elimina una copia
    modificada; su ID/curación se conservan offline. Sin SQL propio en Cherry.
+   El mantenimiento manual de Cherry también conserva ID/curación por movimiento
+   Native verificado, con reserva y recibos; no elimina paquetes ni duplicados.
    Metadata Hub conserva el respaldo previo hasta una purga definitiva manual por
    operación (David, 2026-10-01): vista previa actual, archivo conservado verificado,
    historial/recibo y confirmación explícita. Nunca purga automática; preservar
@@ -194,28 +196,38 @@ disco ni el catálogo de lo ya descargado.
 `modules/cherry/logic/repoint.py` (migración Kemono → Pawchive) **no cuenta como cuarto**: no
 escribe por su cuenta, delega en `profile_writes.add_url`.
 
-Esos tres archivos son los únicos de Panopticon que escriben ahí.
+El mantenimiento manual usa `modules/cherry/logic/native_maintenance.py` y la API
+del motor para confirmar rutas y miembros después del recibo Native. Antes de Sync,
+`counter_highwater.py` sólo eleva contadores mediante `catalog.ensure_counter_at_least`.
+Estas puertas también son deliberadas: ningún wrapper escribe SQL Cherry.
 
 ### Mantenimiento con una biblioteca Native indexada
 
 El motor mantiene archivos y catálogos Cherry; no reconcilia por sí solo los IDs
-centrales. Al llamar a `archives.process_project`, usar `maintenance_before_apply`
-y `maintenance_move_file` con revisión vigente, SHA/identidad física, diario
-durable y servicio Native. Los callbacks son
-opcionales: la interfaz individual/batch aún no los conecta y bloquea carpetas
-con historial central (incluido offline) o carpetas observadas solapadas antes
-de organizar, extraer o renombrar. El CLI batch genérico permite vista previa;
-su aplicación queda bloqueada sin una operación revisada que conecte ese contrato.
-No retirar esta protección para hacer pasar una prueba ni sustituirla por reingesta.
+centrales. La interfaz individual/batch delega en `process_native_project`: guard
+compartido con Sync/fusión, handles fijados, diario Native por fase y recibos por
+movimiento antes de confirmar el catálogo. `archives.process_project(native_hooks=...)`
+cubre organización, extracción y compactación; conectar sólo los callbacks finales
+no cubre las fases anteriores. El CLI batch genérico permite vista previa; aplicar
+sin servicio Native sigue bloqueado. Nunca sustituir este contrato por reingesta.
+Las operaciones interrumpidas conservan su reserva; requieren revisión física/Native
+actual y confirmación antes de reanudarlas, sin reproducir planes históricos.
 Sync conserva los originales manuales y no organiza archivos existentes al arrancar;
 una descarga coincidente se cataloga como copia nueva. Reindexar después no repara
 renombrados ni evita atribuir un contenido nuevo a una identidad anterior.
 Conservar IDs, curación e historial; ante contenido distinto, mantener la versión
 anterior offline y admitir una identidad independiente.
+La ingesta conserva evidencia de contradicciones y confirma las filas sanas del lote.
+Una versión original o modificada conocida es compatible; fechas de catálogo y de
+creación física no son intercambiables. Un nombre offline sigue reservando su número
+antes de nuevas descargas. Una carpeta ausente no se recrea al sincronizar.
 
 La compactación abarca raíz y carpetas administradas inmediatas. Los nombres del
 artista en carpetas curadas/manuales reservan sus números sin entrar en la
 deduplicación ni moverse. No aplicar planes históricos ni purgar sus diarios.
+El mantenimiento conserva paquetes y no retira duplicados automáticamente. Un
+manifiesto Native completo puede acreditar un miembro posteriormente movido o
+retirado; no extraerlo de nuevo sobre la decisión del curador.
 
 Una purga manual autorizada de comprimidos ya extraídos exige el manifiesto
 completo ligado al SHA del paquete y todos los SHA/tamaños de sus miembros

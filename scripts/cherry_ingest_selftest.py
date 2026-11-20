@@ -140,7 +140,7 @@ class ScanTests(Fixture):
         folder = self.seed(self.watch()/'artistÄ', 205)
         path = str(folder/'0.png')
         self.service.submit('register_files_minimal', [dict(path=path, filename='0.png', size=7,
-            created=1, hash_original='documented', origin_url='documented', origin_site='own', artist='curated')]).result(2)
+            created=1, hash_original=hashlib.sha256(b'0').hexdigest(), origin_url='documented', origin_site='own', artist='curated')]).result(2)
         self.service.submit('update_file_rating', path, 5).result(2)
         key = self.service.read('get_file_id', path)
         before = (folder/'catalog.db').read_bytes()
@@ -157,7 +157,7 @@ class ScanTests(Fixture):
         self.assertEqual(self.service.read('get_file_id', path), key)
         with closing(sqlite3.connect(self.service.db_path)) as conn:
             self.assertEqual(conn.execute('SELECT rating,hash_original,origin_url,origin_site,artist FROM files WHERE id=?', (key,)).fetchone(),
-                             (5, 'documented', 'documented', 'own', 'curated'))
+                             (5, hashlib.sha256(b'0').hexdigest(), 'documented', 'own', 'curated'))
         self.assertEqual((folder/'catalog.db').read_bytes(), before)
         self.assertTrue(self.service.read('check_fts')['consistent'])
 
@@ -173,7 +173,7 @@ class ScanTests(Fixture):
         folder = self.seed(self.watch()/'Árbol')
         path = str(folder/'0.png')
         self.service.submit('register_files_minimal', [dict(path=path, filename='0.png', size=7,
-            created=1, hash_original='documented', origin_url='documented')]).result(2)
+            created=1, hash_original=hashlib.sha256(b'0').hexdigest(), origin_url='documented')]).result(2)
         self.service.submit('update_file_rating', path, 5).result(2)
         key = self.service.read('get_file_id', path)
         self.service.backfill_path_identity()
@@ -191,8 +191,9 @@ class ScanTests(Fixture):
         with closing(sqlite3.connect(self.service.db_path)) as conn:
             conn.execute('UPDATE files SET is_offline=1,rating=5')
             conn.commit()
-        self.assertEqual(reconcile(self.service, str(folder), self.event), 1)
+        self.assertEqual(reconcile(self.service, str(folder), self.event), 0)
         self.assertEqual(self.count(), 0)
+        self.assertEqual(self.service.read('get_ingest_review_status')['open_count'], 1)
         with closing(sqlite3.connect(self.service.db_path)) as conn:
             self.assertEqual(conn.execute('SELECT is_offline,rating FROM files').fetchall(), [(1, 5)])
 
@@ -260,8 +261,8 @@ class ScanTests(Fixture):
     def test_cancel_keeps_confirmed_prefix_without_archival(self):
         folder = self.seed(self.watch()/'artist', 205)
         original = LibraryRepository.register_catalog_files_observed
-        def commit(repo, *args):
-            value = original(repo, *args)
+        def commit(repo, *args, **kwargs):
+            value = original(repo, *args, **kwargs)
             self.event.set()  # A running command must settle even after Stop.
             return value
         with patch.object(LibraryRepository, 'register_catalog_files_observed', commit), self.assertRaises(Exception):
@@ -281,10 +282,10 @@ class ControllerTests(Fixture):
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
         original = LibraryRepository.register_catalog_files_observed
-        def blocked(repo, *args):
+        def blocked(repo, *args, **kwargs):
             entered.set()
             release.wait(3)
-            return original(repo, *args)
+            return original(repo, *args, **kwargs)
         with patch.object(LibraryRepository, 'register_catalog_files_observed', blocked):
             item, _ = self.controller()
             self.assertTrue(entered.wait(2))
@@ -332,7 +333,7 @@ class ControllerTests(Fixture):
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
         calls = []
-        def scan(*args):
+        def scan(*args, **kwargs):
             calls.append(args[1])
             if len(calls) == 1:
                 entered.set()
@@ -352,7 +353,7 @@ class ControllerTests(Fixture):
         watch = self.watch()
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
-        def scan(*args):
+        def scan(*args, **kwargs):
             entered.set()
             release.wait(3)
             return 0

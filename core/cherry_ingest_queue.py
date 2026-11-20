@@ -75,7 +75,14 @@ class PendingFolders:
         self.conn.close()
 
 
-def register_catalog_files(repo, records, watched_folder):
+def register_catalog_files(repo, records, watched_folder, *, operation_id=None):
+    from core.ingest_review import dispatch
+    return dispatch(repo, records, observed=True, producer='cherry_catalog', watched_folder=watched_folder,
+                    operation_id=operation_id,
+                    apply=lambda accepted: _register_catalog_files_storage(repo, accepted, watched_folder))
+
+
+def _register_catalog_files_storage(repo, records, watched_folder):
     """SQL-only scope check and identity-aware ingest in the same Native commit."""
     from core.library_path_ingest import write
     valid_path(watched_folder)
@@ -110,6 +117,7 @@ class WatchedService:
     """Retain the existing observed-ingest/FIFO contract, adding a SQL watch CAS."""
     def __init__(self, service, watched_folder):
         self.service, self.folder = service, watched_folder
+        self.operation_id = str(uuid.uuid4())
 
     def read(self, *args, **kwargs):
         return self.service.read(*args, **kwargs)
@@ -117,4 +125,4 @@ class WatchedService:
     def submit(self, operation, records):
         if operation != 'register_files_observed':
             raise ValueError('invalid_cherry_ingest_operation')
-        return self.service.submit('register_catalog_files_observed', records, self.folder)
+        return self.service.submit('register_catalog_files_observed', records, self.folder, operation_id=self.operation_id)

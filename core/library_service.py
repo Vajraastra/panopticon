@@ -24,9 +24,13 @@ from core.library_repository import LibraryRepository
 from core.library_writer_guard import writer_guard
 from core.library_versions_schema import backup_database, migrate as migrate_versions, upgrade_table, ready as versions_ready
 from core.paths import ProjectPaths
+from uuid import uuid4
+from core.library_maintenance_operations import (MAINTENANCE_COMMANDS, READ_NAMES as MAINTENANCE_READS,
+    status as maintenance_status, guard as maintenance_guard)
 
 log = logging.getLogger(__name__)
 READS = frozenset({
+    'get_ingest_review_receipt', 'get_ingest_review_status',
     'get_file_provenance', 'get_folder_scope_metadata', 'read_folder_scope',
     'get_path_identity_ingest_state', 'get_path_identity_status', 'get_path_identity_matches', 'get_path_identity_resolution',
     'get_path_identity_records', 'get_path_identity_review_page',
@@ -43,7 +47,7 @@ READS = frozenset({
     'get_copy_versions_page', 'get_copy_version_state',
     'get_copy_reconciliation_receipt',
     'get_transfer_status', 'get_transfer_receipt', 'get_transfer_sources',
-    'get_maintenance_copies', 'has_maintenance_history',
+    'get_maintenance_copies', 'has_maintenance_history', 'get_source_names_page',
     'get_duplicate_snapshot',
     'get_duplicate_recovery_state',
     'get_duplicate_retirement_roots',
@@ -77,6 +81,7 @@ READ_BUDGET_SECONDS = {
     'get_phash_states': 10,
 }
 WRITES = frozenset({
+    'prepare_ingest_reviews',
     'prepare_copy_reconciliations', 'reconcile_copy_versions_batch',
     'prepare_path_identity', 'store_path_identity_batch',
     'prepare_transfers', 'approve_transfer', 'commit_transfer', 'abort_transfer', 'retire_transfer_copy', 'approve_transfer_restore',
@@ -102,7 +107,10 @@ WRITES = frozenset({
 
 # These successful Native commands can represent published/replaced image bytes.
 # Observation-only registration/hash and ordinary curation retain physical caches.
-PREVIEW_WRITES = frozenset({'commit_maintenance_relocation', 'commit_metadata_edit', 'update_file_metadata',
+WRITES = WRITES | MAINTENANCE_COMMANDS | {'prepare_maintenance_operations'}
+READS = READS | MAINTENANCE_READS
+
+PREVIEW_WRITES = frozenset({'commit_maintenance_relocation', 'commit_metadata_edit', 'update_file_metadata', 'maintenance_ack_relocations', 'maintenance_admit_descendants',
                           'register_derived_copy', 'restore_duplicate_copy', 'commit_transfer', 'retire_transfer_copy', 'abort_transfer'})
 
 
@@ -176,11 +184,24 @@ def _migrate(conn, db_path):
 
 
 class LibraryService:
+    @property
+    def maintenance_owner_nonce(self):
+        return self._maintenance_owner_nonce
+
+    def maintenance_context(self):
+        with self._maintenance_context_lock:
+            return dict(owner_nonce=self._maintenance_owner_nonce,
+                        bound_operations=sorted(self._maintenance_bound_roots))
+
     def __init__(self, db_path, capacity=64, *, require_ready=False):
         if type(capacity) is not int or capacity < 1:
             raise ValueError('invalid_queue_capacity')
         if type(require_ready) is not bool:
             raise ValueError('invalid_ready_policy')
+        self._maintenance_owner_nonce = uuid4().hex
+        self._maintenance_bound_roots = set()
+        self._maintenance_bound_versions = {}
+        self._maintenance_context_lock = threading.RLock()
         self._require_ready = require_ready
         self.db_path = str(Path(db_path).resolve())
         self._queue = Queue(maxsize=capacity)
@@ -226,6 +247,11 @@ class LibraryService:
                     raise sqlite3.DatabaseError('WAL unavailable')
             conn.execute('PRAGMA synchronous=FULL')
             repo = LibraryRepository(conn, cache_derived_paths=True, path_coverage_cache=self._path_coverage)
+            repo._maintenance_writer = True
+            repo._maintenance_owner_nonce = self._maintenance_owner_nonce
+            repo._maintenance_bound_roots = self._maintenance_bound_roots
+            repo._maintenance_bound_versions = self._maintenance_bound_versions
+            repo._maintenance_context_lock = self._maintenance_context_lock
             self._revision.poll(conn)
             self._wal.poll()
             self._ready.set_result(True)
@@ -252,6 +278,9 @@ class LibraryService:
                         continue
                     try:
                         changes_before = conn.total_changes
+                        if operation == 'prepare_maintenance_operations':
+                            if not maintenance_status(conn)['prepared']:
+                                backup_database(conn, self.db_path, 'maintenance-operations')
                         if operation == 'prepare_path_identity':
                             from core.path_identity_registry import needs_prepare
                             if needs_prepare(conn):
@@ -264,18 +293,24 @@ class LibraryService:
                             from core.library_reconciliations import status
                             if not status(conn)['prepared']:
                                 backup_database(conn, self.db_path, 'copy-reconciliations')
+                        if operation == 'prepare_ingest_reviews':
+                            from core.ingest_review import prepared
+                            if not prepared(conn):
+                                backup_database(conn, self.db_path, 'ingest-review')
                         if operation != 'vacuum_database':
                             phase = time.perf_counter()
                             try:
                                 conn.execute('BEGIN IMMEDIATE')
                             finally:
                                 self._metrics.observe('begin', time.perf_counter() - phase)
+                        kwargs = maintenance_guard(repo, operation, args, kwargs)
                         value = getattr(repo, operation)(*args, **kwargs)
                         if value is not True:
                             raise LibraryError(operation, 'operation_failed')
                         phase = time.perf_counter()
                         try:
                             conn.commit()
+                            repo.finish_maintenance_state(True)
                             if conn.total_changes != changes_before:
                                 self._revision.committed(previews_changed=operation in PREVIEW_WRITES)
                         finally:
@@ -291,6 +326,7 @@ class LibraryService:
                         if operation == 'reconcile_copy_versions_batch':
                             from core.library_reconciliations import finish
                             finish(repo, False)
+                        repo.finish_maintenance_state(False)
                         repo.finish_path_ingest(False)
                         repo.finish_derived_paths(False, operation)
                         conn.rollback()
@@ -370,6 +406,10 @@ class LibraryService:
         """Worker-only, bounded observations; migration stays explicit."""
         from core.library_path_ingest import register
         event = cancel_event if cancel_event is not None else threading.Event()
+        if records:
+            from core.library_batch import commit_control
+            if commit_control(self, 'prepare_ingest_reviews', event) is not True:
+                raise RuntimeError('ingest_review_preparation_unconfirmed')
         return register(self, records, event)
 
     def backfill_path_identity(self, **kwargs):

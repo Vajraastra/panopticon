@@ -198,24 +198,27 @@ the project root; other cataloged files move to `Comprimidos/`, `Proyectos/`, `V
 `Audio/`, `Documentos/` or `Otros/`. ZIP/RAR files in `Comprimidos/` are extracted and deduplicated
 by SHA-256, using Cherry's existing numbering and catalog.
 
-Maintenance is currently blocked for folders with library history or an overlapping
-watched folder. Their central identity reconciliation is not connected to this action
-yet. The check covers the entire selected batch before changing any project. The
-batch script still supports previews; applying changes requires a reviewed operation
-that preserves library identities and history.
+Maintenance preserves the central copy ID, curation and history while moving files.
+Sync, merging and maintenance share a project guard. Every phase records its current
+plan and confirmed moves; interrupted work requires a fresh review before resuming.
+The batch script supports previews; application requires the Native service.
 
 Sync routes new downloads to their destination without reorganizing existing files.
 If a downloaded image matches a manually imported file, that original stays in place
 and the verified new download receives its own catalog entry.
+Download counters also reserve names still owned by offline library copies.
+Contradictory catalog observations remain available for review while unaffected
+files continue indexing; an observation cannot silently replace a copy's identity.
 
 Maintenance compacts numbered files only in the project root and its immediate
 routed folders. Files in `picked/`, `discarded/` and other manually managed
 subfolders stay in place. Matching artist filenames there reserve their numbers
 during compaction.
 
-An archive is deleted only after every extracted file is verified. Its download
-record and `.cherry-archives/` manifest remain, preventing a new download. Keep that
-folder alongside `catalog.db`. Failed, password-protected or split archives stay
+Maintenance keeps archive packages, their download records and `.cherry-archives/`
+manifests. A later move or retirement of an extracted member does not restore it.
+Duplicate copies require separate review. Keep the manifests alongside `catalog.db`.
+Failed, password-protected or split archives stay
 available for another manual attempt. Nested archives are available for the next
 manual pass. Installation is automatic through `run.bat`; no system 7-Zip or
 WinRAR is required.

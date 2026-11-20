@@ -251,8 +251,14 @@ class PicklerTransfer(unittest.TestCase):
 
     def test_multiple_active_case_aliases_cannot_choose_a_source(self):
         alias=str(self.source).upper()
-        self.service.submit('register_files_minimal',[dict(path=alias,filename=self.source.name,
-            size=self.source.stat().st_size,created=1,hash_original=self.state()['state']['file']['hash_original'])]).result(5)
+        # Deliberately seed an ambiguous pre-fix state. The shared raw guard
+        # now refuses this second identity before Pickler could encounter it.
+        from contextlib import closing
+        import sqlite3
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            with conn:
+                LibraryRepository(conn)._register_files_minimal_storage([dict(path=alias,filename=self.source.name,
+                    size=self.source.stat().st_size,created=1,hash_original=self.state()['state']['file']['hash_original'])])
         other=self.service.read('get_file_id',alias)
         self.assertNotEqual(other,self.key)
         before={key:self.state(key) for key in (self.key,other)}

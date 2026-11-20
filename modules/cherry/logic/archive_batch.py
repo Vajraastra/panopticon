@@ -12,13 +12,15 @@ from third_party.cherry_dl.maintenance_progress import MaintenanceProgress, Prog
 class MaintenanceBlocked(ValueError):
     """A checked refusal before the engine can organize, extract or rename."""
 
-    def __init__(self, reason):
+    def __init__(self, reason, *, operation_id=None):
         self.reason = reason
+        self.operation_id = operation_id
         super().__init__('cherry_maintenance_' + reason)
 
 
 async def require_unindexed(folders, data_service):
-    if data_service is None:
+    """Legacy name: Native availability and all roots are required before apply."""
+    if data_service is None or not hasattr(data_service,'maintenance_owner_nonce'):
         raise MaintenanceBlocked('review_required')
     from core.path_identity import observe_path
 
@@ -31,8 +33,7 @@ async def require_unindexed(folders, data_service):
             paths.extend([observed.path, observed.canonical])
         if not paths:
             return
-        if data_service.read('has_maintenance_history', sorted(set(paths))):
-            raise MaintenanceBlocked('indexed')
+        data_service.read('get_maintenance_status')
 
     try:
         await asyncio.to_thread(check)
@@ -44,8 +45,11 @@ async def require_unindexed(folders, data_service):
 
 async def process_unindexed_project(folder, artist, *, data_service=None, **options):
     await require_unindexed([folder], data_service)
-    from third_party.cherry_dl.archives import process_project
-    return await process_project(folder, artist, **options)
+    from .native_maintenance import NativeMaintenanceFailure, process_native_project
+    try:
+        return await process_native_project(folder, artist, data_service=data_service, **options)
+    except NativeMaintenanceFailure as exc:
+        raise MaintenanceBlocked('recovery_required',operation_id=exc.operation_id) from exc
 
 
 @dataclass
@@ -84,15 +88,17 @@ async def process_profiles(
     on_file: Callable[[str], None] = lambda _: None,
     on_progress: Callable[[MaintenanceProgress], None] = lambda _: None,
     data_service=None,
+    cancel_event=None,
 ) -> ArchiveBatchResult:
     """Itera exactamente la misma operación que usa un perfil individual."""
-    from third_party.cherry_dl.archives import process_project
+    from .native_maintenance import NativeMaintenanceFailure, process_native_project
 
     # Check the complete selection before touching even its first project.
     await require_unindexed([profile['folder_path'] for profile in profiles], data_service)
     total = len(profiles)
     batch = ArchiveBatchResult()
     for position, profile in enumerate(profiles, 1):
+        if cancel_event is not None and cancel_event.is_set():raise asyncio.CancelledError()
         name = profile.get("display_name") or "artist"
         on_profile(position, total, int(profile.get("id") or -1), name)
         folder = Path(profile["folder_path"])
@@ -101,12 +107,14 @@ async def process_profiles(
             batch.errors.append(f"{name}: carpeta ausente: {folder}")
             continue
         try:
-            result = await process_project(
-                folder, name, on_file, force_audit=force_audit,
-                progress=ProgressReporter(on_progress),
+            result = await process_native_project(
+                folder, name, emit=on_file, force_audit=force_audit,
+                progress=ProgressReporter(on_progress),data_service=data_service,profile_id=int(profile.get('id') or 0),cancel_event=cancel_event,
             )
         except asyncio.CancelledError:
             raise
+        except NativeMaintenanceFailure as exc:
+            raise MaintenanceBlocked('recovery_required',operation_id=exc.operation_id) from exc
         except Exception as exc:
             batch.profiles += 1
             batch.errors.append(f"{name}: {type(exc).__name__}: {exc}")

@@ -138,19 +138,25 @@ def relocate(repo, values):
         raise ValueError('maintenance_transfer_pending')
     guard_ingestion(conn, [value[key] for value, _ in validated
                           for key in ('old_path', 'new_path')])
-    _keys(conn)
-    occupied = collect_rows(conn.execute(
-        'SELECT id FROM files WHERE is_offline=0 AND maintenance_path_key_v1(path) IN ('
-        + ','.join('?' for _ in targets) + ') LIMIT 101', sorted(targets)), lambda row: row[0])
+    if getattr(repo, '_maintenance_relocation_operation', None) is not None:
+        # Only the bound Native ledger can authorize this indexed scope lookup.
+        # Its helper validates the live owner and transaction; failure never
+        # falls back to assuming that a destination is empty.
+        from core.library_maintenance_operations import destination_occupants
+        occupied = destination_occupants(repo, sorted(targets))
+    else:
+        _keys(conn)
+        occupied = collect_rows(conn.execute(
+            'SELECT id FROM files WHERE is_offline=0 AND maintenance_path_key_v1(path) IN ('
+            + ','.join('?' for _ in targets) + ') LIMIT 101', sorted(targets)), lambda row: row[0])
+        if prepared(conn):
+            canonical_occupants = collect_rows(conn.execute(
+                "SELECT file_id FROM path_identity_records WHERE is_offline=0 AND status='resolved' "
+                'AND maintenance_path_key_v1(canonical) IN ('
+                + ','.join('?' for _ in targets) + ') LIMIT 101', sorted(targets)), lambda row: row[0])
+            occupied = list(set(occupied) | set(canonical_occupants))
     if len(occupied) > 100 or any(copy_id not in ids for copy_id in occupied):
         raise ValueError('maintenance_destination_occupied')
-    if prepared(conn):
-        occupied = collect_rows(conn.execute(
-            "SELECT file_id FROM path_identity_records WHERE is_offline=0 AND status='resolved' "
-            'AND maintenance_path_key_v1(canonical) IN ('
-            + ','.join('?' for _ in targets) + ') LIMIT 101', sorted(targets)), lambda row: row[0])
-        if len(occupied) > 100 or any(copy_id not in ids for copy_id in occupied):
-            raise ValueError('maintenance_destination_occupied')
 
     # Free every active source binding inside this transaction before assigning
     # final names, including cycles. Intermediate paths never become visible.

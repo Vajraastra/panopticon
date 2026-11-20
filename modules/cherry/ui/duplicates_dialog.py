@@ -518,7 +518,8 @@ class DuplicatesDialog(QDialog):
         else:
             # Ver `logic/merge.py`: si mover falla, el índice queda intacto a
             # propósito, así que las dos carpetas siguen siendo proyectos válidos.
-            detail = result.errors[0] if result.errors else ""
+            from .operation_errors import operation_error
+            detail = operation_error(result.errors[0], self.tr) if result.errors else ""
             self._status.setText(self.tr(
                 "cherry.merge_failed",
                 "Merge stopped. Completed moves remain; review the reported paths before retrying. {msg}",

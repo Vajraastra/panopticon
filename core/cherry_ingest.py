@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 class CherryIngestor(QObject):
     completed = Signal(str, int)
     failed = Signal(str)
+    review_required = Signal(str, int, int)
 
     def __init__(self, service, event_bus, parent=None):
         super().__init__(parent)
@@ -88,6 +89,9 @@ class CherryIngestor(QObject):
 
     def _run(self):
         try:
+            from core.library_batch import commit_control
+            if commit_control(self.service, 'prepare_ingest_reviews', self._stop) is not True:
+                raise RuntimeError('ingest_review_preparation_unconfirmed')
             with writer_guard(self.queue_path), closing(PendingFolders(self.queue_path)) as pending:
                 while True:
                     self._wake.clear()
@@ -102,7 +106,7 @@ class CherryIngestor(QObject):
                         if self._stop.is_set():
                             break
                         try:
-                            count = reconcile(self.service, folder, self._stop)
+                            count = reconcile(self.service, folder, self._stop, on_review=self.review_required.emit)
                         except Exception as exc:
                             pending.failed(folder, revision, exc)
                             self.failed.emit(str(exc)[:512])

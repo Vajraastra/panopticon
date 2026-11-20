@@ -119,6 +119,9 @@ async def create_profile(
         folder_path=folder_path,
         primary_site=site,
     )
+    # New-project creation explicitly admits this directory. Sync must not
+    # recreate an absent folder belonging to an existing library history.
+    folder_path.mkdir(parents=True, exist_ok=True)
     await add_profile_url(
         db_path=db_path,
         profile_id=profile_id,

@@ -66,7 +66,7 @@ class Batches(unittest.TestCase):
             queued = self.service.submit('register_files_minimal', [self.record])
             with patch.object(self.service, 'submit', wraps=self.service.submit) as submitted:
                 job = pool.submit(commit_batch, self.service, 'register_files_minimal',
-                                  [dict(self.record, size=7)], self.cancel)
+                                  [dict(self.record, filename='changed.png')], self.cancel)
                 try:
                     wait(lambda: self.service.metrics_snapshot()['rejected_full'] >= 1)
                     self.assertFalse(job.done())

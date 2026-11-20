@@ -458,6 +458,7 @@ async def run_profile_download(
     emit: EmitFn,
     config=None,
     resolve_auth: Optional[AuthResolver] = None,
+    prepare_artist: Callable[[str], Awaitable[object]] | None = None,
 ) -> DownloadSummary:
     """
     Ejecuta el flujo de descarga de dos fases para todas las fuentes activas
@@ -885,6 +886,9 @@ async def run_profile_download(
                 await _set_unavailable(f"{type(exc).__name__}: {exc}")
                 _publish_site_metrics(source_metrics, emit)
                 continue
+
+            if not scan_only and prepare_artist is not None:
+                await prepare_artist(artist_info.name)
 
             emit(SourceStarted(pu["url"], artist_info.name, pu["site"]))
             emit(Log(f"▶ {artist_info.name} ({pu['site']})", "info"))

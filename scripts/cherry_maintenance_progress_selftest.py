@@ -113,11 +113,14 @@ class MaintenanceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_batch_order_and_phases(self):
         events, order = [], []
-        result = await process_profiles([
-            dict(id=2, display_name='First', folder_path=str(self.folder)),
-            dict(id=1, display_name='Second', folder_path=str(self.folder)),
-        ], on_profile=lambda *args: order.append(args), on_progress=events.append,
-           data_service=SimpleNamespace(read=lambda *_: False))
+        from core.library_service import LibraryService
+        service=LibraryService(self.folder/'progress-native.db')
+        try:
+            result = await process_profiles([
+                dict(id=2, display_name='First', folder_path=str(self.folder)),
+                dict(id=1, display_name='Second', folder_path=str(self.folder)),
+            ], on_profile=lambda *args: order.append(args), on_progress=events.append,data_service=service)
+        finally:service.close()
         self.assertFalse(result.errors)
         self.assertEqual([r[2] for r in order], [2, 1])
         phases = {e.phase for e in events}

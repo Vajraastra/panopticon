@@ -32,7 +32,7 @@ def commit_batch(service, operation, records, cancel_event):
 
 def commit_control(service, operation, cancel_event):
     """Explicit idempotent schema preparation with the same FIFO admission."""
-    if operation != 'prepare_path_identity':
+    if operation not in ('prepare_path_identity', 'prepare_ingest_reviews'):
         raise ValueError('unsupported_control_command')
     return _commit(service, operation, (), cancel_event)
 

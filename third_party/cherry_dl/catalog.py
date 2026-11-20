@@ -374,6 +374,43 @@ async def read_profile_meta(artist_dir: Path) -> dict | None:
 
 # ── Contador global del artista ────────────────────────────────────────────────
 
+async def ensure_counter_at_least(artist_dir: Path, minima: dict[str, int]) -> dict[str, int]:
+    """Raise existing profile namespaces atomically; never compact or create a profile."""
+    from .file_routing import COUNTER_NAMESPACES
+    allowed={'legacy',*COUNTER_NAMESPACES}
+    if (type(minima) is not dict or not 1 <= len(minima) <= len(allowed) or
+            any(key not in allowed or type(value) is not int or
+                not 0 <= value <= 2**63 - 2 for key,value in minima.items())):
+        raise ValueError('invalid_counter_minima')
+    artist_dir = Path(artist_dir)
+    db_path = artist_dir / CATALOG_NAME
+    if not artist_dir.is_dir() or not db_path.is_file():
+        raise ValueError('counter_profile_missing')
+    # mode=rw prevents a raced disappearance from silently creating an empty DB.
+    async with aiosqlite.connect(db_path.resolve().as_uri() + '?mode=rw', uri=True, timeout=30) as db:
+        await db.execute('BEGIN IMMEDIATE')
+        result = {}
+        try:
+            for namespace, minimum in sorted(minima.items()):
+                key = 'counter' if namespace=='legacy' else 'counter:' + namespace
+                async with db.execute('SELECT value,typeof(value) FROM meta WHERE key=?',(key,)) as cur:
+                    row = await cur.fetchone()
+                if row is not None and (row[1] != 'integer' or type(row[0]) is not int or
+                                         not 0 <= row[0] <= 2**63 - 2):
+                    raise ValueError('counter_state_invalid')
+                current = row[0] if row is not None else 0
+                if row is None:
+                    await db.execute('INSERT INTO meta(key,value) VALUES(?,?)',(key,minimum))
+                elif minimum > current:
+                    await db.execute('UPDATE meta SET value=MAX(value,?) WHERE key=?',(minimum,key))
+                result[namespace] = max(current, minimum)
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+    return result
+
+
 async def next_counter(artist_dir: Path, namespace: str | None = None) -> int:
     """
     Incrementa atómicamente y retorna el siguiente número secuencial del artista.
@@ -499,7 +536,7 @@ async def apply_project_maintenance(
         for file_hash, (filename, _size, _counter) in existing.items():
             occupied.setdefault(filename, set()).add(file_hash)
         changed = [item for item in files if existing.get(item["hash"]) != (
-            item["new"], int(item["size"]), int(item["counter"]))]
+            item["new"], None if item["size"] is None else int(item["size"]), int(item["counter"]))]
         conflicts = [item for item in files
                      if occupied.get(item["new"], set()) - {item["hash"]}]
         progress("catalog_write", 0, len(conflicts) + len(changed))
@@ -522,7 +559,7 @@ async def apply_project_maintenance(
                     counter = excluded.counter
                 """,
                 (item["hash"], item["new"], int(time.time()),
-                 int(item["size"]), int(item["counter"])),
+                 None if item["size"] is None else int(item["size"]), int(item["counter"])),
             )
             progress("catalog_write", len(conflicts) + position + 1, len(conflicts) + len(changed))
         async with db.execute("SELECT key, value FROM meta") as cur:

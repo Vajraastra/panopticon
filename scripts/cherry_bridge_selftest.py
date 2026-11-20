@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PySide6.QtCore import QCoreApplication, QEventLoop  # noqa: E402
 
 from modules.cherry.logic.download_bridge import DownloadBridge  # noqa: E402
+from core.paths import ProjectPaths
 from modules.cherry.logic.download_queue import DownloadQueue  # noqa: E402
 from modules.cherry.logic.runtime import CherryRuntime  # noqa: E402
 
@@ -421,7 +422,7 @@ def test_runner_no_network(app, runtime, bridge, rec) -> None:
     # filas, así que el estado de cherry-dl no se toca.
     fake = {
         "id": -1,
-        "folder_path": str(Path(__file__).resolve().parent.parent / "cache" / "_selftest"),
+        "folder_path": str(ProjectPaths.root() / "cache" / "_selftest"),
         "urls": [{
             "id": -1, "url": "https://example.invalid/no-template",
             "site": "?", "enabled": 1, "last_synced": None, "file_count": 0,
@@ -502,7 +503,7 @@ def _fake_profile(pid: int, name: str) -> dict:
     return {
         "id": pid,
         "display_name": name,
-        "folder_path": str(Path(__file__).resolve().parent.parent / "cache" / "_selftest"),
+        "folder_path": str(ProjectPaths.root() / "cache" / "_selftest"),
         "urls": [{
             "id": pid, "url": "https://example.invalid/no-template",
             "site": "?", "enabled": 1, "last_synced": None, "file_count": 0,
@@ -735,6 +736,7 @@ def temporary_state():
 
     with tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
         root = Path(folder)
+        (root / 'cache' / '_selftest').mkdir(parents=True)
         cherry = root / '.cherry-dl'
         cherry.mkdir()
         for name, value in {'CHERRY_DIR': cherry, 'INDEX_DB': cherry / 'index.db',
@@ -777,7 +779,11 @@ def run_tests(args) -> int:
     if not runtime.start():
         print("✗ el runtime no arrancó")
         return 2
-    bridge = DownloadBridge(runtime)
+    from core.library_service import LibraryService, get_library_service
+    from core.paths import ProjectPaths
+    live = args.scan is not None or args.download is not None
+    service = get_library_service() if live else (None if args.list else LibraryService(ProjectPaths.root() / "bridge-native.db"))
+    bridge = DownloadBridge(runtime, data_service=service)
     rec = Recorder(bridge)
 
     try:
@@ -818,6 +824,8 @@ def run_tests(args) -> int:
     finally:
         print("\n[fin] apagando el runtime")
         runtime.stop()
+        if service is not None and not live:
+            service.close()
         check("el loop se apagó", not runtime.is_running)
 
     if args.scan is None and args.download is None and not args.list:

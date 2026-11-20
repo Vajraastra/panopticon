@@ -14,6 +14,7 @@ def register(service, source, event):
     from core.library_path_ingest import register as plan
     if event.is_set():
         raise ValueError('external_registration_cancelled')
+    confirm_write(service, 'prepare_ingest_reviews', event=event)
     source = safe_path(Path(source).absolute())
     with PinnedFile(source) as pin:
         identity = pin.check()

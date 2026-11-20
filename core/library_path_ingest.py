@@ -152,9 +152,12 @@ def register(service, records, cancel_event, *, commit=None):
             target = targets.get(observation.canonical)
             retained = observation.path in historical or observation.canonical in historical
             if retained and target is not None:
-                raise ValueError('path_identity_review_required')
+                exact={(copy_id, stored_path) for name,copy_id,stored_path in proof['matches']
+                       if name==observation.canonical}
+                if target not in exact:
+                    raise ValueError('path_identity_history_requires_exact_active_binding')
             values.append(dict(data=row, identity=asdict(observation), clock=proof['clock'],
-                               target=target, historical=retained))
+                               target=target, historical=retained and target is None))
         return publish(values)
     except ValueError as exc:
         if str(exc) == 'identity_cancelled':
@@ -162,21 +165,26 @@ def register(service, records, cancel_event, *, commit=None):
         raise
 
 
-def write(repo, values):
+def write(repo, values, *, operation_id=None):
+    from core.ingest_review import dispatch, apply_observed
+    return dispatch(repo, values, observed=True, producer='observed_inventory', operation_id=operation_id,
+                    apply=lambda accepted: apply_observed(repo, accepted, lambda values: _write_storage(repo, values)))
+
+
+def validate_observed(repo, values):
     """SQL only, under BEGIN IMMEDIATE. Never select an ambiguous target."""
     if (type(values) not in (list, tuple) or len(values) > 100 or any(
             type(v) is not dict or set(v) != {'data','identity','clock','target','historical'} for v in values)):
         raise ValueError('invalid_path_ingest_batch')
     if not values:
-        return True
-    repo._path_ingest_transition = None
+        return None
     conn = repo.conn
     ready = prepared(conn)
     if not ready:
         if any(v['identity'] is not None or v['clock'] is not None or v['target'] is not None
                or v['historical'] is not False for v in values):
             raise ValueError('path_identity_sql_state_changed')
-        return repo.register_files_minimal([v['data'] for v in values])
+        return None
     clock = token(conn)
     if clock is None or any(tuple(v['clock'] or ()) != clock for v in values):
         raise ValueError('path_identity_sql_state_changed')
@@ -218,15 +226,31 @@ def write(repo, values):
             hints = {(file_id, stored_path) for volume, high, low, file_id, stored_path
                      in current['candidates'] if (volume, high, low) == tuple(value['identity']['physical'][:3])}
             valid = chosen_target is None or chosen_target in hints
-        if not valid or value['historical'] != (path in historical or canonical in historical):
+        retained = path in historical or canonical in historical
+        expected_historical = retained and chosen_target is None
+        if not valid or value['historical'] != expected_historical:
             raise ValueError('path_identity_sql_state_changed')
-        if value['historical'] and chosen_target is not None:
-            raise ValueError('path_identity_review_required')
+        if retained and chosen_target is not None and (expected is None or chosen_target != expected):
+            raise ValueError('path_identity_history_requires_exact_active_binding')
         if chosen_target is not None:
             repaired = repaired or expected is None
             previous = targets.setdefault(canonical, chosen_target)
             if previous != chosen_target:
                 raise ValueError('path_identity_sql_state_changed')
+    return dict(clock=clock, coverage=coverage, canonicals=canonicals, paths=paths, targets=targets, repaired=repaired)
+
+
+def _write_storage(repo, values):
+    proof = validate_observed(repo, values)
+    if not values:
+        return True
+    repo._path_ingest_transition = None
+    if proof is None:
+        return repo.register_files_minimal([v['data'] for v in values])
+    conn = repo.conn
+    clock, coverage = proof['clock'], proof['coverage']
+    canonicals, paths, targets = proof['canonicals'], proof['paths'], proof['targets']
+    repaired = proof['repaired']
     # Simulate repeated aliases in input order; preserve the saved name and
     # first documented non-NULL provenance, even when Cherry brings a raw copy.
     bindings, normalized = {}, []

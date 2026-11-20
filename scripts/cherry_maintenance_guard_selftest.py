@@ -1,4 +1,4 @@
-"""Private Windows fixtures for the temporary Native maintenance barrier."""
+"""Windows fixtures for required Native maintenance dispatch and review guards."""
 import argparse
 import asyncio
 import json
@@ -18,7 +18,9 @@ from modules.cherry.logic.archive_batch import (MaintenanceBlocked,
 
 class MaintenanceGuard(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        work=Path(__file__).resolve().parents[1]/'.work'/'cherry-maintenance-guard-selftest'
+        work.mkdir(parents=True,exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=work)
         self.root = Path(self.temp.name)
         self.folder = self.root / 'Artist'; self.folder.mkdir()
         self.other = self.root / 'Other'; self.other.mkdir()
@@ -40,16 +42,15 @@ class MaintenanceGuard(unittest.IsolatedAsyncioTestCase):
     def state(self, key):
         return self.service.read('get_copy_version_state', key)
 
-    async def test_active_and_offline_history_block_before_engine(self):
+    async def test_active_and_offline_history_delegate_only_to_native(self):
         key = self.register()
         for offline in (False, True):
             if offline:
                 self.service.submit('archive_copy', key, expected_fingerprint=self.state(key)['fingerprint']).result(5)
             before = self.state(key); names = sorted(p.name for p in self.folder.iterdir())
-            with patch('third_party.cherry_dl.archives.process_project', new=AsyncMock()) as engine:
-                with self.assertRaisesRegex(MaintenanceBlocked, 'indexed'):
-                    await process_unindexed_project(self.folder, 'Artist', data_service=self.service)
-                engine.assert_not_awaited()
+            with patch('modules.cherry.logic.native_maintenance.process_native_project', new=AsyncMock(return_value=True)) as engine:
+                self.assertTrue(await process_unindexed_project(self.folder, 'Artist', data_service=self.service))
+                engine.assert_awaited_once_with(self.folder,'Artist',data_service=self.service)
             self.assertEqual(self.state(key), before)
             self.assertEqual(sorted(p.name for p in self.folder.iterdir()), names)
             self.assertEqual(self.source.read_bytes(), b'private existing image')
@@ -57,25 +58,25 @@ class MaintenanceGuard(unittest.IsolatedAsyncioTestCase):
     async def test_batch_checks_every_profile_before_touching_first(self):
         self.register(offline=True)
         profiles = [dict(id=1, display_name='Free', folder_path=str(self.other)),
-                    dict(id=2, display_name='History', folder_path=str(self.folder))]
-        with patch('third_party.cherry_dl.archives.process_project', new=AsyncMock()) as engine:
-            with self.assertRaisesRegex(MaintenanceBlocked, 'indexed'):
+                    dict(id=2, display_name='Missing', folder_path=str(self.root/'missing'))]
+        with patch('modules.cherry.logic.native_maintenance.process_native_project', new=AsyncMock()) as engine:
+            with self.assertRaisesRegex(MaintenanceBlocked, 'review_required'):
                 await process_profiles(profiles, data_service=self.service)
             engine.assert_not_awaited()
         self.assertEqual(list(self.other.iterdir()), [])
 
     async def test_unindexed_folder_can_reach_engine(self):
         sentinel = object()
-        with patch('third_party.cherry_dl.archives.process_project', new=AsyncMock(return_value=sentinel)) as engine:
+        with patch('modules.cherry.logic.native_maintenance.process_native_project', new=AsyncMock(return_value=sentinel)) as engine:
             result = await process_unindexed_project(self.folder, 'Artist', data_service=self.service)
         self.assertIs(result, sentinel)
-        engine.assert_awaited_once_with(self.folder, 'Artist')
+        engine.assert_awaited_once_with(self.folder, 'Artist',data_service=self.service)
 
     async def test_missing_or_failed_service_blocks_before_engine(self):
         class Broken:
             def read(self, *args):
                 raise RuntimeError('private transport error')
-        with patch('third_party.cherry_dl.archives.process_project', new=AsyncMock()) as engine:
+        with patch('modules.cherry.logic.native_maintenance.process_native_project', new=AsyncMock()) as engine:
             for service in (None, Broken()):
                 with self.assertRaisesRegex(MaintenanceBlocked, 'review_required'):
                     await process_unindexed_project(self.folder, 'Artist', data_service=service)
@@ -91,15 +92,24 @@ class MaintenanceGuard(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(Exception, 'invalid_maintenance_folders'):
             self.service.read('has_maintenance_history', [])
 
-    async def test_watched_scopes_block_parent_child_but_not_neighbor(self):
+    async def test_watched_scopes_detect_history_but_use_native_dispatch(self):
         self.service.submit('add_watched_folder', str(self.folder)).result(5)
         for target in (self.root, self.folder, self.folder / 'empty'):
             self.assertTrue(self.service.read('has_maintenance_history', [target.as_posix()]))
         self.assertFalse(self.service.read('has_maintenance_history', [self.folder.as_posix() + '-neighbor']))
-        with patch('third_party.cherry_dl.archives.process_project', new=AsyncMock()) as engine:
-            with self.assertRaisesRegex(MaintenanceBlocked, 'indexed'):
-                await process_unindexed_project(self.folder, 'Artist', data_service=self.service)
-            engine.assert_not_awaited()
+        with patch('modules.cherry.logic.native_maintenance.process_native_project', new=AsyncMock(return_value=True)) as engine:
+            self.assertTrue(await process_unindexed_project(self.folder, 'Artist', data_service=self.service))
+            engine.assert_awaited_once()
+
+    async def test_pending_failure_exposes_operation_for_review(self):
+        from modules.cherry.logic.native_maintenance import NativeMaintenanceFailure
+        operation_id='b39c7400-bb4b-4d62-a6cc-c031795e7426'
+        with patch('modules.cherry.logic.native_maintenance.process_native_project',
+                   new=AsyncMock(side_effect=NativeMaintenanceFailure(['private failure'],operation_id))):
+            with self.assertRaises(MaintenanceBlocked) as caught:
+                await process_unindexed_project(self.folder,'Artist',data_service=self.service)
+        self.assertEqual(caught.exception.reason,'recovery_required')
+        self.assertEqual(caught.exception.operation_id,operation_id)
 
     async def test_cli_apply_requires_review_but_preview_still_runs(self):
         from scripts import cherry_archive_batch as cli
@@ -130,11 +140,12 @@ class MaintenanceGuardUI(unittest.TestCase):
         for language in ('en', 'es'):
             translations = json.loads((root / 'locales' / (language + '.json')).read_bytes())
             messages = []
-            view = SimpleNamespace(context={}, _maintenance_progress=SimpleNamespace(emit=lambda *_: None),
+            view = SimpleNamespace(context={}, _maintenance_generation=0, _maintenance_progress=SimpleNamespace(emit=lambda *_: None),
                 _archive_batch_profile=SimpleNamespace(emit=lambda *_: None),
                 _archives_finished=SimpleNamespace(emit=lambda *args: messages.append(args)),
                 tr=lambda key, default: translations.get(key, default))
             view._maintenance_blocked_message = lambda reason: CherryView._maintenance_blocked_message(view, reason)
+            view._review_maintenance_recovery = lambda blocked,event,generation: CherryView._review_maintenance_recovery(view,blocked,event,generation)
             for method, args in [(CherryView._archives_async, ('C:/private', 'Artist')),
                                  (CherryView._archives_batch_async, ([dict(folder_path='C:/private')],))]:
                 asyncio.run(method(view, *args))

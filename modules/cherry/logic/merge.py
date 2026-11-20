@@ -150,7 +150,7 @@ async def preview(pair: dict) -> MergePlan:
     return plan
 
 
-async def merge_pair(
+async def _merge_pair(
     pair: dict,
     orphan_action: str = ORPHAN_IGNORE,
     on_progress: Callable[[int, int], None] | None = None,
@@ -221,3 +221,44 @@ async def merge_pair(
         result.moved, result.orphaned, orphan_action, result.purged,
     )
     return result
+
+
+async def merge_pair(
+    pair: dict,
+    orphan_action: str = ORPHAN_IGNORE,
+    on_progress: Callable[[int, int], None] | None = None,
+    *, data_service=None, journal_root=None,
+) -> MergeResult:
+    """Hold both profile scopes until every started move and receipt settles."""
+    from contextlib import ExitStack
+    from .profile_scope import profile_scope, require_available_profile
+
+    plan = plan_pair(pair)
+    if data_service is None or orphan_action != ORPHAN_IGNORE:
+        return await _merge_pair(pair, orphan_action, on_progress,
+                                 data_service=data_service, journal_root=journal_root)
+    try:
+        with ExitStack() as guards:
+            for folder in sorted({plan.keep_folder, plan.remove_folder}, key=str):
+                ticket = guards.enter_context(profile_scope(folder))
+                require_available_profile(data_service, ticket)
+            # A pending Windows worker cannot outlive the shared exclusion.
+            # Drain the whole in-flight engine transaction before propagating
+            # cancellation; no new profile can start against half-written paths.
+            task = asyncio.create_task(_merge_pair(pair, orphan_action, on_progress,
+                data_service=data_service, journal_root=journal_root))
+            cancelled = False
+            while True:
+                try:
+                    result = await asyncio.shield(task)
+                    break
+                except asyncio.CancelledError:
+                    cancelled = True
+                    if task.done():
+                        result = task.result()
+                        break
+            if cancelled:
+                raise asyncio.CancelledError
+            return result
+    except (ValueError, OSError) as error:
+        return MergeResult(plan=plan, orphan_action=orphan_action, errors=[str(error)])

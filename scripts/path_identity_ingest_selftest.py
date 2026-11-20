@@ -45,6 +45,14 @@ class Ingest(unittest.TestCase):
         self.service.submit('register_files_minimal', [self.row(path, **extra)]).result(3)
         return self.service.read('get_file_id', str(path))
 
+    def seed_legacy_alias(self, path):
+        # Deliberate pre-fix ambiguous state; ordinary raw ingestion now blocks it.
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            repo = LibraryRepository(conn)
+            with conn:
+                repo._register_files_minimal_storage([self.row(path)])
+            return repo.get_file_id(str(path))
+
     def ingest(self, rows):
         return self.db.register_files_minimal(rows, cancel_event=self.event)
 
@@ -88,10 +96,15 @@ class Ingest(unittest.TestCase):
         self.service.backfill_path_identity()
         current = self.root/'árbol'/path.name
         path.parent.rename(current.parent)
-        # Metadata may change between preparation and rename: inode hints do
-        # not require a stale saved mtime/size to equal the current file.
+        # Model an explicitly documented Metadata Hub version. A producer's
+        # unrelated SHA must not silently donate bytes to the earlier identity.
         current.write_bytes(b'new current private metadata')
-        self.ingest([self.row(current, hash_original='raw', origin_url='raw', artist='raw')])
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            conn.execute('UPDATE files SET hash_mod=?,file_size=? WHERE id=?',
+                         ('raw', current.stat().st_size, key))
+            conn.commit()
+        self.ingest([dict(self.row(current, hash_original='raw', origin_url='raw', artist='raw'),
+                          size=current.stat().st_size)])
         self.assertEqual(self.sql('SELECT id,path,rating,hash_original,origin_url,artist,meta_model,meta_positive FROM files'),
             [(key, path.as_posix(), 5, 'saved', 'documented', 'curated', 'model', 'prompt')])
         self.assertEqual(self.service.read('get_tags_for_file', str(path)), ['keep'])
@@ -125,7 +138,7 @@ class Ingest(unittest.TestCase):
     def test_stale_duplicate_aliases_are_reviewed_without_merging_ids(self):
         path = self.image('Árbol/One.png')
         first = self.seed(path)
-        second = self.seed(self.root/'ÁRBOL'/'ONE.PNG')
+        second = self.seed_legacy_alias(self.root/'ÁRBOL'/'ONE.PNG')
         self.service.backfill_path_identity()
         path.parent.rename(self.root/'árbol')
         with self.assertRaisesRegex(ValueError, 'review_required'):
@@ -226,7 +239,7 @@ class Ingest(unittest.TestCase):
         path = self.image()
         self.seed(path)
         alias = self.root/'ONE.PNG'
-        self.seed(alias)
+        self.seed_legacy_alias(alias)
         self.service.submit('edit_curation', str(path), rating=5).result(3)
         self.service.backfill_path_identity()
         before = self.sql('SELECT id,path,rating FROM files ORDER BY id')

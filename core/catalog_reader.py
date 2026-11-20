@@ -51,7 +51,9 @@ def get_image_files(folder: str | Path) -> list[dict]:
             'path':     str   — path absoluto normalizado,
             'filename': str   — nombre de archivo,
             'size':     int   — tamaño en bytes,
-            'created':  float — Unix timestamp (date_added de cherry-dl),
+            'created':  float — filesystem birthtime for a newly observed copy,
+            'catalog_created': original catalog date_added (historical evidence),
+            'catalog_size': original catalog file_size (historical evidence),
             'cherry_url':  str | None — URL de origen (informativo),
             'cherry_hash': str | None — SHA-256 de cherry-dl (informativo),
         }
@@ -104,8 +106,10 @@ def read_image_files(folder: str | Path, cancelled=None, *, on_file=None) -> Inv
                             continue
                         entry = {
                             'path': str(full_path), 'filename': filename,
-                            'size': row['file_size'] or info.st_size,
-                            'created': float(row['date_added'] or 0),
+                            'size': info.st_size,
+                            'created': getattr(info, 'st_birthtime', info.st_ctime),
+                            'catalog_size': row['file_size'],
+                            'catalog_created': row['date_added'],
                             'cherry_url': row['url_source'], 'cherry_hash': row['hash'],
                         }
                     except FileNotFoundError:

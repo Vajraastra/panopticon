@@ -83,9 +83,10 @@ class DownloadBridge(QObject):
     cancelled_signal = Signal()
     failed_signal    = Signal(str)     # texto del error
 
-    def __init__(self, runtime: CherryRuntime, parent: QObject | None = None) -> None:
+    def __init__(self, runtime: CherryRuntime, parent: QObject | None = None, *, data_service=None) -> None:
         super().__init__(parent)
         self._runtime = runtime
+        self._data_service = data_service
         self._task: Optional[asyncio.Task] = None
         self._future = None  # concurrent.futures.Future de la descarga en curso
         self._busy = False
@@ -220,12 +221,22 @@ class DownloadBridge(QObject):
             # Import perezoso dentro del contrato de error y limpieza.
             from third_party.cherry_dl.download_service import run_profile_download
 
-            summary = await run_profile_download(
-                profile,
-                emit=self._on_event,
-                resolve_auth=self._resolve_auth,
-                **kwargs,
-            )
+            from pathlib import Path
+            from .profile_scope import async_profile_scope, require_available_profile
+            from .counter_highwater import prepare_highwater
+
+            if self._data_service is None:
+                raise ValueError('cherry_native_service_unavailable')
+            folder = Path(profile['folder_path'])
+            async with async_profile_scope(folder) as ticket:
+                require_available_profile(self._data_service, ticket)
+                hook = None if kwargs.get('scan_only') else await prepare_highwater(self._data_service, ticket)
+                ticket.assert_current()
+                summary = await run_profile_download(
+                    profile, emit=self._on_event, resolve_auth=self._resolve_auth,
+                    prepare_artist=hook, **kwargs,
+                )
+                ticket.assert_current()
             terminal = (self.finished_signal, (summary,))
         except asyncio.CancelledError:
             terminal = (self.cancelled_signal, ())

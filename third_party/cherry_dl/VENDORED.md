@@ -1019,3 +1019,39 @@ curation and history before Cherry acknowledges the destination. The engine stil
 owns catalog/history writes. Completed physical paths are reported even if the
 later catalog acknowledgement fails, so consumers can review partial effects.
 The original mover remains available for engine-only clients and unindexed files.
+
+### Contadores frente a identidades Native conservadas
+
+El hook opcional `prepare_artist` corre tras resolver el nombre real de la fuente,
+antes de iniciar sus descargas. El wrapper Native captura nombres activos y
+offline bajo el guard compartido del perfil y llama a `ensure_counter_at_least`:
+una transacción que sólo eleva contadores por tipo. `reserve_destination` sólo
+comprueba presencia física; un nombre ausente puede seguir perteneciendo a una
+identidad Native. No se reactivan IDs ni se mueven archivos. El motor conserva su
+independencia de Native: recibe el callback y es dueño del SQL de su catálogo.
+
+### Mantenimiento con identidades Native y paquetes conservados
+
+`archives.process_project` admite `native_hooks`: organización, publicación de
+todos los miembros conocidos de un paquete y compactación usan fases Native
+independientes con revisión vigente y movimientos por handle sin sobrescritura.
+Los callbacks no recurren a un rename por ruta si fallan. El motor conserva la
+extracción canónica y sus propias APIs de catálogo; no importa SQL de Panopticon.
+En Native rechaza duplicados para revisión y conserva siempre ZIP/RAR.
+
+El SHA/tamaño físicos actuales y `catalog_hash`/`catalog_size` son distintos cuando Metadata Hub estampó
+un archivo: el movimiento verifica el primero y catálogo/recibos se actualizan
+por su clave original. La planificación Native consulta su versión vigente sin
+releer bytes de archivos que no se mueven. Un manifiesto completo mantiene el
+ID y recibo Native de cada miembro; al repetir, comprueba la cadena original,
+acepta miembros movidos/retirados como historial y no los extrae ni restaura.
+Un plan pendiente exige recuperación con revisión física actual y token; nunca
+se aplica automáticamente un plan histórico. La cancelación comparte un evento
+que interrumpe el SHA entre bloques y completa el recibo tras un rename realizado.
+Las reservas Native de números ausentes también se usan al compactar y antes de
+asignar miembros nuevos; `ensure_counter_at_least` admite el contador heredado
+`counter`, además de los espacios por tipo, con el mismo MAX atómico.
+
+`profiles.create_profile` crea la carpeta tras confirmar el alta de `index.db` y
+antes de añadir fuentes. El guard Native exige una raíz física: un proyecto
+nuevo queda listo para Sync; un alta rechazada no recrea una carpeta ausente.
