@@ -7,9 +7,9 @@ from core.base_module import BaseModule
 
 log = logging.getLogger(__name__)
 
-# Retired product tools remain in Git for historical tests and existing output
-# compatibility. Never import or instantiate them through the application loader.
-RETIRED_MODULES = frozenset({'format_converter'})
+# Retired folders may survive checkout through ignored files or legacy outputs.
+# Never import or instantiate them through the application loader.
+RETIRED_MODULES = frozenset({'character_separator', 'format_converter'})
 
 class ModuleLoader:
     """

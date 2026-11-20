@@ -25,16 +25,26 @@ class Retirement(unittest.TestCase):
             names=loader.discover_modules()
         self.assertEqual(len(names),12)
         self.assertNotIn('format_converter',names)
+        self.assertNotIn('character_separator',names)
         self.assertIn('cropper',names)
         self.assertIn('image_optimizer',names)
         imported.assert_not_called()
 
     def test_explicit_load_cannot_restore_retired_tool_even_if_cached(self):
         loader=ModuleLoader(str(ROOT/'modules'))
-        loader.loaded_modules['format_converter']=object()
-        with patch('core.mod_loader.importlib.import_module') as imported:
-            self.assertIsNone(loader.load_module('format_converter',{}))
-        imported.assert_not_called()
+        for name in ('format_converter','character_separator'):
+            with self.subTest(name=name):
+                loader.loaded_modules[name]=object()
+                with patch('core.mod_loader.importlib.import_module') as imported:
+                    self.assertIsNone(loader.load_module(name,{}))
+                imported.assert_not_called()
+
+    def test_separator_cache_left_after_checkout_does_not_create_a_tool(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache=Path(directory)/'character_separator'/'__pycache__'
+            cache.mkdir(parents=True)
+            (cache/'module.cpython-313.pyc').write_bytes(b'stale bytecode')
+            self.assertEqual(ModuleLoader(directory).discover_modules(),[])
 
     def test_existing_output_and_legacy_sources_remain_untouched(self):
         legacy=(ROOT/'modules/format_converter/logic/converter.py').read_bytes()
@@ -65,6 +75,7 @@ class Retirement(unittest.TestCase):
                     self.assertEqual(len(window.loaded_modules),12)
                     self.assertEqual(window.module_grid_count,12)
                     self.assertNotIn('format_converter',calls)
+                    self.assertNotIn('character_separator',calls)
                     self.assertFalse(window.module_windows)
                 finally:
                     window.close()

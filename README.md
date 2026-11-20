@@ -13,8 +13,7 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 | **Cherry-DL** | Downloader for artist collections from Patreon, Pixiv, and Pawchive. Create a project from a URL, queue several artists, and watch progress per worker while it syncs incrementally. Kemono is retired. Builds the raw library the other modules curate. |
 | **Librarian** | Central library manager. Scans folders, builds an indexed collection, provides thumbnails and lazy loading for large sets. |
 | **Gallery** | Visual browser for your collection. Paginates and displays images with filtering and sorting. |
-| **Character Recognizer** | Identifies and tags characters using CCIP by default. ArcFace facial recognition and its existing profiles remain selectable. |
-| **Character Separator** | Uses CCIP to group images by character in batches of up to 1,000. Review enlarged images, confirm groups, or merge them into confirmed characters. The full pass copies approved images, clear matches, and their .txt captions into named character folders. |
+| **Character Recognizer** | Identifies and tags characters within a set using face recognition (ArcFace + YuNet) with landmark alignment. Supports real photos, 3D renders, and illustration/anime. |
 | **Smart Cropper** | Interactively crops received images to target aspect ratios. Supports standard dataset ratios, monitor formats, and mobile sizes. |
 | **Duplicate Finder** | Reviews exact SHA-256 duplicates with curation priority and recoverable retirement; visual similarity stays review-only. |
 | **Format Scanner** | Analyzes the distribution of image formats across a collection for statistical review. |
@@ -23,19 +22,6 @@ Panopticon is not a single tool. It is a **visual orchestration framework**: a d
 | **Metadata Hub** | Inspect and edit embedded metadata (EXIF, tags, captions) across your collection. |
 | **Dataset Tagger** | Auto-captions image folders with a local or online vision LLM plus a WD tagger, producing kohya-style `.txt` sidecars for training datasets (booru tags and natural language, per-model templates). |
 | **Pickler** | Manual culling with verified image/caption transfers: moves preserve curated IDs, explicit copies inherit initial curation independently, and guarded undo preserves changed files. |
-
-Character Separator works with local Windows folders independently of the indexed library.
-It shares CCIP embeddings with Character Recognizer. Models download when needed and inference
-runs locally. Each input folder keeps its confirmed characters and review decisions across restarts.
-Use the **Unidentified** and **Identified** tabs in the sidebar to review both lists in the same gallery.
-Optional **Autoscan** looks for a newly confirmed character in the unassigned groups of the current batch.
-Later batches show likely matches to known characters as **Name?**. Review the images, then click the name
-to merge the remaining group or reject the suggestion to keep the images pending.
-In **Identified**, select a character to inspect its assignments, including verified exports. Move an image
-to the correct character from the gallery or its enlarged view. A previous exported copy stays on disk
-and the next export can copy the image into the corrected character folder.
-Images and captions are copied when you start the export, including after reopening the review.
-After exporting, select a character to open its verified copies in Gallery, Dataset Tagger, or Pickler.
 
 ---
 
@@ -61,7 +47,7 @@ the Qt event loop alive until the writer has closed its connection and released
 ownership; it does not wait for the writer on the GUI thread, even with a full
 command queue. Pending cancelled commands are skipped and failed transactions
 resolve their futures. Blocking `close()` remains available for CLI/tests.
-All active modules participate in shutdown readiness. The dashboard first
+All 12 active modules participate in shutdown readiness. The dashboard first
 requests cancellation and waits for their retained work and the native thread
 registry, then drains the Cherry ingestor and central writer. Accepted publication
 or database work finishes before its services close. Closing a module window only

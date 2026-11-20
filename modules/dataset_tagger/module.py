@@ -1,7 +1,6 @@
 from PySide6.QtWidgets import QWidget
 from core.base_module import BaseModule
 from core.paths import CachePaths
-from .logic.sidecar import IMAGE_EXTS
 from .ui.tagger_view import DatasetTaggerView
 
 
@@ -13,8 +12,6 @@ class DatasetTaggerModule(BaseModule):
     generación. La salida SIEMPRE va a una carpeta nueva; nunca escribe dentro
     del archivo original (ver Regla de Oro #9).
     """
-
-    image_set_extensions = frozenset(IMAGE_EXTS)
 
     def __init__(self):
         super().__init__()
