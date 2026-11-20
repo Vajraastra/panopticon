@@ -28,6 +28,24 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Sync: conservar archivos existentes y copias manuales (2026-11-20)
+
+El servicio de descarga conserva el archivo manual aunque su SHA-256 coincida
+con la descarga nueva. Cataloga la copia que el motor acaba de publicar en su
+ruta reservada; ya no renombra el manual sobre ella ni lo borra si ese traslado
+falla. Una coincidencia de contenido no acredita la identidad ni la curación
+central de una copia.
+
+Sync tampoco reorganiza archivos existentes por tipo al arrancar: esa operación
+queda en el mantenimiento explícito, donde el llamador puede conservar las
+identidades Native. Se mantienen la validación del layout y las rutas por tipo
+para descargas nuevas. El mapa de hashes manuales deja de construirse en Sync,
+ya que sólo alimentaba el traslado retirado.
+
+`scripts/cherry_manual_copy_selftest.py` verifica copias idénticas, un fallo
+inyectado de replace/unlink y un proyecto ya indexado; nombres, bytes, identidad
+física y curación Native de los originales permanecen intactos.
+
 ### Mantenimiento: staging completo y alcance administrado (2026-11-19)
 
 La compactación separa el traslado de todos los originales al staging de la

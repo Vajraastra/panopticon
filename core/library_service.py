@@ -42,7 +42,7 @@ READS = frozenset({
     'resolve_library_selection', 'check_fts',
     'get_copy_versions_page', 'get_copy_version_state',
     'get_transfer_status', 'get_transfer_receipt', 'get_transfer_sources',
-    'get_maintenance_copies',
+    'get_maintenance_copies', 'has_maintenance_history',
     'get_duplicate_snapshot',
     'get_duplicate_recovery_state',
     'get_duplicate_retirement_roots',

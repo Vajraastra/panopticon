@@ -1372,14 +1372,17 @@ class CherryView(QWidget):
 
     async def _archives_batch_async(self, profiles: list[dict]) -> None:
         import asyncio
-        from ..logic.archive_batch import process_profiles
+        from ..logic.archive_batch import MaintenanceBlocked, process_profiles
         result, error = None, ""
         try:
             result = await process_profiles(
                 profiles,
                 on_profile=self._archive_batch_profile.emit,
                 on_progress=self._maintenance_progress.emit,
+                data_service=self.context.get('data_service'),
             )
+        except MaintenanceBlocked as exc:
+            error = self._maintenance_blocked_message(exc.reason)
         except asyncio.CancelledError:
             error = self.tr("cherry.archives_cancelled", "Cancelled. Run the action again to resume.")
         except Exception as exc:
@@ -1389,18 +1392,32 @@ class CherryView(QWidget):
 
     async def _archives_async(self, folder: str, artist: str) -> None:
         import asyncio
-        from third_party.cherry_dl.archives import process_project
+        from ..logic.archive_batch import MaintenanceBlocked, process_unindexed_project
         from third_party.cherry_dl.maintenance_progress import ProgressReporter
         result, error = None, ""
+        notify_folder = folder
         try:
-            result = await process_project(
-                Path(folder), artist, progress=ProgressReporter(self._maintenance_progress.emit))
+            result = await process_unindexed_project(
+                Path(folder), artist, progress=ProgressReporter(self._maintenance_progress.emit),
+                data_service=self.context.get('data_service'))
+        except MaintenanceBlocked as exc:
+            error = self._maintenance_blocked_message(exc.reason)
+            notify_folder = ""
         except asyncio.CancelledError:
             error = self.tr("cherry.archives_cancelled", "Cancelled. Run the action again to resume.")
         except Exception as exc:
             error = str(exc)
         finally:
-            self._archives_finished.emit(folder, result, error)
+            self._archives_finished.emit(notify_folder, result, error)
+
+    def _maintenance_blocked_message(self, reason):
+        if reason == 'indexed':
+            return self.tr('tool.cherry.maintenance_native_blocked',
+                'This folder belongs to the library. Maintenance that preserves the library '
+                'is not connected yet, so this action is blocked before changing files.')
+        return self.tr('tool.cherry.maintenance_review_required',
+            'The library could not be checked. Maintenance requires a reviewed operation '
+            'that preserves its identities and history.')
 
     def _on_archives_progress(self, name: str) -> None:
         text = self.tr("cherry.archives_working", "Processing: {name}").format(name=name)

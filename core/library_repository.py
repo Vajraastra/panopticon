@@ -1026,6 +1026,10 @@ class LibraryRepository:
         from core.library_maintenance import copies
         return copies(self.conn, paths)
 
+    def has_maintenance_history(self, folders):
+        from core.library_maintenance import has_history
+        return has_history(self.conn, folders)
+
     def commit_maintenance_relocation(self, values):
         from core.library_maintenance import relocate
         return relocate(self, values)

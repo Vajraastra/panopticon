@@ -1321,6 +1321,8 @@
   "tool.cherry.maintenance_verify": "Verificando archivos",
   "tool.cherry.maintenance_unknown": "{done} / …",
   "tool.cherry.maintenance_status": "{project} | {phase} | {count}",
+  "tool.cherry.maintenance_native_blocked": "Esta carpeta pertenece a la biblioteca. El mantenimiento que conserva la biblioteca aún no está conectado; la acción se bloqueó antes de cambiar archivos.",
+  "tool.cherry.maintenance_review_required": "No se pudo comprobar la biblioteca. El mantenimiento requiere una operación revisada que conserve sus identidades e historial.",
   "cherry.archives_batch_progress": "Mantenimiento {position}/{total}: {name}",
   "cherry.archives_start": "Organizando proyecto: {folder}",
   "cherry.archives_cancelled": "Cancelado. Vuelve a ejecutar la acción para continuar.",

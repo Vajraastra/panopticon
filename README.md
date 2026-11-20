@@ -198,6 +198,16 @@ the project root; other cataloged files move to `Comprimidos/`, `Proyectos/`, `V
 `Audio/`, `Documentos/` or `Otros/`. ZIP/RAR files in `Comprimidos/` are extracted and deduplicated
 by SHA-256, using Cherry's existing numbering and catalog.
 
+Maintenance is currently blocked for folders with library history or an overlapping
+watched folder. Their central identity reconciliation is not connected to this action
+yet. The check covers the entire selected batch before changing any project. The
+batch script still supports previews; applying changes requires a reviewed operation
+that preserves library identities and history.
+
+Sync routes new downloads to their destination without reorganizing existing files.
+If a downloaded image matches a manually imported file, that original stays in place
+and the verified new download receives its own catalog entry.
+
 Maintenance compacts numbered files only in the project root and its immediate
 routed folders. Files in `picked/`, `discarded/` and other manually managed
 subfolders stay in place. Matching artist filenames there reserve their numbers

@@ -34,7 +34,6 @@ from typing import Awaitable, Callable, Optional, Union
 from .config import INDEX_DB, load_config
 from .engine import DownloadEngine, ErrorKind
 from .downloads import (
-    _build_local_hash_map,
     _passes_ext_filter,
 )
 from .file_routing import (
@@ -43,7 +42,6 @@ from .file_routing import (
     prepare_selected_folders,
     relative_filename,
 )
-from .archives import organize_project
 from .catalog import (
     FileRoute,
     ScanCatalogBatch,
@@ -517,24 +515,6 @@ async def run_profile_download(
             )
         if ext_filter and not exclude_mode:
             prepare_selected_folders(folder, ext_filter)
-        try:
-            repaired = await organize_project(folder)
-            if repaired.organized:
-                emit(Log(
-                    f"🗂 {repaired.organized} archivo(s) anterior(es) "
-                    "reubicados automáticamente por tipo",
-                    "dim",
-                ))
-        except Exception as exc:
-            log.exception(
-                "cherry: no se pudo reparar la organización | proyecto=%s",
-                folder,
-            )
-            emit(Log(
-                f"⚠ No se pudo reparar la organización anterior: "
-                f"{type(exc).__name__}: {exc}. La descarga continuará.",
-                "warn",
-            ))
 
     global_budget = (
         int(config.daily_limit_gb * 2**30)
@@ -934,7 +914,6 @@ async def run_profile_download(
                 emit(Log("Rescan completo desde el inicio…", "dim"))
 
             dl_before = summ.downloaded
-            local_hashes = await _build_local_hash_map(folder)
             pu_id: int | None = pu.get("id")
 
             # Limpiar pendientes que ya están en el catálogo.
@@ -1686,65 +1665,25 @@ async def run_profile_download(
                             _counters()
                             continue
 
-                        # Catalogar.
-                        if result.file_hash in local_hashes:
-                            old_path = local_hashes[result.file_hash]
-                            new_path = folder / catalog_name
-                            new_path.parent.mkdir(parents=True, exist_ok=True)
-                            try:
-                                old_path.replace(new_path)
-                                local_hashes[result.file_hash] = new_path
-                                if result.dest and result.dest.exists():
-                                    result.dest.unlink()
-                                renamed = True
-                            except OSError:
-                                try:
-                                    old_path.unlink()
-                                except OSError:
-                                    pass
-                                local_hashes[result.file_hash] = result.dest
-                                renamed = False
-                            await add_file(
-                                artist_dir=folder, file_hash=result.file_hash,
-                                filename=catalog_name, url_source=fi.dedup_key,
-                                file_size=result.file_size, counter=counter,
-                                is_preview=fi.is_preview,
-                                content_service=fi.content_service,
-                                post_id=fi.post_id,
-                                content_role=fi.content_role,
-                                content_position=fi.content_position,
-                            )
-                            await _remember_content_alias(
-                                folder, fi, result.file_hash, url_recorded=True,
-                            )
-                            await remove_pending(folder, fi.dedup_key)
-                            summ.downloaded += 1
-                            icon = "↷" if renamed else "✓"
-                            emit(WorkerDone(slot_id, final_name, icon))
-                            emit(Log(
-                                f"{icon} {fi.filename[:40]}  →  {final_name}"
-                                + ("  [renombrado]" if renamed else ""),
-                                "ok",
-                            ))
-                        else:
-                            await add_file(
-                                artist_dir=folder, file_hash=result.file_hash,
-                                filename=catalog_name, url_source=fi.dedup_key,
-                                file_size=result.file_size, counter=counter,
-                                is_preview=fi.is_preview,
-                                content_service=fi.content_service,
-                                post_id=fi.post_id,
-                                content_role=fi.content_role,
-                                content_position=fi.content_position,
-                            )
-                            await _remember_content_alias(
-                                folder, fi, result.file_hash, url_recorded=True,
-                            )
-                            await remove_pending(folder, fi.dedup_key)
-                            local_hashes[result.file_hash] = result.dest
-                            summ.downloaded += 1
-                            emit(WorkerDone(slot_id, catalog_name, "✓"))
-                            emit(Log(f"✓ {fi.filename[:40]}  →  {catalog_name}", "ok"))
+                        # Catalogar la descarga reservada. Un archivo manual
+                        # con los mismos bytes conserva su nombre e identidad.
+                        await add_file(
+                            artist_dir=folder, file_hash=result.file_hash,
+                            filename=catalog_name, url_source=fi.dedup_key,
+                            file_size=result.file_size, counter=counter,
+                            is_preview=fi.is_preview,
+                            content_service=fi.content_service,
+                            post_id=fi.post_id,
+                            content_role=fi.content_role,
+                            content_position=fi.content_position,
+                        )
+                        await _remember_content_alias(
+                            folder, fi, result.file_hash, url_recorded=True,
+                        )
+                        await remove_pending(folder, fi.dedup_key)
+                        summ.downloaded += 1
+                        emit(WorkerDone(slot_id, catalog_name, "✓"))
+                        emit(Log(f"✓ {fi.filename[:40]}  →  {catalog_name}", "ok"))
 
                         _counters()
 

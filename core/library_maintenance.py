@@ -33,6 +33,40 @@ def _keys(conn):
                          deterministic=True)
 
 
+def has_history(conn, folders):
+    """Bounded conservative guard, including offline copies and prepared aliases."""
+    if type(folders) not in (list, tuple) or not 1 <= len(folders) <= 256:
+        raise ValueError('invalid_maintenance_folders')
+    roots = {_path(folder).rstrip('/').casefold() for folder in folders}
+
+    def within(path):
+        key = local_path(path).rstrip('/').casefold()
+        while key:
+            if key in roots:
+                return 1
+            key = key.rpartition('/')[0]
+        return 0
+
+    def watched_overlap(path):
+        key = local_path(path).rstrip('/').casefold()
+        return int(within(path) or any(root.startswith(key + '/') for root in roots))
+
+    # A watched scope may be indexed concurrently even while it is still empty.
+    conn.create_function('maintenance_watch_overlap_v1', 1, watched_overlap)
+    if conn.execute('SELECT 1 FROM watched_folders WHERE maintenance_watch_overlap_v1(path) LIMIT 1').fetchone():
+        return True
+    conn.create_function('maintenance_folder_member_v1', 1, within)
+    if conn.execute('SELECT 1 FROM files WHERE maintenance_folder_member_v1(path) LIMIT 1').fetchone():
+        return True
+    # Stored spellings can differ after a case rename; a conservative refusal
+    # needs no full registry migration or content/identity inference.
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='path_identity_records'").fetchone():
+        if conn.execute('SELECT 1 FROM path_identity_records WHERE canonical IS NOT NULL '
+                        'AND maintenance_folder_member_v1(canonical) LIMIT 1').fetchone():
+            return True
+    return False
+
+
 def copies(conn, paths):
     """Return all active/history IDs for <=100 names; never a partial result."""
     if type(paths) not in (list, tuple) or len(paths) > 100:

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 import tempfile
 import time
@@ -115,7 +116,8 @@ class MaintenanceTests(unittest.IsolatedAsyncioTestCase):
         result = await process_profiles([
             dict(id=2, display_name='First', folder_path=str(self.folder)),
             dict(id=1, display_name='Second', folder_path=str(self.folder)),
-        ], on_profile=lambda *args: order.append(args), on_progress=events.append)
+        ], on_profile=lambda *args: order.append(args), on_progress=events.append,
+           data_service=SimpleNamespace(read=lambda *_: False))
         self.assertFalse(result.errors)
         self.assertEqual([r[2] for r in order], [2, 1])
         phases = {e.phase for e in events}

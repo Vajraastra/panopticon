@@ -202,7 +202,13 @@ El motor mantiene archivos y catálogos Cherry; no reconcilia por sí solo los I
 centrales. Al llamar a `archives.process_project`, usar `maintenance_before_apply`
 y `maintenance_move_file` con revisión vigente, SHA/identidad física, diario
 durable y servicio Native. Los callbacks son
-opcionales: el CLI batch genérico no los conecta. Reindexar después no repara
+opcionales: la interfaz individual/batch aún no los conecta y bloquea carpetas
+con historial central (incluido offline) o carpetas observadas solapadas antes
+de organizar, extraer o renombrar. El CLI batch genérico permite vista previa;
+su aplicación queda bloqueada sin una operación revisada que conecte ese contrato.
+No retirar esta protección para hacer pasar una prueba ni sustituirla por reingesta.
+Sync conserva los originales manuales y no organiza archivos existentes al arrancar;
+una descarga coincidente se cataloga como copia nueva. Reindexar después no repara
 renombrados ni evita atribuir un contenido nuevo a una identidad anterior.
 Conservar IDs, curación e historial; ante contenido distinto, mantener la versión
 anterior offline y admitir una identidad independiente.

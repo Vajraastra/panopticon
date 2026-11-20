@@ -60,17 +60,25 @@ async def run(args: argparse.Namespace, target: Path) -> dict:
         "projects": [],
     }
     if args.apply:
-        from modules.cherry.logic.archive_batch import process_profiles
+        from modules.cherry.logic.archive_batch import MaintenanceBlocked, process_profiles
 
         def profile_progress(position: int, total: int, _profile_id: int, name: str) -> None:
             print(f"[{position}/{total}] {name}", flush=True)
 
-        result = await process_profiles(
-            profiles,
-            force_audit=args.force_audit,
-            on_profile=profile_progress,
-            on_file=lambda name: print(f"    {name}", flush=True),
-        )
+        try:
+            result = await process_profiles(
+                profiles,
+                force_audit=args.force_audit,
+                on_profile=profile_progress,
+                on_file=lambda name: print(f"    {name}", flush=True),
+            )
+        except MaintenanceBlocked:
+            report['blocked'] = True
+            report['errors'] = ['La ejecución requiere una operación revisada que conserve '
+                                'las identidades y el historial de la biblioteca. '
+                                'La vista previa sigue disponible sin --apply.']
+            write_report(target, report)
+            return report
         report["summary"] = vars(result)
         write_report(target, report)
     else:
@@ -122,6 +130,8 @@ def main() -> None:
     report = asyncio.run(run(args, target))
     write_report(target, report)
     print(f"Reporte: {target}")
+    if report.get('blocked'):
+        raise SystemExit(report['errors'][0])
 
 
 if __name__ == "__main__":
