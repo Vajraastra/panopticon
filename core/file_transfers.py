@@ -180,7 +180,7 @@ def commit_native(service, value, pin):
 
 
 def transfer(service, source, directory, action, *, event=None, journal_root=None,
-             exact=False, expected_digest=None, expected_identity=None, expected_caption=None, target_name=None, register_missing=True, expected_sha=None):
+             exact=False, expected_digest=None, expected_identity=None, expected_caption=None, target_name=None, register_missing=True, expected_sha=None, undo_of=None):
     if service is None:raise ValueError('pickler_native_service_unavailable')
     if os.name != 'nt':raise ValueError('pickler_requires_windows')
     if action not in ('copy','move','discard'):raise ValueError('invalid_transfer_action')
@@ -213,6 +213,7 @@ def transfer(service, source, directory, action, *, event=None, journal_root=Non
                 source_fingerprint=current['fingerprint'],
                 source_paths=sorted(set([source_file['path'],*[local_path(p) for p in path_variants(source,source)]])),
                 destination_paths=[local_path(p) for p in path_variants(output,output)])
+            if undo_of is not None:value['undo_of'] = undo_of
             validate_request(value)
             journal = Journal(service,value,journal_root)
             journal.data.update(source_identity=image.check(),caption_identity=text.check() if text else None)
@@ -269,7 +270,7 @@ def undo(service, previous, *, event=None, journal_root=None):
         original = Path(value['source_path'])
         return transfer(service,previous['current'],original.parent,'move',event=event,journal_root=journal_root,
             exact=True,expected_digest=value['digest'],expected_identity=previous['result_identity'],
-            expected_caption=value['caption_digest'],target_name=original.name)
+            expected_caption=value['caption_digest'],target_name=original.name,undo_of=value['operation_id'])
     source, output = Path(value['source_path']),Path(value['result_path'])
     journal = Journal(service,value,journal_root)
     journal.path = safe_path(previous['journal'],portable=True)

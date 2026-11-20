@@ -170,6 +170,78 @@ class Transfers(unittest.TestCase):
             destination_paths=[self.output.upper()],source_fingerprint=self.state(key)['fingerprint'])
         with self.assertRaisesRegex(LibraryError,'destination_requires_review'):self.approve(value)
 
+    def reviewed_return_to_history(self):
+        old_id=self.key
+        self.service.submit('make_copy_online',old_id,expected_fingerprint=self.state()['fingerprint'],
+            digest='b'*64,observation=dict(filename=Path(self.source).name,size=10,created=1)).result(5)
+        historical=self.state(old_id)
+        self.key=self.db.get_file_id(self.source)
+        original=self.request(action='move',digest='b'*64)
+        self.apply(original)
+        returning=self.request(action='move',digest='b'*64,source_path=self.output,
+            result_path=self.source,destination_paths=[self.source],undo_of=original['operation_id'])
+        return original,returning,historical
+
+    def test_confirmed_undo_returns_same_id_to_offline_history(self):
+        original,value,historical=self.reviewed_return_to_history()
+        current=self.state()['state']
+        self.approve(value)
+        self.commit(value,identity={'canonical':self.source,'physical':[1,2,3,4,5,6,7]})
+        self.assertEqual(self.receipt(value)['result_copy_id'],self.key)
+        expected=dict(current['file'],path=self.source,filename=Path(self.source).name)
+        self.assertEqual(self.state()['state'],dict(file=expected,tags=current['tags']))
+        self.assertEqual(self.state(historical['state']['file']['id']),historical)
+        self.assertTrue(self.db.check_fts()['consistent'])
+
+    def test_undo_requires_completed_matching_move_receipt(self):
+        original,value,historical=self.reviewed_return_to_history()
+        before=self.state()
+        missing=dict(value,operation_id=str(uuid4()),undo_of=str(uuid4()))
+        with self.assertRaisesRegex(LibraryError,'undo_requires_review'):self.approve(missing)
+        self.assertIsNone(self.receipt(missing))
+        changes=[('phase','approved'),('phase','aborted'),('action','copy'),
+            ('source_copy_id',historical['state']['file']['id']),
+            ('result_copy_id',historical['state']['file']['id']),
+            ('source_path',self.source+'.other'),('result_path',self.output+'.other'),
+            ('digest','c'*64),('caption_digest','c'*64)]
+        for field,changed in changes:
+            with self.subTest(field=field,changed=changed):
+                saved=self.receipt(original)[field]
+                self.sql(f'UPDATE {NAME} SET {field}=? WHERE operation_id=?',(changed,original['operation_id']))
+                attempt=dict(value,operation_id=str(uuid4()))
+                try:
+                    with self.assertRaisesRegex(LibraryError,'undo_requires_review'):self.approve(attempt)
+                    self.assertIsNone(self.receipt(attempt))
+                finally:
+                    self.sql(f'UPDATE {NAME} SET {field}=? WHERE operation_id=?',(saved,original['operation_id']))
+                self.assertEqual(self.state(),before)
+                self.assertEqual(self.state(historical['state']['file']['id']),historical)
+        for changed in (dict(action='copy'),dict(result_path=self.source+'.other',destination_paths=[self.source+'.other'])):
+            with self.subTest(request=changed):
+                attempt=dict(value,operation_id=str(uuid4()),**changed)
+                with self.assertRaisesRegex(LibraryError,'undo_requires_review'):self.approve(attempt)
+                self.assertIsNone(self.receipt(attempt))
+
+    def test_undo_cannot_replace_active_copy_at_historical_source(self):
+        original,value,historical=self.reviewed_return_to_history()
+        self.sql('INSERT INTO files(path,filename,file_size,hash_original) VALUES(?,?,?,?)',
+            (self.source,Path(self.source).name,10,'c'*64))
+        occupant=self.db.get_file_id(self.source); before=self.state(occupant)
+        with self.assertRaisesRegex(LibraryError,'destination_requires_review'):self.approve(value)
+        self.assertEqual(self.state(occupant),before)
+        self.assertEqual(self.state(historical['state']['file']['id']),historical)
+        self.assertIsNone(self.receipt(value))
+
+    def test_undo_reservation_blocks_another_return_to_same_history(self):
+        original,value,historical=self.reviewed_return_to_history()
+        before=self.state(); self.approve(value)
+        another=dict(value,operation_id=str(uuid4()))
+        with self.assertRaisesRegex(LibraryError,'destination_requires_review'):self.approve(another)
+        self.assertEqual(self.state(),before)
+        self.assertEqual(self.state(historical['state']['file']['id']),historical)
+        self.assertEqual(self.receipt(value)['phase'],'approved')
+        self.assertIsNone(self.receipt(another))
+
     def test_abort_releases_reservation_but_cannot_abort_complete(self):
         self.prepare(); value=self.request(); self.approve(value)
         self.service.submit('abort_transfer',value['operation_id'],expected_fingerprint=normalize_request(value)[1]).result(5)

@@ -108,10 +108,13 @@ def receipt(conn, operation_id):
 def request(value):
     required = {'operation_id','source_copy_id','action','source_path','result_path',
                 'digest','caption_digest','source_fingerprint','destination_paths'}
-    if type(value) is not dict or not required <= set(value) or set(value) - required - {'source_paths'}:
+    if type(value) is not dict or not required <= set(value) or set(value) - required - {'source_paths','undo_of'}:
         raise ValueError('invalid_transfer_request')
     value = dict(value)
     operation(value['operation_id'])
+    if 'undo_of' in value:
+        operation(value['undo_of'])
+        if value['undo_of'] == value['operation_id']:raise ValueError('invalid_transfer_undo')
     _id(value['source_copy_id'])
     if value['action'] not in ('move','copy','discard'):
         raise ValueError('invalid_transfer_action')
@@ -154,16 +157,37 @@ def _source(conn, value):
     return record
 
 
+def _undo_origin(conn, value):
+    if 'undo_of' not in value:
+        return False
+    previous = receipt(conn, value['undo_of'])['receipt']
+    if (previous is None or previous['phase'] != 'complete' or
+            previous['action'] not in ('move','discard') or value['action'] != 'move' or
+            previous['source_copy_id'] != previous['result_copy_id'] or
+            value['source_copy_id'] != previous['result_copy_id'] or
+            value['source_path'] != previous['result_path'] or
+            value['result_path'] != previous['source_path'] or
+            value['digest'] != previous['digest'] or value['caption_digest'] != previous['caption_digest']):
+        raise ValueError('transfer_undo_requires_review')
+    return True
+
+
 def _destination(repo, value, check):
     from core.generation_history import path_status
-    if repo._derived_paths is not None:
+    repo.conn.create_function('transfer_path_key_v1', 1, lambda path: path.casefold(), deterministic=True)
+    aliases = [path.casefold() for path in value['destination_paths']]
+    if _undo_origin(repo.conn, value):
+        # Only a confirmed move of this same ID/bytes may return to its own
+        # source history. Active copies, other aliases and pending work block it.
+        occupied = repo.conn.execute('SELECT 1 FROM files WHERE transfer_path_key_v1(path) IN ('
+            + ','.join('?' for _ in aliases) + ') AND (is_offline=0 OR transfer_path_key_v1(path)<>?) LIMIT 1',
+            (*aliases, value['result_path'].casefold())).fetchone() is not None
+    elif repo._derived_paths is not None:
         occupied = repo._derived_paths.occupied([path.casefold() for path in value['destination_paths']], check)
     else:
         occupied = path_status(repo.conn, value['destination_paths'], normalize=repo._normalize_path)['occupied']
     if occupied:
         raise ValueError('transfer_destination_requires_review')
-    repo.conn.create_function('transfer_path_key_v1', 1, lambda path: path.casefold(), deterministic=True)
-    aliases = [path.casefold() for path in value['destination_paths']]
     pending = repo.conn.execute(f'SELECT 1 FROM {NAME} WHERE phase=\'approved\' '
         f'AND operation_id<>? AND transfer_path_key_v1(result_path) IN ({",".join("?" for _ in aliases)}) LIMIT 1',
         (value['operation_id'], *aliases)).fetchone()
@@ -276,12 +300,16 @@ def reserved(conn, copy_ids):
 
 
 def sources(conn, paths, normalize):
-    """Conservative unprepared lookup: ambiguity/offline history require review."""
+    """Prefer active versions; ambiguity and history without a live copy need review."""
     from core.generation_history import path_keys
     keys = path_keys(paths, normalize=normalize)
     conn.create_function('transfer_path_key_v1', 1, lambda path:path.casefold() if isinstance(path,str) else None, deterministic=True)
     rows = conn.execute('SELECT id,is_offline FROM files WHERE transfer_path_key_v1(path) IN ('
-        + ','.join('?' for _ in keys)+') ORDER BY id LIMIT 2',keys).fetchall()
+        + ','.join('?' for _ in keys)+') ORDER BY is_offline,id LIMIT 2',keys).fetchall()
+    # Two active aliases remain ambiguous. Offline versions cannot hide a live
+    # one behind LIMIT, but history alone must still prevent implicit admission.
+    if rows and not rows[0][1]:
+        rows = [row for row in rows if not row[1]]
     return dict(records=rows)
 
 

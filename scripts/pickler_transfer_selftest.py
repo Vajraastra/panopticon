@@ -196,6 +196,71 @@ class PicklerTransfer(unittest.TestCase):
         result=transfers.transfer(self.service,other,self.output,'copy',journal_root=self.journals)
         self.assertTrue(other.exists()); self.assertNotEqual(result['receipt']['result_copy_id'],result['receipt']['source_copy_id'])
 
+    def replace_source_version(self, content):
+        before=self.state()
+        self.source.write_bytes(content)
+        self.service.submit('make_copy_online',self.key,expected_fingerprint=before['fingerprint'],
+            digest=hashlib.sha256(content).hexdigest(),observation=dict(filename=self.source.name,
+                size=len(content),created=1)).result(5)
+        previous=self.key
+        self.key=self.service.read('get_file_id',str(self.source))
+        self.assertNotEqual(self.key,previous)
+        return self.state(previous)
+
+    def test_current_version_with_multiple_offline_versions_can_copy_and_undo(self):
+        history={self.key:self.replace_source_version(b'first replacement')}
+        previous=self.key; history[previous]=self.replace_source_version(b'current replacement')
+        self.service.submit('edit_curation',str(self.source),add_tags=['current'],rating=2,
+            expected_copy_id=self.key,expected_fingerprint=self.state()['fingerprint']).result(5)
+        current=self.state()
+        result=self.transfer('copy')
+        self.assertEqual(result['receipt']['source_copy_id'],self.key)
+        copied=self.state(result['receipt']['result_copy_id'])['state']
+        self.assertEqual(copied['tags'],current['state']['tags'])
+        self.assertEqual(copied['file']['rating'],2)
+        self.undo(result)
+        self.assertEqual(self.source.read_bytes(),b'current replacement')
+        self.assertEqual(self.state(),current)
+        for copy_id,before in history.items():self.assertEqual(self.state(copy_id),before)
+        self.assertTrue(self.service.read('check_fts')['consistent'])
+
+    def test_current_version_move_and_discard_can_undo_without_changing_offline_history(self):
+        previous=self.key; historical=self.replace_source_version(b'current replacement')
+        current=self.state()
+        for action in ('move','discard'):
+            with self.subTest(action=action):
+                result=self.transfer(action)
+                self.assertEqual(result['receipt']['source_copy_id'],self.key)
+                self.assertEqual(result['receipt']['result_copy_id'],self.key)
+                restored=self.undo(result)
+                self.assertEqual(restored['request']['undo_of'],result['request']['operation_id'])
+                self.assertEqual(restored['receipt']['result_copy_id'],self.key)
+                self.assertEqual(self.state(previous),historical)
+                self.assertEqual(self.state(),current)
+                self.assertEqual(self.source.read_bytes(),b'current replacement')
+                self.assertEqual(self.caption.read_bytes(),b'private caption')
+                self.assertFalse(Path(result['current']).exists())
+
+    def test_only_offline_history_cannot_admit_or_transfer_present_file(self):
+        self.service.submit('archive_copy',self.key,expected_fingerprint=self.state()['fingerprint']).result(5)
+        before=self.state()
+        with self.assertRaisesRegex(ValueError,'path_identity_review_required'):self.transfer()
+        self.assertEqual(self.state(),before)
+        self.assertTrue(self.source.exists()); self.assertTrue(self.caption.exists())
+        self.assertFalse(self.journals.exists()); self.assertFalse(self.output.exists())
+
+    def test_multiple_active_case_aliases_cannot_choose_a_source(self):
+        alias=str(self.source).upper()
+        self.service.submit('register_files_minimal',[dict(path=alias,filename=self.source.name,
+            size=self.source.stat().st_size,created=1,hash_original=self.state()['state']['file']['hash_original'])]).result(5)
+        other=self.service.read('get_file_id',alias)
+        self.assertNotEqual(other,self.key)
+        before={key:self.state(key) for key in (self.key,other)}
+        with self.assertRaisesRegex(ValueError,'path_identity_review_required'):self.transfer()
+        for key,value in before.items():self.assertEqual(self.state(key),value)
+        self.assertTrue(self.source.exists()); self.assertTrue(self.caption.exists())
+        self.assertFalse(self.journals.exists()); self.assertFalse(self.output.exists())
+
     def test_prepared_copy_undo_and_repeated_copy_keep_complete_identity(self):
         self.service.backfill_path_identity()
         first=self.transfer('copy')
