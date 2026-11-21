@@ -726,10 +726,21 @@ class PicklerView(StandardToolLayout):
         worker.deleteLater(); self._job_timer.stop()
         if self._closing:return
         self._new_preview(); self._set_busy(False)
+        kind=job['kind']
         if error is not None:
             self._refresh_view()
-            self._set_status(self.tr('pickler.error_move','Error: {}').format(error)); return
-        kind=job['kind']
+            if kind in ('transfer', 'undo') and error in ('path_identity_review_required', 'transfer_source_lookup_busy'):
+                path = job['args'][0]['current'] if kind == 'undo' else job['args'][0]
+                if error == 'transfer_source_lookup_busy':
+                    message = self.tr('tool.pickler.source_lookup_busy',
+                        'The library changed while checking {file}. Try again.')
+                else:
+                    message = self.tr('tool.pickler.source_identity_review',
+                        'The library identity of {file} needs review. The file is still in place.')
+                self._set_status(message.format(file=Path(path).name))
+            else:
+                self._set_status(self.tr('pickler.error_move','Error: {}').format(error))
+            return
         if kind in ('scan','images'):
             self._images=result['images']; self._set_folder=result['folder']; self._custom_dest=None
             self._index=0; self._undo_stack.clear(); self._kept=0; self._discarded=0; self._update_dest_label()

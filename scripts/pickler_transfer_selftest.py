@@ -9,6 +9,7 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from core.library_service import LibraryService
@@ -57,6 +58,42 @@ class PicklerTransfer(unittest.TestCase):
         result=self.transfer(); self.undo(result)
         self.assertEqual(self.source.read_bytes(),b'private image bytes'); self.assertEqual(self.caption.read_bytes(),b'private caption')
         self.assertFalse(Path(result['current']).exists()); self.assertEqual(self.state()['state']['file']['path'],self.source.resolve().as_posix())
+
+    def test_undo_retries_after_unrelated_cherry_receipt_advances_revision(self):
+        discarded = self.transfer('discard')
+        self.service.submit('add_watched_folder', str(self.folder)).result(5)
+        self.service.submit('prepare_ingest_reviews').result(5)
+        original_read = self.service.read
+        lookups = []
+
+        def read_during_ingest(operation, *args, **kwargs):
+            result = original_read(operation, *args, **kwargs)
+            if operation == 'get_path_identity_resolution':
+                lookups.append(result['status'])
+                if len(lookups) == 1:
+                    self.service.submit('register_catalog_files_observed', [], self.folder.as_posix(),
+                                        operation_id=str(uuid4())).result(5)
+            return result
+
+        with patch.object(self.service, 'read', side_effect=read_during_ingest):
+            restored = self.undo(discarded)
+        self.assertEqual(lookups, ['not_prepared', 'not_prepared'])
+        self.assertEqual(restored['receipt']['result_copy_id'], self.key)
+        self.assertEqual(self.source.read_bytes(), b'private image bytes')
+        self.assertEqual(self.caption.read_bytes(), b'private caption')
+        self.assertFalse(Path(discarded['current']).exists())
+
+    def test_undo_with_continuously_stale_lookup_leaves_discard_receipt_intact(self):
+        discarded = self.transfer('discard')
+        before = self.state()
+        with patch.object(self.service, 'resolve_path_identity', return_value=dict(status='stale')) as resolve:
+            with self.assertRaisesRegex(ValueError, 'transfer_source_lookup_busy'):
+                self.undo(discarded)
+        self.assertEqual(resolve.call_count, 3)
+        self.assertEqual(self.state(), before)
+        self.assertFalse(self.source.exists())
+        self.assertEqual(Path(discarded['current']).read_bytes(), b'private image bytes')
+        self.assertEqual(len(list(self.journals.glob('*/journal.json'))), 1)
 
     def test_undo_move_never_overwrites_new_original(self):
         result=self.transfer(); self.source.write_bytes(b'new unrelated file')

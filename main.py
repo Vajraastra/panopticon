@@ -7,7 +7,7 @@ import traceback
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QStackedWidget,
                              QFrame, QGridLayout, QComboBox, QMessageBox, QScrollArea,
-                             QSizePolicy)
+                             QSizePolicy, QProgressBar)
 from PySide6.QtCore import Qt, QSize, QTimer, Slot
 from PySide6.QtGui import QIcon, QFont
 from shiboken6 import isValid
@@ -76,8 +76,8 @@ class MainWindow(QMainWindow):
         self.loaded_modules = {}
         self.root_stack = None
         self.init_ui()
-        self._cherry_scan_labels = []
-        self._cherry_scan_status = ('', '')
+        self._cherry_scan_widgets = []
+        self._cherry_scan_status = ('', '', None)
         self._cherry_scan_active = False
         self._cherry_scan_error = None
         self._add_cherry_scan_status(self)
@@ -89,6 +89,7 @@ class MainWindow(QMainWindow):
         self._cherry_ingestor = CherryIngestor(self.context['data_service'], self.event_bus, self, autostart=False)
         self.context['cherry_ingestor'] = self._cherry_ingestor
         self._cherry_ingestor.scan_started.connect(self._cherry_scan_started, Qt.QueuedConnection)
+        self._cherry_ingestor.scan_progress.connect(self._cherry_scan_progress, Qt.QueuedConnection)
         self._cherry_ingestor.scan_finished.connect(self._cherry_scan_finished, Qt.QueuedConnection)
         self._cherry_ingestor.failed.connect(self._cherry_ingest_failed, Qt.QueuedConnection)
         self._cherry_ingestor.start()
@@ -97,27 +98,62 @@ class MainWindow(QMainWindow):
         label = QLabel()
         label.setObjectName('cherryScanStatus')
         label.setTextFormat(Qt.PlainText)
-        window.statusBar().addPermanentWidget(label)
-        self._cherry_scan_labels.append(label)
-        self._paint_cherry_scan_status(label)
+        bar = QProgressBar()
+        bar.setObjectName('cherryScanProgress')
+        bar.setFixedWidth(100)
+        status = window.statusBar()
+        status.addPermanentWidget(label)
+        status.addPermanentWidget(bar)
+        self._cherry_scan_widgets.append((label, bar))
+        self._paint_cherry_scan_status(label, bar)
 
-    def _paint_cherry_scan_status(self, label):
-        message, detail = self._cherry_scan_status
+    def _paint_cherry_scan_status(self, label, bar):
+        message, detail, progress = self._cherry_scan_status
         label.setText(message)
         label.setToolTip(detail)
         label.setVisible(bool(message))
+        if progress is None:
+            bar.hide()
+            return
+        percent, tip = progress
+        if percent is None:
+            bar.setRange(0, 0)
+            tip = self.tr('tool.cherry.ingest_scan_progress_pending_tip', 'Calculating totals for each catalog')
+        else:
+            bar.setRange(0, 100)
+            bar.setValue(percent)
+        bar.setToolTip(tip)
+        bar.show()
 
-    def _set_cherry_scan_status(self, message, detail):
-        self._cherry_scan_status = (message, detail)
-        for label in self._cherry_scan_labels:
-            self._paint_cherry_scan_status(label)
+    def _set_cherry_scan_status(self, message, detail, *, progress=None):
+        self._cherry_scan_status = (message, detail, progress)
+        for label, bar in self._cherry_scan_widgets:
+            self._paint_cherry_scan_status(label, bar)
 
     @Slot(str)
     def _cherry_scan_started(self, folder):
         self._cherry_scan_active = True
         self._cherry_scan_error = None
         self._set_cherry_scan_status(self.tr('tool.cherry.ingest_scan_started',
-            'Cherry · Scanning {folder}…').format(folder=os.path.basename(folder) or folder), folder)
+            'Cherry · Scanning {folder}…').format(folder=os.path.basename(folder) or folder), folder,
+            progress=(None, ''))
+
+    @Slot(str, int, int, str, int, int)
+    def _cherry_scan_progress(self, folder, accepted, conflicts, catalog, processed, total):
+        scope = catalog or folder
+        name = self.fontMetrics().elidedText(os.path.basename(scope) or scope, Qt.ElideRight, 180)
+        message = self.tr('tool.cherry.ingest_scan_progress',
+            'Cherry · Scanning {folder}… · {accepted} without conflicts · {conflicts} to review').format(
+                folder=name, accepted=accepted, conflicts=conflicts)
+        if total < 0:
+            progress = (None, '')
+        else:
+            percent = 100 if total == 0 else (processed * 100) // total
+            tip = self.tr('tool.cherry.ingest_scan_progress_tip',
+                'Current catalog progress · {processed} of {total} entries processed').format(
+                    processed=processed, total=total)
+            progress = (percent, f'{tip}\n{scope}')
+        self._set_cherry_scan_status(message, scope, progress=progress)
 
     @Slot(str, str, int, int)
     def _cherry_scan_finished(self, folder, outcome, accepted, conflicts):

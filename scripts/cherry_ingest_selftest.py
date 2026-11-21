@@ -227,8 +227,12 @@ class ScanTests(Fixture):
         with closing(sqlite3.connect(folder/'catalog.db')) as conn:
             conn.execute('INSERT INTO files VALUES(?,?,?,?,?)', ('bad', '../escape.png', '', 1, 7))
             conn.commit()
+        progress = []
         with self.assertRaisesRegex(RuntimeError, 'fuera'):
-            reconcile(self.service, str(folder), self.event)
+            reconcile(self.service, str(folder), self.event,
+                      on_activity=lambda _, processed, total: progress.append((processed, total)))
+        self.assertTrue(all(total == -1 for _, total in progress))
+        self.assertEqual(progress[-1], (1, -1))
         self.assertEqual(self.count(), 2)
         self.assertIsNotNone(self.service.read('get_file_id', old))
 
@@ -308,7 +312,8 @@ class ControllerTests(Fixture):
 
     def test_startup_reports_all_batches_without_notice_or_librarian(self):
         watch = self.watch()
-        folder = self.seed(watch/'artist', 205)
+        folder = self.seed(watch/'artist', 206)
+        (folder/'205.png').unlink()
         historical = [dict(path=str(folder/f'{i}.png'), filename=f'{i}.png', size=7, created=1)
                       for i in (0, 204)]
         self.service.submit('register_files_minimal', historical).result(2)
@@ -316,13 +321,21 @@ class ControllerTests(Fixture):
             conn.execute('UPDATE files SET is_offline=1')
             conn.commit()
         item, bus = self.controller(autostart=False)
-        done, scan_events = [], []
+        done, scan_events, progress = [], [], []
         bus.subscribe('library_ingested', done.append)
         item.scan_started.connect(lambda folder: scan_events.append((folder,)))
         item.scan_finished.connect(lambda *result: scan_events.append(result))
+        item.scan_progress.connect(lambda root, accepted, conflicts, catalog, processed, total:
+            progress.append((root, accepted, conflicts, Path(catalog), processed, total)))
         item.start()
         self.assertTrue(pump(lambda: bool(done) and len(scan_events) == 2))
         self.assertEqual(scan_events, [(watch.as_posix(),), (watch.as_posix(), 'complete', 203, 2)])
+        self.assertEqual(progress[:2], [(watch.as_posix(), 0, 0, folder, 0, -1),
+                                       (watch.as_posix(), 0, 0, folder, 0, 205)])
+        self.assertIn(100, [processed for _, _, _, _, processed, _ in progress])
+        self.assertTrue(all(accepted + conflicts == processed
+                            for _, accepted, conflicts, _, processed, _ in progress))
+        self.assertEqual(progress[-1], (watch.as_posix(), 203, 2, folder, 205, 205))
         self.assertEqual(done, [dict(folder=watch.as_posix(), count=203)])
         self.assertEqual(self.count(), 203)
         self.assertTrue(item.queue_path.is_file())

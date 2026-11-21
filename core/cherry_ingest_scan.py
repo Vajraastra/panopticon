@@ -47,8 +47,11 @@ def scope(service, folder, event):
     return None
 
 
-def reconcile(service, folder, event, *, on_batch=None):
-    """Never remove/archive files or alter Cherry rows, even on a complete pass."""
+def reconcile(service, folder, event, *, on_batch=None, on_activity=None):
+    """Report confirmed batches and optionally the current catalog's progress.
+
+    The catalog total stays unknown (-1) until its complete inventory is sealed.
+    """
     selected = scope(service, folder, event)
     if selected is None:
         return 0
@@ -71,6 +74,8 @@ def reconcile(service, folder, event, *, on_batch=None):
         for _, catalog, _ in catalogs:
             if event.is_set():
                 raise InventoryCancelled()
+            if on_activity is not None:
+                on_activity(catalog, 0, -1)
             root = directory(catalog, event)
             if not within(root.canonical, initial.canonical):
                 raise ValueError('cherry_ingest_catalog_outside_scope')
@@ -81,11 +86,17 @@ def reconcile(service, folder, event, *, on_batch=None):
                         size=row['size'], created=row['created'],
                         hash_original=row.get('cherry_hash'), origin_url=row.get('cherry_url'),
                         origin_site=artist.get('primary_site'), artist=artist.get('display_name')))
+                    if on_activity is not None and len(spool) % 100 == 0:
+                        on_activity(catalog, 0, -1)
                 source = read_image_files(catalog, cancelled=event.is_set, on_file=accept)
                 if event.is_set():
                     raise InventoryCancelled()
                 spool.seal()
-                for start in range(0, len(spool), 100):
+                observed_count = len(spool)
+                total = observed_count if source.complete else -1
+                if on_activity is not None:
+                    on_activity(catalog, 0, total)
+                for start in range(0, observed_count, 100):
                     batch = spool[start:start + 100]
                     if (not same_directory(parent, directory(watch, event)) or
                             not same_directory(initial, directory(folder, event)) or
@@ -104,6 +115,8 @@ def reconcile(service, folder, event, *, on_batch=None):
                     count += notice['accepted']
                     if on_batch is not None:
                         on_batch(notice['accepted'], notice['conflicts'])
+                    if on_activity is not None:
+                        on_activity(catalog, start + len(batch), total)
                 if not source.complete:
                     onerror(source.issues[0] if source.issues else source.status.value)
         if not same_directory(initial, directory(folder, event)):

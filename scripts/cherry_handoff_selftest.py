@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import QCoreApplication, QEvent, Qt, QTimer
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QApplication, QLabel, QMenu
+from PySide6.QtWidgets import QApplication, QLabel, QMenu, QProgressBar
 from core.base_module import BaseModule
 from core.library_service import LibraryService
 from core.module_handoff import image_set_consumers
@@ -136,7 +136,9 @@ class CherryHandoff(unittest.TestCase):
         self.main.show()
         dashboard_status = self.main.statusBar()
         dashboard_label = dashboard_status.findChild(QLabel, 'cherryScanStatus')
+        dashboard_bar = dashboard_status.findChild(QProgressBar, 'cherryScanProgress')
         self.assertTrue(dashboard_label.isHidden())
+        self.assertTrue(dashboard_bar.isHidden())
         folder = (self.root / 'Alpha').as_posix()
         ingestor = self.main._cherry_ingestor
         scanning = self.main.tr('tool.cherry.ingest_scan_started', 'Cherry · Scanning {folder}…').format(folder='Alpha')
@@ -144,16 +146,31 @@ class CherryHandoff(unittest.TestCase):
         ingestor.scan_started.emit(folder)
         self.assertTrue(pump(lambda: dashboard_label.text() == scanning and dashboard_label.isVisible()))
         self.assertEqual(dashboard_label.toolTip(), folder)
+        self.assertTrue(dashboard_bar.isVisible() and dashboard_bar.maximum() == 0)
 
         self.main.switch_to_module(self.pickler)
         pickler_status = self.main.module_windows['Pickler'].statusBar()
         pickler_label = pickler_status.findChild(QLabel, 'cherryScanStatus')
+        pickler_bar = pickler_status.findChild(QProgressBar, 'cherryScanProgress')
         self.assertEqual(pickler_label.text(), scanning)
         self.assertTrue(pickler_label.isVisible())
         self.assertEqual(pickler_label.toolTip(), folder)
+        self.assertTrue(pickler_bar.isVisible() and pickler_bar.maximum() == 0)
 
         dashboard_status.showMessage('Dashboard operation')
         pickler_status.showMessage('Pickler operation')
+        catalog = (self.root / 'Alpha' / 'Current').as_posix()
+        progress = self.main.tr('tool.cherry.ingest_scan_progress',
+            'Cherry · Scanning {folder}… · {accepted} without conflicts · {conflicts} to review').format(
+                folder='Current', accepted=36, conflicts=4)
+        ingestor.scan_progress.emit(folder, 36, 4, catalog, 20, 40)
+        self.assertTrue(pump(lambda: all(label.text() == progress and label.isVisible()
+            for label in (dashboard_label, pickler_label))))
+        for bar in (dashboard_bar, pickler_bar):
+            self.assertTrue(bar.isVisible())
+            self.assertEqual((bar.maximum(), bar.value()), (100, 50))
+            self.assertIn(catalog, bar.toolTip())
+
         for outcome, key, default in (
             ('complete', 'tool.cherry.ingest_scan_complete', 'Scan complete'),
             ('failed', 'tool.cherry.ingest_scan_failed', 'Scan incomplete'),
@@ -167,6 +184,7 @@ class CherryHandoff(unittest.TestCase):
                 ingestor.scan_finished.emit(folder, outcome, 105, 7)
                 self.assertTrue(pump(lambda: all(label.text() == terminal and label.isVisible()
                     for label in (dashboard_label, pickler_label))))
+                self.assertTrue(dashboard_bar.isHidden() and pickler_bar.isHidden())
                 self.assertEqual(dashboard_status.currentMessage(), 'Dashboard operation')
                 self.assertEqual(pickler_status.currentMessage(), 'Pickler operation')
 

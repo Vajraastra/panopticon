@@ -81,6 +81,17 @@ class PicklerUI(unittest.TestCase):
         self.assertTrue(self.source.exists()); self.assertEqual(self.view._index,0); self.assertEqual(len(self.view._images),1)
         self.assertEqual(self.service.read('get_file_id',str(self.source.resolve())),self.key)
 
+    def test_undo_identity_busy_names_the_file_and_keeps_the_action_available(self):
+        self.view._delete_current(); self.wait()
+        previous = self.view._last_op
+        with patch('modules.pickler.logic.transfers.undo', side_effect=ValueError('transfer_source_lookup_busy')):
+            self.view._undo(); self.wait()
+        self.assertEqual(self.view._canvas.lbl_info.text(), 'The library changed while checking image.png. Try again.')
+        self.assertEqual(self.view._last_op, previous)
+        self.assertTrue(self.view._btn_undo.isEnabled())
+        self.assertFalse(self.source.exists())
+        self.assertTrue(Path(previous['current']).exists())
+
     def test_io_stays_off_gui_and_repeated_action_is_not_admitted(self):
         self.show_keyboard()
         entered=threading.Event(); release=threading.Event(); threads=[]; transfer=transfers.transfer

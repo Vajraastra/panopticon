@@ -57,8 +57,18 @@ class Journal(DerivedPublication):
         self.data.update(phase=phase, **details); self.save()
 
 
+def _resolve_source(service, path, event):
+    # Cherry can advance the global revision while this lookup is in flight.
+    # Retry an invalidated snapshot without accepting an ambiguous binding.
+    for _ in range(3):
+        resolution = service.resolve_path_identity(str(path), cancel_event=event)
+        if resolution['status'] != 'stale':
+            return resolution
+    raise ValueError('transfer_source_lookup_busy')
+
+
 def source_state(service, path, event, *, register_missing=True):
-    resolution = service.resolve_path_identity(str(path),cancel_event=event)
+    resolution = _resolve_source(service, path, event)
     if resolution['status'] == 'unique':
         return service.read('get_copy_version_state',resolution['file_id'],cancel_event=event)
     if resolution['status'] not in ('missing','not_prepared'):
@@ -78,7 +88,7 @@ def source_state(service, path, event, *, register_missing=True):
     info = path.stat()
     service.register_files_observed([dict(path=str(path),filename=path.name,size=info.st_size,
                                            created=info.st_ctime)],cancel_event=event)
-    resolution = service.resolve_path_identity(str(path),cancel_event=event)
+    resolution = _resolve_source(service, path, event)
     if resolution['status'] == 'unique':
         key = resolution['file_id']
     elif resolution['status'] == 'not_prepared':

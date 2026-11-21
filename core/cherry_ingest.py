@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from queue import Queue, Empty, Full
 import threading
+from time import monotonic
 
 from PySide6.QtCore import QObject, Signal, Slot, Qt
 from core.cherry_ingest_queue import PendingFolders, valid_path
@@ -11,12 +12,15 @@ from core.cherry_ingest_scan import reconcile
 from core.library_writer_guard import writer_guard
 
 log = logging.getLogger(__name__)
+_LOG_PROGRESS_INTERVAL = 10
+_GUI_PROGRESS_INTERVAL = 1
 
 
 class CherryIngestor(QObject):
     completed = Signal(str, int)
     failed = Signal(str)
     scan_started = Signal(str)
+    scan_progress = Signal(str, int, int, str, int, int)  # folder, accepted, conflicts, catalog, processed, total
     scan_finished = Signal(str, str, int, int)  # folder, outcome, accepted, conflicts
 
     def __init__(self, service, event_bus, parent=None, *, autostart=True):
@@ -99,6 +103,28 @@ class CherryIngestor(QObject):
     def _scan(self, pending, folder, revision):
         accepted = conflicts = 0
         outcome = 'failed'
+        started = monotonic()
+        last_log = None
+        last_signal = started
+        last_progress = ('', 0, -1)
+
+        def report_progress(catalog, processed, total):
+            nonlocal last_log, last_signal, last_progress
+            now = monotonic()
+            first_batch = last_log is None and processed > 0
+            if first_batch or now - (started if last_log is None else last_log) >= _LOG_PROGRESS_INTERVAL:
+                last_log = now
+                files = f'{processed}/{total if total >= 0 else "?"}'
+                log.info('Cherry catalog scan progress: %s | catalog=%s | files=%s | accepted=%d | conflicts=%d',
+                         folder, catalog, files, accepted, conflicts)
+
+            progress = (catalog, processed, total)
+            scope_changed = catalog != last_progress[0] or total != last_progress[2]
+            if progress != last_progress and (scope_changed or first_batch or processed == total
+                                               or now - last_signal >= _GUI_PROGRESS_INTERVAL):
+                last_progress = progress
+                last_signal = now
+                self.scan_progress.emit(folder, accepted, conflicts, catalog, processed, total)
 
         def on_batch(batch_accepted, batch_conflicts):
             nonlocal accepted, conflicts
@@ -109,7 +135,8 @@ class CherryIngestor(QObject):
         self.scan_started.emit(folder)
         try:
             try:
-                accepted = reconcile(self.service, folder, self._stop, on_batch=on_batch)
+                accepted = reconcile(self.service, folder, self._stop, on_batch=on_batch,
+                                     on_activity=report_progress)
             except Exception as exc:
                 pending.failed(folder, revision, exc)
                 if self._stop.is_set():

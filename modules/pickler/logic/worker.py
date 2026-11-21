@@ -1,7 +1,11 @@
 """One owned Pickler operation; cancellation settles admitted publication."""
+import logging
 import threading
 from PySide6.QtCore import QThread, Signal
 from . import transfers
+
+
+log = logging.getLogger(__name__)
 
 
 class PicklerWorker(QThread):
@@ -33,4 +37,8 @@ class PicklerWorker(QThread):
                 result = transfers.transfer(self.service,*self.args,event=self._cancel_event,journal_root=self.journal_root)
         except Exception as exc:
             error = str(exc)
+            if (self.kind in ('transfer', 'undo') and
+                    error in ('path_identity_review_required', 'transfer_source_lookup_busy')):
+                source = self.args[0]['current'] if self.kind == 'undo' else self.args[0]
+                log.warning('Pickler %s blocked: %s | %s', self.kind, error, source)
         self.finished_signal.emit(result,error)
