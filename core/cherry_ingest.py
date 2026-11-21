@@ -16,9 +16,10 @@ log = logging.getLogger(__name__)
 class CherryIngestor(QObject):
     completed = Signal(str, int)
     failed = Signal(str)
-    review_required = Signal(str, int, int)
+    scan_started = Signal(str)
+    scan_finished = Signal(str, str, int, int)  # folder, outcome, accepted, conflicts
 
-    def __init__(self, service, event_bus, parent=None):
+    def __init__(self, service, event_bus, parent=None, *, autostart=True):
         super().__init__(parent)
         self.service, self.event_bus = service, event_bus
         self.queue_path = Path(service.db_path + '.cherry-ingest.db')
@@ -32,13 +33,21 @@ class CherryIngestor(QObject):
         self._admission = threading.Lock()
         self.completed.connect(self._completed, Qt.QueuedConnection)
         self.failed.connect(self._failed, Qt.QueuedConnection)
-        event_bus.subscribe('cherry_catalog_changed', self.notice)
         self._thread = threading.Thread(target=self._run, name='PanopticonCherryIngest', daemon=True)
-        try:
-            self._thread.start()
-        except BaseException:
-            event_bus.unsubscribe('cherry_catalog_changed', self.notice)
-            raise
+        if autostart:
+            self.start()
+
+    def start(self):
+        """Allow the GUI to connect before even a fast startup scan runs."""
+        with self._admission:
+            if self._closed or self._thread.ident is not None:
+                return
+            self.event_bus.subscribe('cherry_catalog_changed', self.notice)
+            try:
+                self._thread.start()
+            except BaseException:
+                self.event_bus.unsubscribe('cherry_catalog_changed', self.notice)
+                raise
 
     def notice(self, folder):
         """Nonblocking GUI admission; overflow requests a complete watched rescan."""
@@ -87,9 +96,38 @@ class CherryIngestor(QObject):
                 self._rescan.set()
                 raise
 
-    def _run(self):
+    def _scan(self, pending, folder, revision):
+        accepted = conflicts = 0
+        outcome = 'failed'
+
+        def on_batch(batch_accepted, batch_conflicts):
+            nonlocal accepted, conflicts
+            accepted += batch_accepted
+            conflicts += batch_conflicts
+
+        log.info('Cherry catalog scan started: %s', folder)
+        self.scan_started.emit(folder)
         try:
-            from core.library_batch import commit_control
+            try:
+                accepted = reconcile(self.service, folder, self._stop, on_batch=on_batch)
+            except Exception as exc:
+                pending.failed(folder, revision, exc)
+                if self._stop.is_set():
+                    outcome = 'cancelled'
+                else:
+                    self.failed.emit(str(exc)[:512])
+            else:
+                pending.acknowledge(folder, revision)
+                outcome = 'complete'
+                self.completed.emit(folder, accepted)
+        finally:
+            log.info('Cherry catalog scan finished: %s | %s | accepted=%d | conflicts=%d',
+                     folder, outcome, accepted, conflicts)
+            self.scan_finished.emit(folder, outcome, accepted, conflicts)
+
+    def _run(self):
+        from core.library_batch import BatchCancelled, commit_control
+        try:
             if commit_control(self.service, 'prepare_ingest_reviews', self._stop) is not True:
                 raise RuntimeError('ingest_review_preparation_unconfirmed')
             with writer_guard(self.queue_path), closing(PendingFolders(self.queue_path)) as pending:
@@ -105,17 +143,12 @@ class CherryIngestor(QObject):
                     for folder, revision in rows:
                         if self._stop.is_set():
                             break
-                        try:
-                            count = reconcile(self.service, folder, self._stop, on_review=self.review_required.emit)
-                        except Exception as exc:
-                            pending.failed(folder, revision, exc)
-                            self.failed.emit(str(exc)[:512])
-                        else:
-                            pending.acknowledge(folder, revision)
-                            self.completed.emit(folder, count)
+                        self._scan(pending, folder, revision)
                         # A new notice during a pass gets a new revision/pass.
                         self._persist_notices(pending)
         except Exception as exc:
+            if self._stop.is_set() and isinstance(exc, BatchCancelled):
+                return
             log.exception('Cherry ingest stopped; startup reconciliation is still required')
             try:
                 self.failed.emit(str(exc)[:512])

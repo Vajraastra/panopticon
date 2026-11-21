@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QStackedWidget,
                              QFrame, QGridLayout, QComboBox, QMessageBox, QScrollArea,
                              QSizePolicy)
-from PySide6.QtCore import Qt, QSize, QTimer
+from PySide6.QtCore import Qt, QSize, QTimer, Slot
 from PySide6.QtGui import QIcon, QFont
 from shiboken6 import isValid
 
@@ -76,18 +76,69 @@ class MainWindow(QMainWindow):
         self.loaded_modules = {}
         self.root_stack = None
         self.init_ui()
+        self._cherry_scan_labels = []
+        self._cherry_scan_status = ('', '')
+        self._cherry_scan_active = False
+        self._cherry_scan_error = None
+        self._add_cherry_scan_status(self)
         
         # 5. Load Modules
         self.loader = ModuleLoader()
         self.load_available_modules()
         from core.cherry_ingest import CherryIngestor
-        self._cherry_ingestor = CherryIngestor(self.context['data_service'], self.event_bus, self)
+        self._cherry_ingestor = CherryIngestor(self.context['data_service'], self.event_bus, self, autostart=False)
         self.context['cherry_ingestor'] = self._cherry_ingestor
-        self._cherry_ingestor.review_required.connect(lambda folder, accepted, conflicts: self.statusBar().showMessage(
-            self.tr('cherry.ingest_review_required', '{conflicts} entries need review; {accepted} unaffected images indexed.').format(
-                conflicts=conflicts, accepted=accepted), 15000))
-        self._cherry_ingestor.failed.connect(lambda error: self.statusBar().showMessage(
-            self.tr('cherry.ingest_pending', 'Downloaded images await library indexing: {error}').format(error=error), 15000))
+        self._cherry_ingestor.scan_started.connect(self._cherry_scan_started, Qt.QueuedConnection)
+        self._cherry_ingestor.scan_finished.connect(self._cherry_scan_finished, Qt.QueuedConnection)
+        self._cherry_ingestor.failed.connect(self._cherry_ingest_failed, Qt.QueuedConnection)
+        self._cherry_ingestor.start()
+
+    def _add_cherry_scan_status(self, window):
+        label = QLabel()
+        label.setObjectName('cherryScanStatus')
+        label.setTextFormat(Qt.PlainText)
+        window.statusBar().addPermanentWidget(label)
+        self._cherry_scan_labels.append(label)
+        self._paint_cherry_scan_status(label)
+
+    def _paint_cherry_scan_status(self, label):
+        message, detail = self._cherry_scan_status
+        label.setText(message)
+        label.setToolTip(detail)
+        label.setVisible(bool(message))
+
+    def _set_cherry_scan_status(self, message, detail):
+        self._cherry_scan_status = (message, detail)
+        for label in self._cherry_scan_labels:
+            self._paint_cherry_scan_status(label)
+
+    @Slot(str)
+    def _cherry_scan_started(self, folder):
+        self._cherry_scan_active = True
+        self._cherry_scan_error = None
+        self._set_cherry_scan_status(self.tr('tool.cherry.ingest_scan_started',
+            'Cherry · Scanning {folder}…').format(folder=os.path.basename(folder) or folder), folder)
+
+    @Slot(str, str, int, int)
+    def _cherry_scan_finished(self, folder, outcome, accepted, conflicts):
+        titles = {
+            'complete': ('tool.cherry.ingest_scan_complete', 'Scan complete'),
+            'failed': ('tool.cherry.ingest_scan_failed', 'Scan incomplete'),
+            'cancelled': ('tool.cherry.ingest_scan_cancelled', 'Scan canceled'),
+        }
+        title = self.tr(*titles[outcome])
+        message = self.tr('tool.cherry.ingest_scan_result',
+            'Cherry · {title} · {accepted} without conflicts · {conflicts} to review')
+        detail = f'{folder}\n{self._cherry_scan_error}' if self._cherry_scan_error else folder
+        self._cherry_scan_active = False
+        self._set_cherry_scan_status(message.format(title=title, accepted=accepted, conflicts=conflicts), detail)
+
+    @Slot(str)
+    def _cherry_ingest_failed(self, error):
+        if self._cherry_scan_active:
+            self._cherry_scan_error = error
+            return
+        self._set_cherry_scan_status(self.tr('tool.cherry.ingest_scan_unavailable', 'Cherry · Scan unavailable'), error)
 
     def init_ui(self):
         """Initialize the main application layout."""
@@ -513,6 +564,7 @@ class MainWindow(QMainWindow):
                 if view is None:
                     raise RuntimeError("Module returned no view")
                 window = ModuleWindow(self, module, view)
+                self._add_cherry_scan_status(window)
                 self.module_windows[module.name] = window
             except Exception:
                 log.exception("Failed to open module %s", module.name)

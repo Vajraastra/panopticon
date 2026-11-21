@@ -74,9 +74,9 @@ class Fixture(unittest.TestCase):
             (folder/f'{i}.png').write_bytes(b'private')
         return folder
 
-    def controller(self):
+    def controller(self, *, autostart=True):
         bus = EventBus()
-        item = CherryIngestor(self.service, bus)
+        item = CherryIngestor(self.service, bus, autostart=autostart)
         self.controllers.append(item)
         return item, bus
 
@@ -278,7 +278,8 @@ class ScanTests(Fixture):
 
 class ControllerTests(Fixture):
     def test_shutdown_waits_for_running_commit_and_keeps_durable_retry(self):
-        self.seed(self.watch()/'artist')
+        watch = self.watch()
+        self.seed(watch/'artist')
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
         original = LibraryRepository.register_catalog_files_observed
@@ -287,25 +288,43 @@ class ControllerTests(Fixture):
             release.wait(3)
             return original(repo, *args, **kwargs)
         with patch.object(LibraryRepository, 'register_catalog_files_observed', blocked):
-            item, _ = self.controller()
+            item, _ = self.controller(autostart=False)
+            finished, failures = [], []
+            item.scan_finished.connect(lambda *result: finished.append(result))
+            item.failed.connect(failures.append)
+            item.start()
             self.assertTrue(entered.wait(2))
             start = time.monotonic()
             item.request_shutdown()
             self.assertLess(time.monotonic()-start, .1)
             self.assertFalse(item.shutdown_ready())
             release.set()
-            self.assertTrue(pump(item.shutdown_ready))
+            self.assertTrue(pump(lambda: item.shutdown_ready() and bool(finished)))
+            self.assertEqual(finished, [(watch.as_posix(), 'cancelled', 1, 0)])
+            self.assertEqual(failures, [])
         self.assertEqual(self.count(), 1)
         with closing(PendingFolders(item.queue_path)) as pending:
             self.assertTrue(pending.page(time.time()+61))
 
-    def test_startup_recovers_commit_without_notice_or_librarian(self):
-        folder = self.seed(self.watch()/'artist')
-        item, bus = self.controller()
-        done = []
+    def test_startup_reports_all_batches_without_notice_or_librarian(self):
+        watch = self.watch()
+        folder = self.seed(watch/'artist', 205)
+        historical = [dict(path=str(folder/f'{i}.png'), filename=f'{i}.png', size=7, created=1)
+                      for i in (0, 204)]
+        self.service.submit('register_files_minimal', historical).result(2)
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            conn.execute('UPDATE files SET is_offline=1')
+            conn.commit()
+        item, bus = self.controller(autostart=False)
+        done, scan_events = [], []
         bus.subscribe('library_ingested', done.append)
-        self.assertTrue(pump(lambda:bool(done)))
-        self.assertEqual(self.count(), 1)
+        item.scan_started.connect(lambda folder: scan_events.append((folder,)))
+        item.scan_finished.connect(lambda *result: scan_events.append(result))
+        item.start()
+        self.assertTrue(pump(lambda: bool(done) and len(scan_events) == 2))
+        self.assertEqual(scan_events, [(watch.as_posix(),), (watch.as_posix(), 'complete', 203, 2)])
+        self.assertEqual(done, [dict(folder=watch.as_posix(), count=203)])
+        self.assertEqual(self.count(), 203)
         self.assertTrue(item.queue_path.is_file())
         item.request_shutdown()
         self.assertTrue(pump(item.shutdown_ready))
@@ -378,10 +397,16 @@ class ControllerTests(Fixture):
         bad = self.watch(self.root/'a-bad')
         (bad/'catalog.db').write_bytes(b'not sqlite')
         good = self.seed(self.watch(self.root/'b-good'))
-        item, bus = self.controller()
-        done = []
+        item, bus = self.controller(autostart=False)
+        done, scan_events = [], []
         bus.subscribe('library_ingested', done.append)
-        self.assertTrue(pump(lambda:any(Path(row['folder']) == good for row in done)))
+        item.scan_started.connect(lambda folder: scan_events.append((folder,)))
+        item.scan_finished.connect(lambda *result: scan_events.append(result))
+        item.start()
+        self.assertTrue(pump(lambda: bool(done) and len(scan_events) == 4))
+        self.assertEqual(scan_events, [(bad.as_posix(),), (bad.as_posix(), 'failed', 0, 0),
+                                       (good.as_posix(),), (good.as_posix(), 'complete', 1, 0)])
+        self.assertEqual(done, [dict(folder=good.as_posix(), count=1)])
         item.request_shutdown()
         self.assertTrue(pump(item.shutdown_ready))
         with closing(PendingFolders(item.queue_path)) as pending:

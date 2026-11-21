@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import QCoreApplication, QEvent, Qt, QTimer
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QApplication, QMenu
+from PySide6.QtWidgets import QApplication, QLabel, QMenu
 from core.base_module import BaseModule
 from core.library_service import LibraryService
 from core.module_handoff import image_set_consumers
@@ -131,6 +131,44 @@ class CherryHandoff(unittest.TestCase):
         self.assertTrue(pump(lambda: self.view._send_worker is None))
         self.assertFalse(received)
         self.assertFalse(self.main.module_windows)
+
+    def test_cherry_scan_status_reaches_dashboard_and_pickler_opened_mid_scan(self):
+        self.main.show()
+        dashboard_status = self.main.statusBar()
+        dashboard_label = dashboard_status.findChild(QLabel, 'cherryScanStatus')
+        self.assertTrue(dashboard_label.isHidden())
+        folder = (self.root / 'Alpha').as_posix()
+        ingestor = self.main._cherry_ingestor
+        scanning = self.main.tr('tool.cherry.ingest_scan_started', 'Cherry · Scanning {folder}…').format(folder='Alpha')
+
+        ingestor.scan_started.emit(folder)
+        self.assertTrue(pump(lambda: dashboard_label.text() == scanning and dashboard_label.isVisible()))
+        self.assertEqual(dashboard_label.toolTip(), folder)
+
+        self.main.switch_to_module(self.pickler)
+        pickler_status = self.main.module_windows['Pickler'].statusBar()
+        pickler_label = pickler_status.findChild(QLabel, 'cherryScanStatus')
+        self.assertEqual(pickler_label.text(), scanning)
+        self.assertTrue(pickler_label.isVisible())
+        self.assertEqual(pickler_label.toolTip(), folder)
+
+        dashboard_status.showMessage('Dashboard operation')
+        pickler_status.showMessage('Pickler operation')
+        for outcome, key, default in (
+            ('complete', 'tool.cherry.ingest_scan_complete', 'Scan complete'),
+            ('failed', 'tool.cherry.ingest_scan_failed', 'Scan incomplete'),
+            ('cancelled', 'tool.cherry.ingest_scan_cancelled', 'Scan canceled'),
+        ):
+            with self.subTest(outcome=outcome):
+                title = self.main.tr(key, default)
+                terminal = self.main.tr('tool.cherry.ingest_scan_result',
+                    'Cherry · {title} · {accepted} without conflicts · {conflicts} to review').format(
+                        title=title, accepted=105, conflicts=7)
+                ingestor.scan_finished.emit(folder, outcome, 105, 7)
+                self.assertTrue(pump(lambda: all(label.text() == terminal and label.isVisible()
+                    for label in (dashboard_label, pickler_label))))
+                self.assertEqual(dashboard_status.currentMessage(), 'Dashboard operation')
+                self.assertEqual(pickler_status.currentMessage(), 'Pickler operation')
 
     def test_cancel_and_shutdown_suppress_late_delivery_and_duplicate_jobs(self):
         entered, release = threading.Event(), threading.Event()
