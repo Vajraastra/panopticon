@@ -171,6 +171,23 @@ class CherryHandoff(unittest.TestCase):
             self.assertEqual((bar.maximum(), bar.value()), (100, 50))
             self.assertIn(catalog, bar.toolTip())
 
+        deferred = self.main.tr('tool.cherry.ingest_batch_deferred', 'Cherry · Indexing after the batch')
+        deferred_tip = self.main.tr('tool.cherry.ingest_batch_deferred_tip',
+            'Pending folders stay in the queue and are indexed when the download batch ends.')
+        ingestor.batch_deferred.emit(True)
+        self.assertTrue(pump(lambda: all(label.text() == deferred and label.isVisible()
+            for label in (dashboard_label, pickler_label))))
+        self.assertTrue(dashboard_bar.isHidden() and pickler_bar.isHidden())
+        self.assertEqual(dashboard_label.toolTip(), deferred_tip)
+        self.assertEqual(pickler_label.toolTip(), deferred_tip)
+        ingestor.scan_progress.emit(folder, 36, 4, catalog, 32, 40)
+        app.processEvents()
+        self.assertEqual((dashboard_label.text(), pickler_label.text()), (deferred, deferred))
+        ingestor.batch_deferred.emit(False)
+        self.assertTrue(pump(lambda: all(bar.value() == 80 and bar.isVisible()
+            for bar in (dashboard_bar, pickler_bar))))
+        self.assertEqual((dashboard_label.text(), pickler_label.text()), (progress, progress))
+
         for outcome, key, default in (
             ('complete', 'tool.cherry.ingest_scan_complete', 'Scan complete'),
             ('failed', 'tool.cherry.ingest_scan_failed', 'Scan incomplete'),

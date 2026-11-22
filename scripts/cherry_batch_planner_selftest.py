@@ -31,6 +31,7 @@ class FakeBridge(QObject):
     finished_signal = Signal(object)
     failed_signal = Signal(str)
     cancelled_signal = Signal()
+    catalog_write_possible = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -50,8 +51,10 @@ class FakeBridge(QObject):
         self.is_busy = False
         self.finished_signal.emit(summary or DownloadSummary())
 
-    def fail(self, message: str) -> None:
+    def fail(self, message: str, *, writes_possible: bool = False) -> None:
         self.is_busy = False
+        if writes_possible:
+            self.catalog_write_possible.emit()
         self.failed_signal.emit(message)
 
     def cancel(self) -> bool:
@@ -181,8 +184,10 @@ def test_cancellation_announces_touched_profiles() -> None:
     bridge = FakeBridge()
     queue = DownloadQueue(bridge)
     finished: list[str] = []
+    notices: list[str] = []
     cancelled: list[object] = []
     queue.profile_finished.connect(lambda item, _: finished.append(item["display_name"]))
+    queue.profile_catalog_changed.connect(lambda item: notices.append(item["display_name"]))
     queue.queue_cancelled.connect(cancelled.append)
     rows = [
         profile(1, "A", [
@@ -195,8 +200,33 @@ def test_cancellation_announces_touched_profiles() -> None:
     bridge.finish(DownloadSummary(downloaded=1))
     check(queue.cancel(), "cancel() no aceptó la operación")
     check(finished == ["A", "B"], f"no se anunciaron perfiles tocados: {finished}")
+    check(notices == ["A"], f"se anunció un catálogo intacto al cancelar: {notices}")
     check(len(cancelled) == 1 and cancelled[0].downloaded == 1,
           "se perdió el resumen parcial al cancelar")
+
+
+def test_catalog_notices_require_downloads_or_possible_engine_writes() -> None:
+    bridge = FakeBridge()
+    queue = DownloadQueue(bridge)
+    notices: list[str] = []
+    queue.profile_catalog_changed.connect(lambda item: notices.append(item["display_name"]))
+    rows = [
+        profile(1, "Earlier download", [
+            source("https://www.patreon.com/a", 11),
+            source("https://pawchive.pw/patreon/user/1", 12),
+        ]),
+        profile(2, "Preflight failure", [source("https://www.patreon.com/b", 21)]),
+        profile(3, "Engine failure", [source("https://www.patreon.com/c", 31)]),
+        profile(4, "No downloads", [source("https://www.patreon.com/d", 41)]),
+    ]
+    check(queue.start(rows), "la cola con fallos mixtos no arrancó")
+    bridge.finish(DownloadSummary(downloaded=1))
+    bridge.fail("source_names_owner_changed")
+    bridge.fail("fixture_engine_failure", writes_possible=True)
+    bridge.finish()
+    bridge.fail("source_names_owner_changed")
+    check(notices == ["Engine failure", "Earlier download"],
+          f"avisos de catálogo incorrectos para resultados mixtos: {notices}")
 
 
 def test_auth_single_flight() -> None:
@@ -387,12 +417,29 @@ def test_automatic_source_availability() -> None:
     asyncio.run(run())
 
 
+def test_deferred_catalog_notice_follows_first_changed_pass() -> None:
+    bridge = FakeBridge()
+    queue = DownloadQueue(bridge)
+    notices, finished = [], []
+    queue.profile_catalog_changed.connect(lambda item: notices.append(item["display_name"]))
+    queue.profile_finished.connect(lambda *result: finished.append(result))
+    row = profile(1, "A", [source("https://www.patreon.com/creator", 10),
+                           source("https://pawchive.pw/patreon/user/1", 11)])
+    check(queue.start([row], catalog_deferred=True), "el lote no arrancó")
+    bridge.finish(DownloadSummary(downloaded=1))
+    check(notices == ["A"] and not finished, "el primer cambio quedó pendiente de la última pasada")
+    bridge.finish(DownloadSummary(downloaded=2))
+    check(notices == ["A"] and len(finished) == 1, "la última pasada repitió el aviso")
+
+
 if __name__ == "__main__":
     test_global_order_and_aggregation()
     test_repository_pass_waits_for_throttle()
     test_failure_isolation()
     test_cancellation_announces_touched_profiles()
+    test_catalog_notices_require_downloads_or_possible_engine_writes()
+    test_deferred_catalog_notice_follows_first_changed_pass()
     test_auth_single_flight()
     test_source_failure_stays_inside_profile()
     test_automatic_source_availability()
-    print("O3 planner: 40/40 comprobaciones")
+    print("O3 planner: 46/46 comprobaciones")

@@ -3,17 +3,13 @@ Vista del módulo Pickler.
 
 Usa el StandardToolLayout de 3 paneles (biblia §4):
   • Sidebar (320px) : entrada (abrir carpeta + recientes) y ajustes
-                      (toggle de modo, carpeta destino, mover/copiar, contadores).
+                      (acción, carpeta destino y contadores).
   • Canvas          : imagen escalada a 1024px lado largo, centrada, con franja
                       de color según el modo activo.
   • Action Bar      : botón de acción primaria del modo + omitir.
 
-Dos modos *error-proof* (constantes locale-safe, nunca comparar por texto):
-  MODE_DELETE → acción primaria = enviar a papelera recuperable.
-  MODE_PICK   → acción primaria = conservar (mover/copiar) a destino.
-
-D descarta y C conserva, con avance tras confirmar la operación. Las flechas
-navegan sin modificar archivos; Ctrl+Z recorre el historial del set actual.
+El panel selecciona la acción principal: mover, copiar o descartar.
+D marca para descartar. Aplicar o cerrar confirma las decisiones pendientes.
 """
 
 from __future__ import annotations
@@ -25,20 +21,16 @@ from PySide6.QtCore import Qt, QSize, QSettings, Signal, QTimer
 from PySide6.QtGui import QAction, QKeyEvent, QMouseEvent, QPixmap, QResizeEvent, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QButtonGroup, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget,
-    QListWidgetItem, QMenu, QMessageBox, QPushButton, QRadioButton, QSizePolicy,
+    QListWidgetItem, QMenu, QMessageBox, QProgressBar, QPushButton, QRadioButton, QSizePolicy,
     QVBoxLayout, QWidget,
 )
 
 from core.components.standard_layout import StandardToolLayout
 from core.paths import CachePaths
-from core.image_preview import ImagePreview
+from core.image_preview import ImagePreview, load_preview, _identity as preview_identity
 from core.metadata.bundle import MetadataBundle
 from core.native_threads import native_done, start_worker
 from ..logic.worker import PicklerWorker
-
-# Modos (locale-safe: nunca comparar por el texto del botón)
-MODE_DELETE = 0
-MODE_PICK = 1
 
 _IMAGE_EXTS = {
     ".jpg", ".jpeg", ".png", ".webp",
@@ -48,6 +40,12 @@ _IMAGE_EXTS = {
 _MAX_RECENT = 10
 _MAX_SIDE = 1024  # Regla de 1024px (biblia §4)
 
+
+def _load_pickler_preview(path, metadata_loader, cancel_event):
+    preview = load_preview(path, metadata_loader, cancel_event)
+    if preview is not None and not preview['image'].isNull():
+        preview['caption_identity'] = preview_identity(Path(path).with_suffix('.txt'))
+    return preview
 
 
 class _ScaledLabel(QLabel):
@@ -166,10 +164,17 @@ class PicklerView(StandardToolLayout):
         # Estado
         self._images: list[Path] = []
         self._index = 0
-        self._mode = MODE_DELETE
+        self._primary_action = 'discard'
         self._kept = 0
         self._discarded = 0
         self._undo_stack: list[dict] = []
+        self._staged: list[dict] = []
+        self._pending_counts = dict(move=0, copy=0, discard=0)
+        self._reviewed_file = None
+        self._apply_recovery = None
+        self._after_apply = None
+        self._changed_library_folders: dict[str, None] = {}
+        self._flush_library_when_idle = False
         self._decision_ready = False
         self._visible_since = None
         self._shortcuts = []
@@ -179,7 +184,6 @@ class PicklerView(StandardToolLayout):
         # solo el destino de conservar y se reinicia al abrir otro set.
         self._set_folder: Path | None = None
         self._custom_dest: Path | None = None
-        self._copy_mode = self._settings.value("copy_mode", False, type=bool)
 
         # Construir los 3 paneles y armar el layout estándar
         self._canvas = _Canvas()
@@ -201,8 +205,7 @@ class PicklerView(StandardToolLayout):
         self._decision_timer.setSingleShot(True)
         self._decision_timer.timeout.connect(self._arm_decisions)
         for sequence, callback in (
-            ('D', lambda: self._keyboard_decision('discard')),
-            ('C', lambda: self._keyboard_decision('keep')),
+            ('D', lambda: self._mark_current('discard')),
             ('Right', self._next), ('Space', self._next),
             ('Left', self._prev), ('Ctrl+Z', self._undo),
         ):
@@ -219,7 +222,7 @@ class PicklerView(StandardToolLayout):
         self._canvas.context_menu_requested.connect(self._show_context_menu)
 
         self._load_recent()
-        self._apply_mode_visuals()
+        self._update_primary_action()
         self._refresh_view()
 
     # ── i18n ──────────────────────────────────────────────────────────
@@ -241,8 +244,7 @@ class PicklerView(StandardToolLayout):
         self._btn_open = QPushButton(self.tr("pickler.open_folder", "Open folder…"))
         self._btn_open.setToolTip(self.tr(
             "pickler.open_folder_tip",
-            "Choose the folder of images to review. It is walked in order and nothing is "
-            "changed until you decide on each image."))
+            "Choose a folder to review. Apply or undo pending decisions before switching sets."))
         self._btn_open.clicked.connect(self._browse)
         lay.addWidget(self._btn_open)
 
@@ -257,15 +259,28 @@ class PicklerView(StandardToolLayout):
         lay.addSpacing(6)
         lay.addWidget(self._divider())
 
-        # Ajustes: modo
+        # Acción del botón principal
         lay.addWidget(self._section_label(self.tr("pickler.settings", "SETTINGS")))
-        self._btn_mode = QPushButton()
-        self._btn_mode.setToolTip(self.tr(
-            "pickler.mode_tip",
-            "Changes only the main button and context menu. Keyboard shortcuts are fixed: "
-            "D always discards; C always keeps using Move/Copy and the selected destination."))
-        self._btn_mode.clicked.connect(self._toggle_mode)
-        lay.addWidget(self._btn_mode)
+        lay.addWidget(self._section_label(self.tr('tool.pickler.action_choice', 'Action to mark')))
+        row = QHBoxLayout()
+        self._rb_move = QRadioButton(self.tr('pickler.move', 'Move'))
+        self._rb_move.setToolTip(self.tr('pickler.move_tip',
+            'Applying a move takes the image and its caption out of the source folder.'))
+        self._rb_copy = QRadioButton(self.tr('pickler.copy', 'Copy'))
+        self._rb_copy.setToolTip(self.tr('pickler.copy_tip',
+            'Applying a copy keeps the original and puts a copy in the selected destination.'))
+        self._rb_discard = QRadioButton(self.tr('tool.pickler.discard', 'Discard'))
+        self._rb_discard.setToolTip(self.tr('tool.pickler.discard_tip',
+            'Applying a discard moves the image and its caption into the source’s discarded folder.'))
+        grp = QButtonGroup(panel)
+        self._action_buttons = {'move': self._rb_move, 'copy': self._rb_copy, 'discard': self._rb_discard}
+        self._rb_discard.setChecked(True)
+        for action, button in self._action_buttons.items():
+            grp.addButton(button)
+            button.toggled.connect(lambda checked, action=action: self._on_action_toggled(action, checked))
+            row.addWidget(button)
+        row.addStretch()
+        lay.addLayout(row)
 
         # Destino (conservar)
         lay.addWidget(self._section_label(self.tr("pickler.dest_folder", "Destination (keep)")))
@@ -282,43 +297,21 @@ class PicklerView(StandardToolLayout):
         self._btn_dest.clicked.connect(self._choose_dest)
         lay.addWidget(self._btn_dest)
 
-        # Mover / Copiar
-        lay.addWidget(self._section_label(self.tr("pickler.transfer_mode", "When keeping:")))
-        row = QHBoxLayout()
-        self._rb_move = QRadioButton(self.tr("pickler.move", "Move"))
-        self._rb_move.setToolTip(self.tr(
-            "pickler.move_tip",
-            "The images you keep are MOVED to the destination: they leave the source "
-            "folder."))
-        self._rb_copy = QRadioButton(self.tr("pickler.copy", "Copy"))
-        self._rb_copy.setToolTip(self.tr(
-            "pickler.copy_tip",
-            "The images you keep are COPIED to the destination: the original stays where "
-            "it is."))
-        grp = QButtonGroup(panel)
-        grp.addButton(self._rb_move)
-        grp.addButton(self._rb_copy)
-        (self._rb_copy if self._copy_mode else self._rb_move).setChecked(True)
-        self._rb_move.toggled.connect(self._on_transfer_toggled)
-        self._rb_copy.toggled.connect(self._on_transfer_toggled)
-        row.addWidget(self._rb_move)
-        row.addWidget(self._rb_copy)
-        row.addStretch()
-        lay.addLayout(row)
-
         lay.addStretch()
 
         # Contadores
         self._lbl_counters = QLabel()
         lay.addWidget(self._lbl_counters)
+        self._lbl_pending = QLabel()
+        self._lbl_pending.setWordWrap(True)
+        lay.addWidget(self._lbl_pending)
 
         # Footer: abrir destino / papelera / deshacer
         self._btn_undo = QPushButton()
         self._btn_undo.setToolTip(self.tr(
             "pickler.undo_tip",
-            "Press repeatedly to undo this set's decisions, newest first. Moves restore "
-            "the image and caption; copies remove only the verified copy. Changed files "
-            "and occupied original paths are protected. History resets when loading another set or closing Pickler."))
+            "Undo the newest pending mark immediately. After applying, undo restores a verified "
+            "move or removes an unchanged copy. Loading another set clears the history."))
         self._btn_undo.clicked.connect(self._undo)
         lay.addWidget(self._btn_undo)
         self._btn_open_dest = QPushButton(self.tr("pickler.open_dest", "Open destination"))
@@ -336,7 +329,7 @@ class PicklerView(StandardToolLayout):
         lay.addWidget(self._btn_open_disc)
         self._btn_recovery = QPushButton(self.tr("pickler.recovery", "Review interrupted transfers…"))
         self._btn_recovery.setToolTip(self.tr("pickler.recovery_tip", "Restore the source of a pending transfer, keeping its current curation. Verified copy undo can resume; confirmed transfers are retained."))
-        self._btn_recovery.clicked.connect(lambda: self._start_job('review', ()))
+        self._btn_recovery.clicked.connect(self._review_transfers)
         lay.addWidget(self._btn_recovery)
 
         self._update_dest_label()
@@ -352,25 +345,33 @@ class PicklerView(StandardToolLayout):
         self._btn_primary = QPushButton()
         self._btn_primary.setToolTip(self.tr(
             "pickler.action_tip",
-            "Applies the button action to the displayed image and caption, then advances "
-            "after confirmation. D always discards; C keeps. Discards go to discarded/ "
-            "and Ctrl+Z undoes decisions in reverse order."))
+            "Marks the displayed image and advances. Apply decisions finalizes the image and caption."))
         self._btn_primary.clicked.connect(self._do_primary)
         self._btn_skip = QPushButton(self.tr("pickler.action_skip", "→  Skip"))
         self._btn_skip.setToolTip(self.tr(
             "pickler.action_skip_tip",
             "Moves to the next image without touching it or deciding anything about it."))
         self._btn_skip.clicked.connect(self._next)
+        self._btn_apply = QPushButton()
+        self._btn_apply.setToolTip(self.tr('tool.pickler.apply_tip',
+            'Run the marked moves, copies and discards in order. Closing Pickler also applies pending decisions.'))
+        self._btn_apply.clicked.connect(self._toggle_apply)
+        self._apply_bar = QProgressBar()
+        self._apply_bar.setMinimumWidth(180)
+        self._apply_bar.setFormat(self.tr('tool.pickler.apply_progress', 'Applying · %v/%m · %p%'))
+        self._apply_bar.hide()
         lay.addWidget(self._btn_primary)
         lay.addWidget(self._btn_skip)
-        lay.addStretch()
+        lay.addStretch(1)
+        lay.addWidget(self._apply_bar, 1)
+        lay.addWidget(self._btn_apply)
         self._lbl_keys = QLabel()
         self._lbl_keys.setTextFormat(Qt.TextFormat.PlainText)
         self._lbl_keys.setWordWrap(True)
         root.addWidget(self._lbl_keys)
         self._lbl_recover = QLabel(self.tr(
             'tool.pickler.recover_help',
-            'Ctrl+Z: undo repeatedly, newest first, and return to that image. History lasts until another set is loaded or Pickler closes. Discards remain in discarded/; use Open discarded to find them.'))
+            'Ctrl+Z removes the latest mark. Apply decisions or close Pickler to carry out the pending actions.'))
         self._lbl_recover.setWordWrap(True)
         root.addWidget(self._lbl_recover)
         self._lbl_undo_next = QLabel()
@@ -467,6 +468,8 @@ class PicklerView(StandardToolLayout):
             return self._set_folder
         if self._images:
             return self._images[self._index].parent
+        if self._staged:
+            return self._staged[-1]['path'].parent
         if self._last_op:
             return Path(self._last_op['original']).parent
         return None
@@ -484,40 +487,29 @@ class PicklerView(StandardToolLayout):
     def _update_keyboard_help(self) -> None:
         if not hasattr(self, '_lbl_keys'):
             return
-        operation = self.tr('pickler.copy', 'Copy') if self._copy_mode else self.tr('pickler.move', 'Move')
-        destination = str(self._keep_dest() or self.tr('pickler.dest_default', '<set>/picked'))
         discarded = str(self._discard_dest() or 'discarded/')
         self._lbl_keys.setText(self.tr(
             'tool.pickler.keyboard_help',
-            'D: move to {discarded} • C: {operation} to {destination}\n←: previous • → / Space: skip • D and C advance after success. Image + caption travel together. Holding a key never repeats.').format(
-                discarded=discarded, operation=operation, destination=destination))
-
-    def _on_transfer_toggled(self) -> None:
-        self._copy_mode = self._rb_copy.isChecked()
-        self._settings.setValue("copy_mode", self._copy_mode)
-        self._update_keyboard_help()
+            'D: mark for discard to {discarded} • ←: previous • → / Space: skip\nTo move or copy, select the action in the sidebar and use the main button.').format(discarded=discarded))
 
     # ── API pública ───────────────────────────────────────────────────
     def load_folder(self, folder: Path) -> None:
         self._start_job('scan',(Path(folder),))
 
-    # ── Modo ──────────────────────────────────────────────────────────
-    def _toggle_mode(self) -> None:
-        if self._closing or self._worker is not None:return
-        self._mode = MODE_PICK if self._mode == MODE_DELETE else MODE_DELETE
-        self._apply_mode_visuals()
+    def _on_action_toggled(self, action, checked):
+        if checked:
+            self._primary_action = action
+            self._update_primary_action()
 
-    def _apply_mode_visuals(self) -> None:
-        if self._mode == MODE_PICK:
-            color = self._color('accent_success', '#00ff66')
-            self._btn_mode.setText(self.tr("pickler.mode_pick", "✓ Picker"))
-            self._btn_primary.setText(self.tr("pickler.action_pick", "✓  Keep") + " (C)")
-        else:
+    def _update_primary_action(self) -> None:
+        label = self._action_buttons[self._primary_action].text()
+        if self._primary_action == 'discard':
             color = self._color('accent_warning', '#ff3333')
-            self._btn_mode.setText(self.tr("pickler.mode_delete", "🗑 Discard"))
-            self._btn_primary.setText(self.tr("pickler.action_delete", "🗑  Discard") + " (D)")
+            label += ' (D)'
+        else:
+            color = self._color('accent_success', '#00ff66')
+        self._btn_primary.setText(label)
         self._canvas.mode_stripe.setStyleSheet(f"background-color: {color};")
-        self._btn_mode.setStyleSheet(f"color: {color}; border-color: {color};")
         self._btn_primary.setStyleSheet(f"color: {color}; border-color: {color};")
 
     # ── Navegación ────────────────────────────────────────────────────
@@ -535,26 +527,28 @@ class PicklerView(StandardToolLayout):
 
     # ── Acción primaria ───────────────────────────────────────────────
     def _do_primary(self) -> None:
-        if not self._decision_ready or self._closing or self._worker is not None:return
-        if not self._images:
+        self._mark_current(self._primary_action)
+
+    def _mark_current(self, action):
+        if (not self._decision_ready or self._closing or self._worker is not None
+                or self._apply_recovery is not None or not self._images or self._reviewed_file is None):
             return
-        if self._mode == MODE_PICK:
-            self._pick_current()
-        else:
-            self._delete_current()
+        path, identity, caption = self._reviewed_file
+        if path != self._images[self._index] or identity is None:
+            return
+        destination = self._discard_dest() if action == 'discard' else self._keep_dest()
+        self._staged.append(dict(path=path, destination=destination, action=action, index=self._index,
+                                 reviewed_identity=identity, reviewed_caption=caption))
+        self._pending_counts[action] += 1
+        self._consume_current()
 
-    def _delete_current(self) -> None:
-        if self._closing or self._worker is not None or not self._images:return
-        destination=self._discard_dest()
-        if destination:self._start_job('transfer',(self._images[self._index],destination,'discard'))
-
-    def _pick_current(self) -> None:
-        if self._closing or self._worker is not None or not self._images:return
-        destination=self._keep_dest()
-        if destination:self._start_job('transfer',(self._images[self._index],destination,'copy' if self._copy_mode else 'move'))
+    def _restore_mark(self, decision):
+        index = min(decision['index'], len(self._images))
+        self._images.insert(index, decision['path'])
+        self._index = index
 
     def _consume_current(self) -> None:
-        """Quita la imagen actual de la lista (movida) y refresca."""
+        """Retira del recorrido una imagen marcada y muestra la siguiente."""
         self._images.pop(self._index)
         if self._index >= len(self._images):
             self._index = max(0, len(self._images) - 1)
@@ -563,38 +557,57 @@ class PicklerView(StandardToolLayout):
 
     # ── Deshacer ──────────────────────────────────────────────────────
     def _undo(self) -> None:
-        if self._undo_stack:self._start_job('undo',(self._undo_stack[-1],))
+        if self._closing or self._worker is not None or self._apply_recovery is not None:
+            return
+        if self._staged:
+            decision = self._staged.pop()
+            self._pending_counts[decision['action']] -= 1
+            self._restore_mark(decision)
+            self._refresh_view()
+            self._update_counters()
+        elif self._undo_stack:
+            self._start_job('undo',(self._undo_stack[-1],))
 
     @property
     def _last_op(self):
         return self._undo_stack[-1] if self._undo_stack else None
 
-    def _keyboard_decision(self, action):
-        if not self._decision_ready or self._closing or self._worker is not None:
-            return
-        if action == 'discard':
-            self._delete_current()
-        else:
-            self._pick_current()
-
     def _arm_decisions(self):
-        if self._closing or self._worker is not None or self._visible_since is None:
+        if (self._closing or self._worker is not None or self._visible_since is None
+                or self._apply_recovery is not None):
             return
         remaining = 0.3 - (monotonic() - self._visible_since)
         if remaining > 0:
             self._decision_timer.start(max(1, int(remaining * 1000) + 1))
             return
         self._decision_ready = True
-        self._lbl_keyboard_state.setText(self.tr('tool.pickler.keys_ready', 'D / C ready — one press per image.'))
+        self._lbl_keyboard_state.setText(self.tr('tool.pickler.keys_ready', 'D ready to mark for discard.'))
         self._set_busy(False)
 
-    def _notify_library_changed(self, *folders) -> None:
-        """Publicar carpetas sólo tras confirmación; no depender de reindexar para curación."""
-        if not self._event_bus:
+    def _remember_library_changes(self, kind, args, result, *, notify_previews=True) -> None:
+        if kind == 'recover':
+            request = result['request']
+            paths = (request['source_path'], request['result_path'])
+        elif kind in ('transfer', 'undo'):
+            operation = args[0] if kind == 'undo' else result
+            paths = (operation['original'], operation['current'])
+        else:
             return
-        for f in folders:
-            if f:
-                self._event_bus.publish("library_changed", str(f))
+        folders = tuple(str(Path(path).parent) for path in paths)
+        self._changed_library_folders.update(dict.fromkeys(folders))
+        if self._event_bus and notify_previews:
+            self._event_bus.publish('library_previews_changed', folders)
+
+    def flush_library_changes(self) -> None:
+        """Announce confirmed folders once the current operation has settled."""
+        if self._worker is not None:
+            self._flush_library_when_idle = True
+            return
+        self._flush_library_when_idle = False
+        folders, self._changed_library_folders = self._changed_library_folders, {}
+        if self._event_bus:
+            for folder in folders:
+                self._event_bus.publish('library_changed', folder)
 
     # ── Menú contextual (acción primaria error-proof) ─────────────────
     def _show_context_menu(self, pos) -> None:
@@ -602,12 +615,8 @@ class PicklerView(StandardToolLayout):
         if not self._images:
             return
         menu = QMenu(self)
-        if self._mode == MODE_PICK:
-            act = QAction(self.tr("pickler.action_pick", "✓  Keep"), self)
-            act.triggered.connect(lambda: self._keyboard_decision('keep'))
-        else:
-            act = QAction(self.tr("pickler.action_delete", "🗑  Discard"), self)
-            act.triggered.connect(lambda: self._keyboard_decision('discard'))
+        act = QAction(self._btn_primary.text(), menu)
+        act.triggered.connect(self._do_primary)
         act.setEnabled(self._decision_ready)
         skip = QAction(self.tr("pickler.action_skip", "→  Skip"), self)
         skip.triggered.connect(self._next)
@@ -619,15 +628,18 @@ class PicklerView(StandardToolLayout):
     def _refresh_view(self) -> None:
         if self._closing or self._worker is not None:return
         self._decision_ready = False
+        self._reviewed_file = None
         self._visible_since = None
         self._decision_timer.stop()
         self._update_keyboard_help()
-        self._lbl_keyboard_state.setText(self.tr('tool.pickler.keys_wait', 'D / C paused while loading; enabled 0.3 s after the image appears. Early presses are ignored.'))
+        self._lbl_keyboard_state.setText(self.tr('tool.pickler.keys_wait', 'Marking is available 0.3 s after the image appears.'))
         self._set_busy(False)
         if not self._images:
             self._lbl_keyboard_state.setText('')
             self._canvas.img.set_source(None)
-            self._canvas.img.setText(self.tr("pickler.no_images", "No images in this folder"))
+            text = (self.tr('tool.pickler.marking_done', 'Apply the pending decisions to finish.')
+                    if self._staged else self.tr('pickler.no_images', 'No images in this folder'))
+            self._canvas.img.setText(text)
             self._set_status(""); return
         path=self._images[self._index]
         self._canvas.img.set_source(None)
@@ -643,11 +655,33 @@ class PicklerView(StandardToolLayout):
         disc = self.tr("pickler.deleted", "Discarded")
         self._lbl_counters.setText(
             f"✓ {kept}: {self._kept}    🗑 {disc}: {self._discarded}")
+        self._lbl_pending.setText(self.tr('tool.pickler.pending_counts',
+            'Pending · Move {move} · Copy {copy} · Discard {discard}').format(**self._pending_counts))
         if hasattr(self, '_btn_undo'):
-            self._btn_undo.setText(self.tr('tool.pickler.undo_count', 'Undo ({count}) — Ctrl+Z').format(count=len(self._undo_stack)))
+            count = len(self._undo_stack) + len(self._staged)
+            self._btn_undo.setText(self.tr('tool.pickler.undo_count', 'Undo ({count}) — Ctrl+Z').format(count=count))
         if hasattr(self, '_lbl_undo_next'):
+            path = self._staged[-1]['path'] if self._staged else self._last_op['original'] if self._last_op else None
             self._lbl_undo_next.setText(self.tr('tool.pickler.undo_next', 'Next Ctrl+Z: {path}').format(
-                path=self._last_op['original']) if self._last_op else '')
+                path=path) if path is not None else '')
+        self._update_apply_button()
+
+    def _update_apply_button(self):
+        if not hasattr(self, '_btn_apply'):
+            return
+        applying = self._worker is not None and self._job['kind'] == 'apply'
+        self._lbl_pending.setVisible(not applying)
+        if applying:
+            label = self.tr('tool.pickler.apply_stop', 'Stop batch')
+            tip = self.tr('tool.pickler.apply_stop_tip', 'Keep confirmed changes and stop before the next decision.')
+        else:
+            label = self.tr('tool.pickler.apply', 'Apply decisions ({count})').format(count=len(self._staged))
+            tip = self.tr('tool.pickler.apply_tip',
+                'Run the marked moves, copies and discards in order. Closing Pickler also applies pending decisions.')
+        self._btn_apply.setText(label)
+        self._btn_apply.setToolTip(tip)
+        self._btn_apply.setEnabled(not self._closing and (applying or (
+            self._worker is None and bool(self._staged) and self._apply_recovery is None)))
 
     def _open_dest(self) -> None:
         dest = self._keep_dest()
@@ -661,7 +695,7 @@ class PicklerView(StandardToolLayout):
 
     def _new_preview(self):
         if self._closing:return
-        self._preview=ImagePreview(lambda _: MetadataBundle(),self)
+        self._preview=ImagePreview(lambda _: MetadataBundle(),self, loader=_load_pickler_preview)
         preview=self._preview
         preview.result.connect(lambda ticket,value,error: self._preview_ready(preview,ticket,value,error),Qt.QueuedConnection)
 
@@ -670,24 +704,65 @@ class PicklerView(StandardToolLayout):
         if error is not None or value is None or value['image'].isNull():
             self._canvas.img.set_source(None)
             self._canvas.img.setText(self.tr('pickler.cant_display','Cannot display:'))
-            self._lbl_keyboard_state.setText(self.tr('tool.pickler.keys_unavailable', 'D / C unavailable: image could not be displayed. Skip to review the next image.'))
+            self._lbl_keyboard_state.setText(self.tr('tool.pickler.keys_unavailable', 'Image could not be displayed. Skip to review the next image.'))
         else:
             self._canvas.img.set_source(QPixmap.fromImage(value['image']))
+            self._reviewed_file = (Path(value['path']), value.get('identity'), value.get('caption_identity'))
             self._visible_since = monotonic()
             self._decision_timer.start(300)
 
     def _set_busy(self,busy):
         enabled=not busy and not self._closing
-        for name in ('_btn_open','_recent_list','_btn_dest','_btn_mode','_rb_move','_rb_copy','_btn_recovery'):
+        for name in ('_btn_open','_recent_list','_btn_dest','_rb_move','_rb_copy','_rb_discard','_btn_recovery'):
             widget=getattr(self,name,None)
             if widget:widget.setEnabled(enabled)
         self._canvas.setEnabled(enabled)
         self._btn_primary.setEnabled(enabled and bool(self._images) and self._decision_ready)
         self._btn_skip.setEnabled(enabled and bool(self._images))
-        self._btn_undo.setEnabled(enabled and self._last_op is not None)
+        self._btn_undo.setEnabled(enabled and self._apply_recovery is None and bool(self._staged or self._undo_stack))
+        self._update_apply_button()
+
+    def _review_transfers(self):
+        args = (self._apply_recovery,) if self._apply_recovery is not None else ()
+        self._start_job('review', args)
+
+    def _toggle_apply(self):
+        if self._worker is not None and self._job['kind'] == 'apply':
+            self._worker.stop()
+            self._btn_apply.setEnabled(False)
+        else:
+            self._apply_pending()
+
+    def _apply_pending(self):
+        if self._closing or self._worker is not None or not self._staged:
+            return
+        if self._apply_recovery is not None:
+            self._set_status(self.tr('tool.pickler.apply_review_required',
+                'Resolve the interrupted transfer before applying more decisions.'))
+            return
+        decisions = tuple((item['path'], item['destination'], item['action'], item['reviewed_identity'],
+                           item['reviewed_caption']) for item in self._staged)
+        self._start_job('apply', (decisions,))
+
+    def prepare_close(self, retry):
+        """Apply pending marks and retry closing only after confirmation."""
+        if not self._staged:
+            return True
+        if self._apply_recovery is not None:
+            self._set_status(self.tr('tool.pickler.apply_review_required',
+                'Resolve the interrupted transfer before applying more decisions.'))
+            return False
+        if self._worker is None or self._job['kind'] == 'apply':
+            self._after_apply = retry
+            self._apply_pending()
+        return False
 
     def _start_job(self,kind,args):
         if self._closing or self._worker is not None:return
+        if kind in ('scan', 'images') and self._staged:
+            self._set_status(self.tr('tool.pickler.apply_before_load',
+                'Apply or undo pending decisions before opening another set.'))
+            return
         self._decision_ready = False
         self._visible_since = None
         self._decision_timer.stop()
@@ -697,14 +772,102 @@ class PicklerView(StandardToolLayout):
         self._delivery=None
         self._worker=PicklerWorker(kind,self._service,args,journal_root=self.context.get('pickler_journal_root'))
         self._worker.finished_signal.connect(self._job_delivered,Qt.QueuedConnection)
+        if kind == 'apply':
+            self._worker.progress_signal.connect(self._apply_progress, Qt.QueuedConnection)
         self._pending_start=True
         self._set_busy(True)
         self._lbl_keyboard_state.setText(self.tr('tool.pickler.keys_busy', 'Operation in progress. Keys are ignored; no actions are queued.'))
-        self._set_status(self.tr('pickler.processing','Processing…'))
+        if kind == 'apply':
+            self._set_status('')
+            self._apply_progress(0, len(args[0]))
+        else:
+            self._set_status(self.tr('pickler.processing', 'Processing…'))
         self._job_timer.start(); self._poll_job()
+
+    def _apply_progress(self, completed, total):
+        if self._worker is not None and self._job['kind'] == 'apply':
+            self._apply_bar.setRange(0, total)
+            self._apply_bar.setValue(completed)
+            self._apply_bar.show()
 
     def _job_delivered(self,result,error):
         self._delivery=(result,error); self._poll_job()
+
+    def _count_applied(self, action):
+        self._pending_counts[action] -= 1
+        if action == 'discard':
+            self._discarded += 1
+        else:
+            self._kept += 1
+
+    def _finish_apply(self, result, error):
+        self._apply_bar.hide()
+        result = result or {}
+        completed = result.get('completed', [])
+        for decision, operation in zip(self._staged, completed):
+            operation['index'] = decision['index']
+            self._undo_stack.append(operation)
+            self._count_applied(operation['action'])
+            self._remember_library_changes('transfer', (), operation, notify_previews=False)
+        del self._staged[:len(completed)]
+        if completed and self._event_bus:
+            self._event_bus.publish('library_previews_changed', tuple(self._changed_library_folders))
+        if result.get('recovery_required'):
+            self._apply_recovery = result['recovery_journal']
+        self.flush_library_changes()
+        retry, self._after_apply = self._after_apply, None
+        if self._closing:
+            return
+        self._new_preview()
+        self._refresh_view()
+        self._update_counters()
+        if error is None:
+            self._set_status(self.tr('tool.pickler.apply_done',
+                '{count} decisions applied.').format(count=len(completed)))
+            if retry is not None:
+                QTimer.singleShot(0, self, retry)
+        else:
+            self._show_apply_error(result.get('failed_path'), error, len(completed))
+
+    def _source_check_message(self, path, error):
+        if error == 'transfer_source_lookup_busy':
+            message = self.tr('tool.pickler.source_lookup_busy',
+                'The library changed while checking {file}. Try again.')
+        else:
+            message = self.tr('tool.pickler.source_identity_review',
+                'The library identity of {file} needs review. The file is still in place.')
+        return message.format(file=Path(path).name)
+
+    def _show_apply_error(self, path, error, completed):
+        if self._apply_recovery is not None:
+            detail = self.tr('tool.pickler.apply_review_required',
+                'Resolve the interrupted transfer before applying more decisions.')
+        elif error == 'pickler_cancelled':
+            detail = self.tr('tool.pickler.apply_stopped', 'Application stopped.')
+        elif path and error in ('path_identity_review_required', 'transfer_source_lookup_busy'):
+            detail = self._source_check_message(path, error)
+            path = None
+        elif error in ('pickler_reviewed_image_changed', 'pickler_reviewed_caption_changed'):
+            detail = self.tr('tool.pickler.apply_source_changed',
+                'The image or caption changed after review. Undo the mark and review the current file.')
+        else:
+            detail = error
+        if path:
+            detail = f'{Path(path).name} · {detail}'
+        self._set_status(self.tr('tool.pickler.apply_incomplete',
+            '{completed} applied · {pending} pending. {detail}').format(
+                completed=completed, pending=len(self._staged), detail=detail))
+
+    def _settle_apply_recovery(self, path, result):
+        if self._apply_recovery is None or Path(path) != Path(self._apply_recovery):
+            return
+        self._apply_recovery = None
+        if result['status'] == 'already_confirmed':
+            decision = self._staged.pop(0)
+            self._count_applied(decision['action'])
+        elif result['status'] == 'source_restored':
+            self._staged[0].update(reviewed_identity=result['reviewed_identity'],
+                                   reviewed_caption=result['reviewed_caption'])
 
     def _poll_job(self):
         for preview in tuple(self._retired_previews):
@@ -724,47 +887,43 @@ class PicklerView(StandardToolLayout):
         job,self._job=self._job,None
         result,error=self._delivery; self._delivery=None
         worker.deleteLater(); self._job_timer.stop()
+        kind=job['kind']
+        if kind == 'apply':
+            self._finish_apply(result, error)
+            return
+        if error is None:
+            self._remember_library_changes(kind, job['args'], result)
+        if self._closing or self._flush_library_when_idle:
+            self.flush_library_changes()
         if self._closing:return
         self._new_preview(); self._set_busy(False)
-        kind=job['kind']
         if error is not None:
             self._refresh_view()
             if kind in ('transfer', 'undo') and error in ('path_identity_review_required', 'transfer_source_lookup_busy'):
                 path = job['args'][0]['current'] if kind == 'undo' else job['args'][0]
-                if error == 'transfer_source_lookup_busy':
-                    message = self.tr('tool.pickler.source_lookup_busy',
-                        'The library changed while checking {file}. Try again.')
-                else:
-                    message = self.tr('tool.pickler.source_identity_review',
-                        'The library identity of {file} needs review. The file is still in place.')
-                self._set_status(message.format(file=Path(path).name))
+                self._set_status(self._source_check_message(path, error))
             else:
                 self._set_status(self.tr('pickler.error_move','Error: {}').format(error))
             return
         if kind in ('scan','images'):
+            self.flush_library_changes()
             self._images=result['images']; self._set_folder=result['folder']; self._custom_dest=None
             self._index=0; self._undo_stack.clear(); self._kept=0; self._discarded=0; self._update_dest_label()
-        elif kind=='transfer':
-            result['index']=job['index']; self._undo_stack.append(result)
-            if result['action']=='discard':self._discarded+=1
-            else:self._kept+=1
-            self._notify_library_changed(Path(result['original']).parent,Path(result['current']).parent)
-            self._images.pop(self._index); self._index=min(self._index,max(0,len(self._images)-1))
         elif kind=='undo':
             previous=job['args'][0]; action=previous['request']['action']
             if action=='discard':self._discarded=max(0,self._discarded-1)
             else:self._kept=max(0,self._kept-1)
             index=min(previous['index'],len(self._images))
             self._images.insert(index,Path(previous['original'])); self._index=index
-            self._notify_library_changed(Path(previous['original']).parent,Path(previous['current']).parent)
             self._undo_stack.pop()
         elif kind=='review':
             self._refresh_view(); self._show_recovery(result); return
         elif kind=='recover':
             self._undo_stack.clear()
-            request=result['request']
-            self._notify_library_changed(Path(request['source_path']).parent,Path(request['result_path']).parent)
+            self._settle_apply_recovery(job['args'][0], result)
         self._refresh_view(); self._update_counters()
+        if not self._images:
+            self.flush_library_changes()
         if kind=='recover':self._set_status(self.tr('pickler.recovery_done','Recovery verified. Reload the folder to update the set.'))
 
     def _show_recovery(self,result):
@@ -807,6 +966,7 @@ class PicklerView(StandardToolLayout):
         self._closing=True
         self._decision_timer.stop()
         if self._worker:self._worker.stop()
+        self.flush_library_changes()
         if self._preview:self._preview.close()
         for preview in self._retired_previews:preview.close()
         for dialog in tuple(self._dialogs):dialog.close()
@@ -817,6 +977,9 @@ class PicklerView(StandardToolLayout):
             all(preview.shutdown_ready() for preview in self._retired_previews) and not self._dialogs)
 
     def closeEvent(self,event):
+        if not self._closing and not self.prepare_close(self.close):
+            event.ignore()
+            return
         self.shutdown()
         if not self.shutdown_ready():event.ignore(); QTimer.singleShot(25,self,self.close)
         else:super().closeEvent(event)

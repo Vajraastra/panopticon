@@ -215,7 +215,9 @@ class ImageOptimizerModule(BaseModule):
     def on_unload(self):
         self._closed = True
         bus = (getattr(self,"context",None) or {}).get("event_bus")
-        if bus:bus.unsubscribe("library_changed",self._library_changed)
+        if bus:
+            bus.unsubscribe('library_changed', self._library_changed)
+            bus.unsubscribe('library_previews_changed', self._library_changed)
         self._thumb_loader.shutdown()
         self._analysis.close()
         if self.worker is not None and self.worker.isRunning():
@@ -227,7 +229,9 @@ class ImageOptimizerModule(BaseModule):
     def on_load(self,context=None):
         super().on_load(context)
         bus = (context or {}).get('event_bus')
-        if bus:bus.subscribe('library_changed',self._library_changed)
+        if bus:
+            bus.subscribe('library_changed', self._library_changed)
+            bus.subscribe('library_previews_changed', self._library_changed)
 
     def _library_changed(self,scope):
         # EventBus callbacks may originate outside Qt; marshal UI invalidation.

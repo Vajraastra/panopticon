@@ -220,7 +220,9 @@ anterior offline y admitir una identidad independiente.
 La ingesta conserva evidencia de contradicciones y confirma las filas sanas del lote.
 Una versión original o modificada conocida es compatible; fechas de catálogo y de
 creación física no son intercambiables. Un nombre offline sigue reservando su número
-antes de nuevas descargas. Una carpeta ausente no se recrea al sincronizar.
+antes de nuevas descargas. Una carpeta ausente se reconstruye al iniciar una descarga (no un escaneo) si su carpeta
+superior existe, para recuperar un borrado erróneo; el catálogo parte vacío y se vuelve a
+descargar. Quien ya no quiere el perfil lo elimina de la lista.
 
 La compactación abarca raíz y carpetas administradas inmediatas. Los nombres del
 artista en carpetas curadas/manuales reservan sus números sin entrar en la

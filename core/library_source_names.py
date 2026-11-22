@@ -4,12 +4,15 @@ One PK pass includes every current/offline file and its prepared canonical
 spelling. This reserves present identities, not every name in old receipts.
 The Native owner/revision fence is required around a multi-page legacy read.
 """
+import threading
+
 from core.path_identity import local_path
 from core.path_identity_registry import prepared
 from core.path_identity_clock import token
 
 PAGE_SIZE = 256
 MAX_ID = 2**63 - 1
+SNAPSHOT_BUDGET_SECONDS = 20
 
 
 def aliases(values):
@@ -64,3 +67,26 @@ def page(conn, roots, *, after_id=0, snapshot=None):
 
 def repository_method(self, roots, **kwargs):
     return page(self.conn, roots, **kwargs)
+
+
+class SourceNamesReader:
+    """Page view of one worker-owned read-only transaction."""
+
+    def __init__(self, conn, *, check, error):
+        self._conn = conn
+        self._check = check
+        self._error = error
+        self._thread = threading.get_ident()
+
+    def get_source_names_page(self, roots, *, after_id=0, snapshot=None):
+        if self._conn is None:
+            raise self._error('get_source_names_page', 'source_names_reader_closed')
+        if threading.get_ident() != self._thread:
+            raise self._error('get_source_names_page', 'source_names_reader_wrong_thread')
+        self._check()
+        result = page(self._conn, roots, after_id=after_id, snapshot=snapshot)
+        self._check()
+        return result
+
+    def close(self):
+        self._conn = None

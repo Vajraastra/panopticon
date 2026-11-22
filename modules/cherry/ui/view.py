@@ -115,6 +115,7 @@ class CherryView(QWidget):
         self._runtime = runtime or CherryRuntime()
         self._bridge = DownloadBridge(self._runtime, data_service=self.context.get("data_service"))
         self._queue = DownloadQueue(self._bridge)
+        self._batch_ingestor = None
 
         self._profiles: list[dict] = []
         self._selected_id: int | None = None
@@ -209,6 +210,7 @@ class CherryView(QWidget):
         self._bridge.auth_required.connect(self._on_auth_required)
         self._bridge.auth_aborted.connect(self._on_auth_aborted)
         self._queue.profile_finished.connect(self._on_profile_finished)
+        self._queue.profile_catalog_changed.connect(self._announce_folder)
         self._queue.active_profile_changed.connect(self._on_active_profile_changed)
         self._queue.queue_finished.connect(self._on_queue_finished)
         self._queue.queue_cancelled.connect(self._on_queue_cancelled)
@@ -772,13 +774,16 @@ class CherryView(QWidget):
             self._maintenance_future.cancel()
         if self._queue.is_running:
             self._queue.cancel()
-        # The view owns the bridge even if no queue currently owns its job.
-        if self._bridge.is_busy:
-            self._bridge.cancel()
+        else:
+            self._release_ingest_batch()
+            # A standalone bridge job is also owned by the view.
+            if self._bridge.is_busy:
+                self._bridge.cancel()
         self._runtime.request_stop()
 
     def shutdown_ready(self) -> bool:
-        return native_done(self._send_worker) and owner_threads_ready(self)
+        return (self._batch_ingestor is None and native_done(self._send_worker)
+                and owner_threads_ready(self))
 
     # ── Carga de datos ────────────────────────────────────────────────────
     def refresh(self) -> None:
@@ -1943,26 +1948,49 @@ class CherryView(QWidget):
         self, rows: list, scan_only: bool, batch: bool,
     ) -> None:
         self._preparing_download = False
-        if self._maintenance_busy:
+        if self._closing:
+            return
+        if self._maintenance_busy or self._queue.is_running or self._bridge.is_busy:
             self._update_actions()
             return
         if not rows:
             self._set_status(self.tr("cherry.dl_nothing", "Nothing to download."))
             self._update_actions()
             return
-        started = self._queue.start(
-            rows,
-            params_for=self._params_for_profile,
-            workers=self._workers.value(),
-            force_full=self._force_full.isChecked(),
-            scan_only=scan_only,
-            validate_sources=batch or self._force_full.isChecked(),
-        )
+        try:
+            if batch and not scan_only:
+                ingestor = self.context.get("cherry_ingestor")
+                if ingestor is not None and ingestor.begin_batch():
+                    self._batch_ingestor = ingestor
+            started = self._queue.start(
+                rows,
+                params_for=self._params_for_profile,
+                catalog_deferred=self._batch_ingestor is not None,
+                workers=self._workers.value(),
+                force_full=self._force_full.isChecked(),
+                scan_only=scan_only,
+                validate_sources=batch or self._force_full.isChecked(),
+            )
+        except Exception as exc:
+            self._release_ingest_batch()
+            log.exception("cherry: no se pudo iniciar la cola de descargas")
+            self._load_failed.emit(f"{type(exc).__name__}: {exc}")
+            return
         if not started:
+            self._release_ingest_batch()
             self._set_status(self.tr("cherry.dl_busy", "A download is already running."))
-        else:
+        elif self._queue.is_running:
             self._set_status(self.tr("cherry.dl_running", "Downloading…"))
         self._update_actions()
+
+    def _release_ingest_batch(self):
+        ingestor, self._batch_ingestor = self._batch_ingestor, None
+        if ingestor is None:
+            return
+        if self._closing and getattr(self.context.get("main_window"), "_shutting_down", False):
+            # The dashboard stops ingestion after the queue's final folder notices.
+            return
+        ingestor.end_batch()
 
     def _params_for_profile(self, profile: dict) -> dict:
         """Lo que cambia de un perfil a otro: hoy, su filtro de tipos.
@@ -1993,10 +2021,6 @@ class CherryView(QWidget):
             self._panel.append_log(
                 self.tr("cherry.dl_profile_failed", "✗ {name} did not finish").format(name=name),
                 "error")
-            # Fallo o cancelación NO significa carpeta intacta: el motor
-            # cataloga cada archivo al cerrarlo, así que lo que alcanzó a bajar
-            # ya está en disco y hay que indexarlo igual.
-            self._announce_folder(profile)
             return
         self._panel.append_log(self.tr(
             "cherry.dl_profile_done",
@@ -2004,8 +2028,6 @@ class CherryView(QWidget):
         ).format(name=name, d=summary.downloaded, s=summary.skipped,
                  e=summary.errors, f=summary.deferred,
                  a=getattr(summary, "awaiting_archive", 0)), "ok")
-        if summary.downloaded:
-            self._announce_folder(profile)
         if (getattr(summary, "awaiting_archive", 0)
                 or profile.get("awaiting_archive_count")):
             self.refresh()
@@ -2016,8 +2038,8 @@ class CherryView(QWidget):
         En la aplicación, core recibe el aviso y reconcilia en su worker,
         aunque Librarian no se haya abierto. El worker valida pertenencia real
         a carpetas vigiladas; Native vuelve a comprobarla al confirmar cada lote.
-        También se avisa tras fallo/cancelación por lo ya catalogado. La cola
-        propia y la reconciliación de arranque cubren los avisos interrumpidos.
+        Sólo se avisa si el lote descargó o pudo haber escrito antes de fallar.
+        La cola propia y la reconciliación de arranque cubren avisos interrumpidos.
         El camino legacy se conserva para vistas autónomas sin el servicio core.
         """
         if self._event_bus is None:
@@ -2037,14 +2059,18 @@ class CherryView(QWidget):
         log.info("cherry: library_changed → %s", folder)
 
     def _on_queue_finished(self, totals) -> None:
-        text = self.tr(
-            "cherry.dl_queue_done",
-            "Done · {n} profiles · ↓{d} ⏭{s} ✗{e} ⏸{f} ◷{a}"
-        ).format(n=totals.done, d=totals.downloaded, s=totals.skipped,
-                 e=totals.errors, f=totals.deferred,
-                 a=getattr(totals, "awaiting_archive", 0))
+        self._release_ingest_batch()
+        if totals.failed:
+            message = self.tr("tool.cherry.dl_queue_incomplete",
+                "Finished with failures · {n} profiles completed · ↓{d} ⏭{s} ✗{e} ⏸{f} ◷{a}")
+        else:
+            message = self.tr("cherry.dl_queue_done",
+                "Done · {n} profiles · ↓{d} ⏭{s} ✗{e} ⏸{f} ◷{a}")
+        text = message.format(n=totals.done, d=totals.downloaded, s=totals.skipped,
+                              e=totals.errors, f=totals.deferred,
+                              a=getattr(totals, "awaiting_archive", 0))
         self._panel.set_phase(text)
-        self._panel.append_log(text, "ok")
+        self._panel.append_log(text, "warn" if totals.failed else "ok")
         from .operation_errors import operation_error
         for name, message in totals.failed:
             self._panel.append_log(f"✗ {name}: {operation_error(message, self.tr)}", "error")
@@ -2054,6 +2080,7 @@ class CherryView(QWidget):
         self.refresh()
 
     def _on_queue_cancelled(self, totals) -> None:
+        self._release_ingest_batch()
         text = self.tr(
             "cherry.dl_queue_cancelled", "Cancelled · {n} profiles done · ↓{d}"
         ).format(n=totals.done, d=totals.downloaded)

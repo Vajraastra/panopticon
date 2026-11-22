@@ -19,6 +19,13 @@ from core.pinned_file import PinnedFile
 EXTENSIONS = {'.jpg','.jpeg','.png','.webp','.gif','.bmp','.tiff','.tif','.avif'}
 
 
+class TransferError(RuntimeError):
+    def __init__(self, error, journal_path, *, requires_recovery):
+        super().__init__(f'{error}\n{journal_path}')
+        self.journal_path = journal_path
+        self.requires_recovery = requires_recovery
+
+
 def cancelled(event):
     if event is not None and event.is_set():
         raise ValueError('pickler_cancelled')
@@ -190,32 +197,39 @@ def commit_native(service, value, pin):
 
 
 def transfer(service, source, directory, action, *, event=None, journal_root=None,
-             exact=False, expected_digest=None, expected_identity=None, expected_caption=None, target_name=None, register_missing=True, expected_sha=None, undo_of=None):
+             exact=False, expected_digest=None, expected_identity=None, expected_caption=None, target_name=None,
+             register_missing=True, expected_sha=None, undo_of=None, reviewed_identity=None, reviewed_caption=None):
     if service is None:raise ValueError('pickler_native_service_unavailable')
     if os.name != 'nt':raise ValueError('pickler_requires_windows')
     if action not in ('copy','move','discard'):raise ValueError('invalid_transfer_action')
     event = event or threading.Event()
     cancelled(event)
     source = safe_path(source)
-    current = source_state(service,source,event,register_missing=register_missing)
-    source_file = current['state']['file']
-    output = destination(source if target_name is None else source.with_name(target_name),directory,
-                         service=service,event=event,exact=exact)
-    caption = caption_for(source)
-    target_caption = output.with_suffix('.txt') if caption is not None else None
     source_before = _identity(source.stat())
+    if reviewed_identity is not None and source_before[:4] != tuple(reviewed_identity):
+        raise ValueError('pickler_reviewed_image_changed')
     journal = None
     published = False
     try:
         with ExitStack() as inputs, ExitStack() as outputs:
             image = inputs.enter_context(PinnedFile(source,delete=action != 'copy'))
             if image.check() != source_before:raise ValueError('pickler_source_changed')
+            caption = caption_for(source)
+            text = inputs.enter_context(PinnedFile(caption,delete=action != 'copy')) if caption is not None else None
+            if reviewed_identity is not None:
+                current_caption = text.check()[:4] if text is not None else None
+                if current_caption != reviewed_caption:
+                    raise ValueError('pickler_reviewed_caption_changed')
+            current = source_state(service,source,event,register_missing=register_missing)
+            source_file = current['state']['file']
+            output = destination(source if target_name is None else source.with_name(target_name),directory,
+                                 service=service,event=event,exact=exact)
+            target_caption = output.with_suffix('.txt') if text is not None else None
             sha = digest(image,event)
             if expected_sha is not None and sha != expected_sha:
                 raise ValueError("cherry_source_digest_changed")
             if expected_digest is not None and (sha != expected_digest or image.check() != tuple(expected_identity)):
                 raise ValueError('pickler_undo_image_changed')
-            text = inputs.enter_context(PinnedFile(caption,delete=action != 'copy')) if caption is not None else None
             text_sha = digest(text,event) if text else None
             if exact and expected_digest is not None and text_sha != expected_caption:raise ValueError('pickler_undo_caption_changed')
             value = dict(operation_id=str(uuid4()),source_copy_id=source_file['id'],action=action,
@@ -259,16 +273,18 @@ def transfer(service, source, directory, action, *, event=None, journal_root=Non
                 caption_identity=caption_result.check() if caption_result else None)
     except Exception as exc:
         if journal is not None and journal.path is not None:
+            requires_recovery = published
             if not published:
                 try:
                     saved=service.read('get_transfer_receipt',journal.request['operation_id'])['receipt']
                     if saved is not None and saved['phase']=='approved':
                         write(service,'abort_transfer',journal.request['operation_id'],
                               expected_fingerprint=validate_request(journal.request)[1])
-                except Exception:pass
+                except Exception:
+                    requires_recovery = True
             try:journal.phase('review_required' if published else 'not_published',error=str(exc),published=published)
             except Exception:pass
-            raise RuntimeError(f'{exc}\n{journal.path}') from exc
+            raise TransferError(exc, journal.path, requires_recovery=requires_recovery) from exc
         raise
 
 
@@ -412,6 +428,8 @@ def recover(service, path, *, event=None, journal_root=None):
         cancelled(event)
         actual = observe_path(str(restored['image'].actual))
         if actual.status != 'resolved' or actual.kind != 'file':raise ValueError('pickler_recovery_source_changed')
+        reviewed_identity = restored['image'].check()[:4]
+        reviewed_caption = restored['caption'].check()[:4] if 'caption' in restored else None
         current = service.read('get_copy_version_state',value['source_copy_id'],cancel_event=event)
         write(service,'approve_transfer_restore',value,current['fingerprint'],
             {'canonical':actual.canonical,'physical':actual.physical},event=event)
@@ -422,7 +440,8 @@ def recover(service, path, *, event=None, journal_root=None):
         stack.close()
         write(service,'abort_transfer',value['operation_id'],expected_fingerprint=validate_request(value)[1])
         journal.phase('restored_and_aborted')
-    return dict(status='source_restored',request=value)
+    return dict(status='source_restored', request=value, reviewed_identity=reviewed_identity,
+                reviewed_caption=reviewed_caption)
 
 
 def scan_folder(folder, event):
@@ -452,10 +471,14 @@ def load_images(paths,event):
     return dict(images=images,folder=None)
 
 
-def list_recovery(service, *, event=None, journal_root=None):
+def list_recovery(service, *, event=None, journal_root=None, preferred=None):
     if service is None:raise ValueError('pickler_native_service_unavailable')
     journal=Journal(service,{},journal_root)
     root=journal.scope(event)
+    if preferred is not None:
+        pending = read_journal(preferred, service, root, event)
+        return dict(records=[dict(path=str(pending.path), request=pending.request, phase=pending.data['phase'])],
+                    truncated=False)
     if not root.exists():return dict(records=[],truncated=False)
     records=[]; checked=0; truncated=False
     with os.scandir(root) as entries:

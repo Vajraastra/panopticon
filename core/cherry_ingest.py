@@ -22,6 +22,7 @@ class CherryIngestor(QObject):
     scan_started = Signal(str)
     scan_progress = Signal(str, int, int, str, int, int)  # folder, accepted, conflicts, catalog, processed, total
     scan_finished = Signal(str, str, int, int)  # folder, outcome, accepted, conflicts
+    batch_deferred = Signal(bool)
 
     def __init__(self, service, event_bus, parent=None, *, autostart=True):
         super().__init__(parent)
@@ -30,6 +31,7 @@ class CherryIngestor(QObject):
         self._notices = Queue(maxsize=128)
         self._wake = threading.Event()
         self._stop = threading.Event()
+        self._batch_active = threading.Event()
         self._rescan = threading.Event()
         self._rescan.set()  # Recover the commit-to-notice crash gap on every start.
         self._last_error = None
@@ -70,6 +72,28 @@ class CherryIngestor(QObject):
             self._wake.set()
         return True
 
+    def begin_batch(self):
+        """Keep accepting folder notices while a download batch owns the pause."""
+        with self._admission:
+            if self._closed or self._batch_active.is_set():
+                return False
+            self._batch_active.set()
+            self._wake.set()
+        self.batch_deferred.emit(True)
+        return True
+
+    @property
+    def batch_active(self):
+        return self._batch_active.is_set()
+
+    def end_batch(self):
+        with self._admission:
+            if not self._batch_active.is_set():
+                return
+            self._batch_active.clear()
+            self._wake.set()
+        self.batch_deferred.emit(False)
+
     def request_shutdown(self):
         with self._admission:
             if not self._closed:
@@ -99,6 +123,13 @@ class CherryIngestor(QObject):
             except BaseException:
                 self._rescan.set()
                 raise
+
+    def _wait_for_batch(self, pending):
+        while self._batch_active.is_set() and not self._stop.is_set():
+            self._wake.clear()
+            self._persist_notices(pending)
+            if self._batch_active.is_set() and not self._stop.is_set():
+                self._wake.wait(1)
 
     def _scan(self, pending, folder, revision):
         accepted = conflicts = 0
@@ -136,7 +167,8 @@ class CherryIngestor(QObject):
         try:
             try:
                 accepted = reconcile(self.service, folder, self._stop, on_batch=on_batch,
-                                     on_activity=report_progress)
+                                     on_activity=report_progress,
+                                     checkpoint=lambda: self._wait_for_batch(pending))
             except Exception as exc:
                 pending.failed(folder, revision, exc)
                 if self._stop.is_set():
@@ -153,13 +185,11 @@ class CherryIngestor(QObject):
             self.scan_finished.emit(folder, outcome, accepted, conflicts)
 
     def _run(self):
-        from core.library_batch import BatchCancelled, commit_control
         try:
-            if commit_control(self.service, 'prepare_ingest_reviews', self._stop) is not True:
-                raise RuntimeError('ingest_review_preparation_unconfirmed')
             with writer_guard(self.queue_path), closing(PendingFolders(self.queue_path)) as pending:
                 while True:
                     self._wake.clear()
+                    self._wait_for_batch(pending)
                     self._persist_notices(pending)
                     if self._stop.is_set():
                         break  # Keep pending work durable; do not replay on close.
@@ -167,15 +197,11 @@ class CherryIngestor(QObject):
                     if not rows:
                         self._wake.wait(1)
                         continue
-                    for folder, revision in rows:
-                        if self._stop.is_set():
-                            break
-                        self._scan(pending, folder, revision)
-                        # A new notice during a pass gets a new revision/pass.
-                        self._persist_notices(pending)
+                    if not self._batch_active.is_set() and not self._stop.is_set():
+                        # Fetch the current revision each time: a paused pass may
+                        # have persisted newer notices for other folders.
+                        self._scan(pending, *rows[0])
         except Exception as exc:
-            if self._stop.is_set() and isinstance(exc, BatchCancelled):
-                return
             log.exception('Cherry ingest stopped; startup reconciliation is still required')
             try:
                 self.failed.emit(str(exc)[:512])

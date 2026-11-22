@@ -9,6 +9,7 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 HERE = ROOT/'.work/pickler-repair-tests/counter-highwater'
@@ -207,20 +208,46 @@ class CounterHighwater(unittest.IsolatedAsyncioTestCase):
                 await hook('UnrelatedManual')
         self.assertEqual(self.catalog_rows()['counter:visual'],100)
 
-    async def test_revision_changed_during_page_prevents_counter_writes(self):
+    async def test_target_names_changed_during_page_prevents_counter_writes(self):
         self.seed(*(dict(path=str(self.profile/f'{self.artist}_{n:05d}.png')) for n in range(1,300)))
-        await self.catalog();original=self.service.read;changed=False
+        await self.catalog();changed=False
         def mutate(*args,**kwargs):
             nonlocal changed
-            result=original(*args,**kwargs)
+            result=page(*args,**kwargs)
             if not changed:
                 changed=True;self.service.submit('fixture_rename').result(5)
             return result
-        with patch.object(self.service,'read',side_effect=mutate):
+        with patch('core.library_source_names.page',side_effect=mutate):
             async with async_profile_scope(self.profile) as ticket:
                 with self.assertRaisesRegex(ValueError,'source_names_owner_changed'):
                     await prepare_highwater(self.service,ticket,self.artist,self.engine)
         self.assertEqual(self.catalog_rows()['counter:visual'],100)
+
+    async def test_concurrent_receipts_and_unrelated_names_do_not_block_sync(self):
+        outside = self.root/'outside'
+        self.seed(*(dict(path=str(outside/f'{n}.png')) for n in range(300)),
+                  dict(path=str(self.profile/f'{self.artist}_09000.png'), offline=True))
+        await self.catalog()
+        self.service.submit('add_watched_folder', self.root.as_posix()).result(5)
+        self.service.submit('prepare_ingest_reviews').result(5)
+        revisions = []
+
+        def ingest_after_read(*args, **kwargs):
+            result = page(*args, **kwargs)
+            if not revisions:
+                self.seed(dict(path=str(outside/f'{self.artist}_99999.png')))
+            self.service.submit('register_catalog_files_observed', [], self.root.as_posix(),
+                                operation_id=str(uuid4())).result(5)
+            revisions.append(self.service.revision_snapshot())
+            return result
+
+        with patch('core.library_source_names.page', side_effect=ingest_after_read):
+            async with async_profile_scope(self.profile) as ticket:
+                hook = await prepare_profile_highwater(self.service, ticket, catalog_api=self.engine)
+                self.assertEqual(await hook(self.artist), {'visual': 9000})
+        self.assertEqual(len(set(revisions)), 4)
+        self.assertEqual(hook.review['scanned'], 301)
+        self.assertEqual(self.catalog_rows()['counter:visual'], 9000)
 
     async def test_cancellation_never_updates_counter(self):
         self.seed(dict(path=str(self.profile/f'{self.artist}_09000.png')));await self.catalog()
@@ -229,6 +256,24 @@ class CounterHighwater(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError,'source_names_cancelled'):
                 await prepare_highwater(self.service,ticket,self.artist,self.engine,cancel_event=event)
         self.assertEqual(self.catalog_rows()['counter:visual'],100)
+
+    async def test_async_cancellation_stops_the_source_names_worker(self):
+        entered, stopped = threading.Event(), threading.Event()
+
+        def capture(*args, cancel_event):
+            entered.set()
+            if cancel_event.wait(3):
+                stopped.set()
+            raise ValueError('source_names_cancelled')
+
+        with patch('modules.cherry.logic.counter_highwater.compile_minima', side_effect=capture):
+            async with async_profile_scope(self.profile) as ticket:
+                task = asyncio.create_task(prepare_profile_highwater(self.service, ticket, catalog_api=self.engine))
+                self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                self.assertTrue(await asyncio.to_thread(stopped.wait, 2))
 
     async def test_pk_pages_sparse_roots_bounded_and_snapshot_frozen(self):
         self.seed(*(dict(path=str(self.root/'outside'/f'{n}.png')) for n in range(600)),

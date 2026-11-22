@@ -136,6 +136,23 @@ class QueueTests(Fixture):
 
 
 class ScanTests(Fixture):
+    def test_catalog_checkpoint_does_not_hold_a_sqlite_read_transaction(self):
+        from core.catalog_reader import read_image_files
+
+        folder = self.seed(self.watch()/'artist')
+        checkpoints = []
+
+        def checkpoint():
+            with closing(sqlite3.connect(folder/'catalog.db', timeout=.1)) as writer:
+                writer.execute("UPDATE files SET url_source='committed during checkpoint'")
+                writer.commit()
+            checkpoints.append(True)
+
+        source = read_image_files(folder, checkpoint=checkpoint)
+        self.assertTrue(source.complete)
+        self.assertEqual(checkpoints, [True])
+        self.assertEqual(len(source.files), 1)
+
     def test_catalog_ingestion_preserves_curation_provenance_and_fts(self):
         folder = self.seed(self.watch()/'artistÄ', 205)
         path = str(folder/'0.png')
@@ -281,6 +298,103 @@ class ScanTests(Fixture):
 
 
 class ControllerTests(Fixture):
+    def test_batch_hold_persists_distinct_profile_notices_until_release(self):
+        item, bus = self.controller(autostart=False)
+        ready = threading.Event()
+        queued, started, finished, deferred = [], [], [], []
+        mark = PendingFolders.mark
+
+        def record_mark(pending, paths):
+            mark(pending, paths)
+            queued[:] = [path for path, _ in pending.page()]
+            ready.set()
+
+        item.scan_started.connect(started.append)
+        item.scan_finished.connect(lambda *result: finished.append(result))
+        item.batch_deferred.connect(deferred.append)
+        with patch.object(PendingFolders, 'mark', record_mark):
+            item.start()
+            self.assertTrue(ready.wait(2))  # Startup sampled the initially empty watches.
+            self.assertTrue(item.begin_batch())
+            self.assertFalse(item.begin_batch())
+            watch = self.watch()
+            first = self.seed(watch/'first').as_posix()
+            second = self.seed(watch/'second').as_posix()
+            for folder in (first, first, second):
+                bus.publish('cherry_catalog_changed', folder)
+            self.assertTrue(pump(lambda: queued == [first, second]))
+            self.assertEqual(started, [])
+            self.assertEqual(self.count(), 0)
+            item.end_batch()
+            self.assertTrue(pump(lambda: len(finished) == 2))
+            self.assertEqual(started, [first, second])
+            self.assertEqual(finished, [(first, 'complete', 1, 0), (second, 'complete', 1, 0)])
+            self.assertEqual(self.count(), 2)
+            self.assertEqual(deferred, [True, False])
+
+    def test_batch_hold_resumes_after_the_confirmed_native_batch(self):
+        watch = self.watch()
+        self.seed(watch/'artist', 205)
+        entered, release, held = threading.Event(), threading.Event(), threading.Event()
+        self.releases.append(release)
+        commits, started, finished = [], [], []
+        original = LibraryRepository.register_catalog_files_observed
+        item, _ = self.controller(autostart=False)
+        wait = item._wait_for_batch
+
+        def blocked(repo, records, *args, **kwargs):
+            commits.append(len(records))
+            if len(commits) == 1:
+                entered.set()
+                release.wait(3)
+            return original(repo, records, *args, **kwargs)
+
+        def reached_checkpoint(pending):
+            if item._batch_active.is_set():
+                held.set()
+            return wait(pending)
+
+        item.scan_started.connect(started.append)
+        item.scan_finished.connect(lambda *result: finished.append(result))
+        with patch.object(LibraryRepository, 'register_catalog_files_observed', blocked), \
+                patch.object(item, '_wait_for_batch', reached_checkpoint):
+            item.start()
+            self.assertTrue(entered.wait(2))
+            self.assertTrue(item.begin_batch())
+            release.set()
+            self.assertTrue(held.wait(2))
+            self.assertEqual(commits, [100])
+            self.assertEqual(self.count(), 100)
+            self.assertEqual(finished, [])
+            item.end_batch()
+            self.assertTrue(pump(lambda: bool(finished)))
+        self.assertEqual(commits, [100, 100, 5])
+        self.assertEqual(started, [watch.as_posix()])
+        self.assertEqual(finished, [(watch.as_posix(), 'complete', 205, 0)])
+        self.assertEqual(self.count(), 205)
+
+    def test_shutdown_during_batch_hold_keeps_durable_profile_notice(self):
+        watch = self.watch()
+        folder = self.seed(watch/'artist').as_posix()
+        item, _ = self.controller(autostart=False)
+        ready = threading.Event()
+        mark = PendingFolders.mark
+
+        def record_mark(pending, paths):
+            mark(pending, paths)
+            ready.set()
+
+        self.assertTrue(item.begin_batch())
+        with patch.object(PendingFolders, 'mark', record_mark):
+            item.start()
+            self.assertTrue(ready.wait(2))
+            self.assertTrue(item.notice(folder))
+            item.request_shutdown()
+            self.assertTrue(pump(item.shutdown_ready))
+        self.assertEqual(self.count(), 0)
+        with closing(PendingFolders(item.queue_path)) as pending:
+            self.assertEqual([path for path, _ in pending.page()], [watch.as_posix(), folder])
+
     def test_shutdown_waits_for_running_commit_and_keeps_durable_retry(self):
         watch = self.watch()
         self.seed(watch/'artist')

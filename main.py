@@ -80,6 +80,7 @@ class MainWindow(QMainWindow):
         self._cherry_scan_status = ('', '', None)
         self._cherry_scan_active = False
         self._cherry_scan_error = None
+        self._cherry_batch_deferred = False
         self._add_cherry_scan_status(self)
         
         # 5. Load Modules
@@ -91,6 +92,7 @@ class MainWindow(QMainWindow):
         self._cherry_ingestor.scan_started.connect(self._cherry_scan_started, Qt.QueuedConnection)
         self._cherry_ingestor.scan_progress.connect(self._cherry_scan_progress, Qt.QueuedConnection)
         self._cherry_ingestor.scan_finished.connect(self._cherry_scan_finished, Qt.QueuedConnection)
+        self._cherry_ingestor.batch_deferred.connect(self._cherry_batch_deferral, Qt.QueuedConnection)
         self._cherry_ingestor.failed.connect(self._cherry_ingest_failed, Qt.QueuedConnection)
         self._cherry_ingestor.start()
 
@@ -109,6 +111,11 @@ class MainWindow(QMainWindow):
 
     def _paint_cherry_scan_status(self, label, bar):
         message, detail, progress = self._cherry_scan_status
+        if self._cherry_batch_deferred:
+            message = self.tr('tool.cherry.ingest_batch_deferred', 'Cherry · Indexing after the batch')
+            detail = self.tr('tool.cherry.ingest_batch_deferred_tip',
+                'Pending folders stay in the queue and are indexed when the download batch ends.')
+            progress = None
         label.setText(message)
         label.setToolTip(detail)
         label.setVisible(bool(message))
@@ -127,6 +134,14 @@ class MainWindow(QMainWindow):
 
     def _set_cherry_scan_status(self, message, detail, *, progress=None):
         self._cherry_scan_status = (message, detail, progress)
+        self._refresh_cherry_scan_status()
+
+    @Slot(bool)
+    def _cherry_batch_deferral(self, deferred):
+        self._cherry_batch_deferred = deferred
+        self._refresh_cherry_scan_status()
+
+    def _refresh_cherry_scan_status(self):
         for label, bar in self._cherry_scan_widgets:
             self._paint_cherry_scan_status(label, bar)
 
@@ -717,6 +732,16 @@ class MainWindow(QMainWindow):
             event.accept()
             return
         if not self._shutting_down:
+            for name, module in self.loaded_modules.items():
+                prepare_close = getattr(module, 'prepare_close', None)
+                if prepare_close is None:
+                    continue
+                event.ignore()
+                if not prepare_close(self.close):
+                    window = self.module_windows.get(name)
+                    if window is not None:
+                        window.show_session()
+                    return
             self._shutting_down = True
             dialog = self._producer_recovery_dialog
             if dialog is not None and isValid(dialog):

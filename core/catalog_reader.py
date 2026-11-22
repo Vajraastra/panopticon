@@ -66,7 +66,7 @@ def get_image_files(folder: str | Path) -> list[dict]:
     return read_image_files(folder).files
 
 
-def read_image_files(folder: str | Path, cancelled=None, *, on_file=None) -> InventoryResult:
+def read_image_files(folder: str | Path, cancelled=None, *, on_file=None, checkpoint=None) -> InventoryResult:
     """Lee sólo en modo ro; conserva archivos válidos y marca inventarios parciales."""
     if on_file is not None and not callable(on_file):
         raise ValueError('invalid_inventory_sink')
@@ -85,6 +85,9 @@ def read_image_files(folder: str | Path, cancelled=None, *, on_file=None) -> Inv
         with closing(sqlite3.connect(uri, uri=True, timeout=5)) as conn:
             conn.row_factory = sqlite3.Row
             for block in catalog_pages(conn, cancelled):
+                if checkpoint is not None:
+                    # The page has already released its SQLite read transaction.
+                    checkpoint()
                 for row in block:
                     if cancelled():
                         result.fail(InventoryStatus.CANCELLED)

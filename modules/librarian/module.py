@@ -62,6 +62,7 @@ class LibrarianModule(BaseModule):
         # Re-index dirigido tras cambios externos (ej. Pickler mueve archivos).
         # Carpetas marcadas como "sucias" + temporizador para coalescer eventos.
         self._dirty_folders: set[str] = set()
+        self._cherry_ingestor = None
         self._reindex_thread = None
         self._dirty_timer = QTimer()
         self._dirty_timer.setSingleShot(True)
@@ -141,6 +142,9 @@ class LibrarianModule(BaseModule):
         eb = self.context.get('event_bus')
         if eb:
             eb.subscribe("library_changed", self._on_library_changed)
+        self._cherry_ingestor = self.context.get('cherry_ingestor')
+        if self._cherry_ingestor is not None:
+            self._cherry_ingestor.batch_deferred.connect(self._on_cherry_batch_deferred, Qt.QueuedConnection)
 
         return self.view
 
@@ -994,6 +998,9 @@ class LibrarianModule(BaseModule):
         eb = (self.context or {}).get('event_bus')
         if eb:
             eb.unsubscribe('library_changed', self._on_library_changed)
+        if self._cherry_ingestor is not None:
+            self._cherry_ingestor.batch_deferred.disconnect(self._on_cherry_batch_deferred)
+            self._cherry_ingestor = None
 
     def shutdown_ready(self):
         readers = self.findChildren(LibraryReader)
@@ -1309,6 +1316,8 @@ class LibrarianModule(BaseModule):
         """Re-indexa (silenciosamente) solo las carpetas marcadas como sucias."""
         if self._closed:
             return
+        if self._cherry_ingestor is not None and self._cherry_ingestor.batch_active:
+            return
         # No interferir con un escaneo manual ni con otro re-index en curso.
         busy = self._path_identity_busy or self._folder_write is not None or \
                (self.indexer_thread and self.indexer_thread.isRunning()) or \
@@ -1327,6 +1336,10 @@ class LibrarianModule(BaseModule):
         retain_worker(self._reindex_thread)
         self._reindex_thread.finished_signal.connect(self._quiet_reindex_finished)
         start_worker(self._reindex_thread, self)
+
+    def _on_cherry_batch_deferred(self, deferred):
+        if not deferred and not self._closed and self._dirty_folders:
+            self._dirty_timer.start()
 
     def _quiet_reindex_finished(self):
         """Refresca la vista tras el re-index dirigido, sin diálogos."""

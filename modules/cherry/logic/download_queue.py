@@ -52,6 +52,7 @@ class _ProfileState:
     started: bool = False
     emitted: bool = False
     failed: bool = False
+    catalog_changed: bool = False
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ class DownloadQueue(QObject):
     active_profile_changed = Signal(object)  # profile id while active, else None
     job_progress = Signal(int, int)  # trabajos terminados, trabajos totales
     profile_finished = Signal(object, object)
+    profile_catalog_changed = Signal(object)
     queue_finished = Signal(object)
     queue_cancelled = Signal(object)
 
@@ -83,10 +85,12 @@ class DownloadQueue(QObject):
         self._params: dict = {}
         self._params_for: Callable[[dict], dict] | None = None
         self._cancelling = False
+        self._catalog_deferred = False
 
         bridge.finished_signal.connect(self._on_finished)
         bridge.failed_signal.connect(self._on_failed)
         bridge.cancelled_signal.connect(self._on_cancelled)
+        bridge.catalog_write_possible.connect(self._on_catalog_write_possible)
 
     @property
     def is_running(self) -> bool:
@@ -101,6 +105,7 @@ class DownloadQueue(QObject):
         profiles: list[dict],
         *,
         params_for: Callable[[dict], dict] | None = None,
+        catalog_deferred: bool = False,
         **params,
     ) -> bool:
         if self.is_running or self._bridge.is_busy:
@@ -149,6 +154,7 @@ class DownloadQueue(QObject):
         self._params = params
         self._params_for = params_for
         self._cancelling = False
+        self._catalog_deferred = catalog_deferred
 
         # Un perfil sin fuentes activas también termina exactamente una vez.
         for state in self._states:
@@ -172,9 +178,11 @@ class DownloadQueue(QObject):
         if self._cancelling or not self._pending:
             self._current = None
             self.active_profile_changed.emit(None)
-            (self.queue_cancelled if self._cancelling else self.queue_finished).emit(
-                self._totals
-            )
+            if self._cancelling:
+                self._finish_started_profiles()
+                self.queue_cancelled.emit(self._totals)
+            else:
+                self.queue_finished.emit(self._totals)
             return False
 
         job = self._pending.pop(0)
@@ -198,6 +206,7 @@ class DownloadQueue(QObject):
         self.active_profile_changed.emit(None)
         self._totals.failed.append((profile["display_name"], "no se pudo iniciar"))
         self._pending.clear()
+        self._finish_started_profiles()
         self.queue_finished.emit(self._totals)
         return False
 
@@ -211,6 +220,25 @@ class DownloadQueue(QObject):
             state.profile,
             None if cancelled or state.failed else state.summary,
         )
+        if state.catalog_changed and not self._catalog_deferred:
+            self.profile_catalog_changed.emit(state.profile)
+
+    def _finish_started_profiles(self) -> None:
+        for state in self._states:
+            if state.started and not state.emitted:
+                self._finish_profile(state, cancelled=True)
+
+    def _on_catalog_write_possible(self) -> None:
+        if self._current is not None:
+            self._mark_catalog_changed(self._current.state)
+
+    def _mark_catalog_changed(self, state: _ProfileState) -> None:
+        if state.catalog_changed:
+            return
+        state.catalog_changed = True
+        if self._catalog_deferred:
+            # The held indexer can persist this hint before the profile's final pass.
+            self.profile_catalog_changed.emit(state.profile)
 
     def _complete_job(self, summary: Any | None, error: str | None = None) -> None:
         if self._current is None:
@@ -219,6 +247,8 @@ class DownloadQueue(QObject):
         if summary is not None:
             state.summary.add(summary)
             self._totals.add(summary)
+            if getattr(summary, 'downloaded', 0):
+                self._mark_catalog_changed(state)
         if error is not None:
             state.failed = True
             self._totals.failed.append((state.profile["display_name"], error))
@@ -239,14 +269,6 @@ class DownloadQueue(QObject):
     def _on_cancelled(self) -> None:
         if self._current is None:
             return
-        self._current.state.failed = True
-        self._current = None
-        self.active_profile_changed.emit(None)
         self._cancelling = True
         self._pending.clear()
-        # Una pasada previa pudo haber escrito archivos: cada perfil tocado
-        # avisa una sola vez para que el Librarian reindexe su carpeta.
-        for state in self._states:
-            if state.started and not state.emitted:
-                self._finish_profile(state, cancelled=True)
-        self.queue_cancelled.emit(self._totals)
+        self._advance()

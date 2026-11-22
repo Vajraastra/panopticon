@@ -99,6 +99,50 @@ class ModuleWindows(unittest.TestCase):
         self.assertTrue(wa.isVisible() and wb.isVisible())
         self.assertEqual(self.main.root_stack.count(), 2)
 
+    def test_module_close_waits_for_preparation_then_announces_one_close(self):
+        self.main.switch_to_module(self.a)
+        window = self.main.module_windows[self.a.name]
+        retries, did_close = [], []
+
+        def prepare(retry):
+            if retries:
+                return True
+            retries.append(retry)
+            return False
+
+        with patch.object(self.a, 'prepare_close', prepare, create=True), \
+                patch.object(self.a, 'on_window_closed', lambda: did_close.append(True), create=True):
+            self.assertFalse(window.close())
+            self.assertTrue(window.isVisible())
+            self.assertEqual(did_close, [])
+            retries[0]()
+            self.assertFalse(window.isVisible())
+            self.assertEqual(did_close, [True])
+            self.assertEqual(self.a.unloads, 0)
+
+    def test_dashboard_close_waits_before_unloading_and_reveals_blocking_window(self):
+        self.main.switch_to_module(self.a)
+        window = self.main.module_windows[self.a.name]
+        window.close()
+        self.assertFalse(window.isVisible())
+        retries = []
+
+        def prepare(retry):
+            if retries:
+                return True
+            retries.append(retry)
+            return False
+
+        with patch.object(self.a, 'prepare_close', prepare, create=True):
+            self.assertFalse(self.main.close())
+            self.assertFalse(self.main._shutting_down)
+            self.assertTrue(self.main.isVisible())
+            self.assertTrue(window.isVisible())
+            self.assertEqual((self.a.unloads, self.b.unloads), (0, 0))
+            retries[0]()
+            self.assertTrue(self.main._shutting_down)
+            self.assertEqual((self.a.unloads, self.b.unloads), (1, 1))
+
     def test_gallery_sends_selection_to_reused_optimizer_and_pickler_sessions(self):
         gallery = GalleryModule()
         optimizer, pickler = Tool('Image Optimizer'), Tool('Pickler')

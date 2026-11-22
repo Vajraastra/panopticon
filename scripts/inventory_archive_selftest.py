@@ -6,11 +6,14 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from core.cherry_ingest import CherryIngestor
+from core.event_bus import EventBus
 from core.inventory_archive import archive_missing
 from core.inventory import InventoryStatus as Status
 from modules.librarian.logic import indexer
 from modules.librarian.module import LibrarianModule
 from core.paths import ProjectPaths
+from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QMessageBox
 import indexer_safety_selftest as prior
 
@@ -172,6 +175,46 @@ class Archive(prior.IndexerSafety):
                 self.assertIn('256',done.call_args.args[2])
             finally:
                 module.indexer_thread=module._reindex_thread=None;module.on_unload();view.close()
+                self.app.processEvents()
+
+
+    def test_directed_reindex_waits_for_cherry_batch_and_resumes_with_one_folder(self):
+        file = self.image('new.png')
+        folder = str(file.parent)
+        bus = EventBus()
+        ingestor = CherryIngestor(self.db.service, bus, autostart=False)
+        with patch.object(ProjectPaths, 'root', return_value=self.root):
+            module = LibrarianModule()
+            module.on_load(dict(data_service=self.db.service, event_bus=bus, cherry_ingestor=ingestor))
+            module._auto_scan_pending = False
+            view = module.get_view()
+            module._dirty_timer.setInterval(10)
+            timeout = QSignalSpy(module._dirty_timer.timeout)
+            try:
+                self.assertTrue(ingestor.begin_batch())
+                bus.publish('library_changed', folder)
+                bus.publish('library_changed', folder)
+                self.assertTrue(timeout.wait(2000))
+                self.assertIsNone(module._reindex_thread)
+                self.assertEqual(module._dirty_folders, {folder})
+                self.assertFalse(module._dirty_timer.isActive())
+                self.assertIsNone(self.db.get_file_id(file.as_posix()))
+
+                ingestor.end_batch()
+                self.assertTrue(timeout.wait(2000))
+                worker = module._reindex_thread
+                self.assertIsNotNone(worker)
+                self.assertEqual(worker.folders, [folder])
+                self.assertTrue(worker.wait(5000))
+                self.assertEqual(worker.outcome, Status.COMPLETE)
+                self.assertEqual(module._dirty_folders, set())
+                self.assertIsNotNone(self.db.get_file_id(file.as_posix()))
+            finally:
+                module.on_unload()
+                ingestor.request_shutdown()
+                if module._reindex_thread is not None:
+                    module._reindex_thread.wait(5000)
+                view.close()
                 self.app.processEvents()
 
 

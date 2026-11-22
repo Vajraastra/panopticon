@@ -82,6 +82,7 @@ class DownloadBridge(QObject):
     finished_signal  = Signal(object)  # DownloadSummary
     cancelled_signal = Signal()
     failed_signal    = Signal(str)     # texto del error
+    catalog_write_possible = Signal()  # download entered the engine but produced no summary
 
     def __init__(self, runtime: CherryRuntime, parent: QObject | None = None, *, data_service=None) -> None:
         super().__init__(parent)
@@ -217,6 +218,7 @@ class DownloadBridge(QObject):
             return  # Cancelada antes de que el runner tomara posesión.
         self._task = asyncio.current_task()
         terminal = None
+        catalog_write_possible = False
         try:
             # Import perezoso dentro del contrato de error y limpieza.
             from third_party.cherry_dl.download_service import run_profile_download
@@ -228,16 +230,26 @@ class DownloadBridge(QObject):
             if self._data_service is None:
                 raise ValueError('cherry_native_service_unavailable')
             folder = Path(profile['folder_path'])
+            if not kwargs.get('scan_only') and not folder.is_dir():
+                # Un borrado erróneo se repara al descargar; si el usuario ya no
+                # quiere el perfil, basta con eliminarlo de la lista.
+                if not folder.parent.is_dir():
+                    raise ValueError('cherry_profile_parent_missing')
+                folder.mkdir(exist_ok=True)
+                log.warning('cherry: carpeta de perfil reconstruida: %s', folder)
+                self.log_line.emit(f'Carpeta ausente reconstruida: {folder}', 'warn')
             async with async_profile_scope(folder) as ticket:
                 require_available_profile(self._data_service, ticket)
                 hook = None if kwargs.get('scan_only') else await prepare_highwater(self._data_service, ticket)
                 ticket.assert_current()
+                catalog_write_possible = not kwargs.get('scan_only')
                 summary = await run_profile_download(
                     profile, emit=self._on_event, resolve_auth=self._resolve_auth,
                     prepare_artist=hook, **kwargs,
                 )
                 ticket.assert_current()
             terminal = (self.finished_signal, (summary,))
+            catalog_write_possible = False  # A successful summary reports any downloads itself.
         except asyncio.CancelledError:
             terminal = (self.cancelled_signal, ())
             raise
@@ -249,6 +261,8 @@ class DownloadBridge(QObject):
             # Liberar antes de emitir, y no tocar después el estado del próximo.
             if self._release(token) and terminal is not None:
                 signal, args = terminal
+                if catalog_write_possible:
+                    self.catalog_write_possible.emit()
                 signal.emit(*args)
 
     def _release(self, token: object) -> bool:

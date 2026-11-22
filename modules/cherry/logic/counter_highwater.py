@@ -4,8 +4,10 @@ No image scan, hash, content adoption or Native write. The caller must hold the
 same scope for the complete Sync, not release it after counter preparation.
 """
 import asyncio
+from hashlib import sha256
 from pathlib import Path, PurePosixPath
 import re
+import threading
 
 from core.output_paths import path_variants
 from core.path_identity import local_path
@@ -73,61 +75,99 @@ def revision(service):
     return tuple(value)
 
 
+def source_pages(reader, roots):
+    snapshot, after_id = None, 0
+    while True:
+        result = reader.get_source_names_page(roots, after_id=after_id, snapshot=snapshot)
+        snapshot = result['snapshot']
+        next_id = result['after_id']
+        if next_id < after_id or (not result['done'] and next_id == after_id):
+            raise ValueError('source_names_cursor_not_advancing')
+        yield result
+        if result['done']:
+            return
+        after_id = next_id
+
+
+def hash_source_names(digest, records):
+    for row in records:
+        digest.update(f"{row['id']}\0".encode('ascii'))
+        for name in row['paths']:
+            digest.update(name.encode('utf-8') + b'\0')
+
+
+def validate_source_names(service, roots, baseline, digest, cancel_event):
+    current = revision(service)
+    if current[0] != baseline[0]:
+        raise ValueError('source_names_owner_changed')
+    if current != baseline:
+        # Receipts and other profiles can advance the global revision. Compare
+        # only the names that affect these counters, in a fresh read snapshot.
+        fresh = sha256()
+        with service.source_names_reader(cancel_event=cancel_event) as reader:
+            for result in source_pages(reader, roots):
+                hash_source_names(fresh, result['records'])
+        if fresh.digest() != digest or revision(service)[0] != baseline[0]:
+            raise ValueError('source_names_owner_changed')
+
+
 def compile_minima(service, ticket, artist=None, *, cancel_event=None):
     if service is None:
         raise ValueError('source_names_native_required')
     if artist is not None:artist_prefix(artist)
     roots = root_aliases(ticket)
+    if cancel_event is not None and cancel_event.is_set():
+        raise ValueError('source_names_cancelled')
     baseline = revision(service)
-    snapshot, after_id, maxima = None, 0, {}
+    maxima = {}
     buckets, invalid = {}, set()
     scanned = matched = pages = 0
-    while True:
-        ticket.assert_current()
-        if cancel_event is not None and cancel_event.is_set():
-            raise ValueError('source_names_cancelled')
-        if revision(service) != baseline:
-            raise ValueError('source_names_owner_changed')
-        result = service.read('get_source_names_page',roots,after_id=after_id,snapshot=snapshot,
-                              cancel_event=cancel_event)
-        if revision(service) != baseline:
-            raise ValueError('source_names_owner_changed')
-        snapshot = result['snapshot']; pages += 1; scanned += result['scanned']
-        if result['after_id'] < after_id or (not result['done'] and result['after_id'] == after_id):
-            raise ValueError('source_names_cursor_not_advancing')
-        after_id = result['after_id']
-        for row in result['records']:
-            for name in row['paths']:
-                if artist is None:
-                    indexed = indexed_counter(name)
-                    if indexed is None:continue
-                    prefix,parsed = indexed
-                    if parsed is None:
-                        if prefix not in invalid and len(invalid) + len(buckets) >= MAX_ARTIST_PREFIXES:
+    digest = sha256()
+    with service.source_names_reader(cancel_event=cancel_event) as reader:
+        for result in source_pages(reader, roots):
+            pages += 1
+            scanned += result['scanned']
+            hash_source_names(digest, result['records'])
+            for row in result['records']:
+                for name in row['paths']:
+                    if artist is None:
+                        indexed = indexed_counter(name)
+                        if indexed is None:continue
+                        prefix,parsed = indexed
+                        if parsed is None:
+                            if prefix not in invalid and len(invalid) + len(buckets) >= MAX_ARTIST_PREFIXES:
+                                raise ValueError('source_names_artist_limit')
+                            invalid.add(prefix);continue
+                        if prefix not in buckets and len(buckets) + len(invalid) >= MAX_ARTIST_PREFIXES:
                             raise ValueError('source_names_artist_limit')
-                        invalid.add(prefix);continue
-                    if prefix not in buckets and len(buckets) + len(invalid) >= MAX_ARTIST_PREFIXES:
-                        raise ValueError('source_names_artist_limit')
-                    target = buckets.setdefault(prefix,{})
-                else:
-                    parsed = namespace_counter(artist,name)
-                    target = maxima
-                if parsed is not None:
-                    namespace, number = parsed
-                    target[namespace] = max(target.get(namespace,0),number); matched += 1
-        if result['done']:
-            ticket.assert_current()
-            if revision(service) != baseline:
-                raise ValueError('source_names_owner_changed')
-            return dict(minima=maxima, revision=baseline, snapshot=snapshot,
-                        scanned=scanned, matched=matched, pages=pages, roots=roots,
-                        buckets=buckets, invalid_prefixes=invalid)
+                        target = buckets.setdefault(prefix,{})
+                    else:
+                        parsed = namespace_counter(artist,name)
+                        target = maxima
+                    if parsed is not None:
+                        namespace, number = parsed
+                        target[namespace] = max(target.get(namespace,0),number); matched += 1
+    ticket.assert_current()
+    validate_source_names(service, roots, baseline, digest.digest(), cancel_event)
+    return dict(minima=maxima, revision=baseline, snapshot=result['snapshot'],
+                scanned=scanned, matched=matched, pages=pages, roots=roots,
+                buckets=buckets, invalid_prefixes=invalid)
+
+
+async def capture_minima(service, ticket, artist=None, *, cancel_event=None):
+    event = cancel_event if cancel_event is not None else threading.Event()
+    try:
+        return await asyncio.to_thread(compile_minima, service, ticket, artist, cancel_event=event)
+    except asyncio.CancelledError:
+        # Cancellation of the await alone does not stop the reader thread.
+        event.set()
+        raise
 
 
 async def prepare_artist_highwater(service, ticket, artist, catalog_api, *, cancel_event=None):
-    review = await asyncio.to_thread(compile_minima,service,ticket,artist,cancel_event=cancel_event)
+    review = await capture_minima(service, ticket, artist, cancel_event=cancel_event)
     ticket.assert_current()
-    if revision(service) != review['revision']:
+    if revision(service)[0] != review['revision'][0]:
         raise ValueError('source_names_owner_changed')
     if cancel_event is not None and cancel_event.is_set():
         raise ValueError('source_names_cancelled')
@@ -163,17 +203,18 @@ class ArtistHighwaterHook:
 async def prepare_highwater(service,ticket,*,catalog_api=None,cancel_event=None):
     """One Native pass, then an async hook for each actual artist_info.name.
 
-The caller retains the profile scope throughout Sync. Later successful Native
-ingestion may advance its revision; it must not invalidate its own captured
-names. This is prevention for identities known at capture, not a reservation
-against producers that ignore the shared guard or the ingest review gate.
+    The caller retains the profile scope throughout Sync. The check reserves
+    identities known at capture; other uncoordinated producers remain subject
+    to the ingest review gate.
 """
     if catalog_api is None:
         from third_party.cherry_dl import catalog as catalog_api
-    review = await asyncio.to_thread(compile_minima,service,ticket,cancel_event=cancel_event)
+    review = await capture_minima(service, ticket, cancel_event=cancel_event)
     ticket.assert_current()
-    if revision(service) != review['revision']:
+    if revision(service)[0] != review['revision'][0]:
         raise ValueError('source_names_owner_changed')
+    if cancel_event is not None and cancel_event.is_set():
+        raise ValueError('source_names_cancelled')
     return ArtistHighwaterHook(ticket,review,catalog_api,cancel_event)
 
 

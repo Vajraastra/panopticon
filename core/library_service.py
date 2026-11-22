@@ -538,6 +538,55 @@ class LibraryService:
                 reader.close()
 
     @contextmanager
+    def source_names_reader(self, *, cancel_event=None):
+        """Worker-only pages sharing one bounded Native read snapshot."""
+        from core.library_source_names import SourceNamesReader, SNAPSHOT_BUDGET_SECONDS
+
+        operation = 'get_source_names_page'
+        started = self._metrics.start_read()
+        outcome = 'failed'
+        deadline = time.monotonic() + SNAPSHOT_BUDGET_SECONDS
+
+        def interrupt_reason():
+            if cancel_event is not None and cancel_event.is_set():
+                return 'source_names_cancelled'
+            if time.monotonic() >= deadline:
+                return 'source_names_read_budget_exceeded'
+            return None
+
+        def check():
+            reason = interrupt_reason()
+            if reason is not None:
+                raise LibraryError(operation, reason)
+            with self._admission:
+                if self._closed:
+                    raise LibraryError(operation, 'source_names_owner_unavailable')
+
+        try:
+            check()
+            with closing(open_reader(self.db_path)) as conn:
+                reader = SourceNamesReader(conn, check=check, error=LibraryError)
+                conn.set_progress_handler(lambda: int(interrupt_reason() is not None), 1000)
+                try:
+                    conn.execute('BEGIN')
+                    yield reader
+                    check()
+                finally:
+                    reader.close()
+            outcome = 'completed'
+        except sqlite3.Error as exc:
+            reason = interrupt_reason() or str(exc)
+            if reason == 'source_names_cancelled':
+                outcome = 'cancelled'
+            raise LibraryError(operation, reason) from exc
+        except LibraryError as exc:
+            if exc.reason == 'source_names_cancelled':
+                outcome = 'cancelled'
+            raise
+        finally:
+            self._metrics.finish_read(outcome, started)
+
+    @contextmanager
     def metadata_destination_guard(self, *, cancel_event=None):
         """Lector privado del lote; sin snapshot WAL retenido entre imágenes."""
         from core.metadata_destinations import DestinationPaths

@@ -45,7 +45,7 @@ def load_preview(path, metadata_loader, cancel):
         return None
     if _identity(path) != before:
         raise ValueError('preview_source_changed')
-    return dict(path=path, image=image, width=size.width(), height=size.height(),
+    return dict(path=path, image=image, width=size.width(), height=size.height(), identity=before,
                 bytes=None if before is None else before[2], tags=tuple(bundle.tags),
                 rating=bundle.rating, quality=bundle.quality_score)
 

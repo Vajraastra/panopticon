@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -112,6 +113,46 @@ class CherryOperational(unittest.TestCase):
 
     def start(self):
         return self.cherry.view._bridge.start(self.profile,workers=1,force_full=True,config=self.cfg)
+
+    def start_batch(self):
+        view = self.cherry.view
+        events = []
+
+        def begin_batch():
+            events.append('begin')
+            return True
+
+        view.context['cherry_ingestor'] = SimpleNamespace(
+            begin_batch=begin_batch, end_batch=lambda: events.append('end'))
+        view.context['event_bus'].subscribe('cherry_catalog_changed',
+            lambda folder: events.append(('catalog', Path(folder))))
+        with patch.object(view, '_params_for_profile', return_value={'config': self.cfg}):
+            view._on_details_ready([self.profile], scan_only=False, batch=True)
+        self.assertTrue(pump(self.entered.is_set))
+        self.assertEqual(events, ['begin'])
+        return events
+
+    def test_batch_releases_ingestion_after_announcing_downloads(self):
+        events = self.start_batch()
+        self.windows[0].close()
+        self.assertEqual(events, ['begin'])
+        self.release.set()
+        self.assertTrue(pump(lambda: 'end' in events))
+        self.assertEqual(events, ['begin', ('catalog', self.folder), 'end'])
+
+    def test_batch_cancel_releases_ingestion_after_final_catalog_notice(self):
+        events = self.start_batch()
+        self.cherry.view._cancel()
+        self.assertEqual(events, ['begin'])
+        self.assertTrue(pump(lambda: 'end' in events))
+        self.assertEqual(events, ['begin', ('catalog', self.folder), 'end'])
+
+    def test_dashboard_shutdown_keeps_ingestion_paused_after_final_notice(self):
+        events = self.start_batch()
+        self.cherry.view.context['main_window'] = SimpleNamespace(_shutting_down=True)
+        self.cherry.on_unload()
+        self.assertTrue(pump(self.cherry.shutdown_ready))
+        self.assertEqual(events, ['begin', ('catalog', self.folder)])
 
     def test_download_hide_reopen_other_module_and_receipts_skip_repeat(self):
         bridge=self.cherry.view._bridge;summaries=[];bridge.finished_signal.connect(summaries.append)

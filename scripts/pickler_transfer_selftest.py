@@ -36,6 +36,61 @@ class PicklerTransfer(unittest.TestCase):
         return transfers.transfer(self.service,self.source,self.output,action,journal_root=self.journals,**kwargs)
     def undo(self,previous):return transfers.undo(self.service,previous,journal_root=self.journals)
 
+    def approved_identity(self, path):
+        info = path.stat()
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+    def test_deferred_transfer_refuses_replacement_at_unindexed_source(self):
+        source = self.folder / 'unindexed.png'
+        source.write_bytes(b'reviewed image')
+        approved = self.approved_identity(source)
+        replacement = self.folder / 'replacement.png'
+        replacement.write_bytes(b'other content!')
+        replacement.replace(source)
+
+        with self.assertRaisesRegex(ValueError, 'review|changed'):
+            transfers.transfer(self.service, source, self.output, 'discard', journal_root=self.journals,
+                               reviewed_identity=approved, reviewed_caption=None)
+
+        self.assertEqual(source.read_bytes(), b'other content!')
+        self.assertIsNone(self.service.read('get_file_id', str(source)))
+        self.assertFalse(self.output.exists())
+        self.assertFalse(self.journals.exists())
+
+    def test_deferred_transfer_respects_reviewed_caption_absence(self):
+        self.caption.unlink()
+        image_proof = self.approved_identity(self.source)
+        self.caption.write_bytes(b'new caption')
+
+        with self.assertRaisesRegex(ValueError, 'caption'):
+            self.transfer(reviewed_identity=image_proof, reviewed_caption=None)
+
+        self.assertTrue(self.source.exists())
+        self.assertEqual(self.caption.read_bytes(), b'new caption')
+        self.assertFalse(self.journals.exists())
+        self.assertEqual(self.state()['state']['file']['path'], self.source.resolve().as_posix())
+
+    def test_journal_failure_after_copy_commit_is_marked_for_recovery(self):
+        record_phase = transfers.Journal.phase
+
+        def fail_completed_write(journal, phase, **details):
+            if phase == 'complete':
+                raise OSError('completed journal write injected')
+            return record_phase(journal, phase, **details)
+
+        with patch.object(transfers.Journal, 'phase', fail_completed_write):
+            with self.assertRaisesRegex(RuntimeError, 'completed journal write injected') as failure:
+                self.transfer('copy', reviewed_identity=self.approved_identity(self.source),
+                              reviewed_caption=self.approved_identity(self.caption))
+
+        self.assertTrue(failure.exception.requires_recovery)
+        copy = self.output / self.source.name
+        self.assertTrue(self.source.exists() and copy.exists())
+        self.assertIsNotNone(self.service.read('get_file_id', str(copy)))
+        recovered = transfers.recover(self.service, self.failed_journal(), journal_root=self.journals)
+        self.assertEqual(recovered['status'], 'already_confirmed')
+        self.assertEqual(list(self.output.glob('*.png')), [copy])
+
     def test_move_pair_preserves_identity_curation_and_bytes(self):
         before=self.state()['state']; result=self.transfer()
         self.assertFalse(self.source.exists()); self.assertFalse(self.caption.exists())

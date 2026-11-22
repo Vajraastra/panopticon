@@ -1260,8 +1260,11 @@ full scans; other mutations still invalidate it normally. Validating the real
 migration remains open. Folder spelling and portable Cherry data remain preserved.
 [Windows supports case rules per directory](https://learn.microsoft.com/en-us/windows/wsl/case-sensitivity).
 
-Pickler transfers run in an owned worker on Windows, with one admitted action
-per view. Image and same-stem caption are pinned, copied through verified durable
+In Pickler, choose Move, Copy, or Discard in the sidebar and use the main button
+to mark the displayed image. D also marks an image for discard. Ctrl+Z removes the
+latest pending mark. Apply decisions or close Pickler to run the marked actions in order.
+Pickler transfers run in a single worker on Windows. Image and same-stem caption
+are pinned, copied through verified durable
 temporaries and published without overwriting existing names. Move/discard retain
 the curated ID; explicit identical-byte Copy creates an independent ID with the
 initial tag associations, sources, rating, category definitions and generation.
