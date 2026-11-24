@@ -798,6 +798,11 @@ class MainWindow(QMainWindow):
             self.close()
 
 if __name__ == "__main__":
+    # Solo al ejecutar la app, no al importar `main` (las pruebas lo importan y no deben
+    # tocar el crash.log real ni cambiar los manejadores de excepciones y de Qt).
+    from core.crash_diagnostics import install_crash_diagnostics
+    from core.paths import ProjectPaths
+    install_crash_diagnostics(ProjectPaths.root() / "logs")
     # Diálogos nativos del OS (selector de archivos, etc.): enrutar al portal del
     # escritorio. Sin esto, Qt cae a su propio diálogo (feo y estilizado por la QSS
     # global). SOLO Linux: en Windows/macOS este theme no existe y fuerza el estilo
