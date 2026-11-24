@@ -156,6 +156,10 @@ carpeta sola: no hay que registrar nada en el core.
 Smoke test (import + `on_load` + `get_view()`) antes y después del cambio, un grupo lógico por
 commit, y `git status` limpio de `__pycache__`.
 
+Los selftests se corren con `scripts/run_selftests.ps1` (`-Filter pickler`, `-List`,
+`-IncludeToy`): fija `TEMP` largo y el venv, un log por prueba en `logs/selftests/`, exit 1
+si algo falla.
+
 ## Cherry-dl
 
 `third_party/cherry_dl/` contiene el motor canónico de Cherry dentro de Panopticon.
