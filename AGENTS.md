@@ -159,6 +159,8 @@ commit, y `git status` limpio de `__pycache__`.
 Los selftests se corren con `scripts/run_selftests.ps1` (`-Filter pickler`, `-List`,
 `-IncludeToy`): fija `TEMP` largo y el venv, un log por prueba en `logs/selftests/`, exit 1
 si algo falla.
+Lanzarlo con `pwsh` (PowerShell 7); el `powershell.exe` 5.1 trae la ejecución de scripts
+deshabilitada y no lo arranca.
 
 ## Cherry-dl
 

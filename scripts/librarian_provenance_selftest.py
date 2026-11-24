@@ -69,7 +69,12 @@ class Provenance(helpers.Fixture):
         self.assertEqual(self.service.read('count_files'), 1)
 
     def test_read_is_bounded_and_rejects_invalid_path(self):
-        self.register_origin('C:/fixture/long.png', 'a'*1100, 'u'*5000)
+        # El registro ya acota artista/URL; los valores largos son datos históricos: sembrarlos directo.
+        self.register_origin('C:/fixture/long.png', 'a', 'u')
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(Path(self.temp.name) / 'fixture.db')) as db, db:
+            db.execute('UPDATE files SET artist=?, origin_url=? WHERE path LIKE ?', ('a'*1100, 'u'*5000, '%long.png'))
         value = self.service.read('get_file_provenance', 'C:\\fixture\\long.png')
         self.assertEqual(len(value['artist']), 1024)
         self.assertEqual(len(value['origin_url']), 4096)

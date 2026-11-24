@@ -573,7 +573,8 @@ class GUI(prior.Review):
         raw, curated = self.pair()
         self.scan_gui()
         self.module.tree.setCurrentItem(self.child(curated))
-        sent, gallery = [], object()
+        sent = []
+        gallery = type('GalleryProbe', (), {'set_send_targets': lambda self, *args, **kwargs: None})()
         class Host:
             def get_module(host, name):
                 return {'Gallery': gallery, 'Duplicate Finder': self.module}.get(name)

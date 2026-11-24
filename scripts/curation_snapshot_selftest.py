@@ -40,6 +40,7 @@ class Fixture(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.service = LibraryService(Path(self.temp.name) / 'fixture.db')
         self.addCleanup(self.service.close)
+        self.service.submit('prepare_ingest_reviews').result(5)
 
     def register(self, *paths):
         # Seed large fixtures through bounded requests, like actual ingestion.

@@ -28,6 +28,13 @@ from gallery_data_selftest import pump
 
 class GalleryRegistration(unittest.TestCase):
     def setUp(self):
+        # Las aserciones de texto asumen inglés; no depender del idioma del sistema ni escribir config.json.
+        from core.locale_manager import LocaleManager
+        manager = LocaleManager()
+        previous = manager.current_locale
+        manager.current_locale = 'en'
+        manager._load_translations()
+        self.addCleanup(lambda: (setattr(manager, 'current_locale', previous), manager._load_translations()))
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()

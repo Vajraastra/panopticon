@@ -251,6 +251,9 @@ async def main() -> None:
 
             class BatchProbe:
                 _maintenance_busy = False
+                _maintenance_generation = 0
+                _maintenance_cancel_event = None
+                _maintenance_started_event = None
                 _preparing_download = False
                 _archive_check_busy = False
 
@@ -276,7 +279,7 @@ async def main() -> None:
                     ]
 
                 @staticmethod
-                def _archives_batch_async(profiles):
+                def _archives_batch_async(profiles, _cancel_event=None, _started_event=None):
                     return ("batch", profiles)
 
                 def _on_active_profile_changed(self, profile_id):

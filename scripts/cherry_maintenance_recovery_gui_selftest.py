@@ -35,7 +35,7 @@ class View(CherryView):
         QWidget.__init__(self)
         self._lm=None;self._closing=False;self._maintenance_busy=False
         self._maintenance_future=None;self._maintenance_cancel_event=None;self._maintenance_started_event=None
-        self._maintenance_generation=3;self._preparing_download=False;self._archive_check_busy=False
+        self._maintenance_generation=3;self._batch_ingestor=None;self._preparing_download=False;self._archive_check_busy=False
         self._send_worker=None;self._queue=SimpleNamespace(is_running=False,cancel=lambda:False)
         self._bridge=SimpleNamespace(is_busy=False,cancel=lambda:False)
         self._runtime=Runtime();self.logs=[];self.announced=[];self.status='';self.reloads=0

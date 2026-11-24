@@ -67,6 +67,7 @@ class PreviewHints(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.service = LibraryService(Path(self.temp.name)/'private.db')
         self.addCleanup(self.service.close)
+        self.service.submit('prepare_ingest_reviews').result(5)
         self.path = (Path(self.temp.name)/'one.png').as_posix()
         self.service.submit('register_files_minimal', [
             dict(path=self.path, filename='one.png', size=1, created=1)]).result(3)
