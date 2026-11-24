@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,21 @@ CHERRY_DIR = Path.home() / ".cherry-dl"
 CONFIG_FILE = CHERRY_DIR / "config.toml"
 SESSION_FILE = CHERRY_DIR / "session.json"   # cookies DDG persistentes
 INDEX_DB = CHERRY_DIR / "index.db"
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Escribe en un temporal del mismo directorio y lo reemplaza: un corte deja el
+    archivo anterior intacto, nunca uno truncado."""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
 
 # ── Modelos Pydantic ───────────────────────────────────────────────────────────
 
@@ -150,7 +166,7 @@ def save_config(config: UserConfig) -> None:
         lines.append(f"\n[templates.{name}]\n")
         lines.append(f"workers = {tmpl.workers}\n")
 
-    CONFIG_FILE.write_text("".join(lines), encoding="utf-8")
+    _atomic_write_text(CONFIG_FILE, "".join(lines))
 
 
 def set_config_value(key: str, value: str) -> UserConfig:
@@ -236,16 +252,33 @@ def set_config_value(key: str, value: str) -> UserConfig:
 # ── Sesión DDG ─────────────────────────────────────────────────────────────────
 
 def load_session() -> dict[str, str]:
-    """Carga cookies DDG persistidas en disco."""
+    """Carga cookies DDG persistidas en disco.
+
+    Un archivo ilegible (corte a media escritura, edición manual) no debe
+    dejar sin sesión a Patreon, Pixiv y DDG a la vez: se aparta como
+    `session.json.corrupt` para poder inspeccionarlo y se arranca sin sesión.
+    """
     if not SESSION_FILE.exists():
         return {}
-    return json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except (ValueError, UnicodeDecodeError):
+        pass
+    try:
+        os.replace(SESSION_FILE, SESSION_FILE.with_name(SESSION_FILE.name + ".corrupt"))
+    except OSError:
+        pass
+    print(f"[cherry-dl] {SESSION_FILE.name} ilegible; apartado como .corrupt — "
+          "hay que volver a iniciar sesión", file=sys.stderr)
+    return {}
 
 
 def save_session(cookies: dict[str, str]) -> None:
     """Persiste cookies DDG en disco para reutilizarlas en la siguiente sesión."""
     CHERRY_DIR.mkdir(parents=True, exist_ok=True)
-    SESSION_FILE.write_text(json.dumps(cookies, indent=2), encoding="utf-8")
+    _atomic_write_text(SESSION_FILE, json.dumps(cookies, indent=2))
 
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────

@@ -28,6 +28,18 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Configuración y sesión: escritura atómica y carga tolerante (2026-11-24)
+
+`save_session` y `save_config` escribían con `write_text` directo y `load_session` no
+toleraba un JSON corrupto: un corte a media escritura de `session.json` (que guarda Patreon,
+Pixiv y DDG juntos) hacía que `load_patreon_cookies` lanzara `JSONDecodeError` hasta borrar el
+archivo a mano. Ahora ambas escriben a un temporal del mismo directorio con `fsync` y
+`os.replace` (un corte deja el archivo anterior intacto), y `load_session` aparta un archivo
+ilegible como `session.json.corrupt` y arranca sin sesión, avisando por stderr.
+
+`scripts/cherry_session_atomic_selftest.py` cubre ida y vuelta, JSON truncado, JSON que no es
+objeto y fallo de `replace` (sesión y config previas intactas, sin `.tmp` residual).
+
 ### Sync: conservar archivos existentes y copias manuales (2026-11-20)
 
 El servicio de descarga conserva el archivo manual aunque su SHA-256 coincida
