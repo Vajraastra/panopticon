@@ -59,7 +59,9 @@ locales/         en.json · es.json
 
 `README.md`, `AGENTS.md` y `third_party/cherry_dl/VENDORED.md` están trackeados, además de
 las licencias. La documentación de trabajo (`TASKS`, `BITACORA`, `HANDOFF`, `*_DESIGN.md`)
-está **gitignored**: git no la respalda, así que **hay que copiarla antes de reescribirla**.
+está **gitignored**: git no la respalda, así que **hay que copiarla antes de reescribirla**:
+`pwsh scripts/backup_docs.ps1` deja una única copia rotativa en `.work/session-notes-backup/`
+(no la sobrescribe si el original quedó a menos de la mitad de tamaño; `-Force` lo anula).
 Tampoco se versionan `venv/`,
 `models/`, `data/`, `cache/`, `logs/`, `config.json` ni las `*.db`.
 
