@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .downloads import EXT_GROUPS, build_filename
+from .downloads import EXT_GROUPS, build_filename, safe_extension
 
 
 @dataclass(frozen=True)
@@ -28,7 +28,9 @@ COUNTER_NAMESPACES = tuple(spec.key for spec in ROUTES)
 
 def route(filename: str) -> FileRoute:
     """Clasifica por extensión; imágenes y animaciones comparten la raíz."""
-    ext = Path(filename).suffix.lower().lstrip(".")
+    # La misma extensión saneada que usa build_filename, para que la carpeta elegida y el
+    # nombre construido coincidan aunque el nombre remoto traiga una extensión extraña.
+    ext = safe_extension(filename).lstrip(".")
     if ext in EXT_GROUPS["images"][1] | EXT_GROUPS["anim"][1]:
         return VISUAL
     if ext in EXT_GROUPS["zip"][1]:

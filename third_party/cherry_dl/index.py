@@ -91,6 +91,19 @@ CREATE TABLE IF NOT EXISTS profile_exclusions (
 
 # ── Inicialización ─────────────────────────────────────────────────────────────
 
+# Segundos que cualquier operación sobre index.db espera un lock de escritura. sqlite3 espera
+# 5 s por defecto, y con una descarga activa (guardado de last_synced, escaneos) un alta o
+# añadir una fuente podían fallar con «database is locked». catalog.db ya usa 30 s.
+LOCK_TIMEOUT = 30.0
+# La alta de un proyecto conserva su propio nombre para poder ajustarla por separado.
+CREATE_LOCK_TIMEOUT = LOCK_TIMEOUT
+
+
+def _connect(db_path: Path, timeout: float | None = None):
+    """Conexión a index.db con la espera de lock común. Úsese como `async with`."""
+    return aiosqlite.connect(db_path, timeout=LOCK_TIMEOUT if timeout is None else timeout)
+
+
 async def init_index(db_path: Path) -> None:
     """
     Crea index.db si no existe y aplica migraciones.
@@ -100,7 +113,22 @@ async def init_index(db_path: Path) -> None:
     La migración es idempotente — se puede ejecutar múltiples veces.
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
+        # WAL: lectores y escritor no se bloquean entre sí (catalog.db ya lo usa). Cambiar el modo
+        # exige que no haya otras conexiones: si hay alguna, se queda como está y se reintenta
+        # en el siguiente arranque; nunca debe impedir abrir el índice.
+        try:
+            # Espera corta: con otro lector abierto el cambio no es posible y no debe retrasar
+            # el arranque los 30 s de LOCK_TIMEOUT.
+            await db.execute("PRAGMA busy_timeout=500")
+            await db.execute("PRAGMA journal_mode=WAL")
+        except Exception:
+            pass
+        finally:
+            try:
+                await db.execute(f"PRAGMA busy_timeout={int(LOCK_TIMEOUT * 1000)}")
+            except Exception:
+                pass
         # Fase 1 — tablas base
         await db.execute(_CREATE_SITES)
         await db.execute(_CREATE_ARTISTS)
@@ -176,7 +204,7 @@ async def init_index(db_path: Path) -> None:
 
 async def get_or_create_site(db_path: Path, name: str, url: str = "") -> int:
     """Retorna el ID del sitio, creándolo si no existe."""
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         async with db.execute(
             "SELECT id FROM sites WHERE name = ?", (name,)
         ) as cur:
@@ -206,7 +234,7 @@ async def get_or_create_artist(
     Retorna el ID del artista en el índice.
     Si no existe lo crea. Si existe, actualiza su folder_path (por si se movió).
     """
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         async with db.execute(
             "SELECT id FROM artists WHERE site_id = ? AND artist_id = ?",
             (site_id, artist_id),
@@ -238,7 +266,7 @@ async def relink_artist(
     Actualiza la ruta de la carpeta de un artista.
     Retorna True si se encontró y actualizó, False si no existe.
     """
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         async with db.execute(
             """
             UPDATE artists SET folder_path = ?
@@ -256,7 +284,7 @@ async def get_artist_folder(
     db_path: Path, artist_id: str, site_name: str
 ) -> Path | None:
     """Retorna la ruta de carpeta de un artista o None si no está indexado."""
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         async with db.execute(
             """
             SELECT a.folder_path FROM artists a
@@ -288,7 +316,7 @@ async def migrate_all_folders(
     moved   = 0
     errors: list[str] = []
 
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         for idx, a in enumerate(artists, 1):
             old_path = Path(a["folder_path"])
 
@@ -331,7 +359,7 @@ async def list_profiles(db_path: Path) -> list[dict]:
     Retorna todos los perfiles con el conteo de fuentes.
     Cada dict: {id, display_name, folder_path, primary_site, created_at, last_checked, url_count}
     """
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         async with db.execute("""
             SELECT p.id, p.display_name, p.folder_path, p.primary_site,
                    p.created_at, p.last_checked,
@@ -358,7 +386,7 @@ async def get_profile(db_path: Path, profile_id: int) -> dict | None:
     Dict: {id, display_name, folder_path, primary_site, created_at, last_checked, urls: [...]}
     Cada URL incluye estado manual (`enabled`) y de disponibilidad automática.
     """
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         async with db.execute(
             "SELECT id, display_name, folder_path, primary_site, created_at, "
             "last_checked, ext_filter "
@@ -408,7 +436,7 @@ async def get_profile(db_path: Path, profile_id: int) -> dict | None:
 # ── Auto-descripción de carpetas (respaldo para reindex cross-OS) ──────────────
 
 async def _profile_id_of_url(db_path: Path, url_id: int) -> int | None:
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         async with db.execute(
             "SELECT profile_id FROM profile_urls WHERE id = ?", (url_id,)
         ) as cur:
@@ -509,7 +537,7 @@ async def reindex_from_folders(
             stats["urls"] += len(urls)
             continue
 
-        async with aiosqlite.connect(db_path) as db:
+        async with _connect(db_path) as db:
             async with db.execute(
                 "SELECT id FROM profiles WHERE folder_path = ?", (str(folder),)
             ) as cur:
@@ -568,7 +596,7 @@ async def create_profile(
     Crea un perfil nuevo. Retorna el ID del perfil creado.
     Las URLs se agregan después con add_profile_url().
     """
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         async with db.execute(
             "INSERT INTO profiles (display_name, folder_path, primary_site, created_at) "
             "VALUES (?, ?, ?, datetime('now'))",
@@ -577,12 +605,6 @@ async def create_profile(
             profile_id = cur.lastrowid
         await db.commit()
     return profile_id
-
-
-# Segundos que la alta de un proyecto espera el lock de escritura de index.db (una descarga
-# o un escaneo pueden retenerlo). El valor por defecto de sqlite3 (5 s) hacía fallar la
-# creación justo cuando la app estaba ocupada.
-CREATE_LOCK_TIMEOUT = 30.0
 
 
 async def create_profile_with_url(
@@ -601,7 +623,7 @@ async def create_profile_with_url(
     existen los dos o ninguno. `before_commit` (p. ej. crear la carpeta) corre dentro de la
     transacción: si falla, no se persiste nada.
     """
-    async with aiosqlite.connect(db_path, timeout=CREATE_LOCK_TIMEOUT) as db:
+    async with _connect(db_path, CREATE_LOCK_TIMEOUT) as db:
         await db.execute("BEGIN IMMEDIATE")
         try:
             async with db.execute(
@@ -635,7 +657,7 @@ async def add_profile_url(
     Agrega una URL a un perfil existente. Retorna el ID de la entrada.
     url puede ser None para entradas migradas de Fase 1.
     """
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         async with db.execute(
             "INSERT INTO profile_urls (profile_id, url, site, artist_id) VALUES (?, ?, ?, ?)",
             (profile_id, url, site, artist_id),
@@ -665,7 +687,7 @@ async def update_profile_url_sync(
             raise ValueError('invalid_completed_scan_watermark') from exc
         if watermark.strftime('%Y-%m-%d %H:%M:%S')!=last_synced:
             raise ValueError('invalid_completed_scan_watermark')
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         # Serialize against another completed scan before reading its frontier.
         await db.execute('BEGIN IMMEDIATE')
         if artist_id is not None:
@@ -700,7 +722,7 @@ async def update_profile_url_sync(
 
 async def update_profile_last_checked(db_path: Path, profile_id: int) -> None:
     """Actualiza last_checked del perfil al momento actual."""
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         await db.execute(
             "UPDATE profiles SET last_checked = datetime('now') WHERE id = ?",
             (profile_id,),
@@ -712,7 +734,7 @@ async def update_profile_ext_filter(
     db_path: Path, profile_id: int, ext_filter: str
 ) -> None:
     """Persiste el filtro de extensiones del perfil."""
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         await db.execute(
             "UPDATE profiles SET ext_filter = ? WHERE id = ?",
             (ext_filter.strip(), profile_id),
@@ -728,7 +750,7 @@ async def delete_profile(db_path: Path, profile_id: int) -> None:
     También borra el artista de la tabla artists para que la migración
     de init_index no lo re-cree automáticamente en la próxima carga.
     """
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         await db.execute("PRAGMA foreign_keys = ON")
         async with db.execute(
             "SELECT folder_path FROM profiles WHERE id = ?", (profile_id,)
@@ -758,7 +780,7 @@ async def merge_profiles(
 
     Retorna el número de URLs reasignadas.
     """
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         await db.execute("PRAGMA foreign_keys = OFF")
 
         # Reasignar solo las URLs que no están ya en keep_id
@@ -814,7 +836,7 @@ async def set_profile_url_enabled(
 ) -> None:
     """Activa o desactiva manualmente una URL y limpia el veto automático."""
     await init_index(db_path)
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         await db.execute(
             "UPDATE profile_urls SET enabled = ?, auto_disabled = 0, "
             "auto_disabled_reason = NULL WHERE id = ?",
@@ -832,7 +854,7 @@ async def set_profile_url_availability(
 ) -> None:
     """Persiste la salud de una fuente sin confundirla con la elección manual."""
     await init_index(db_path)
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         await db.execute(
             "UPDATE profile_urls SET enabled = ?, auto_disabled = ?, "
             "auto_disabled_reason = ? WHERE id = ?",
@@ -856,7 +878,7 @@ async def delete_profile_url(
     primaria para que los filtros de la tabla no conserven el sitio eliminado.
     Retorna el id del perfil propietario.
     """
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         await db.execute("PRAGMA foreign_keys = ON")
         async with db.execute(
             """
@@ -910,7 +932,7 @@ async def add_exclusion(db_path: Path, id_a: int, id_b: int) -> None:
     Orden canónico: siempre almacena min(id_a,id_b) < max(id_a,id_b).
     """
     lo, hi = min(id_a, id_b), max(id_a, id_b)
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         await db.execute(
             "INSERT OR IGNORE INTO profile_exclusions (id_a, id_b) VALUES (?, ?)",
             (lo, hi),
@@ -920,7 +942,7 @@ async def add_exclusion(db_path: Path, id_a: int, id_b: int) -> None:
 
 async def get_exclusions(db_path: Path) -> set[tuple[int, int]]:
     """Retorna todos los pares excluidos como set de tuplas (id_a, id_b) con id_a < id_b."""
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         async with db.execute(
             "SELECT id_a, id_b FROM profile_exclusions"
         ) as cur:
@@ -930,7 +952,7 @@ async def get_exclusions(db_path: Path) -> set[tuple[int, int]]:
 
 async def list_all(db_path: Path) -> list[dict]:
     """Retorna lista de todos los artistas indexados con su sitio y ruta."""
-    async with aiosqlite.connect(db_path) as db:
+    async with _connect(db_path) as db:
         async with db.execute(
             """
             SELECT s.name, a.name, a.artist_id, a.folder_path

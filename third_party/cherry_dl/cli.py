@@ -513,7 +513,7 @@ async def _migrate_structure(dry_run: bool) -> None:
 
     # Ejecutar migración
     migrated = errors = only_db = 0
-    async with aiosqlite.connect(INDEX_DB) as db:
+    async with aiosqlite.connect(INDEX_DB, timeout=30) as db:
         for item in plan:
             old_path: Path = item["old"]
             new_path: Path = item["new"]

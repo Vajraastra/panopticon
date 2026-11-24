@@ -139,7 +139,7 @@ async def recover_profiles(
 
         # Upsert del perfil por folder_path; luego añadir la URL (sync_profile_meta
         # se dispara dentro de add_profile_url y deja la carpeta auto-describible).
-        async with aiosqlite.connect(index_db) as db:
+        async with aiosqlite.connect(index_db, timeout=30) as db:
             async with db.execute(
                 "SELECT id FROM profiles WHERE folder_path = ?", (str(folder),)
             ) as cur:
@@ -222,7 +222,7 @@ async def apply_review(index_db: Path, download_dir: Path) -> dict:
             res["skipped"].append(folder_name)
             continue
         site = tmpl.name
-        async with aiosqlite.connect(index_db) as db:
+        async with aiosqlite.connect(index_db, timeout=30) as db:
             async with db.execute(
                 "SELECT id FROM profiles WHERE folder_path = ?", (str(folder),)
             ) as cur:

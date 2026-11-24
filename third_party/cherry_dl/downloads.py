@@ -30,6 +30,24 @@ def _safe_prefix(name: str) -> str:
     return prefix[:40] or "artist"  # máx 40 chars para no hacer nombres kilométricos
 
 
+def safe_extension(original_filename: str) -> str:
+    """Extensión en minúsculas apta para un nombre en disco; ".bin" si la remota no lo es.
+
+    El nombre original lo pone el creador del sitio. Un ":" tras el último punto
+    (`sketch v1.5: final`) hace que NTFS cree un flujo alternativo: el archivo visible queda
+    en 0 bytes y el contenido oculto; `* ? " < > |` o una «extensión» larga con espacios
+    impiden abrir el archivo y lo dejan pendiente para siempre. Solo se admite ASCII
+    alfanumérico de 1 a 10 caracteres; sin extensión se devuelve "".
+    """
+    ext = Path(original_filename).suffix.strip().lower()
+    if not ext:
+        return ""
+    body = ext[1:]
+    if 1 <= len(body) <= 10 and body.isascii() and body.isalnum():
+        return ext
+    return ".bin"
+
+
 def build_filename(artist_name: str, counter: int, original_filename: str) -> str:
     """
     Construye el nombre final del archivo:
@@ -40,7 +58,7 @@ def build_filename(artist_name: str, counter: int, original_filename: str) -> st
       SomeArtist_00042.psd
       another_artist_00100.png
     """
-    ext = Path(original_filename).suffix.lower()
+    ext = safe_extension(original_filename)
     prefix = _safe_prefix(artist_name)
     return f"{prefix}_{counter:05d}{ext}"
 

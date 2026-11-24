@@ -28,6 +28,27 @@
 
 ## Divergencias respecto a `befa56d`
 
+### Extensión remota saneada e index.db con WAL y espera de 30 s (2026-11-24)
+
+**Extensión.** `build_filename` tomaba `Path(nombre_remoto).suffix` tal cual, y el nombre lo pone
+el creador del sitio. Con `:` tras el último punto (`sketch v1.5: final`) NTFS creaba un flujo
+alternativo (archivo visible de 0 bytes, contenido oculto); con `* ? " < > |` o una «extensión»
+larga con espacios, abrir el `.tmp` lanzaba `OSError` y el archivo volvía a pendientes sin bajarse
+nunca, gastando un contador por intento. `downloads.safe_extension` solo admite ASCII
+alfanumérico de 1 a 10 caracteres (si no, `.bin`) y la usan tanto `build_filename` como
+`file_routing.route`, para que nombre y carpeta salgan de la misma extensión. Los nombres normales
+no cambian.
+
+**index.db.** Sus 23 conexiones esperaban los 5 s por defecto de sqlite3 y el archivo estaba en
+`journal_mode=delete`, así que con una descarga activa un alta, añadir una fuente o guardar
+`last_synced` podían fallar con «database is locked». `index._connect` fija `LOCK_TIMEOUT = 30`
+(como `catalog.db`) y `init_index` pasa la base a WAL con una espera corta de 0,5 s: si hay otro
+lector abierto no cambia el modo ni retrasa el arranque, y se reintenta la siguiente vez. Los
+lectores de solo lectura siguen funcionando sobre WAL. Mismo tiempo de espera en las aperturas
+sueltas de `recovery.py` y `cli.py`.
+
+`scripts/cherry_filename_ext_selftest.py` y `scripts/cherry_index_locking_selftest.py` lo cubren.
+
 ### Configuración y sesión: escritura atómica y carga tolerante (2026-11-24)
 
 `save_session` y `save_config` escribían con `write_text` directo y `load_session` no
