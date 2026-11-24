@@ -30,12 +30,18 @@ from third_party.cherry_dl.site_policy import SourceCategory, ScanPolicy, Transf
 
 class RealDownloadWait(unittest.IsolatedAsyncioTestCase):
     async def test_http_transfers_pause_once_and_resume_with_private_quota(self):
+        # El segundo worker solo espera por bytes (until=None) mientras el primero sostiene
+        # todo el cupo reservado, es decir, antes de recibir cabeceras. Un sleep fijo hacía la
+        # prueba dependiente del planificador (~40 % de fallos en Windows): el servidor retiene
+        # la respuesta hasta que la prueba observa esa espera (tope de 3 s para no colgarse).
+        saw_byte_wait = threading.Event()
+
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
 
             def do_GET(self):
-                time.sleep(.02)
+                saw_byte_wait.wait(3)
                 payload = (self.path * 10).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/octet-stream")
@@ -86,11 +92,18 @@ class RealDownloadWait(unittest.IsolatedAsyncioTestCase):
                     pawchive=config.PawchiveConfig(adaptive_quota=False, downloads_per_window=2, resume_headroom=1,
                                                    gigabytes_per_window=1, window_hours=1 / 3600))
                 events = []
+
+                def emit(event):
+                    events.append(event)
+                    if (isinstance(event, WorkerState) and event.phase == "waiting"
+                            and event.reason == "quota_bytes" and event.until is None):
+                        saw_byte_wait.set()
+
                 summary = await asyncio.wait_for(download_service.run_profile_download(
                     {"id": -1, "folder_path": str(root / "Artist"), "urls": [
                         {"id": -1, "url": "fixture://artist", "site": "pawchive", "enabled": True,
                          "last_synced": None, "file_count": 0}]},
-                    workers=2, ext_filter=set(), emit=events.append, config=cfg,
+                    workers=2, ext_filter=set(), emit=emit, config=cfg,
                     force_full=True, finalize_profile=False,
                 ), 10)
                 self.assertEqual(summary.downloaded, 3)
