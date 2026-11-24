@@ -95,6 +95,10 @@ class DownloadPanel(QWidget):
         self._cooldown_until = 0.0
         self._worker_states = {}
         self._worker_activity = {}
+        # Filas con una transferencia en curso y filas que muestran su último archivo
+        # terminado: un cambio de fase no debe vaciarlas.
+        self._busy: set[int] = set()
+        self._shown_done: set[int] = set()
         self._quota_state = None
         self._quota_in_flight = 0
         self._quota_next_release = 0
@@ -243,18 +247,41 @@ class DownloadPanel(QWidget):
         self._stop_cooldown()
         self._file_bar.setVisible(False)
         self._batch_bar.setVisible(False)
+        self._clear_rows()
         self.set_phase(self.tr("cherry.dl_starting", "Starting…"))
-        for row in self._rows:
-            row.idle()
         self.refresh_pawchive_quota()
 
+    def _clear_rows(self) -> None:
+        """Perfil o corrida nueva: todas las filas vuelven a reposo."""
+        self._busy.clear()
+        self._shown_done.clear()
+        for row in self._rows:
+            row.idle()
+
     def set_phase(self, text: str) -> None:
+        """Fase terminal (cancelar, fuente terminada, detener): vacía todas las filas."""
         self._stop_cooldown()
         for state in self._worker_states.values():
+            self._busy.discard(state.slot)
+            self._shown_done.discard(state.slot)
             if state.slot < len(self._rows):
                 self._rows[state.slot].idle()
         self._worker_states.clear()
         self._worker_activity.clear()
+        self._phase.setText(text)
+
+    def _set_running_phase(self, text: str) -> None:
+        # Una fuente nueva, un escaneo o una tanda cambian la fase, no lo que otro
+        # worker ya está bajando: vaciar su fila hacía desaparecer la barra de una
+        # transferencia en curso hasta su siguiente evento. Solo se limpian las filas
+        # en espera; las que transfieren o muestran su último archivo se conservan.
+        for state in self._worker_states.values():
+            if (state.slot < len(self._rows) and state.slot not in self._busy
+                    and state.slot not in self._shown_done):
+                self._rows[state.slot].idle()
+        self._stop_cooldown()
+        self._worker_states = {s: st for s, st in self._worker_states.items() if s in self._busy}
+        self._worker_activity = {s: at for s, at in self._worker_activity.items() if s in self._busy}
         self._phase.setText(text)
 
     def append_log(self, message: str, level: str = "info") -> None:
@@ -482,24 +509,23 @@ class DownloadPanel(QWidget):
         self._reset_counters()
         self._file_bar.setVisible(False)
         self._stop_cooldown()
-        for row in self._rows:
-            row.idle()
+        self._clear_rows()
 
     def _on_source_started(self, url: str, artist: str, site: str) -> None:
         self._file_bar.setVisible(False)
-        self.set_phase(self.tr("cherry.dl_source", "Source: {a} ({s})").format(a=artist, s=site))
+        self._set_running_phase(self.tr("cherry.dl_source", "Source: {a} ({s})").format(a=artist, s=site))
 
     def _on_scan_progress(self, seen: int, queued: int) -> None:
-        self.set_phase(self.tr(
+        self._set_running_phase(self.tr(
             "cherry.dl_scanning", "Scanning: {seen} seen · {queued} queued"
         ).format(seen=seen, queued=queued))
 
     def _on_scan_complete(self, pending: int) -> None:
-        self.set_phase(self.tr(
+        self._set_running_phase(self.tr(
             "cherry.dl_scan_done", "Scan complete: {n} pending").format(n=pending))
 
     def _on_batch_info(self, total: int, offset: int) -> None:
-        self.set_phase(self.tr(
+        self._set_running_phase(self.tr(
             "cherry.dl_batch", "Downloading {total} files (resuming at {offset})"
         ).format(total=total, offset=offset))
 
@@ -516,6 +542,8 @@ class DownloadPanel(QWidget):
     def _on_worker_start(self, slot: int, filename: str) -> None:
         self._stop_cooldown()
         self._ensure_slots(slot + 1)
+        self._busy.add(slot)
+        self._shown_done.discard(slot)
         self._rows[slot].start(filename)
 
     def _on_worker_progress(self, slot: int, done: int, total: int) -> None:
@@ -592,10 +620,14 @@ class DownloadPanel(QWidget):
         self._phase.setText(text)
 
     def _on_worker_done(self, slot: int, filename: str, icon: str) -> None:
+        self._busy.discard(slot)
+        self._shown_done.add(slot)
         if slot < len(self._rows):
             self._rows[slot].done(filename, icon)
 
     def _on_worker_idle(self, slot: int) -> None:
+        self._busy.discard(slot)
+        self._shown_done.discard(slot)
         if slot < len(self._rows):
             self._rows[slot].idle()
 
