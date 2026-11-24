@@ -33,6 +33,17 @@ class Registry(unittest.TestCase):
         self.service.submit('register_files_minimal', [dict(path=str(p), filename=Path(p).name,
             size=7, created=1, hash_original='a'*64) for p in paths]).result(3)
 
+    def legacy(self,paths,size=7,digest='a'*64):
+        """Siembra filas como las dejaba el registro anterior a la revisión de ingesta.
+
+        register_files_minimal ya trata un alias de mayúsculas/Unicode como conflicto; una base
+        histórica puede contener ambas filas. Se insertan directo en el archivo.
+        """
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            conn.executemany('INSERT INTO files(path,filename,file_size,created_date,hash_original) VALUES(?,?,?,?,?)',
+                [(Path(p).as_posix(),Path(p).name,size,1,digest) for p in paths])
+            conn.commit()
+
     def prepare(self):
         self.assertTrue(self.service.submit('prepare_path_identity').result(3))
 
@@ -106,7 +117,7 @@ class Registry(unittest.TestCase):
     def test_unicode_legacy_collision_preserves_every_id_and_curation(self):
         image = self.add('Árbol/Mixed.png')
         alias = self.root/'árbol'/'mixed.png'
-        self.register([alias])
+        self.legacy([alias])
         ids = [self.service.read('get_file_id',str(p)) for p in (image,alias)]
         self.service.submit('edit_curation',str(image),rating=5,add_tags=['keep']).result(3)
         self.prepare()

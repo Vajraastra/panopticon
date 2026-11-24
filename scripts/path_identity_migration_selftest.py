@@ -29,6 +29,17 @@ class Migration(unittest.TestCase):
     def register(self,paths):
         self.service.submit('register_files_minimal',[dict(path=str(p),filename=Path(p).name,size=1,created=1) for p in paths]).result(3)
 
+    def legacy(self,paths,size=1,digest=None):
+        """Siembra filas como las dejaba el registro anterior a la revisión de ingesta.
+
+        register_files_minimal ya trata un alias de mayúsculas/Unicode como conflicto; una base
+        histórica puede contener ambas filas. Se insertan directo en el archivo.
+        """
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            conn.executemany('INSERT INTO files(path,filename,file_size,created_date,hash_original) VALUES(?,?,?,?,?)',
+                [(Path(p).as_posix(),Path(p).name,size,1,digest) for p in paths])
+            conn.commit()
+
     def add(self,name):
         path=self.root/name
         path.parent.mkdir(parents=True,exist_ok=True)
@@ -71,7 +82,7 @@ class Migration(unittest.TestCase):
     def test_ambiguous_legacy_copies_keep_distinct_ratings_and_no_winner(self):
         image=self.add('Árbol/Mixed.png')
         alias=self.root/'árbol'/'mixed.png'
-        self.register([alias])
+        self.legacy([alias])
         self.service.submit('edit_curation',str(image),rating=5,add_tags=['curated']).result(3)
         self.service.backfill_path_identity()
         result=self.service.resolve_path_identity(str(alias))

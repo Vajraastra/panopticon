@@ -55,6 +55,17 @@ class Review(unittest.TestCase):
     def register(self,paths):
         self.service.submit('register_files_minimal',[dict(path=str(p),filename=Path(p).name,size=7,created=1) for p in paths]).result(3)
 
+    def legacy(self,paths,size=7,digest=None):
+        """Siembra filas como las dejaba el registro anterior a la revisión de ingesta.
+
+        register_files_minimal ya trata un alias de mayúsculas/Unicode como conflicto; una base
+        histórica puede contener ambas filas. Se insertan directo en el archivo.
+        """
+        with closing(sqlite3.connect(self.service.db_path)) as conn:
+            conn.executemany('INSERT INTO files(path,filename,file_size,created_date,hash_original) VALUES(?,?,?,?,?)',
+                [(Path(p).as_posix(),Path(p).name,size,1,digest) for p in paths])
+            conn.commit()
+
     def add(self,name):
         path=self.root/name
         path.parent.mkdir(parents=True,exist_ok=True)
@@ -93,7 +104,7 @@ class Review(unittest.TestCase):
     def test_conflicts_keep_both_ids_and_live_curation_hardlinks_not_conflicts(self):
         one=self.add('Árbol/Mixed.png')
         alias=self.root/'árbol'/'mixed.png'
-        self.register([alias])
+        self.legacy([alias])
         linked=self.root/'Distinct.png'
         os.link(one,linked)
         self.register([linked])

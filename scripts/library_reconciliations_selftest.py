@@ -147,8 +147,12 @@ class Reconciliations(unittest.TestCase):
     def test_new_case_alias_invalidates_owner_cache_and_blocks_ambiguous_source(self):
         operation_id, _ = self.apply(requests=self.requests()[:1])
         alias = self.paths[1].upper()
-        self.service.submit('register_files_minimal', [dict(path=alias, filename=Path(alias).name,
-            size=20, created=1, hash_original=OLD)]).result(5)
+        # register_files_minimal ya trata un alias de mayúsculas como conflicto de revisión; el
+        # alias "nuevo" de una base histórica se siembra directo, como lo dejaba el registro anterior.
+        with closing(sqlite3.connect(self.db)) as conn:
+            conn.execute('INSERT INTO files(path,filename,file_size,created_date,hash_original) VALUES(?,?,?,?,?)',
+                (alias, Path(alias).name, 20, 1, OLD))
+            conn.commit()
         before = self.state(self.ids[1]); count = self.count()
         # Historical acknowledgement must not seal a cache invalidated by
         # this intervening unrelated write.
