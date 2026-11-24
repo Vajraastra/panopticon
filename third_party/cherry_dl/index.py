@@ -579,6 +579,51 @@ async def create_profile(
     return profile_id
 
 
+# Segundos que la alta de un proyecto espera el lock de escritura de index.db (una descarga
+# o un escaneo pueden retenerlo). El valor por defecto de sqlite3 (5 s) hacía fallar la
+# creación justo cuando la app estaba ocupada.
+CREATE_LOCK_TIMEOUT = 30.0
+
+
+async def create_profile_with_url(
+    db_path: Path,
+    display_name: str,
+    folder_path: Path,
+    primary_site: str,
+    url: str,
+    site: str,
+    before_commit=None,
+) -> int:
+    """Crea el perfil y su primera fuente en UNA transacción; retorna el id del perfil.
+
+    Antes eran dos escrituras con commits separados: si la segunda fallaba (base ocupada,
+    error de disco) o la app moría entre ambas, quedaba un perfil sin fuentes. Ahora o
+    existen los dos o ninguno. `before_commit` (p. ej. crear la carpeta) corre dentro de la
+    transacción: si falla, no se persiste nada.
+    """
+    async with aiosqlite.connect(db_path, timeout=CREATE_LOCK_TIMEOUT) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute(
+                "INSERT INTO profiles (display_name, folder_path, primary_site, created_at) "
+                "VALUES (?, ?, ?, datetime('now'))",
+                (display_name, str(folder_path), primary_site),
+            ) as cur:
+                profile_id = cur.lastrowid
+            await db.execute(
+                "INSERT INTO profile_urls (profile_id, url, site, artist_id) VALUES (?, ?, ?, ?)",
+                (profile_id, url, site, None),
+            )
+            if before_commit is not None:
+                before_commit()
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+    await sync_profile_meta(db_path, profile_id)
+    return profile_id
+
+
 async def add_profile_url(
     db_path: Path,
     profile_id: int,

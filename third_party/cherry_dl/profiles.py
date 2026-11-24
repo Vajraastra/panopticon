@@ -108,27 +108,24 @@ async def create_profile(
 
     Nota: display_name debe obtenerse previamente con resolve_artist_name().
     """
-    from .index import create_profile as _db_create, add_profile_url
+    from .index import create_profile_with_url
 
     site = _site_from_url(primary_url)
     folder_path = base_dir / _safe_dirname(display_name)
 
-    profile_id = await _db_create(
+    # Perfil, primera fuente y carpeta en una sola transacción: un fallo o un corte
+    # a medias ya no deja un perfil sin fuentes. New-project creation explicitly admits
+    # this directory; Sync must not recreate an absent folder belonging to an existing
+    # library history.
+    return await create_profile_with_url(
         db_path=db_path,
         display_name=display_name,
         folder_path=folder_path,
         primary_site=site,
-    )
-    # New-project creation explicitly admits this directory. Sync must not
-    # recreate an absent folder belonging to an existing library history.
-    folder_path.mkdir(parents=True, exist_ok=True)
-    await add_profile_url(
-        db_path=db_path,
-        profile_id=profile_id,
         url=primary_url,
         site=site,
+        before_commit=lambda: folder_path.mkdir(parents=True, exist_ok=True),
     )
-    return profile_id
 
 
 async def add_url_to_profile(
