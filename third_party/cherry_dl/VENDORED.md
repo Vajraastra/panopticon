@@ -1088,3 +1088,8 @@ asignar miembros nuevos; `ensure_counter_at_least` admite el contador heredado
 `profiles.create_profile` crea la carpeta tras confirmar el alta de `index.db` y
 antes de añadir fuentes. El guard Native exige una raíz física: un proyecto
 nuevo queda listo para Sync; un alta rechazada no recrea una carpeta ausente.
+
+`RawTrafficWindow._connection` solo bloquea la ventana (`failed`) ante `sqlite3.Error`/`OSError`.
+Un `ValueError` lógico (reserva que excede la cuota, token ausente) ya no la deja inservible:
+antes, al llegar al límite de GB/hora todas las descargas fallaban con «La cuota de tráfico
+requiere recuperación».

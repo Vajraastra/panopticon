@@ -39,7 +39,10 @@ class RawTrafficWindow:
                 if write:
                     connection.execute("BEGIN IMMEDIATE")
                 yield connection
-        except Exception:
+        except (sqlite3.Error, OSError):
+            # Solo un fallo real de persistencia bloquea la ventana. Los
+            # ValueError lógicos (reserva que excede la cuota, token ausente)
+            # son flujo normal y no deben dejarla inservible.
             if write:
                 self.failed = True
             raise
