@@ -2058,5 +2058,6 @@
   "meta.sec.history": "History",
   "meta.open": "Open images…",
   "cr.load_folder": "Open folder…",
-  "cr.sec.profiles": "Known characters"
+  "cr.sec.profiles": "Known characters",
+  "dup.tabs_scroll_tip": "Show more comparison modes."
 }

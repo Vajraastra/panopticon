@@ -2058,5 +2058,6 @@
   "meta.sec.history": "Historial",
   "meta.open": "Abrir imágenes…",
   "cr.load_folder": "Abrir carpeta…",
-  "cr.sec.profiles": "Personajes conocidos"
+  "cr.sec.profiles": "Personajes conocidos",
+  "dup.tabs_scroll_tip": "Muestra más modos de comparación."
 }

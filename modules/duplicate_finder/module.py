@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Slot, Signal
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
     QFileDialog, QMessageBox, QProgressBar, QSlider, QComboBox, QSpinBox, QFormLayout,
-    QTreeWidget, QTreeWidgetItem, QPlainTextEdit, QLineEdit, QHeaderView, QSizePolicy, QTabBar)
+    QTreeWidget, QTreeWidgetItem, QPlainTextEdit, QLineEdit, QHeaderView, QSizePolicy, QTabBar, QToolButton)
 
 from core.base_module import BaseModule
 from core.theme import Theme
@@ -185,6 +185,10 @@ class DuplicateFinderModule(BaseModule):
         self.mode_tabs = QTabBar()
         self.mode_tabs.setExpanding(False)
         self.mode_tabs.setDrawBase(False)
+        self.mode_tabs.setUsesScrollButtons(False)  # caben de sobra
+        # Qt crea igual sus flechas internas (ocultas): también llevan ayuda (regla 5).
+        for arrow in self.mode_tabs.findChildren(QToolButton):
+            arrow.setToolTip(self.text('tabs_scroll_tip', 'Show more comparison modes.'))
         for index, (key, label) in enumerate(self.MODE_TABS):
             self.mode_tabs.addTab(self.text(key, label))
             self.mode_tabs.setTabToolTip(index, self.combo_mode.itemText(index))
