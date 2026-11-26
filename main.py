@@ -205,96 +205,83 @@ class MainWindow(QMainWindow):
         self.create_settings_page()
         self.root_stack.addWidget(self.settings_page) # Index 1
 
+    # Etapas del flujo de trabajo (UI_DESIGN.md). Clave = nombre interno del módulo.
+    DASHBOARD_STAGES = (
+        ("obtain",  "Obtain",  ("Cherry-DL",)),
+        ("library", "Library", ("Gallery", "Librarian", "Duplicate Finder", "Format Scanner")),
+        ("curate",  "Curate",  ("Pickler", "Character Recognizer")),
+        ("workshop","Workshop",("Smart Cropper", "Image Optimizer", "Watermarker", "Metadata Hub")),
+        ("dataset", "Dataset", ("Dataset Tagger",)),
+    )
+
     def create_dashboard_page(self):
+        from core.components.ui_roles import section, hint, link
+        from core.components.tag_widgets import FlowLayout
+        tm = self.theme_manager
         self.dashboard_page = QWidget()
-        self.dashboard_page.setStyleSheet(f"background-color: {self.theme_manager.get_color('bg_main')};")
-        
-        # Main Vertical Layout
+        self.dashboard_page.setStyleSheet(f"background-color: {tm.get_color('bg_main')};")
+
         layout = QVBoxLayout(self.dashboard_page)
-        layout.setAlignment(Qt.AlignTop)
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
-        
-        # 1. HEADER AREA (Yellow Zone equivalent)
+
+        # 1. Cabecera compacta: título a la izquierda, enlaces a la derecha.
         header = QFrame()
-        header.setFixedHeight(140)
-        header_layout = QVBoxLayout(header)
-        header_layout.setAlignment(Qt.AlignCenter)
-        header_layout.setSpacing(5)
-        
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(40, 24, 40, 8)
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
         lbl_title = QLabel(self.tr('dashboard.welcome', 'PANOPTICON'))
-        lbl_title.setStyleSheet(f"color: {self.theme_manager.get_color('text_primary')}; font-size: 56px; font-weight: bold; letter-spacing: 4px;")
-        lbl_title.setAlignment(Qt.AlignCenter)
-        header_layout.addWidget(lbl_title)
-        
+        lbl_title.setStyleSheet(f"color: {tm.get_color('text_primary')}; font-size: 32px; font-weight: bold; letter-spacing: 3px; background: transparent;")
         lbl_subtitle = QLabel(self.tr('app.subtitle', 'Modular Image Organizer'))
-        lbl_subtitle.setStyleSheet(f"color: {self.theme_manager.get_color('accent_main')}; font-size: 18px; letter-spacing: 2px;")
-        lbl_subtitle.setAlignment(Qt.AlignCenter)
-        header_layout.addWidget(lbl_subtitle)
-        
-        layout.addWidget(header)
-        
-        # 2. SETTINGS AREA (Purple Zone equivalent)
-        settings_bar = QFrame()
-        settings_bar.setFixedHeight(80)
-        sb_layout = QHBoxLayout(settings_bar)
-        sb_layout.setAlignment(Qt.AlignCenter)
-        
-        btn_settings = QPushButton(f"⚙ {self.tr('settings.title', 'Settings / Configuración')}")
-        btn_settings.setFixedSize(280, 45)
-        btn_settings.setCursor(Qt.PointingHandCursor)
-        btn_settings.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {self.theme_manager.get_color('bg_panel')};
-                color: {self.theme_manager.get_color('text_dim')};
-                border: 1px solid {self.theme_manager.get_color('border')};
-                border-radius: 22px;
-                font-weight: bold;
-                font-size: 14px;
-            }}
-            QPushButton:hover {{
-                background-color: {self.theme_manager.get_color('bg_sidebar')};
-                color: {self.theme_manager.get_color('text_primary')};
-                border-color: {self.theme_manager.get_color('accent_main')};
-            }}
-        """)
-        btn_settings.clicked.connect(lambda: self.root_stack.setCurrentIndex(1))
-        sb_layout.addWidget(btn_settings)
-        btn_recovery = QPushButton(self.tr('tool.producer_recovery.title', 'Recovery journals'))
-        btn_recovery.setMinimumHeight(45)
+        lbl_subtitle.setStyleSheet(f"color: {tm.get_color('accent_main')}; font-size: 14px; letter-spacing: 1px; background: transparent;")
+        titles.addWidget(lbl_title)
+        titles.addWidget(lbl_subtitle)
+        header_layout.addLayout(titles)
+        header_layout.addStretch()
+
+        btn_recovery = link(QPushButton(self.tr('dashboard.recovery_link', 'Recovery center')))
+        btn_recovery.setCursor(Qt.PointingHandCursor)
         btn_recovery.setToolTip(self.tr('tool.producer_recovery.open_tip',
             'Review one producer journal and explicitly reconcile verified Native evidence using the open library.'))
         btn_recovery.clicked.connect(self.open_producer_recovery)
-        sb_layout.addWidget(btn_recovery)
-        
-        layout.addWidget(settings_bar)
-        
-        # 3. TOOLS GRID AREA
-        # Label
-        lbl_tools_container = QWidget()
-        lbl_tools_layout = QVBoxLayout(lbl_tools_container)
-        lbl_tools_layout.setContentsMargins(40, 20, 40, 0)
-        lbl_tools = QLabel(self.tr('dashboard.tools', 'AVAILABLE TOOLS'))
-        lbl_tools.setStyleSheet(f"color: {self.theme_manager.get_color('text_dim')}; font-size: 12px; font-weight: bold; letter-spacing: 1px;")
-        lbl_tools_layout.addWidget(lbl_tools)
-        layout.addWidget(lbl_tools_container)
+        header_layout.addWidget(btn_recovery)
 
-        # Scroll Area for the Grid
+        btn_settings = QPushButton(f"⚙ {self.tr('settings.title', 'Settings')}")
+        btn_settings.setCursor(Qt.PointingHandCursor)
+        btn_settings.setToolTip(self.tr('dashboard.settings_tip', 'Language and theme.'))
+        btn_settings.clicked.connect(lambda: self.root_stack.setCurrentIndex(1))
+        header_layout.addWidget(btn_settings)
+        layout.addWidget(header)
+
+        # 2. Herramientas agrupadas por etapa; cada fila hace wrap con el ancho.
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setStyleSheet("background: transparent; border: none;")
-        
-        # The Grid Widget
         self.modules_grid_widget = QWidget()
         self.modules_grid_widget.setStyleSheet("background: transparent;")
-        self.modules_grid_layout = QGridLayout(self.modules_grid_widget)
-        self.modules_grid_layout.setSpacing(25) # Space between cards
-        self.modules_grid_layout.setContentsMargins(40, 20, 40, 20)
-        self.modules_grid_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-        
+        self.modules_stages_layout = QVBoxLayout(self.modules_grid_widget)
+        self.modules_stages_layout.setContentsMargins(40, 8, 40, 24)
+        self.modules_stages_layout.setSpacing(6)
+        self._stage_rows = {}
+        for key, default, _names in self.DASHBOARD_STAGES + (("other", "Other", ()),):
+            label = section(self.tr(f'dashboard.stage.{key}', default))
+            row_widget = QWidget()
+            row = FlowLayout(row_widget, margin=0, h_spacing=16, v_spacing=16)
+            self.modules_stages_layout.addWidget(label)
+            self.modules_stages_layout.addWidget(row_widget)
+            label.setVisible(False)  # se muestra al recibir la primera tarjeta
+            self._stage_rows[key] = (label, row)
+        self.modules_stages_layout.addStretch()
         scroll.setWidget(self.modules_grid_widget)
-        layout.addWidget(scroll, 1) # This will take all available space
+        layout.addWidget(scroll, 1)
+
+    def _stage_for(self, module_name):
+        for key, _default, names in self.DASHBOARD_STAGES:
+            if module_name in names:
+                return key
+        return "other"
 
     def create_settings_page(self):
         self.settings_page = QWidget()
@@ -531,78 +518,61 @@ class MainWindow(QMainWindow):
         self.setup_integrations()
 
     def add_module_card(self, module):
-        """Create and add a module card to the grid."""
-        # 1. Create Card Widget
+        """Tarjeta de una herramienta dentro de la fila de su etapa."""
+        tm = self.theme_manager
         card = QFrame()
-        card.setFixedSize(220, 220)
+        card.setFixedSize(230, 120)
         card.setCursor(Qt.PointingHandCursor)
-        
-        # Accent Color
-        accent = getattr(module, "accent_color", self.theme_manager.get_color('accent_main'))
-
-        # Styling
+        accent = getattr(module, "accent_color", tm.get_color('accent_main'))
         card.setStyleSheet(f"""
             QFrame {{
-                background-color: {self.theme_manager.get_color('bg_panel')};
-                border: 2px solid {self.theme_manager.get_color('border')};
-                border-radius: 16px;
+                background-color: {tm.get_color('bg_panel')};
+                border: 1px solid {tm.get_color('border')};
+                border-radius: 12px;
             }}
             QFrame:hover {{
-                background-color: {self.theme_manager.get_color('bg_sidebar')};
-                border-color: {accent};
+                background-color: {tm.get_color('bg_sidebar')};
+                border: 2px solid {accent};
             }}
         """)
-        
-        # Layout
         layout = QVBoxLayout(card)
-        layout.setAlignment(Qt.AlignCenter)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(10)
-        
-        # Content
-        # Icon
-        icon_txt = str(getattr(module, "icon", "📦"))
-        lbl_icon = QLabel(icon_txt)
-        lbl_icon.setAlignment(Qt.AlignCenter)
-        lbl_icon.setFixedHeight(50)
-        lbl_icon.setStyleSheet(f"font-size: 40px; color: {self.theme_manager.get_color('text_primary')}; background: transparent; border: none;")
-        layout.addWidget(lbl_icon)
-        
-        # Title
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(4)
+
+        head = QHBoxLayout()
+        lbl_icon = QLabel(str(getattr(module, "icon", "📦")))
+        lbl_icon.setStyleSheet("font-size: 26px; background: transparent; border: none;")
         title_key = f"tool.{module.name.lower().replace(' ', '_')}.name"
         lbl_title = QLabel(self.tr(title_key, module.name))
-        lbl_title.setAlignment(Qt.AlignCenter)
         lbl_title.setWordWrap(True)
-        lbl_title.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {self.theme_manager.get_color('text_primary')}; background: transparent; border: none;")
-        layout.addWidget(lbl_title)
-        
-        # Description
+        lbl_title.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {tm.get_color('text_primary')}; background: transparent; border: none;")
+        head.addWidget(lbl_icon)
+        head.addWidget(lbl_title, 1)
+        layout.addLayout(head)
+
+        # Descripción completa con ajuste de línea (antes se cortaba a 57 caracteres).
         desc_key = f"tool.{module.name.lower().replace(' ', '_')}.desc"
-        default_desc = getattr(module, "description", "No Info")
-        desc = self.tr(desc_key, default_desc)
-        
-        if len(desc) > 60: desc = desc[:57] + "..."
-        lbl_desc = QLabel(desc)
-        lbl_desc.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        lbl_desc = QLabel(self.tr(desc_key, getattr(module, "description", "")))
         lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet(f"font-size: 11px; color: {self.theme_manager.get_color('text_dim')}; background: transparent; border: none;")
-        layout.addWidget(lbl_desc, 1) # Stretch
-        
+        lbl_desc.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        lbl_desc.setStyleSheet(f"font-size: 12px; color: {tm.get_color('text_secondary')}; background: transparent; border: none;")
+        layout.addWidget(lbl_desc, 1)
+
         card.setToolTip(self.tr(
             "dashboard.open_module_tip",
             "Open this tool in its own window. Click again to return to the same session."
         ))
+        card.mousePressEvent = lambda e: self.switch_to_module(module)
 
-        # Monkey-patch click
-        def on_click(e):
-            self.switch_to_module(module)
-        card.mousePressEvent = on_click
-        
-        # Place in Grid (5 Columns)
-        row = self.module_grid_count // 5
-        col = self.module_grid_count % 5
-        self.modules_grid_layout.addWidget(card, row, col)
-        
+        # Orden dentro de la etapa = orden del flujo en DASHBOARD_STAGES, no el de descubrimiento.
+        stage = self._stage_for(module.name)
+        label, row = self._stage_rows[stage]
+        names = next((n for k, _d, n in self.DASHBOARD_STAGES if k == stage), ())
+        card.setProperty("stage_order", names.index(module.name) if module.name in names else len(names))
+        cards = [row.takeAt(0).widget() for _ in range(row.count())] + [card]
+        for widget in sorted(cards, key=lambda w: w.property("stage_order")):
+            row.addWidget(widget)
+        label.setVisible(True)
         self.module_grid_count += 1
 
     def switch_to_module(self, module, *args):

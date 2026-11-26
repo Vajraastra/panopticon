@@ -321,8 +321,7 @@
   "tagger.native_hash_missing": "Verify the source SHA-256 with Librarian before copying its curation.",
   "tagger.cancelling": "Cancelling…",
   "dashboard.welcome": "PANOPTICON",
-  "dashboard.tools": "AVAILABLE TOOLS",
-  "settings.title": "Settings / Configuration",
+  "settings.title": "Settings",
   "settings.language_section": "LANGUAGE",
   "settings.theme_section": "THEME",
   "settings.language": "Language:",
@@ -2038,5 +2037,14 @@
   "gallery.title.albums": "📂 Albums",
   "gallery.title.all": "All images",
   "gallery.page": "Page {current} / {total}",
-  "gallery.album_count": "{count} images"
+  "gallery.album_count": "{count} images",
+  "dashboard.recovery_link": "Recovery center",
+  "dashboard.settings_tip": "Language and theme.",
+  "dashboard.stage.obtain": "Obtain",
+  "dashboard.stage.library": "Library",
+  "dashboard.stage.curate": "Curate",
+  "dashboard.stage.workshop": "Workshop",
+  "dashboard.stage.dataset": "Dataset",
+  "dashboard.stage.other": "Other",
+  "tool.cherry-dl.desc": "Downloads and keeps artist collections up to date (Patreon, Pixiv, Pawchive)."
 }
