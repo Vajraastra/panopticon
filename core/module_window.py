@@ -13,10 +13,11 @@ class ModuleWindow(QMainWindow):
         self.setWindowModality(Qt.NonModal)
         self.resize(1280, 800)
         self.setCentralWidget(view)
+        # Aviso temporal: fijo ocupaba la barra de estado de cada ventana para siempre.
         self.statusBar().showMessage(dashboard.tr(
             "dashboard.module_session_tip",
             "Closing this window keeps its session and jobs running. Reopen it from the dashboard."
-        ))
+        ), 10000)
 
     def show_session(self):
         if self.isMinimized():

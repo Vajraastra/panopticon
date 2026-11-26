@@ -432,7 +432,8 @@ class DatasetTaggerView(WorkerViewLifecycle, QWidget):
         lay.addWidget(self.combo_model_nat)
 
         # --- provider / endpoint ---
-        lay.addWidget(self._section(self._tr("tagger.sec.provider", "Provider (local OpenAI-compatible)")))
+        self._sec_provider = self._section(self._tr("tagger.sec.provider", "Provider (local OpenAI-compatible)"))
+        lay.addWidget(self._sec_provider)
         self.edit_endpoint = QLineEdit("http://localhost:1234/v1")
         self.edit_endpoint.setPlaceholderText("http://localhost:1234/v1")
         self.edit_endpoint.setToolTip(self._tr(
@@ -479,6 +480,10 @@ class DatasetTaggerView(WorkerViewLifecycle, QWidget):
         self.lbl_vision_warn.setStyleSheet(
             f"color: {self._color('warning', '#ffb86c')}; font-size: 11px;")
         lay.addWidget(self.lbl_vision_warn)
+        # Solo se muestran cuando la corrida usa el VLM (ver _refresh_engine_ui).
+        self._vlm_widgets = (self._sec_provider, self.edit_endpoint, self.edit_apikey,
+                             self.btn_discover, self.btn_test, self.lbl_endpoint_model,
+                             self.combo_endpoint_model, self.lbl_vision_warn)
 
         # --- trigger / prefix / suffix ---
         self._sec_tokens = self._section(self._tr("tagger.sec.tokens", "Trigger & affixes"))
@@ -865,6 +870,9 @@ class DatasetTaggerView(WorkerViewLifecycle, QWidget):
         # el meta-prompt de tags solo aplica al VLM (el clasificador no lo usa)
         self.box_prompt_tags["frame"].setVisible(
             show_tags and self._tags_engine() == ENGINE_VLM)
+        needs_vlm = self._needs_vlm() or self._mode() == MODE_IDEOGRAM4
+        for w in getattr(self, "_vlm_widgets", ()):
+            w.setVisible(needs_vlm)
         if wd:
             self._refresh_wd_status()
 

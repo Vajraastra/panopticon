@@ -316,6 +316,7 @@ class ImageOptimizerModule(BaseModule):
         self.spin_max_side.setRange(64, 8192)
         self.spin_max_side.setValue(1024)
         self.spin_max_side.setEnabled(False)
+        self.spin_max_side.setVisible(False)
         layout.addWidget(self.spin_max_side)
 
         self.chk_meta = QCheckBox(self.tr("opt.preserve_meta", "Preserve Metadata"))
@@ -450,6 +451,7 @@ class ImageOptimizerModule(BaseModule):
 
     def _on_resize_change(self, index: int):
         self.spin_max_side.setEnabled(index == 3)
+        self.spin_max_side.setVisible(index == 3)
 
     def _load_images(self):
         files, _ = QFileDialog.getOpenFileNames(

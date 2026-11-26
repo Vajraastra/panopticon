@@ -383,7 +383,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(themes_frame)
 
         # ── SAVE & BACK ──────────────────────────────────────────────────────────
-        btn_save = QPushButton(self.tr("settings.save_restart", "Save & Restart"))
+        btn_save = QPushButton(self.tr("settings.save_restart", "Save and restart"))
         btn_save.setFixedSize(250, 50)
         btn_save.setCursor(Qt.PointingHandCursor)
         btn_save.setStyleSheet(f"""

@@ -311,7 +311,7 @@ class CropperModule(BaseModule):
         self.btn_open.setToolTip(self.tr("crop.open_tip", "Loads the image to crop."))
         self.btn_open.setCursor(Qt.PointingHandCursor)
         self.btn_open.clicked.connect(self.open_image_dialog)
-        self.btn_open.setFixedWidth(120)
+        self.btn_open.setMinimumWidth(120)
         layout.addWidget(self.btn_open)
         self.btn_previous = QPushButton(self.tr('tool.cropper.previous', 'Previous image'))
         self.btn_next = QPushButton(self.tr('tool.cropper.next', 'Next image'))
@@ -336,7 +336,7 @@ class CropperModule(BaseModule):
             "is copied over to the crop."))
         self.btn_save.setCursor(Qt.PointingHandCursor)
         self.btn_save.clicked.connect(self.save_crop)
-        self.btn_save.setFixedWidth(120)
+        self.btn_save.setMinimumWidth(120)
         theme = self.context.get('theme_manager')
         action_text = theme.get_color('bg_main') if theme else Theme.BG_MAIN
         accent_hover = theme.get_color('accent_hover') if theme else Theme._c('accent_hover')

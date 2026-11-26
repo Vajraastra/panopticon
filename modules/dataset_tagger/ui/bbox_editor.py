@@ -955,7 +955,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         lay.addWidget(self._refine_status)
 
         # Acciones
-        save_btn = QPushButton(self.tr("ig4.save_close", "Save & close"))
+        save_btn = QPushButton(self.tr("ig4.save_close", "Save and close"))
         save_btn.setStyleSheet(Theme.get_button_style(Theme.ACCENT_SUCCESS))
         save_btn.setToolTip(self.tr(
             "ig4.tip.save",
