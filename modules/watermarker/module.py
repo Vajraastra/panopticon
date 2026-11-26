@@ -10,6 +10,7 @@ from shiboken6 import isValid
 from core.base_module import BaseModule
 from core.theme import Theme
 from core.components.standard_layout import StandardToolLayout
+from core.components.ui_roles import primary, section, hint
 from .logic.worker import WatermarkWorker
 from core.native_threads import start_worker, native_done, owner_threads_ready
 from core.paths import CachePaths
@@ -47,12 +48,16 @@ class WatermarkerModule(BaseModule):
 
         content = self._create_content()
         sidebar = self._create_sidebar()
+        bottom = self._create_bottom_bar()
 
         self.view = StandardToolLayout(
             content,
             sidebar_widget=sidebar,
+            bottom_widget=bottom,
             theme_manager=self.context.get('theme_manager'),
-            event_bus=self.context.get('event_bus')
+            event_bus=self.context.get('event_bus'),
+            tool_header=(self._icon, self.tr("tool.watermarker.name", "Watermarker"),
+                         self.tr("tool.watermarker.desc", self._description)),
         )
         self.view.destroyed.connect(self._view_destroyed)
         self._sync_save_control()
@@ -68,37 +73,21 @@ class WatermarkerModule(BaseModule):
 
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(12)
-
-        lbl_title = QLabel(self.tr("wm.title", "🎨 WATERMARKER"))
-        lbl_title.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 14px;")
-        layout.addWidget(lbl_title)
-
-        lbl_desc = QLabel(self.tr("wm.desc", "Protect images with watermarks and logos."))
-        lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet(f"color: {text_dim}; font-size: 11px;")
-        layout.addWidget(lbl_desc)
-
-        layout.addSpacing(10)
+        layout.setContentsMargins(15, 10, 15, 15)
+        layout.setSpacing(8)
 
         # 1. Base image
-        lbl_img = QLabel(self.tr("wm.section.base", "🖼️ 1. BASE IMAGE"))
-        lbl_img.setStyleSheet(f"color: {text_sec}; font-weight: bold; font-size: 12px;")
-        layout.addWidget(lbl_img)
+        layout.addWidget(section(self.tr("wm.section.base", "1. Base image")))
 
-        self.btn_load_image = QPushButton(self.tr("common.load_image", "📂 Load Image"))
+        self.btn_load_image = QPushButton(self.tr("wm.load_image", "Open image…"))
         self.btn_load_image.setToolTip(self.tr(
             "wm.load_image_tip",
             "Loads the image to stamp onto. The original file is never touched: the "
             "result is saved as a separate copy."))
-        self.btn_load_image.setStyleSheet(Theme.get_action_button_style(self.accent_color))
-        self.btn_load_image.setFixedHeight(36)
         self.btn_load_image.clicked.connect(self.load_source_image)
         layout.addWidget(self.btn_load_image)
 
-        self.lbl_image_status = QLabel(self.tr("wm.status.no_img", "No image loaded"))
-        self.lbl_image_status.setStyleSheet(f"color: {text_dim}; font-size: 10px;")
+        self.lbl_image_status = hint(self.tr("wm.status.no_img", "No image loaded"))
         layout.addWidget(self.lbl_image_status)
 
         self.lbl_input_notice = QLabel()
@@ -107,25 +96,18 @@ class WatermarkerModule(BaseModule):
         self.lbl_input_notice.hide()
         layout.addWidget(self.lbl_input_notice)
 
-        layout.addSpacing(10)
-
         # 2. Watermark
-        lbl_wm_section = QLabel(self.tr("wm.section.wm", "🎨 2. WATERMARK"))
-        lbl_wm_section.setStyleSheet(f"color: {text_sec}; font-weight: bold; font-size: 12px;")
-        layout.addWidget(lbl_wm_section)
+        layout.addWidget(section(self.tr("wm.section.wm", "2. Watermark (tiled)")))
 
-        self.btn_load_watermark = QPushButton(self.tr("wm.load_wm", "📂 Load Watermark"))
+        self.btn_load_watermark = QPushButton(self.tr("wm.load_wm", "Open watermark…"))
         self.btn_load_watermark.setToolTip(self.tr(
             "wm.load_wm_tip",
             "Image tiled across the whole photo. Use a PNG with transparency so the "
             "background shows through."))
-        self.btn_load_watermark.setStyleSheet(Theme.get_button_style(Theme.TEXT_SECONDARY))
-        self.btn_load_watermark.setFixedHeight(36)
         self.btn_load_watermark.clicked.connect(self.load_watermark_asset)
         layout.addWidget(self.btn_load_watermark)
 
-        self.lbl_watermark_status = QLabel(self.tr("wm.status.none", "None"))
-        self.lbl_watermark_status.setStyleSheet(f"color: {text_dim}; font-size: 10px;")
+        self.lbl_watermark_status = hint(self.tr("wm.status.none", "None"))
         layout.addWidget(self.lbl_watermark_status)
 
         layout.addWidget(QLabel(self.tr("wm.angle", "Rotation Angle:")))
@@ -135,7 +117,6 @@ class WatermarkerModule(BaseModule):
             "Tilt of the tiled pattern. A diagonal one is harder to crop out than a "
             "horizontal one."))
         self.combo_angle.addItems(["0°", "45°", "90°", "135°", "180°", "225°", "270°", "315°"])
-        self.combo_angle.setStyleSheet(Theme.get_input_style(self.accent_color))
         self.combo_angle.currentIndexChanged.connect(self.generate_preview)
         layout.addWidget(self.combo_angle)
 
@@ -161,25 +142,18 @@ class WatermarkerModule(BaseModule):
         self.slider_opacity.valueChanged.connect(self.generate_preview)
         layout.addWidget(self.slider_opacity)
 
-        layout.addSpacing(10)
-
         # 3. Logo
-        lbl_logo_section = QLabel(self.tr("wm.section.logo", "🏷️ 3. LOGOTIPO"))
-        lbl_logo_section.setStyleSheet(f"color: {text_sec}; font-weight: bold; font-size: 12px;")
-        layout.addWidget(lbl_logo_section)
+        layout.addWidget(section(self.tr("wm.section.logo", "3. Logo (one corner)")))
 
-        self.btn_load_logo = QPushButton(self.tr("wm.load_logo", "📂 Load Logo"))
+        self.btn_load_logo = QPushButton(self.tr("wm.load_logo", "Open logo…"))
         self.btn_load_logo.setToolTip(self.tr(
             "wm.load_logo_tip",
             "Image placed ONCE in a corner, on top of the tiled pattern. They are "
             "separate things: you can use just one of them."))
-        self.btn_load_logo.setStyleSheet(Theme.get_button_style(Theme.TEXT_SECONDARY))
-        self.btn_load_logo.setFixedHeight(36)
         self.btn_load_logo.clicked.connect(self.load_logo_asset)
         layout.addWidget(self.btn_load_logo)
 
-        self.lbl_logo_status = QLabel(self.tr("wm.status.none", "None"))
-        self.lbl_logo_status.setStyleSheet(f"color: {text_dim}; font-size: 10px;")
+        self.lbl_logo_status = hint(self.tr("wm.status.none", "None"))
         layout.addWidget(self.lbl_logo_status)
 
         layout.addWidget(QLabel(self.tr("wm.logo_pos", "Logo Position:")))
@@ -189,7 +163,6 @@ class WatermarkerModule(BaseModule):
         self.combo_logo_pos.addItems([self.tr('wm.position.'+key, label) for key,label in
             (('top_right','Top-Right'), ('top_left','Top-Left'),
              ('bottom_right','Bottom-Right'), ('bottom_left','Bottom-Left'))])
-        self.combo_logo_pos.setStyleSheet(Theme.get_input_style(self.accent_color))
         self.combo_logo_pos.currentIndexChanged.connect(self.generate_preview)
         layout.addWidget(self.combo_logo_pos)
 
@@ -205,8 +178,14 @@ class WatermarkerModule(BaseModule):
         layout.addWidget(self.slider_logo_size)
 
         layout.addStretch()
+        return container
 
-        self.btn_save = QPushButton(self.tr("common.save_copy", "💾 SAVE COPY"))
+    def _create_bottom_bar(self) -> QWidget:
+        bar = QWidget()
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(hint(self.tr("wm.strip_note", "Saved copies have no metadata: they are meant for publishing.")), 1)
+        self.btn_save = primary(QPushButton(self.tr("wm.save_copy", "Save copy…")))
         self.btn_save.setToolTip(self.tr(
             "wm.save_copy_tip",
             "Saves a copy with the mark applied. NOTE: it deliberately strips ALL metadata "
@@ -214,11 +193,8 @@ class WatermarkerModule(BaseModule):
             "publishing. The original keeps its own."))
         self.btn_save.setCursor(Qt.PointingHandCursor)
         self.btn_save.clicked.connect(self.save_copy)
-        self.btn_save.setFixedHeight(44)
-        self.btn_save.setStyleSheet(Theme.get_action_button_style(self.accent_color))
         layout.addWidget(self.btn_save)
-
-        return container
+        return bar
 
     def _create_content(self) -> QWidget:
         theme    = self.context.get('theme_manager') if hasattr(self, 'context') else None
@@ -323,7 +299,7 @@ class WatermarkerModule(BaseModule):
         self.btn_save.setEnabled(bool(self.source_image and (self.watermark_asset or self.logo_asset)) and not busy)
         self.btn_save.setText(self.tr('wm.saving_copy','Saving copy…') if self._save_pending is not None or (
             self._worker is not None and self._worker.operation == 'save')
-            else self.tr('common.save_copy','💾 SAVE COPY'))
+            else self.tr('wm.save_copy','Save copy…'))
 
     def generate_preview(self):
         if not self._alive() or not self.source_image:

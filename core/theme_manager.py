@@ -466,6 +466,30 @@ class ThemeManager(QObject):
                 color: {c['text_dim']};
             }}
 
+            /* Deslizadores: sin regla, Qt los pinta con su paleta nativa (negro). */
+            QSlider {{ background: transparent; }}
+            QSlider::groove:horizontal {{
+                height: 6px;
+                background: {c['bg_input']};
+                border: 1px solid {c['border_strong']};
+                border-radius: 3px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {c['accent_main']};
+                border-radius: 3px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {c['accent_main']};
+                border: 1px solid {c['accent_main']};
+                width: 14px;
+                margin: -5px 0;
+                border-radius: 7px;
+            }}
+            QSlider::handle:horizontal:hover {{ background: {c['accent_hover']}; }}
+            QSlider::handle:horizontal:disabled, QSlider::sub-page:horizontal:disabled {{
+                background: {c['border_strong']};
+            }}
+
             /* Roles de la convención de UI (UI_DESIGN.md). Se asignan con
                core/components/ui_roles.py; ningún módulo los pinta a mano. */
             QPushButton[role="primary"] {{

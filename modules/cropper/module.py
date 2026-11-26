@@ -19,6 +19,7 @@ from core.paths import CachePaths
 from core.curation_bindings import valid as valid_binding
 from core.derived_publication import write
 from core.components.standard_layout import StandardToolLayout
+from core.components.ui_roles import primary, section
 from modules.cropper.logic.cropper_widget import ImageCropperWidget
 from modules.cropper.logic.cropper_logic import crop_image, CropCancelled, SourceDestinationError
 
@@ -124,7 +125,9 @@ class CropperModule(BaseModule):
             sidebar,
             bottom,
             theme_manager=self.context.get('theme_manager'),
-            event_bus=self.context.get('event_bus')
+            event_bus=self.context.get('event_bus'),
+            tool_header=(self._icon, self.tr("tool.smart_cropper.name", "Smart Cropper"),
+                         self.tr("tool.smart_cropper.desc", self._description)),
         )
 
         self.view.setAcceptDrops(True)
@@ -202,22 +205,20 @@ class CropperModule(BaseModule):
 
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(12)
+        layout.setContentsMargins(15, 10, 15, 15)
+        layout.setSpacing(8)
 
-        lbl_title = QLabel(self.tr("crop.title", "✂️ SMART CROPPER"))
-        lbl_title.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 14px;")
-        layout.addWidget(lbl_title)
+        # 1. Origen
+        layout.addWidget(section(self.tr("crop.sec.source", "Image")))
+        self.btn_open = QPushButton(self.tr("crop.open", "Open image…"))
+        self.btn_open.setToolTip(self.tr("crop.open_tip", "Loads the image to crop."))
+        self.btn_open.setCursor(Qt.PointingHandCursor)
+        self.btn_open.clicked.connect(self.open_image_dialog)
+        layout.addWidget(self.btn_open)
 
-        lbl_desc = QLabel(self.tr("crop.desc", "High-precision cropping for AI datasets."))
-        lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet(f"color: {text_dim}; font-size: 11px;")
-        layout.addWidget(lbl_desc)
-
-        layout.addSpacing(10)
-
+        # 2. Opciones
+        layout.addWidget(section(self.tr("crop.sec.options", "Crop")))
         lbl_ar = QLabel(self.tr("crop.ratio", "Aspect Ratio:"))
-        lbl_ar.setStyleSheet(f"color: {text_sec}; font-size: 12px;")
         layout.addWidget(lbl_ar)
 
         self.combo_ar = QComboBox()
@@ -307,12 +308,6 @@ class CropperModule(BaseModule):
         layout.setContentsMargins(10, 5, 10, 5)
         layout.setSpacing(15)
 
-        self.btn_open = QPushButton(self.tr("crop.open", "📂 Open Image"))
-        self.btn_open.setToolTip(self.tr("crop.open_tip", "Loads the image to crop."))
-        self.btn_open.setCursor(Qt.PointingHandCursor)
-        self.btn_open.clicked.connect(self.open_image_dialog)
-        self.btn_open.setMinimumWidth(120)
-        layout.addWidget(self.btn_open)
         self.btn_previous = QPushButton(self.tr('tool.cropper.previous', 'Previous image'))
         self.btn_next = QPushButton(self.tr('tool.cropper.next', 'Next image'))
         for button in (self.btn_previous, self.btn_next):
@@ -329,7 +324,7 @@ class CropperModule(BaseModule):
 
         layout.addStretch()
 
-        self.btn_save = QPushButton(self.tr("crop.save", "💾 Save Crop"))
+        self.btn_save = primary(QPushButton(self.tr("crop.save", "Save crop")))
         self.btn_save.setToolTip(self.tr(
             "crop.save_tip",
             "Saves the crop as a new file. The original is left alone, and its metadata "
@@ -337,19 +332,6 @@ class CropperModule(BaseModule):
         self.btn_save.setCursor(Qt.PointingHandCursor)
         self.btn_save.clicked.connect(self.save_crop)
         self.btn_save.setMinimumWidth(120)
-        theme = self.context.get('theme_manager')
-        action_text = theme.get_color('bg_main') if theme else Theme.BG_MAIN
-        accent_hover = theme.get_color('accent_hover') if theme else Theme._c('accent_hover')
-        self.btn_save.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {self.accent_color};
-                color: {action_text};
-                border-radius: 4px;
-                font-weight: bold;
-                padding: 6px;
-            }}
-            QPushButton:hover {{ background-color: {accent_hover}; }}
-        """)
         layout.addWidget(self.btn_save)
 
         return container
