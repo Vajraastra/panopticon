@@ -211,7 +211,9 @@ class ReviewQt(helpers.Fixture):
 
     def test_filters_export_and_folder_write_disable_review(self):
         module, _ = self.selected(2)
-        for attribute, value in (('active_tags', ['alpha']), ('_external_paths', ('fixture',)),
+        # Sin explorador ya no hay filtros ni conjuntos externos: sin carpeta, exportando o
+        # escribiendo carpetas, la revisión queda deshabilitada.
+        for attribute, value in (('current_folder_path', None),
                                   ('_exporting', self.folder), ('_folder_write', (1, 'add', 'fixture'))):
             old = getattr(module, attribute)
             setattr(module, attribute, value)

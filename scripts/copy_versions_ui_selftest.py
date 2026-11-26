@@ -383,7 +383,7 @@ class IntegrationQt(helpers.Fixture):
         self.service.submit('remove_files', paths).result(3)
         module.refresh_current_view()
         self.assertTrue(helpers.pump(lambda: module._browse_ready))
-        self.assertEqual(module._selection_count, 0)
+        self.assertEqual(module._folder_count, 0)
         self.assertTrue(module.btn_export_curation.isEnabled())
         module.export_folder_curation()
         self.assertTrue(helpers.pump(lambda: module._exporting is None))
@@ -399,8 +399,12 @@ class IntegrationQt(helpers.Fixture):
         dialog.scope.setCurrentIndex(1)
         self.assertTrue(helpers.pump(lambda: not dialog._busy and dialog._reviewed is not None))
         dialog.archive_button.click()
+        # La carpeta sin copias activas sale del resumen y Librarian suelta la selección
+        # (como antes del U1); si siguiera seleccionada, su recuento sería 0.
         self.assertTrue(helpers.pump(lambda: not dialog._acting and not dialog._busy and
-                                   module._overview_ready and module._browse_ready and module._selection_count == 0))
+                                   module._overview_ready and module._browse_ready and
+                                   (module._folder_count == 0 or
+                                    (module.current_folder_path is None and module._folder_count is None))))
         self.assertEqual(self.service.read('count_files'), 0)
 
 

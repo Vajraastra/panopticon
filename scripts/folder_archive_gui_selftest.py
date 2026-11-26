@@ -206,7 +206,7 @@ class FolderArchiveQt(helpers.Fixture):
             module.remove_folder();self.assertTrue(helpers.pump(lambda:seen))
         self.assertTrue(module.folder_archive.closed);self.assertTrue(module.shutdown_ready());self.assert_active()
         module.on_unload();self.modules.remove(module)
-        for reader in (module.overview_reader,module.browse_reader,module.scan_reader,module.handoff_reader,module.export_reader):
+        for reader in (module.overview_reader,module.browse_reader,module.scan_reader,module.export_reader):
             if reader._thread:reader._thread.join(3)
 
     def test_indexer_unload_cancels_without_wait_and_retains_qthread_until_finished(self):

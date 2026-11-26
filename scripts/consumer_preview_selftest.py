@@ -86,19 +86,6 @@ class ConsumerPreview(unittest.TestCase):
             release.set();pump(module.shutdown_ready)
         timer.stop()
 
-    def test_librarian_thumbnails_use_worker_and_hold_shutdown_until_pool_finishes(self):
-        from core.thumbnail_loader import load_thumbnail
-        module=LibrarianModule();module.on_load({'data_service':self.service,'event_bus':self.bus})
-        module.get_view();self.modules.append(module)
-        pump(lambda:not module.overview_reader._active and not module.browse_reader._active)
-        load,entered,release,threads=self.blocked(load_thumbnail)
-        with patch('core.thumbnail_loader.load_thumbnail',side_effect=load),patch('modules.librarian.module.QPixmap',NoFilePixmap):
-            module.total_paths=self.paths;module._selection_count=len(self.paths)
-            module.refresh_thumbnails_grid();pump(entered.is_set)
-            self.assertTrue(all(thread!=threading.get_ident() for thread in threads))
-            module.on_unload();self.assertFalse(module.shutdown_ready())
-            release.set();pump(module.shutdown_ready)
-
     def test_same_count_new_paths_replace_preview_and_discard_old_result(self):
         from core.thumbnail_loader import load_thumbnail
         load,entered,release,_=self.blocked(load_thumbnail)

@@ -207,40 +207,27 @@ class RevisionQt(fixture.Fixture):
         self.assertTrue(fixture.pump(lambda:module._overview_ready and not module._revision_busy()))
         return module
 
-    def test_librarian_preserves_page_filter_and_tag_cursor(self):
+    def test_librarian_preserves_selected_folder_across_unrelated_commit(self):
         paths=[f'C:/private/{n:03d}.png' for n in range(220)]
         self.register(*paths); self.service.submit('add_watched_folder','C:/private').result(3)
-        with closing(sqlite3.connect(self.service.db_path)) as conn:
-            conn.executemany('INSERT INTO tags(name) VALUES (?)',[(f'tag-{n:03d}',) for n in range(450)]); conn.commit()
-        module=self.librarian(); module.load_folder_paths('C:/private'); module._request_selection(1)
-        self.assertTrue(fixture.pump(lambda:not module._revision_busy()))
-        module.tag_completions.next(); self.assertTrue(fixture.pump(lambda:not module.tag_completions.busy))
-        cursor=list(module.tag_completions.cursors)
+        module=self.librarian(); module.load_folder_paths('C:/private')
+        self.assertTrue(fixture.pump(lambda:not module._revision_busy() and module._folder_count==220))
         self.service.submit('edit_curation',paths[0],add_tags=['new'],rating=4).result(3)
         self.assertTrue(fixture.pump(lambda:module.revisions._observed==self.service.revision_snapshot() and not module._revision_busy()))
-        self.assertEqual(module.current_folder_path,'C:/private'); self.assertEqual(module.current_page,1)
-        self.assertEqual(module.tag_completions.cursors,cursor)
+        self.assertEqual(module.current_folder_path,'C:/private')
+        self.assertEqual(module._folder_count,220)
 
-    def test_librarian_external_selection_survives_unrelated_commit(self):
-        module=self.librarian(); module.run_headless(['C:/external/a.png','C:/external/b.png'])
-        before=module._external_paths
-        self.register('C:/other/new.png')
-        self.assertTrue(fixture.pump(lambda:module.revisions._observed==self.service.revision_snapshot() and not module._revision_busy()))
-        self.assertEqual(module._external_paths,before)
-        self.assertEqual(module.total_paths,list(before))
+    # (Retirada con U1: la selección externa de Librarian ya no existe; explorar es de Gallery.)
 
-    def test_librarian_clamps_page_when_external_commit_removes_last_page(self):
+    def test_librarian_folder_count_follows_external_commit(self):
         paths=[f'C:/private/{n:03d}.png' for n in range(220)]
         self.register(*paths); self.service.submit('add_watched_folder','C:/private').result(3)
-        module=self.librarian(); module.load_folder_paths('C:/private'); module._request_selection(2)
-        self.assertTrue(fixture.pump(lambda:not module._revision_busy()))
-        self.assertEqual(module.current_page,2)
+        module=self.librarian(); module.load_folder_paths('C:/private')
+        self.assertTrue(fixture.pump(lambda:not module._revision_busy() and module._folder_count==220))
         with closing(sqlite3.connect(self.service.db_path)) as conn:
             conn.executemany('UPDATE files SET is_offline=1 WHERE path=?',[(path,) for path in paths[200:]])
             conn.commit()
-        self.assertTrue(fixture.pump(lambda:module.current_page==1 and module._browse_ready))
-        self.assertEqual(module._selection_count,200)
-        self.assertEqual(module.total_paths,paths[100:200])
+        self.assertTrue(fixture.pump(lambda:module._folder_count==200 and module._browse_ready))
 
     def test_gallery_module_refreshes_custom_curation(self):
         from modules.gallery.module import GalleryModule

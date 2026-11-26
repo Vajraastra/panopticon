@@ -108,7 +108,7 @@ class RelocationQt(helpers.Fixture):
             self.assertEqual(row[0], len(before[0]))
             self.assertEqual(row[1], getattr(Path(paths[0]).stat(), 'st_birthtime', Path(paths[0]).stat().st_ctime))
             self.assertEqual(row[2:], (None, None))
-        self.assertTrue(helpers.pump(lambda: module._browse_ready and module._selection_count == 1))
+        self.assertTrue(helpers.pump(lambda: module._browse_ready and module._folder_count == 1))
         self.assertEqual(dialog._reports[0]['status'], 'same')
         self.assertIn('Restored exported', dialog.restore_status.text())
 
