@@ -569,8 +569,6 @@
   "fscanner.results.title": "\n--- RESULTADOS ESTADÍSTICOS ---",
   "fscanner.results.no_images": "No se encontraron imágenes.",
   "fscanner.results.total": "\nTotal de imágenes analizadas: {total}",
-  "dup.title": "Opciones de escaneo",
-  "dup.mode_label": "Modo de comparación:",
   "dup.mode_hash": "Contenido exacto (SHA-256)",
   "dup.mode_visual": "Similitud visual (sólo revisión)",
   "dup.threshold": "Tolerancia Visual (menor = más exacto):",
@@ -2046,5 +2044,15 @@
   "dashboard.recovery_tip": "Las operaciones interrumpidas de todas las herramientas, en un solo lugar. Nada cambia sin tu confirmación.",
   "dup.recovery_center_title": "Diario de duplicados retirados",
   "dup.recovery_center_tip": "Revisa un diario de retiro: restaura una copia retirada o, por separado, bórrala definitivamente tras una vista previa nueva.",
-  "common.close": "Cerrar"
+  "common.close": "Cerrar",
+  "dup.sec_source": "Carpeta",
+  "dup.sec_similarity": "Similitud",
+  "dup.weights_toggle": "Pesos de decisión (avanzado) ▸",
+  "dup.weights_toggle_tip": "Muestra cómo se pondera la información documentada al elegir qué copia conservar. Los valores por defecto son seguros; la curación siempre va primero.",
+  "dup.tab_hash": "Contenido exacto",
+  "dup.tab_visual": "Similitud visual",
+  "dup.tab_database": "Biblioteca",
+  "dup.tab_overlap": "Solapamiento de carpetas",
+  "dup.tab_phash": "Guardar pHash",
+  "dup.tab_recovery": "Recuperación"
 }

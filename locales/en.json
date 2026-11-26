@@ -569,8 +569,6 @@
   "fscanner.results.title": "\n--- STATISTICAL RESULTS ---",
   "fscanner.results.no_images": "No images found.",
   "fscanner.results.total": "\nTotal images analyzed: {total}",
-  "dup.title": "Scan options",
-  "dup.mode_label": "Comparison mode:",
   "dup.mode_hash": "Exact content (SHA-256)",
   "dup.mode_visual": "Visual similarity (review only)",
   "dup.threshold": "Visual Tolerance (lower = more exact):",
@@ -2046,5 +2044,15 @@
   "dashboard.recovery_tip": "Interrupted operations from every tool, in one place. Nothing changes without your confirmation.",
   "dup.recovery_center_title": "Retired duplicates journal",
   "dup.recovery_center_tip": "Review a retirement journal: restore a retired copy or, separately, delete it permanently after a fresh preview.",
-  "common.close": "Close"
+  "common.close": "Close",
+  "dup.sec_source": "Folder",
+  "dup.sec_similarity": "Similarity",
+  "dup.weights_toggle": "Decision weights (advanced) ▸",
+  "dup.weights_toggle_tip": "Show how documented information is weighed when choosing which copy to keep. The defaults are safe; curation always comes first.",
+  "dup.tab_hash": "Exact content",
+  "dup.tab_visual": "Visual similarity",
+  "dup.tab_database": "Library",
+  "dup.tab_overlap": "Folder overlap",
+  "dup.tab_phash": "Save pHash",
+  "dup.tab_recovery": "Recovery"
 }

@@ -8,13 +8,14 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Slot, Signal
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
     QFileDialog, QMessageBox, QProgressBar, QSlider, QComboBox, QSpinBox, QFormLayout,
-    QTreeWidget, QTreeWidgetItem, QPlainTextEdit, QLineEdit, QHeaderView, QSizePolicy)
+    QTreeWidget, QTreeWidgetItem, QPlainTextEdit, QLineEdit, QHeaderView, QSizePolicy, QTabBar)
 
 from core.base_module import BaseModule
 from core.theme import Theme
 from core.paths import ProjectPaths
 from core.duplicate_policy import DuplicatePolicy
 from core.components.standard_layout import StandardToolLayout
+from core.components.ui_roles import primary, danger, section, hint
 from .logic.review_worker import ExactReviewWorker, VisualReviewWorker
 from .logic.retirement_worker import DuplicateRetirementWorker
 from .logic.database_worker import DatabaseGroupReviewWorker, NativeDuplicateQueryWorker
@@ -65,8 +66,11 @@ class DuplicateFinderModule(BaseModule):
     def get_view(self):
         if self.view is None:
             content, sidebar, bottom = self._content(), self._sidebar(), self._bottom()
+            content.layout().insertWidget(0, self._mode_tabs())
             self.view = StandardToolLayout(content, sidebar_widget=sidebar, bottom_widget=bottom,
-                theme_manager=self.context.get('theme_manager'), event_bus=self.context.get('event_bus'))
+                theme_manager=self.context.get('theme_manager'), event_bus=self.context.get('event_bus'),
+                tool_header=(self._icon, self.tr('tool.duplicate_finder.name', 'Duplicate Finder'),
+                             self.tr('tool.duplicate_finder.desc', self._description)))
             self.view.destroyed.connect(self.on_unload)
             self._controls()
         return self.view
@@ -84,25 +88,36 @@ class DuplicateFinderModule(BaseModule):
     def _sidebar(self):
         box = QWidget()
         layout = QVBoxLayout(box)
-        title = QLabel(self.text('title', 'Scan options'))
-        title.setStyleSheet(f'font-weight:bold;color:{self.accent_color};')
-        layout.addWidget(title)
-        layout.addWidget(QLabel(self.text('mode_label', 'Comparison mode:')))
+        layout.setContentsMargins(15, 10, 15, 15)
+        layout.setSpacing(8)
+        # Estado del modo: lo elige la barra de pestañas del lienzo (UI_DESIGN U7);
+        # el combo se conserva oculto como única fuente de verdad.
         self.combo_mode = QComboBox()
         self.combo_mode.addItems([self.text('mode_hash', 'Exact content (SHA-256)'), self.text('mode_visual', 'Visual similarity (review only)')])
         self.combo_mode.addItem(self.text('mode_database', 'Native library (exact groups)'))
         self.combo_mode.addItem(self.text('mode_overlap', 'Folder overlap (review only)'))
         self.combo_mode.addItem(self.text('mode_phash','pHash by folders (save)'))
         self.combo_mode.addItem(self.text('mode_recovery_review','Recovery journal (review)'))
-        self.combo_mode.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.combo_mode.setMinimumContentsLength(16)
         self.combo_mode.setToolTip(self.text('mode_tip', 'Exact content verifies current bytes and curation. Visual similarity only proposes groups for review.'))
-        self.combo_mode.setStyleSheet(Theme.get_input_style())
         self.combo_mode.currentIndexChanged.connect(self._configuration_changed)
+        self.combo_mode.setVisible(False)
         layout.addWidget(self.combo_mode)
+
+        # 1. Origen
+        self.sec_source = section(self.text('sec_source', 'Folder'))
+        layout.addWidget(self.sec_source)
+        self.btn_select = self._button('select_folder', 'Select folder', self.select_folder)
+        layout.addWidget(self.btn_select)
+        self.lbl_folder = hint(self.text('no_folder', 'No folder selected'))
+        self.lbl_folder.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.lbl_folder.setTextFormat(Qt.PlainText)
+        layout.addWidget(self.lbl_folder)
+
+        # 2. Opciones del modo
         self.threshold_container = QWidget()
         threshold = QVBoxLayout(self.threshold_container)
         threshold.setContentsMargins(0, 0, 0, 0)
+        threshold.addWidget(section(self.text('sec_similarity', 'Similarity')))
         self.lbl_thr_val = QLabel()
         self.slider_thr = QSlider(Qt.Horizontal)
         self.slider_thr.setRange(1, 20)
@@ -112,6 +127,17 @@ class DuplicateFinderModule(BaseModule):
         threshold.addWidget(self.lbl_thr_val)
         threshold.addWidget(self.slider_thr)
         layout.addWidget(self.threshold_container)
+
+        # 3. Pesos de decisión: avanzado, plegado por defecto.
+        self.advanced_box = QWidget()
+        advanced = QVBoxLayout(self.advanced_box)
+        advanced.setContentsMargins(0, 0, 0, 0)
+        self.btn_weights = QPushButton(self.text('weights_toggle', 'Decision weights (advanced) ▸'))
+        self.btn_weights.setCheckable(True)
+        self.btn_weights.setToolTip(self.text('weights_toggle_tip',
+            'Show how documented information is weighed when choosing which copy to keep. '
+            'The defaults are safe; curation always comes first.'))
+        advanced.addWidget(self.btn_weights)
         self.weight_box = QWidget()
         form = QFormLayout(self.weight_box)
         form.setContentsMargins(0, 0, 0, 0)
@@ -123,37 +149,55 @@ class DuplicateFinderModule(BaseModule):
             control = QSpinBox()
             control.setRange(0, 1000)
             control.setValue(getattr(defaults, name))
-            control.setStyleSheet(Theme.get_input_style())
             control.setToolTip(self.text('weight_tip', 'Weight for comparing documented copies. Curation always comes first; conflicting or complementary information prevents retirement.'))
             control.lineEdit().setToolTip(control.toolTip())
             control.valueChanged.connect(self._configuration_changed)
             self.weights[name] = control
             form.addRow(self.text(name, label), control)
-        layout.addWidget(self.weight_box)
-        self.btn_select = self._button('select_folder', 'Select folder', self.select_folder)
-        layout.addWidget(self.btn_select)
-        self.lbl_folder = QLabel(self.text('no_folder', 'No folder selected'))
-        self.lbl_folder.setWordWrap(True)
-        self.lbl_folder.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.lbl_folder.setTextFormat(Qt.PlainText)
-        layout.addWidget(self.lbl_folder)
-        self.recovery_label=QLabel(self.text('recovery_label', 'Recovery folder:'))
+        self.weight_box.setVisible(False)
+        self.btn_weights.toggled.connect(self._toggle_weights)
+        advanced.addWidget(self.weight_box)
+        layout.addWidget(self.advanced_box)
+
+        # 4. Carpeta de recuperación (dónde van las copias retiradas)
+        self.recovery_label = section(self.text('recovery_label', 'Recovery folder:').rstrip(':'))
         layout.addWidget(self.recovery_label)
         self.recovery = QLineEdit(str(ProjectPaths.root()/'data'/'retired_duplicates'))
-        self.recovery.setStyleSheet(Theme.get_input_style())
         self.recovery.setToolTip(self.text('recovery_tip', 'Persistent destination outside the collection and Cherry projects, on the same volume. Retired files and their recovery journal are kept here.'))
         layout.addWidget(self.recovery)
         self.btn_recovery = self._button('choose_recovery', 'Choose recovery folder', self.select_recovery)
         layout.addWidget(self.btn_recovery)
-        note = QLabel(self.text('policy_note', 'Documented copies take priority. Conflicts, unknown identities and external captions or sidecars require review. Visual similarity does not authorize retirement.'))
-        note.setWordWrap(True)
+        note = hint(self.text('policy_note', 'Documented copies take priority. Conflicts, unknown identities and external captions or sidecars require review. Visual similarity does not authorize retirement.'))
         self.policy_note=note
         note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         layout.addWidget(note)
         layout.addStretch()
-        self.btn_run = self._button('run_scan', 'Start scan', self.run_scan)
-        layout.addWidget(self.btn_run)
         return box
+
+    def _toggle_weights(self, shown):
+        self.weight_box.setVisible(shown)
+        self.btn_weights.setText(self.text('weights_toggle', 'Decision weights (advanced) ▸').replace('▸', '▾' if shown else '▸'))
+
+    MODE_TABS = (('tab_hash', 'Exact content'), ('tab_visual', 'Visual similarity'), ('tab_database', 'Library'),
+                 ('tab_overlap', 'Folder overlap'), ('tab_phash', 'Save pHash'), ('tab_recovery', 'Recovery'))
+
+    def _mode_tabs(self):
+        self.mode_tabs = QTabBar()
+        self.mode_tabs.setExpanding(False)
+        self.mode_tabs.setDrawBase(False)
+        for index, (key, label) in enumerate(self.MODE_TABS):
+            self.mode_tabs.addTab(self.text(key, label))
+            self.mode_tabs.setTabToolTip(index, self.combo_mode.itemText(index))
+        self.mode_tabs.setCurrentIndex(self.combo_mode.currentIndex())
+        self.mode_tabs.currentChanged.connect(self.combo_mode.setCurrentIndex)
+        self.combo_mode.currentIndexChanged.connect(self._sync_mode_tab)
+        return self.mode_tabs
+
+    def _sync_mode_tab(self, index):
+        if self.mode_tabs.currentIndex() != index:
+            self.mode_tabs.blockSignals(True)
+            self.mode_tabs.setCurrentIndex(index)
+            self.mode_tabs.blockSignals(False)
 
     def _content(self):
         box = QWidget()
@@ -246,17 +290,20 @@ class DuplicateFinderModule(BaseModule):
         self.btn_cancel.setToolTip(self.text('cancel_tip', 'Stop preparation or deletion before the file is marked. An admitted retirement or restoration, or a marked deletion, finishes with its journal without blocking the interface.'))
         self.btn_auto_select = self._button('auto_select', 'Select recommended copies', self.auto_select_duplicates)
         self.btn_auto_select.setToolTip(self.text('auto_select_tip', 'Only marks exact copies whose complete information is preserved in the retained copy. Never selects the first file by position.'))
-        self.btn_delete = self._button('delete', 'Retire selected copies', self.delete_files)
+        self.btn_delete = danger(self._button('delete', 'Retire selected copies', self.delete_files))
         self.btn_delete.setToolTip(self.text('delete_tip', 'Rechecks the entire exact group, archives selected IDs and moves files to the persistent recovery folder. Cherry receipts are retained.'))
-        for button in (self.btn_cancel, self.btn_auto_select, self.btn_delete):
-            layout.addWidget(button)
+        self.btn_run = primary(self._button('run_scan', 'Start scan', self.run_scan))
+        layout.addWidget(self.btn_auto_select)
+        layout.addWidget(self.btn_delete)
+        layout.addStretch()
+        layout.addWidget(self.btn_cancel)
+        layout.addWidget(self.btn_run)
         return box
 
     def _button(self, key, label, callback):
         button = QPushButton(self.text(key, label))
         button.setCursor(Qt.PointingHandCursor)
         button.setToolTip(self.text(key+'_tip', label))
-        button.setStyleSheet(Theme.get_button_style(self.accent_color))
         button.clicked.connect(callback)
         return button
 
@@ -281,13 +328,15 @@ class DuplicateFinderModule(BaseModule):
         for control in (self.btn_run, self.btn_select, self.combo_mode, self.slider_thr, self.recovery, self.btn_recovery, *self.weights.values()):
             control.setEnabled(idle)
         self.threshold_container.setVisible(self.combo_mode.currentIndex() == 1)
-        self.weight_box.setVisible(self.combo_mode.currentIndex() in (0,2))
+        self.advanced_box.setVisible(self.combo_mode.currentIndex() in (0,2))
+        self.mode_tabs.setEnabled(idle)
         self.db_box.setVisible(database)
         self.lbl_folder.setText(self.text('db_scope','Scope: all active indexed copies') if database else
             (self.folder_path or self.text('no_folder','No folder selected')))
         self.btn_select.setEnabled(idle and not database and not report_only)
-        self.btn_select.setVisible(not report_only)
+        self.btn_select.setVisible(not report_only and not database)
         self.lbl_folder.setVisible(not report_only)
+        self.sec_source.setVisible(not report_only)
         self.overlap_panel.setVisible(overlap)
         self.overlap_panel.set_idle(idle)
         self.phash_panel.setVisible(phash)
