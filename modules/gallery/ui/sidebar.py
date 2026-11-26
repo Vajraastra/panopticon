@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt, Signal
 from core.locale_manager import LocaleManager
 from core.library_async import LibraryReader
 from core.components.tag_vocabulary import TagVocabulary
+from core.components.ui_roles import section, primary, set_role
 import logging
 from core.components.tag_widgets import FlowLayout, TagChip # widget compartido en core (Regla #3)
 
@@ -23,109 +24,76 @@ class GallerySidebar(QWidget):
         self.setup_completer()
         
     def init_ui(self):
+        tr = LocaleManager().tr
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 20, 15, 20)
-        layout.setSpacing(15)
-        
-        # Styles
-        # Styles
-        self.setStyleSheet("""
-            QLabel { color: #ddd; font-family: 'Segoe UI'; }
-            QLineEdit { background: #222; border: 1px solid #333; color: white; padding: 6px; border-radius: 4px; }
-            QLineEdit:focus { border-color: #00ffcc; }
-            QPushButton { background: #333; color: white; border: none; padding: 8px; border-radius: 4px; }
-            QPushButton:hover { background: #444; }
-            QComboBox { background: #222; color: white; border: 1px solid #333; padding: 5px; border-radius: 4px; }
-            QComboBox::drop-down { border: none; width: 20px; }
-            QComboBox QAbstractItemView {
-                background-color: #222;
-                color: white;
-                selection-background-color: #00ffcc;
-                selection-color: black;
-                border: 1px solid #333;
-            }
-        """)
-        
-        # 1. Navigation
-        lbl_nav = QLabel("NAVIGATION")
-        lbl_nav.setStyleSheet("color: #666; font-weight: bold; font-size: 11px;")
-        layout.addWidget(lbl_nav)
-        
-        # New Open Folder Button
-        self.btn_open = QPushButton("📂 Open Folder")
-        self.btn_open.setToolTip(LocaleManager().tr(
+        layout.setContentsMargins(15, 10, 15, 15)
+        layout.setSpacing(10)
+
+        # 1. Origen (convención: origen → opciones → acciones)
+        layout.addWidget(section(tr("gallery.sec.source", "Source")))
+        self.btn_open = QPushButton(tr("gallery.open_folder", "Open folder…"))
+        self.btn_open.setToolTip(tr(
             "gallery.open_folder_tip", "Opens a folder of images to browse here."))
         self.btn_open.setCursor(Qt.PointingHandCursor)
-        self.btn_open.setStyleSheet("background-color: #222; color: #00ffcc; border: 1px solid #444; font-weight: bold;")
         layout.addWidget(self.btn_open)
-        
-        self.btn_back = QPushButton("🔙 Back to Albums")
-        self.btn_back.setToolTip(LocaleManager().tr(
+
+        self.btn_back = QPushButton(tr("gallery.back_albums", "← Back to albums"))
+        self.btn_back.setToolTip(tr(
             "gallery.back_albums_tip",
             "Back to the album view, leaving this folder's contents."))
         self.btn_back.setCursor(Qt.PointingHandCursor)
         self.btn_back.clicked.connect(lambda: self.state.set_mode(self.state.VIEW_ALBUMS))
-        self.btn_back.setVisible(False) # Default hidden
-        self.btn_back.setStyleSheet("color: #00ffcc; background: #222;")
+        self.btn_back.setVisible(False)
         layout.addWidget(self.btn_back)
-        
-        # 2. Filters
-        layout.addSpacing(10)
-        lbl_filter = QLabel("FILTERS & SEARCH")
-        lbl_filter.setStyleSheet("color: #666; font-weight: bold; font-size: 11px;")
-        layout.addWidget(lbl_filter)
-        
-        # Search Input
+
+        # 2. Filtros
+        layout.addWidget(section(tr("gallery.sec.filters", "Search and filters")))
         self.txt_search = QLineEdit()
-        self.txt_search.setToolTip(LocaleManager().tr(
+        self.txt_search.setToolTip(tr(
             "gallery.search_tip",
             "Filters by tags or metadata text. Type several tags to keep only the images "
             "that have them all. Put metadata text in double quotes; separate entries with commas."))
-        self.txt_search.setPlaceholderText("Search tags or text...")
+        self.txt_search.setPlaceholderText(tr("gallery.search_placeholder", "Library tags or \"text\"…"))
         self.txt_search.returnPressed.connect(self.on_search_submit)
         layout.addWidget(self.txt_search)
-        
-        # Rating
+
         self.combo_rating = QComboBox()
-        self.combo_rating.setToolTip(LocaleManager().tr(
+        self.combo_rating.setToolTip(tr(
             "gallery.rating_tip", "Leaves only the images with that rating or better."))
-        self.combo_rating.addItems(["All Ratings", "⭐ 1+", "⭐⭐ 2+", "⭐⭐⭐ 3+", "⭐⭐⭐⭐ 4+", "⭐⭐⭐⭐⭐ 5"])
+        self.combo_rating.addItems([tr("gallery.rating_all", "Any rating"),
+                                    "⭐ 1+", "⭐⭐ 2+", "⭐⭐⭐ 3+", "⭐⭐⭐⭐ 4+", "⭐⭐⭐⭐⭐ 5"])
         self.combo_rating.currentIndexChanged.connect(lambda idx: self.state.set_rating_filter(idx))
         layout.addWidget(self.combo_rating)
-        
-        # Active Chips
+
         self.chip_container = QWidget()
         self.chip_layout = FlowLayout(self.chip_container)
         layout.addWidget(self.chip_container)
-        
-        # Clear
-        self.btn_clear = QPushButton("✕ Clear Filters")
-        self.btn_clear.setToolTip(LocaleManager().tr(
+
+        self.btn_clear = QPushButton(tr("gallery.clear_filters", "Clear filters"))
+        self.btn_clear.setToolTip(tr(
             "gallery.clear_filters_tip",
             "Clears the search and the rating at once, showing everything again."))
         self.btn_clear.clicked.connect(self.clear_all)
-        self.btn_clear.setStyleSheet("color: #ff5555; background: transparent; border: 1px solid #331111;")
         layout.addWidget(self.btn_clear)
-        
+
         layout.addStretch()
-        
-        # 3. Picker Toggle
-        self.btn_picker = QPushButton("🎯 Picker Mode")
-        self.btn_picker.setToolTip(LocaleManager().tr(
+
+        # 3. Selección múltiple (antes «Picker Mode»; se confundía con Pickler)
+        layout.addWidget(section(tr("gallery.sec.selection", "Selection")))
+        self.btn_picker = QPushButton(tr("gallery.multi_select", "Multiple selection"))
+        self.btn_picker.setToolTip(tr(
             "gallery.picker_tip",
             "Turns on multi-select so you can send several images to another tool. NOTE: "
             "turning it off clears whatever you had selected."))
         self.btn_picker.setCheckable(True)
         self.btn_picker.toggled.connect(lambda chk: self.state.toggle_picker_mode(chk))
-        self.btn_picker.setStyleSheet("""
-            QPushButton:checked { border: 1px solid #00ffcc; color: #00ffcc; background: #112211; }
-        """)
+        self.btn_picker.toggled.connect(lambda chk: (primary(self.btn_picker) if chk
+                                                    else set_role(self.btn_picker, "")))
         layout.addWidget(self.btn_picker)
-        
-        # Connect state changes to UI updates
+
         self.state.view_mode_changed.connect(self.on_mode_changed)
         self.state.filter_changed.connect(self.refresh_chips)
-        
+
     def setup_completer(self):
         self.tag_completions = TagVocabulary(self.engine.db.service, self.txt_search, self, reader=self.reader)
         self.tag_completions.failed.connect(lambda error: self.on_tags_loaded(0, [], error))

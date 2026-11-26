@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
 
 from core import library_probe
 from core.paths import CachePaths
+from core.components.send_to import populate_send_menu, sort_targets
 from core.native_threads import native_done, owner_threads_ready, start_worker
 from ..logic import ext_filter as ext_logic
 from ..logic import profile_writes as writes
@@ -276,8 +277,7 @@ class CherryView(QWidget):
         return table
 
     def set_send_targets(self, targets) -> None:
-        self._send_targets = sorted(
-            targets, key=lambda target: (target[0] != "Pickler", target[1].casefold()))
+        self._send_targets = sort_targets(targets)
 
     def _profile_menu(self, profile) -> QMenu:
         menu = QMenu(self)
@@ -290,17 +290,14 @@ class CherryView(QWidget):
         enabled = (not self._closing and self._send_worker is None
                    and bool(profile.get("folder_exists")))
         send.setEnabled(enabled and bool(self._send_targets))
-        for name, label, icon in self._send_targets:
-            action = send.addAction(f"{icon or ''} {label}".strip())
-            action.setData(name)
-            action.setToolTip(self.tr("tool.cherry.send.target_tip",
+        selected = dict(profile)
+        populate_send_menu(
+            send, self._send_targets,
+            lambda target: self._send_profile(selected, target), self.tr,
+            tip=lambda label: self.tr("tool.cherry.send.target_tip",
                 "Open {profile}'s images in {tool}. Reading the set does not move or copy files.").format(
                     profile=profile['display_name'], tool=label))
-            action.triggered.connect(
-                lambda checked=False, target=name, selected=dict(profile): self._send_profile(selected, target))
-        if not self._send_targets:
-            menu.addAction(self.tr("tool.cherry.send.no_targets", "No compatible tools available")).setEnabled(False)
-        elif self._send_worker is not None:
+        if self._send_targets and self._send_worker is not None:
             action = menu.addAction(self.tr("tool.cherry.send.cancel", "Cancel reading images"))
             action.setToolTip(self.tr("tool.cherry.send.cancel_tip",
                 "Stop preparing the image set. Downloads continue."))

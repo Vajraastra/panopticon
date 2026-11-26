@@ -466,6 +466,84 @@ class ThemeManager(QObject):
                 color: {c['text_dim']};
             }}
 
+            /* Roles de la convención de UI (UI_DESIGN.md). Se asignan con
+               core/components/ui_roles.py; ningún módulo los pinta a mano. */
+            QPushButton[role="primary"] {{
+                background-color: {c['accent_main']};
+                color: {c['bg_main']};
+                border: 1px solid {c['accent_main']};
+            }}
+            QPushButton[role="primary"]:hover {{
+                background-color: {c['accent_hover']};
+                border: 1px solid {c['accent_hover']};
+                color: {c['bg_main']};
+            }}
+            QPushButton[role="primary"]:disabled {{
+                background-color: {c['bg_main']};
+                border: 1px solid {c['border']};
+                color: {c['text_dim']};
+            }}
+            QPushButton[role="danger"] {{
+                color: {c['accent_danger']};
+                border: 1px solid {c['accent_danger']};
+                background-color: transparent;
+            }}
+            QPushButton[role="danger"]:hover {{
+                background-color: {c['accent_danger']};
+                color: {c['bg_main']};
+            }}
+            QPushButton[role="danger"]:disabled {{
+                border: 1px solid {c['border']};
+                color: {c['text_dim']};
+            }}
+            QPushButton[role="link"] {{
+                background: transparent;
+                border: none;
+                color: {c['text_secondary']};
+                font-weight: normal;
+                text-decoration: underline;
+                padding: 4px 8px;
+            }}
+            QPushButton[role="link"]:hover {{ color: {c['accent_main']}; }}
+            QLabel[role="section"] {{
+                color: {c['text_dim']};
+                font-size: 11px;
+                font-weight: bold;
+                letter-spacing: 1px;
+                background: transparent;
+                padding-top: 6px;
+            }}
+            QLabel[role="tool_title"] {{
+                color: {c['accent_main']};
+                font-size: 15px;
+                font-weight: bold;
+                background: transparent;
+            }}
+            QLabel[role="tool_desc"] {{
+                color: {c['text_secondary']};
+                font-size: 12px;
+                background: transparent;
+            }}
+            QFrame[role="card"] {{
+                background-color: {c['bg_panel']};
+                border: 1px solid {c['border']};
+                border-radius: 12px;
+            }}
+            QFrame[role="card"]:hover {{
+                background-color: {c['bg_sidebar']};
+                border: 1px solid {c['accent_main']};
+            }}
+            QLabel[role="cover"] {{
+                background-color: {c['bg_input']};
+                border: none;
+                border-radius: 6px;
+            }}
+            QLabel[role="hint"] {{
+                color: {c['text_dim']};
+                font-size: 12px;
+                background: transparent;
+            }}
+
             /* Tablas y listas. Van sobre la superficie BASE, no sobre la elevada: una
                tabla ocupa media pantalla y `bg_panel` en esa superficie deja el area
                dominante en el nivel mas claro, que es justo lo que cansa la vista. */

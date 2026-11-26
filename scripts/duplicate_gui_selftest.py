@@ -576,6 +576,7 @@ class GUI(prior.Review):
         sent = []
         gallery = type('GalleryProbe', (), {'set_send_targets': lambda self, *args, **kwargs: None})()
         class Host:
+            loaded_modules = {}
             def get_module(host, name):
                 return {'Gallery': gallery, 'Duplicate Finder': self.module}.get(name)
             def switch_to_module(host, destination, paths):

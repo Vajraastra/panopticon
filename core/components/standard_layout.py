@@ -21,7 +21,8 @@ class StandardToolLayout(QWidget):
                                       | [ Barra de Acciones (Inferior)      ] |
                                       |_______________________________________|
     """
-    def __init__(self, content_widget: QWidget, sidebar_widget: QWidget = None, bottom_widget: QWidget = None, theme_manager=None, event_bus=None, sidebar_width: int = 320):
+    def __init__(self, content_widget: QWidget, sidebar_widget: QWidget = None, bottom_widget: QWidget = None, theme_manager=None, event_bus=None, sidebar_width: int = 320,
+                 tool_header=None):
         super().__init__()
         self.theme = theme_manager
         self.event_bus = event_bus
@@ -73,6 +74,11 @@ class StandardToolLayout(QWidget):
         div.setFixedHeight(1)
         div.setStyleSheet(f"background-color: {border_col};")
         self.left_layout.addWidget(div)
+
+        # 1a'. Encabezado estándar (UI_DESIGN.md, convención 1): icono + nombre + descripción.
+        self.header_frame = None
+        if tool_header:
+            self.set_header(*tool_header)
         
         # 1b. Splitter for Settings vs Future File Browser
         # Note: We currently only have 'sidebar_widget' (Settings). 
@@ -136,6 +142,26 @@ class StandardToolLayout(QWidget):
             
         self.layout.addWidget(self.right_container, stretch=1)
         
+    def set_header(self, icon, title, description=""):
+        from PySide6.QtWidgets import QLabel
+        from core.components.ui_roles import set_role
+        if self.header_frame is None:
+            self.header_frame = QFrame()
+            self.header_frame.setStyleSheet("background: transparent;")
+            lay = QVBoxLayout(self.header_frame)
+            lay.setContentsMargins(15, 12, 15, 10)
+            lay.setSpacing(2)
+            self.header_title = set_role(QLabel(), "tool_title")
+            self.header_desc = set_role(QLabel(), "tool_desc")
+            self.header_desc.setWordWrap(True)
+            lay.addWidget(self.header_title)
+            lay.addWidget(self.header_desc)
+            # Justo debajo de «← Dashboard» y su divisor.
+            self.left_layout.insertWidget(2, self.header_frame)
+        self.header_title.setText(f"{icon}  {title}".strip())
+        self.header_desc.setText(description)
+        self.header_desc.setVisible(bool(description))
+
     def _go_back(self):
         if self.event_bus:
             self.event_bus.publish("navigate", "dashboard")

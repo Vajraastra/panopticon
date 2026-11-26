@@ -634,15 +634,20 @@ class MainWindow(QMainWindow):
                 module.load_custom_view(*args)
 
     def setup_integrations(self):
-        # Wiring up known module connections
-        cherry = self.get_module("Cherry-DL")
-        if cherry:
-            targets = image_set_consumers(self.loaded_modules, cherry)
-            cherry.set_send_targets([
+        # «Enviar a…» genérico (core/components/send_to.py): todo origen con
+        # set_send_targets + request_open_module recibe todos los consumidores.
+        wired = self.__dict__.setdefault('_send_wired', set())
+        for source in self.loaded_modules.values():
+            if not (hasattr(source, 'set_send_targets') and hasattr(source, 'request_open_module')):
+                continue
+            targets = image_set_consumers(self.loaded_modules, source)
+            source.set_send_targets([
                 (name, self.tr(f"tool.{name.lower().replace(' ', '_')}.name", name), module.icon)
                 for name, module in targets.items()
             ])
-            cherry.request_open_module.connect(self.open_cherry_image_set)
+            if id(source) not in wired:
+                source.request_open_module.connect(self.open_image_set)
+                wired.add(id(source))
 
         librarian = self.get_module("Librarian")
         gallery = self.get_module("Gallery")
@@ -674,30 +679,18 @@ class MainWindow(QMainWindow):
                     lambda paths: self.switch_to_module(pickler, paths)
                 )
 
-        if gallery:
-            gallery.set_send_targets(
-                name for name, target in (('optimizer', optimizer), ('pickler', pickler))
-                if target is not None
-            )
-            if optimizer:
-                gallery.request_open_optimizer.connect(
-                    lambda paths: self.switch_to_module(optimizer, paths)
-                )
-            if pickler:
-                gallery.request_open_pickler.connect(
-                    lambda paths: self.switch_to_module(pickler, paths)
-                )
-
     def get_module(self, partial_name):
         for name, mod in self.loaded_modules.items():
             if partial_name.lower() in name.lower():
                 return mod
         return None
 
-    def open_cherry_image_set(self, name, paths):
+    def open_image_set(self, name, paths):
         target = image_set_consumers(self.loaded_modules).get(name)
         if target is not None and paths:
             self.switch_to_module(target, paths)
+
+    open_cherry_image_set = open_image_set  # nombre histórico, lo usan las pruebas
 
     def on_navigate(self, target):
         if target == "dashboard":

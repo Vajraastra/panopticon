@@ -4,6 +4,8 @@ from PySide6.QtGui import QMouseEvent, QPixmap
 
 # Widget compartido en core (no se importa entre módulos — Regla de Oro #3)
 from core.components.thumbnail import ClickableThumbnail
+from core.components.ui_roles import set_role
+from core.locale_manager import LocaleManager
 
 class FolderCard(QFrame):
     """
@@ -18,17 +20,7 @@ class FolderCard(QFrame):
         
         # Styling
         self.setFixedSize(160, 210)
-        self.setStyleSheet("""
-            FolderCard {
-                background-color: #222;
-                border-radius: 12px;
-                border: 1px solid #333;
-            }
-            FolderCard:hover {
-                background-color: #2a2a2a;
-                border: 1px solid #00ffcc;
-            }
-        """)
+        set_role(self, "card")  # estilo en el QSS global (tema)
         self.setCursor(Qt.PointingHandCursor)
         
         layout = QVBoxLayout(self)
@@ -37,7 +29,7 @@ class FolderCard(QFrame):
         # Cover Image
         self.lbl_cover = QLabel()
         self.lbl_cover.setFixedSize(140, 130)
-        self.lbl_cover.setStyleSheet("background-color: #111; border-radius: 6px;")
+        set_role(self.lbl_cover, "cover")
         self.lbl_cover.setAlignment(Qt.AlignCenter)
         
         if not cover_path:
@@ -49,14 +41,13 @@ class FolderCard(QFrame):
         
         # Name
         self.lbl_name = QLabel(name)
-        self.lbl_name.setStyleSheet("color: white; font-weight: bold; font-size: 13px; border: none; background: transparent;")
+        self.lbl_name.setStyleSheet("font-weight: bold; font-size: 13px; border: none; background: transparent;")
         self.lbl_name.setAlignment(Qt.AlignCenter)
         # Elide text manually if needed or rely on layout
         layout.addWidget(self.lbl_name)
         
         # Count
-        self.lbl_count = QLabel(f"{count} items")
-        self.lbl_count.setStyleSheet("color: #777; font-size: 11px; border: none; background: transparent;")
+        self.lbl_count = set_role(QLabel(LocaleManager().tr("gallery.album_count", "{count} images").format(count=count)), "hint")
         self.lbl_count.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.lbl_count)
     

@@ -153,11 +153,13 @@ class ModuleWindows(unittest.TestCase):
         self.main.switch_to_module(gallery)
         paths = {'C:/private/uno.png', 'C:/private/dos.png'}
         gallery.state.selected_paths = dict.fromkeys(paths)
-        for index, target in enumerate((optimizer, pickler)):
-            def choose(menu, point, index=index):
-                self.assertEqual(len(menu.actions()), 2)
+        for target in (optimizer, pickler):
+            def choose(menu, point, name=target.name):
+                # Todos los consumidores cargados (A, B, Optimizer, Pickler), Pickler primero.
+                self.assertEqual([a.data() for a in menu.actions()],
+                                 ['Pickler', 'A', 'B', 'Image Optimizer'])
                 self.assertTrue(all(action.toolTip() for action in menu.actions()))
-                return menu.actions()[index]
+                return next(a for a in menu.actions() if a.data() == name)
             class Menu(QMenu):
                 def exec(self, point):
                     return choose(self, point)
@@ -181,10 +183,11 @@ class ModuleWindows(unittest.TestCase):
         gallery.on_load(self.main.context)
         self.main.loaded_modules[gallery.name] = gallery
         self.main.setup_integrations()
+        gallery.set_send_targets([])  # sin destinos compatibles
         self.main.switch_to_module(gallery)
         gallery.state.toggle_selection('C:/private/uno.png')
         delivered = []
-        gallery.request_open_optimizer.connect(delivered.append)
+        gallery.request_open_module.connect(lambda name, paths: delivered.append(paths))
         def choose(menu, point):
             self.assertFalse(any(action.isEnabled() for action in menu.actions()))
             return menu.actions()[0]

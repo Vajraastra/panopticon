@@ -3,6 +3,7 @@ from PySide6.QtGui import QCursor
 from PySide6.QtCore import Signal
 
 from core.base_module import BaseModule
+from core.components.send_to import populate_send_menu
 from core.image_preview import ImagePreview
 from core.library_revision_async import LibraryRevisionWatcher
 from core.library_async import LibraryReader
@@ -15,8 +16,7 @@ from .ui.view import GalleryView
 class GalleryModule(BaseModule):
     """Gallery Module — Browse and organize image library."""
 
-    request_open_optimizer = Signal(list)
-    request_open_pickler = Signal(list)
+    request_open_module = Signal(str, list)   # (destino, rutas) — contrato de send_to
 
     def __init__(self):
         super().__init__()
@@ -29,7 +29,7 @@ class GalleryModule(BaseModule):
         self.state = None
         self.engine = None
         self._closed = False
-        self.send_targets = frozenset()
+        self.send_targets = []
 
     def get_view(self) -> QWidget:
         if self.view_widget:
@@ -106,44 +106,23 @@ class GalleryModule(BaseModule):
         )
 
     def set_send_targets(self, targets):
-        self.send_targets = frozenset(targets) & {'optimizer', 'pickler'}
+        self.send_targets = list(targets)
 
     def show_send_menu(self):
         if self._closed: return
         menu = QMenu(self.view_widget)
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #222222;
-                color: white;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 5px;
-            }
-            QMenu::item { padding: 5px 20px; border-radius: 4px; }
-            QMenu::item:selected { background-color: #00ffcc; color: black; }
-        """)
-
-        act_opt  = menu.addAction(self.tr("gallery.send.optimizer", "🚀 Send to Optimizer"))
-        act_pick = menu.addAction(self.tr("gallery.send.pickler",   "🥒 Send to Pickler"))
-        act_opt.setEnabled('optimizer' in self.send_targets)
-        act_pick.setEnabled('pickler' in self.send_targets)
-        for action in (act_opt, act_pick):
-            action.setToolTip(self.tr('gallery.send.target_tip',
-                'Open this tool with the selected images. Unavailable tools are disabled.'))
-        menu.setToolTipsVisible(True)
+        populate_send_menu(menu, self.send_targets, None, self.tr, tip=lambda label: self.tr(
+            'gallery.send.target_tip',
+            'Open the selected images in {tool}. Files are not moved or copied.').format(tool=label))
 
         selected = menu.exec(QCursor.pos())
 
         paths = list(self.state.selected_paths)
         if not paths or self._closed:
             return
-
-        if selected is None or not selected.isEnabled():
+        if selected is None or not selected.isEnabled() or not selected.data():
             return
-        if selected == act_opt:
-            self.request_open_optimizer.emit(paths)
-        elif selected == act_pick:
-            self.request_open_pickler.emit(paths)
+        self.request_open_module.emit(selected.data(), paths)
 
     def run_headless(self, params: dict, input_data) -> None:
         pass

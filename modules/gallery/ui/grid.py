@@ -2,6 +2,7 @@ from PySide6.QtWidgets import (QWidget, QGridLayout, QScrollArea, QVBoxLayout, Q
                                QPushButton, QHBoxLayout)
 from PySide6.QtCore import Qt, Slot, QSize
 from core.locale_manager import LocaleManager
+from core.components.ui_roles import hint
 from core.library_async import LibraryReader, LibraryWriter
 import logging
 from PySide6.QtGui import QImage, QPixmap
@@ -45,14 +46,14 @@ class GalleryGrid(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         
         # Header (Title)
-        self.lbl_title = QLabel("Gallery")
-        self.lbl_title.setStyleSheet("font-size: 20px; font-weight: bold; color: white; padding: 15px;")
+        self.lbl_title = QLabel()
+        self.lbl_title.setStyleSheet("font-size: 18px; font-weight: bold; padding: 12px 15px; background: transparent;")
         layout.addWidget(self.lbl_title)
         
         # Scroll Area
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("background: #111; border: none;")
+        self.scroll.setFrameShape(QScrollArea.NoFrame)
         
         self.grid_container = QWidget()
         self.grid_layout = QGridLayout(self.grid_container)
@@ -73,8 +74,7 @@ class GalleryGrid(QWidget):
         self.btn_prev.setFixedSize(40, 30)
         self.btn_prev.clicked.connect(self.prev_page)
         
-        self.lbl_page = QLabel("Page 1")
-        self.lbl_page.setStyleSheet("color: #888;")
+        self.lbl_page = hint("")
         
         self.btn_next = QPushButton("▶")
         self.btn_next.setToolTip(LocaleManager().tr(
@@ -104,11 +104,11 @@ class GalleryGrid(QWidget):
         self.btn_next.setEnabled(False)
         self.lbl_page.setText(LocaleManager().tr('gallery.db.loading', 'Loading…'))
         if self.state.mode == self.state.VIEW_ALBUMS:
-            self.lbl_title.setText("📂 Albums")
+            self.lbl_title.setText(LocaleManager().tr("gallery.title.albums", "📂 Albums"))
             self.reader.request('get_folders_paginated', limit=self.state._page_size,
                                 offset=self.state._page * self.state._page_size)
         else:
-            name = self.state.current_folder if self.state.current_folder else "All Images"
+            name = self.state.current_folder if self.state.current_folder else LocaleManager().tr("gallery.title.all", "All images")
             self.lbl_title.setText(f"🖼️ {name}")
             if self.state.mode == self.state.VIEW_CUSTOM:
                 self._custom_filtered = self.engine.has_custom_filters(self.state)
@@ -226,7 +226,7 @@ class GalleryGrid(QWidget):
         current = self.state._page + 1
         total_pages = self.state.total_pages
         
-        self.lbl_page.setText(f"Page {current} / {total_pages}")
+        self.lbl_page.setText(LocaleManager().tr("gallery.page", "Page {current} / {total}").format(current=current, total=total_pages))
         self.btn_prev.setEnabled(current > 1)
         self.btn_next.setEnabled(current < total_pages)
         

@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout, QPushButton
 from core.components.standard_layout import StandardToolLayout
 from core.locale_manager import LocaleManager
+from core.components.ui_roles import primary, hint
 from .sidebar import GallerySidebar
 from .grid import GalleryGrid
 
@@ -17,56 +18,55 @@ class GalleryView(QWidget):
         self.init_ui()
         
     def init_ui(self):
-        # 1. Components
+        tr = LocaleManager().tr
         self.sidebar = GallerySidebar(self.state, self.engine)
         self.grid = GalleryGrid(self.state, self.engine)
         self.bottom = self._create_bottom_bar()
-        
-        # 2. Layout
+
         self.layout_manager = StandardToolLayout(
-            self.grid, 
-            self.sidebar, 
+            self.grid,
+            self.sidebar,
             self.bottom,
             theme_manager=self.context.get('theme_manager'),
-            event_bus=self.context.get('event_bus')
+            event_bus=self.context.get('event_bus'),
+            tool_header=("🖼️", tr("tool.gallery.name", "Gallery"),
+                    tr("tool.gallery.desc", "Browse, rate, and tag your organized image collections.")),
         )
-        
+
         from PySide6.QtWidgets import QVBoxLayout
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0,0,0,0)
         main_layout.addWidget(self.layout_manager)
-        
+
     def _create_bottom_bar(self):
+        tr = LocaleManager().tr
         bar = QWidget()
         layout = QHBoxLayout(bar)
-        
-        self.lbl_status = QLabel("Ready")
-        self.lbl_status.setStyleSheet("color: #888;")
-        
-        # Action Buttons (Picker)
-        self.btn_send = QPushButton("🚀 Send Selection")
-        self.btn_send.setToolTip(LocaleManager().tr(
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.lbl_status = hint(tr("gallery.status.ready", "Ready"))
+
+        # Acción principal abajo a la derecha (convención 3)
+        self.btn_send = primary(QPushButton(tr("gallery.send_selection", "Send to…")))
+        self.btn_send.setToolTip(tr(
             "gallery.send_tip",
             "Sends the selected images to another tool. Opens a menu to pick which one."))
         self.btn_send.setVisible(False)
-        # Connect to a placeholder, signal will be connected in Module
-        self.btn_send.setStyleSheet("background: #00ffcc; color: black; font-weight: bold; padding: 5px 10px; border-radius: 4px;")
-        
+
         layout.addWidget(self.lbl_status)
         layout.addStretch()
         layout.addWidget(self.btn_send)
-        
-        # Connect to state
+
         self.state.selection_changed.connect(self.update_bottom_bar)
-        
         return bar
-        
+
     def update_bottom_bar(self):
+        tr = LocaleManager().tr
         count = len(self.state.selected_paths)
         if self.state.picker_active:
-            self.lbl_status.setText(f"Picker Active: {count} items selected")
+            self.lbl_status.setText(tr("gallery.status.selected", "{count} selected").format(count=count))
             self.btn_send.setVisible(count > 0)
-            self.btn_send.setText(f"🚀 Send {count} items")
+            self.btn_send.setText(tr("gallery.send_count", "Send {count} to…").format(count=count))
         else:
-            self.lbl_status.setText("Ready")
+            self.lbl_status.setText(tr("gallery.status.ready", "Ready"))
             self.btn_send.setVisible(False)

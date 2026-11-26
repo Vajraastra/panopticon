@@ -141,7 +141,7 @@ class FolderDiscovery(unittest.TestCase):
         self.assertFalse(module.state.selected_paths)
 
     def test_handoff_keeps_selection_order_across_pages_and_reselection(self):
-        module=self.view();module.set_send_targets(('optimizer','pickler'))
+        module=self.view();module.set_send_targets([('Image Optimizer','Optimizer','🚀'),('Pickler','Pickler','🥒')])
         # Deliberately differ from set iteration, independent of hash randomization.
         paths=list({str(self.path),str(self.other),str(self.folder/'third.png')})[::-1]
         module.load_image_set(paths);module.state.toggle_picker_mode(True)
@@ -150,12 +150,15 @@ class FolderDiscovery(unittest.TestCase):
         self.assertEqual(list(module.state.selected_paths),paths)
         module.state.toggle_selection(paths[0]);module.state.toggle_selection(paths[0])
         expected=paths[1:]+paths[:1]
-        for index,signal in enumerate((module.request_open_optimizer,module.request_open_pickler)):
-            received=[];signal.connect(received.append)
+        # send_to ordena Pickler primero.
+        for index,target in enumerate(('Pickler','Image Optimizer')):
+            received=[];slot=lambda name,paths,r=received,t=target:r.append(paths) if name==t else None
+            module.request_open_module.connect(slot)
             class Menu(QMenu):
                 def exec(self,point):return self.actions()[index]
             with patch('modules.gallery.module.QMenu',Menu):
                 module.show_send_menu()
+            module.request_open_module.disconnect(slot)
             self.assertEqual(received,[expected])
         module.state.toggle_picker_mode(False)
         self.assertFalse(module.state.selected_paths)
