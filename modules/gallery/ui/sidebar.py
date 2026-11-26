@@ -87,8 +87,6 @@ class GallerySidebar(QWidget):
             "turning it off clears whatever you had selected."))
         self.btn_picker.setCheckable(True)
         self.btn_picker.toggled.connect(lambda chk: self.state.toggle_picker_mode(chk))
-        self.btn_picker.toggled.connect(lambda chk: (primary(self.btn_picker) if chk
-                                                    else set_role(self.btn_picker, "")))
         layout.addWidget(self.btn_picker)
 
         self.state.view_mode_changed.connect(self.on_mode_changed)

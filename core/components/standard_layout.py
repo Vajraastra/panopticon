@@ -95,7 +95,12 @@ class StandardToolLayout(QWidget):
         else:
             self.settings_scroll.setWidget(QWidget())
         self.settings_scroll.setFrameShape(QFrame.NoFrame)
-        self.settings_scroll.setStyleSheet("background: transparent;") # Allow container bg to show
+        # Acotado: sin selector, «transparent» se heredaba a los botones de la barra
+        # lateral y un botón marcado («checked») se quedaba sin fondo.
+        self.settings_scroll.setObjectName("sidebar_scroll")
+        self.settings_scroll.setStyleSheet(
+            "QScrollArea#sidebar_scroll, QScrollArea#sidebar_scroll .QWidget, "
+            "QScrollArea#sidebar_scroll QLabel { background: transparent; }")
         
         self.left_layout.addWidget(self.settings_scroll, stretch=1)
         

@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap, QPainter
 from shiboken6 import isValid
 from core.base_module import BaseModule
+from core.components.ui_roles import primary, section, hint, set_role
 from core.theme_manager import ThemeManager
 from .logic.worker import MetadataWorker
 import json
@@ -138,13 +139,17 @@ class MetadataModule(BaseModule):
         
         sidebar = self._create_sidebar()
         content = self._create_content()
-        
+        bottom = self._create_bottom_bar()
+
         from core.components.standard_layout import StandardToolLayout
         self.view = StandardToolLayout(
             content,
             sidebar_widget=sidebar,
+            bottom_widget=bottom,
             theme_manager=self.context.get('theme_manager'),
-            event_bus=self.context.get('event_bus')
+            event_bus=self.context.get('event_bus'),
+            tool_header=(self._icon, self.tr("tool.metadata_hub.name", "Metadata Hub"),
+                         self.tr("tool.metadata_hub.desc", self._description)),
         )
         
         # Establece el modo inicial (solo lectura por defecto)
@@ -154,96 +159,47 @@ class MetadataModule(BaseModule):
         return self.view
 
     def _create_sidebar(self) -> QWidget:
-        tm = self.context.get('theme_manager')
-        c = self._color
-
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(12)
+        layout.setContentsMargins(15, 10, 15, 15)
+        layout.setSpacing(8)
 
-        # Title
-        lbl_title = QLabel(self.tr("meta.title", "🔍 METADATA HUB"))
-        lbl_title.setStyleSheet(f"color: {c('accent_main')}; font-weight: bold; font-size: 14px;")
-        layout.addWidget(lbl_title)
+        # 1. Origen
+        layout.addWidget(section(self.tr("meta.sec.images", "Images")))
+        self.btn_open = QPushButton(self.tr("meta.open", "Open images…"))
+        self.btn_open.setToolTip(self.tr(
+            "meta.open_tip", "Loads one or more images to view or edit their metadata."))
+        self.btn_open.clicked.connect(self.open_files_dialog)
+        layout.addWidget(self.btn_open)
+        self.lbl_carousel_stats = hint(self.tr("meta.stats", "{current} / {total} images").format(current=0, total=0))
+        layout.addWidget(self.lbl_carousel_stats)
 
-        lbl_desc = QLabel(self.tr("meta.desc", "Read, edit and clean image metadata."))
-        lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet(f"color: {c('text_dim')}; font-size: 11px;")
-        layout.addWidget(lbl_desc)
-
-        layout.addSpacing(10)
-
-        lbl = QLabel(self.tr("meta.mode", "🛠️ MODE"))
-        lbl.setStyleSheet(f"color: {c('text_secondary')}; font-weight: bold; font-size: 12px;")
-        layout.addWidget(lbl)
-
-        # Mode Selector (Toggle)
-        self.btn_mode_view = QPushButton(self.tr("meta.viewer", "🔍 Viewer Mode"))
+        # 2. Modo
+        layout.addWidget(section(self.tr("meta.mode", "Mode")))
+        self.btn_mode_view = QPushButton(self.tr("meta.viewer", "Read only"))
         self.btn_mode_view.setToolTip(self.tr(
             "meta.viewer_tip",
             "Read-only: shows the prompts and generation data without letting you change "
             "them."))
         self.btn_mode_view.setCheckable(True)
         self.btn_mode_view.setChecked(True)
-        self.btn_mode_view.setFixedHeight(38)
         self.btn_mode_view.clicked.connect(lambda: self.set_mode(self.MODE_VIEWER))
-        layout.addWidget(self.btn_mode_view)
-
-        self.btn_mode_edit = QPushButton(self.tr("meta.editor", "✍️ Editor Mode"))
+        self.btn_mode_edit = QPushButton(self.tr("meta.editor", "Edit"))
         self.btn_mode_edit.setToolTip(self.tr(
             "meta.editor_tip",
             "Lets you edit the prompts. This is the only module that can write over the "
             "original file — that is what it is for."))
         self.btn_mode_edit.setCheckable(True)
-        self.btn_mode_edit.setFixedHeight(38)
         self.btn_mode_edit.clicked.connect(lambda: self.set_mode(self.MODE_EDITOR))
-        layout.addWidget(self.btn_mode_edit)
-
-        # Style for modes (called after buttons exist)
+        modes = QHBoxLayout()
+        modes.setSpacing(6)
+        modes.addWidget(self.btn_mode_view)
+        modes.addWidget(self.btn_mode_edit)
+        layout.addLayout(modes)
         self._update_mode_styles()
 
-        layout.addSpacing(10)
-        lbl_act = QLabel(self.tr("meta.actions", "⚡ ACTIONS"))
-        lbl_act.setStyleSheet(f"color: {c('text_secondary')}; font-weight: bold; font-size: 12px;")
-        layout.addWidget(lbl_act)
-
-        self.btn_save = QPushButton(self.tr("meta.save", "💾 Save Changes"))
-        self.btn_save.setToolTip(self.tr(
-            "meta.save_tip",
-            "Updates the displayed indexed copy after confirmation and verification. "
-            "Previous generation and a recovery backup remain available; Cherry originals are protected."))
-        self.btn_save.setFixedHeight(40)
-        self.btn_save.setCursor(Qt.PointingHandCursor)
-        self.btn_save.clicked.connect(self.action_save_current)
-        self.btn_save.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {c('accent_main')}; color: {c('bg_main')};
-                border-radius: 8px; font-size: 14px; font-weight: bold; padding: 10px;
-            }}
-            QPushButton:hover {{ background-color: {c('accent_hover')}; }}
-            QPushButton:disabled {{ background-color: {c('border')}; color: {c('text_dim')}; }}
-        """)
-        layout.addWidget(self.btn_save)
-
-        self.btn_export = QPushButton(self.tr("meta.export", "📂 Export Copy"))
-        self.btn_export.setToolTip(self.tr(
-            "meta.export_tip",
-            "Saves a NEW file with the edited metadata and leaves the original untouched. "
-            "It is the safe option next to «Save changes»."))
-        self.btn_export.setFixedHeight(36)
-        self.btn_export.setCursor(Qt.PointingHandCursor)
-        self.btn_export.clicked.connect(self.action_export_copy)
-        self.btn_export.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {c('bg_panel')}; color: {c('text_secondary')};
-                border-radius: 6px; font-weight: bold; font-size: 11px;
-                padding: 5px 10px; border: 1px solid transparent;
-            }}
-            QPushButton:hover {{ background-color: {c('border')}; border: 1px solid {c('accent_main')}; }}
-        """)
-        layout.addWidget(self.btn_export)
-
+        # 3. Historial y recarga
+        layout.addWidget(section(self.tr("meta.sec.history", "History")))
         self.btn_history = QPushButton(self.tr('tool.metadata.history', 'Generation history'))
         self.btn_history.setToolTip(self.tr('tool.metadata.history_tip', 'Read the first two previous generations of this copy ID without changing the image or database.'))
         self.btn_history.clicked.connect(lambda: self._read_history(False))
@@ -256,26 +212,38 @@ class MetadataModule(BaseModule):
         self.btn_reload.setToolTip(self.tr('tool.metadata.reload_tip', 'Read the file and native identity again; discard unsaved edits and old review evidence.'))
         self.btn_reload.clicked.connect(self.display_current)
         layout.addWidget(self.btn_reload)
+        layout.addStretch()
+        return container
+
+    def _create_bottom_bar(self) -> QWidget:
+        bar = QWidget()
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.lbl_operation = QLabel()
+        self.lbl_operation.setTextFormat(Qt.PlainText)
+        self.lbl_operation.setWordWrap(True)
+        layout.addWidget(self.lbl_operation, 1)
         self.btn_cancel = QPushButton(self.tr('tool.metadata.cancel', 'Cancel'))
         self.btn_cancel.setToolTip(self.tr('tool.metadata.cancel_tip', 'Stop before publication. A file already published and an admitted database write finish; closing waits without blocking the interface.'))
         self.btn_cancel.clicked.connect(self._cancel_job)
         layout.addWidget(self.btn_cancel)
-        self.lbl_operation = QLabel()
-        self.lbl_operation.setTextFormat(Qt.PlainText)
-        self.lbl_operation.setWordWrap(True)
-        layout.addWidget(self.lbl_operation)
-
-        layout.addStretch()
-
-        lbl_info = QLabel(self.tr("meta.list", "IMAGE LIST"))
-        lbl_info.setStyleSheet(f"color: {c('text_dim')}; font-weight: bold; font-size: 11px;")
-        layout.addWidget(lbl_info)
-
-        self.lbl_carousel_stats = QLabel(self.tr("meta.stats", "{current} / {total} images").format(current=0, total=0))
-        self.lbl_carousel_stats.setStyleSheet(f"color: {c('text_dim')};")
-        layout.addWidget(self.lbl_carousel_stats)
-
-        return container
+        self.btn_export = QPushButton(self.tr("meta.export", "Export copy…"))
+        self.btn_export.setToolTip(self.tr(
+            "meta.export_tip",
+            "Saves a NEW file with the edited metadata and leaves the original untouched. "
+            "It is the safe option next to «Save changes»."))
+        self.btn_export.setCursor(Qt.PointingHandCursor)
+        self.btn_export.clicked.connect(self.action_export_copy)
+        layout.addWidget(self.btn_export)
+        self.btn_save = primary(QPushButton(self.tr("meta.save", "Save changes")))
+        self.btn_save.setToolTip(self.tr(
+            "meta.save_tip",
+            "Updates the displayed indexed copy after confirmation and verification. "
+            "Previous generation and a recovery backup remain available; Cherry originals are protected."))
+        self.btn_save.setCursor(Qt.PointingHandCursor)
+        self.btn_save.clicked.connect(self.action_save_current)
+        layout.addWidget(self.btn_save)
+        return bar
 
     def _create_content(self) -> QWidget:
         tm = self.context.get('theme_manager')
@@ -294,13 +262,6 @@ class MetadataModule(BaseModule):
 
         # Action Bar (Top)
         top_bar = QHBoxLayout()
-        self.btn_open = QPushButton(self.tr("opt.load_images", "📂 Open Image(s)"))
-        self.btn_open.setToolTip(self.tr(
-            "meta.open_tip", "Loads one or more images to view or edit their metadata."))
-        self.btn_open.clicked.connect(self.open_files_dialog)
-        self.btn_open.setStyleSheet(f"background: {c('bg_panel')}; color: {c('text_primary')}; padding: 8px 15px; border-radius: 5px; border: 1px solid {c('border_strong')};")
-        top_bar.addWidget(self.btn_open)
-        top_bar.addStretch()
 
         self.lbl_file_name = QLabel(self.tr("meta.no_file", "No file selected"))
         self.lbl_file_name.setTextFormat(Qt.PlainText)
@@ -317,18 +278,15 @@ class MetadataModule(BaseModule):
 
         # Carousel Controls
         carousel_layout = QHBoxLayout()
-        nav_style = f"padding: 10px; background: {c('bg_input')}; color: {c('text_secondary')}; border-radius: 5px; border: 1px solid {c('border_strong')};"
         self.btn_prev = QPushButton(self.tr("meta.prev", "◀ Previous"))
         self.btn_prev.setToolTip(self.tr(
             "meta.prev_tip", "Previous of the loaded images. Unsaved changes are lost."))
         self.btn_prev.clicked.connect(self.go_prev)
-        self.btn_prev.setStyleSheet(nav_style)
 
         self.btn_next = QPushButton(self.tr("meta.next", "Next ▶"))
         self.btn_next.setToolTip(self.tr(
             "meta.next_tip", "Next of the loaded images. Unsaved changes are lost."))
         self.btn_next.clicked.connect(self.go_next)
-        self.btn_next.setStyleSheet(nav_style)
 
         carousel_layout.addWidget(self.btn_prev)
         carousel_layout.addStretch()
@@ -415,11 +373,7 @@ class MetadataModule(BaseModule):
         self.btn_mode_view.setChecked(view_active)
         self.btn_mode_edit.setChecked(not view_active)
 
-        active_style = f"background-color: {c('bg_panel')}; color: {c('accent_main')}; border: 1px solid {c('accent_main')}; font-weight: bold; border-radius: 6px; text-align: left; padding: 5px;"
-        inactive_style = f"background-color: {c('bg_main')}; color: {c('text_dim')}; border: 1px solid {c('border')}; border-radius: 6px; text-align: left; padding: 5px;"
-
-        self.btn_mode_view.setStyleSheet(active_style if view_active else inactive_style)
-        self.btn_mode_edit.setStyleSheet(inactive_style if view_active else active_style)
+        # El estado marcado lo pinta la regla QPushButton:checked del tema.
 
     def load_image_set(self, paths: list):
         """Standard integration from Librarian."""

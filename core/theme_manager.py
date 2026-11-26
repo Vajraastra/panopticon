@@ -466,6 +466,19 @@ class ThemeManager(QObject):
                 color: {c['text_dim']};
             }}
 
+            /* Interruptores (botones marcables): el estado activo se ve igual en todo el
+               programa. Sin esta regla Qt dibuja «checked» con su paleta e ignora el fondo. */
+            QPushButton:checked {{
+                background-color: {c['accent_main']};
+                color: {c['bg_main']};
+                border: 1px solid {c['accent_main']};
+            }}
+            QPushButton:checked:hover {{
+                background-color: {c['accent_hover']};
+                border: 1px solid {c['accent_hover']};
+                color: {c['bg_main']};
+            }}
+
             /* Deslizadores: sin regla, Qt los pinta con su paleta nativa (negro). */
             QSlider {{ background: transparent; }}
             QSlider::groove:horizontal {{
