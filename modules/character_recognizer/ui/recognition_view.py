@@ -15,6 +15,7 @@ from core.database_manager import DatabaseManager
 from core.library_async import LibraryReader, LibraryWriter
 from core.curation_bindings import valid as valid_binding
 from core.components.standard_layout import StandardToolLayout
+from core.components.ui_roles import primary, danger, section, hint, set_role
 from core.theme import Theme
 import cv2
 
@@ -70,7 +71,9 @@ class CharacterRecognitionView(QWidget):
             content,
             sidebar_widget=sidebar,
             theme_manager=self.context.get('theme_manager'),
-            event_bus=self.context.get('event_bus')
+            event_bus=self.context.get('event_bus'),
+            tool_header=("👤", self._tr("tool.character_recognizer.name", "Character Recognizer"),
+                         self._tr("tool.character_recognizer.desc", "Identify and tag characters using AI.")),
         )
 
         main_layout = QVBoxLayout(self)
@@ -240,24 +243,115 @@ class CharacterRecognitionView(QWidget):
     def _create_sidebar(self):
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(15, 10, 15, 15)
+        layout.setSpacing(8)
 
-        # Header
-        title_lbl = QLabel(self._tr("cr.title", "RECOGNIZER"))
-        title_lbl.setStyleSheet(
-            f"color: {Theme.ACCENT_MAIN}; font-weight: bold; font-size: 14px; letter-spacing: 1px;"
-        )
-        layout.addWidget(title_lbl)
+        # 1. Origen y modo de detección
+        layout.addWidget(section(self._tr("cr.source", "Source")))
+        self.btn_load = btn_load = QPushButton(self._tr("cr.load_folder", "Open folder…"))
+        btn_load.setToolTip(self._tr(
+            "cr.load_folder_tip", "Folder of images to look for known faces in."))
+        btn_load.clicked.connect(self.on_load_folder_clicked)
+        layout.addWidget(btn_load)
 
-        desc_lbl = QLabel(self._tr("cr.desc", "Auto-tag characters using facial recognition."))
-        desc_lbl.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px;")
-        desc_lbl.setWordWrap(True)
-        layout.addWidget(desc_lbl)
+        self._detection_mode = 'illustration'
+        self.btn_mode_illustration = QPushButton(self._tr("cr.mode.illustration", "Illustration"))
+        self.btn_mode_illustration.setToolTip(
+            self._tr("cr.mode.illustration.tooltip", "Illustration / AI art mode (default)"))
+        self.btn_mode_real = QPushButton(self._tr("cr.mode.real", "Real Person"))
+        self.btn_mode_real.setToolTip(
+            self._tr("cr.mode.real.tooltip", "Real photograph mode — uses landmark alignment"))
+        modes = QHBoxLayout()
+        modes.setSpacing(6)
+        for button in (self.btn_mode_illustration, self.btn_mode_real):
+            button.setCheckable(True)  # el estado activo lo pinta QPushButton:checked del tema
+            modes.addWidget(button)
+        layout.addLayout(modes)
+        self.btn_mode_illustration.clicked.connect(lambda: self._set_detection_mode('illustration'))
+        self.btn_mode_real.clicked.connect(lambda: self._set_detection_mode('real'))
+        self._set_detection_mode('illustration')
 
-        self.lbl_profiles = QLabel('')
+        # 2. Análisis automático de la carpeta
+        layout.addWidget(section(self._tr("cr.auto_mode", "Automatic scan")))
+        self.lbl_status = hint(self._tr("cr.status.idle", "Idle"))
+        layout.addWidget(self.lbl_status)
+        self.btn_auto_scan = QPushButton(self._tr("cr.auto_scan", "Auto scan"))
+        self.btn_auto_scan.setToolTip(
+            self._tr("cr.auto_scan.tooltip",
+                     "Captures up to 100,000 copy identities before analysis, then suggests a bulk "
+                     "tag for review. Split larger batches; no partial scope is approved."))
+        self.btn_auto_scan.clicked.connect(self.on_auto_scan)
+        layout.addWidget(self.btn_auto_scan)
+        self.lbl_auto_status = hint("")
+        self.lbl_auto_status.hide()
+        layout.addWidget(self.lbl_auto_status)
+
+        # Sugerencia tras el análisis automático
+        self.frame_suggestion = set_role(QFrame(), "card")
+        sug_layout = QVBoxLayout(self.frame_suggestion)
+        sug_layout.setContentsMargins(10, 8, 10, 8)
+        sug_layout.setSpacing(6)
+        self.lbl_suggestion_text = QLabel("")
+        self.lbl_suggestion_text.setStyleSheet("font-weight: bold; background: transparent; border: none;")
+        self.lbl_suggestion_text.setWordWrap(True)
+        sug_layout.addWidget(self.lbl_suggestion_text)
+        sug_btn_layout = QHBoxLayout()
+        sug_btn_layout.setSpacing(6)
+        self.btn_tag_all = primary(QPushButton(self._tr("cr.auto.tag_all", "Tag All")))
+        self.btn_tag_all.setToolTip(self._tr(
+            "cr.tag_all_tip",
+            "Applies the suggested name to the captured copy IDs, including images without "
+            "a match. Stops on changed identity or revision; confirmed tags are kept."))
+        self.btn_auto_cancel = QPushButton(self._tr("cr.auto.cancel", "Cancel"))
+        self.btn_auto_cancel.setToolTip(self._tr(
+            "cr.auto_cancel_tip",
+            "Stops the automatic scan. Whatever was tagged so far is kept."))
+        sug_btn_layout.addWidget(self.btn_auto_cancel)
+        sug_btn_layout.addWidget(self.btn_tag_all)
+        sug_layout.addLayout(sug_btn_layout)
+        self.btn_tag_all.clicked.connect(self.on_tag_all)
+        self.btn_auto_cancel.clicked.connect(self.on_auto_cancel)
+        self.frame_suggestion.hide()
+        layout.addWidget(self.frame_suggestion)
+
+        # 3. Imagen actual: archivo y etiquetas de biblioteca
+        layout.addWidget(section(self._tr("cr.file_info", "Current image")))
+        self.lbl_filename = QLabel(self._tr("cr.no_file", "No File"))
+        self.lbl_filename.setStyleSheet("font-weight: bold;")
+        self.lbl_filename.setWordWrap(True)
+        layout.addWidget(self.lbl_filename)
+        self.lbl_dimensions = hint("--- x ---")
+        layout.addWidget(self.lbl_dimensions)
+        self.lbl_filesize = hint("--- KB")
+        layout.addWidget(self.lbl_filesize)
+
+        layout.addWidget(hint(self._tr("cr.tags", "Library tags")))
+        self.list_tags = QListWidget()
+        self.list_tags.setToolTip(self._tr('tool.character_recognizer.tags_tip',
+            'Tags confirmed by the library. Select one to remove it without changing the image.'))
+        self.list_tags.setFixedHeight(100)
+        layout.addWidget(self.list_tags)
+        tag_buttons = QHBoxLayout()
+        tag_buttons.setSpacing(6)
+        self.btn_retry_tags = QPushButton(self._tr('tool.character_recognizer.retry_tags', 'Reload tags'))
+        self.btn_retry_tags.setToolTip(self._tr('tool.character_recognizer.retry_tags_tip',
+            'Retries the library read for this image after an error.'))
+        self.btn_retry_tags.clicked.connect(self._request_curation)
+        self.btn_remove_tag = danger(QPushButton(self._tr("cr.btn.remove_tag", "Remove tag")))
+        self.btn_remove_tag.setToolTip(self._tr(
+            "cr.btn_remove_tag_tip",
+            "Removes this tag from the image. The file itself is untouched."))
+        self.btn_remove_tag.clicked.connect(self.on_remove_tag)
+        tag_buttons.addWidget(self.btn_retry_tags)
+        tag_buttons.addWidget(self.btn_remove_tag)
+        layout.addLayout(tag_buttons)
+
+        layout.addStretch()
+
+        # 4. Perfiles conocidos (estado; normalmente no requiere atención)
+        layout.addWidget(section(self._tr("cr.sec.profiles", "Known characters")))
+        self.lbl_profiles = hint('')
         self.lbl_profiles.setTextFormat(Qt.PlainText)
-        self.lbl_profiles.setWordWrap(True)
         layout.addWidget(self.lbl_profiles)
         self.btn_retry_profiles = QPushButton(self._tr(
             'tool.character_recognizer.reload_profiles', 'Reload profiles'))
@@ -266,282 +360,12 @@ class CharacterRecognitionView(QWidget):
             'Refreshes known names after a profile read error; keeps the name being typed.'))
         self.btn_retry_profiles.clicked.connect(self.refresh_profiles)
         layout.addWidget(self.btn_retry_profiles)
-
-        layout.addSpacing(10)
-
-        # File Info
-        lbl_meta = QLabel(self._tr("cr.file_info", "FILE INFO"))
-        lbl_meta.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 11px;")
-        layout.addWidget(lbl_meta)
-
-        meta_style = (
-            f"color: {Theme.TEXT_PRIMARY};"
-            " font-family: 'Consolas', 'Monaco', monospace; font-size: 11px;"
-        )
-        self.lbl_filename = QLabel(self._tr("cr.no_file", "No File"))
-        self.lbl_filename.setStyleSheet(
-            f"color: {Theme.TEXT_PRIMARY}; font-size: 12px; font-weight: bold;"
-        )
-        self.lbl_filename.setWordWrap(True)
-        layout.addWidget(self.lbl_filename)
-
-        self.lbl_dimensions = QLabel("--- x ---")
-        self.lbl_dimensions.setStyleSheet(meta_style)
-        layout.addWidget(self.lbl_dimensions)
-
-        self.lbl_filesize = QLabel("--- KB")
-        self.lbl_filesize.setStyleSheet(meta_style)
-        layout.addWidget(self.lbl_filesize)
-
-        layout.addSpacing(10)
-
-        # Current Tags
-        lbl_tags = QLabel(self._tr("cr.tags", "CURRENT TAGS"))
-        lbl_tags.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 11px;")
-        layout.addWidget(lbl_tags)
-
-        self.list_tags = QListWidget()
-        self.list_tags.setToolTip(self._tr('tool.character_recognizer.tags_tip',
-            'Tags confirmed by the library. Select one to remove it without changing the image.'))
-        self.list_tags.setStyleSheet(f"""
-            QListWidget {{
-                background-color: {Theme.BG_INPUT};
-                border: 1px solid {Theme.BORDER};
-                border-radius: 4px;
-                color: {Theme.TEXT_PRIMARY};
-                font-size: 11px;
-            }}
-            QListWidget::item {{ margin: 2px; }}
-        """)
-        self.list_tags.setFixedHeight(100)
-        layout.addWidget(self.list_tags)
-
-        self.btn_retry_tags = QPushButton(self._tr('tool.character_recognizer.retry_tags', 'Reload tags'))
-        self.btn_retry_tags.setToolTip(self._tr('tool.character_recognizer.retry_tags_tip',
-            'Retries the library read for this image after an error.'))
-        self.btn_retry_tags.clicked.connect(self._request_curation)
-        layout.addWidget(self.btn_retry_tags)
-
-        self.btn_remove_tag = QPushButton(self._tr("cr.btn.remove_tag", "🗑 Remove Tag"))
-        self.btn_remove_tag.setToolTip(self._tr(
-            "cr.btn_remove_tag_tip",
-            "Removes this tag from the image. The file itself is untouched."))
-        self.btn_remove_tag.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {Theme.BG_INPUT};
-                color: {Theme.TEXT_SECONDARY};
-                border: 1px solid {Theme.BORDER};
-                border-radius: 4px;
-                font-size: 11px;
-                padding: 3px 6px;
-            }}
-            QPushButton:hover {{ background-color: {Theme.BG_PANEL}; color: {Theme.TEXT_PRIMARY}; }}
-        """)
-        self.btn_remove_tag.clicked.connect(self.on_remove_tag)
-        layout.addWidget(self.btn_remove_tag)
-
-        layout.addSpacing(10)
-
-        # Mode Toggle
-        lbl_mode = QLabel(self._tr("cr.mode", "MODE"))
-        lbl_mode.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 11px;")
-        layout.addWidget(lbl_mode)
-
-        self._detection_mode = 'illustration'
-
-        _btn_active = f"""
-            QPushButton {{
-                background-color: {Theme.ACCENT_MAIN};
-                color: {Theme.BG_MAIN};
-                border-radius: 0px;
-                font-size: 11px;
-                font-weight: bold;
-                padding: 5px 4px;
-            }}"""
-        _btn_inactive = f"""
-            QPushButton {{
-                background-color: {Theme.BG_INPUT};
-                color: {Theme.TEXT_DIM};
-                border-radius: 0px;
-                font-size: 11px;
-                font-weight: normal;
-                padding: 5px 4px;
-            }}
-            QPushButton:hover {{ background-color: {Theme.BG_PANEL}; color: {Theme.TEXT_PRIMARY}; }}"""
-
-        self._style_active = _btn_active
-        self._style_inactive = _btn_inactive
-
-        toggle_frame = QFrame()
-        toggle_frame.setStyleSheet(
-            f"QFrame {{ border: 1px solid {Theme.BORDER}; border-radius: 4px; }}"
-        )
-        toggle_layout = QHBoxLayout(toggle_frame)
-        toggle_layout.setContentsMargins(0, 0, 0, 0)
-        toggle_layout.setSpacing(0)
-
-        self.btn_mode_illustration = QPushButton(self._tr("cr.mode.illustration", "Illustration"))
-        self.btn_mode_illustration.setToolTip(self._tr(
-            "cr.mode_illustration_tip",
-            "Mode for drawings and anime. Uses a detector trained on illustrated faces; "
-            "it does worse on real photos."))
-        self.btn_mode_illustration.setStyleSheet(_btn_active)
-        self.btn_mode_illustration.setToolTip(
-            self._tr("cr.mode.illustration.tooltip", "Illustration / AI art mode (default)")
-        )
-        self.btn_mode_real = QPushButton(self._tr("cr.mode.real", "Real Person"))
-        self.btn_mode_real.setToolTip(self._tr(
-            "cr.mode_real_tip",
-            "Mode for photography. Uses a detector trained on real faces; it does worse "
-            "on drawings."))
-        self.btn_mode_real.setStyleSheet(_btn_inactive)
-        self.btn_mode_real.setToolTip(
-            self._tr("cr.mode.real.tooltip", "Real photograph mode — uses landmark alignment")
-        )
-
-        toggle_layout.addWidget(self.btn_mode_illustration)
-        toggle_layout.addWidget(self.btn_mode_real)
-        layout.addWidget(toggle_frame)
-
-        self.btn_mode_illustration.clicked.connect(lambda: self._set_detection_mode('illustration'))
-        self.btn_mode_real.clicked.connect(lambda: self._set_detection_mode('real'))
-
-        layout.addSpacing(10)
-
-        # Source
-        lbl_source = QLabel(self._tr("cr.source", "SOURCE"))
-        lbl_source.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 11px;")
-        layout.addWidget(lbl_source)
-
-        btn_load = QPushButton(self._tr("common.load_folder", "📂 Load Folder"))
-        btn_load.setToolTip(self._tr(
-            "cr.load_folder_tip", "Folder of images to look for known faces in."))
-        btn_load.clicked.connect(self.on_load_folder_clicked)
-        btn_load.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {Theme.ACCENT_INFO};
-                color: {Theme.BG_MAIN};
-                border-radius: 6px;
-                font-size: 12px;
-                font-weight: bold;
-                padding: 6px 4px;
-            }}
-            QPushButton:hover {{ background-color: {Theme._c('accent_hover')}; }}
-        """)
-        layout.addWidget(btn_load)
-
-        layout.addSpacing(10)
-
-        # Status
-        lbl_status_header = QLabel(self._tr("cr.status_header", "STATUS"))
-        lbl_status_header.setStyleSheet(
-            f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 11px;"
-        )
-        layout.addWidget(lbl_status_header)
-
-        self.lbl_status = QLabel(self._tr("cr.status.idle", "Idle"))
-        self.lbl_status.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: 11px;")
-        self.lbl_status.setWordWrap(True)
-        layout.addWidget(self.lbl_status)
-
-        layout.addSpacing(10)
-
-        # Auto Mode
-        lbl_auto = QLabel(self._tr("cr.auto_mode", "AUTO MODE"))
-        lbl_auto.setStyleSheet(
-            f"color: {Theme.TEXT_SECONDARY}; font-weight: bold; font-size: 11px;"
-        )
-        layout.addWidget(lbl_auto)
-
-        self.btn_auto_scan = QPushButton(self._tr("cr.auto_scan", "🤖 Auto Scan"))
-        self.btn_auto_scan.setToolTip(
-            self._tr("cr.auto_scan.tooltip",
-                     "Captures up to 100,000 copy identities before analysis, then suggests a bulk "
-                     "tag for review. Split larger batches; no partial scope is approved.")
-        )
-        self.btn_auto_scan.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {Theme.BG_INPUT};
-                color: {Theme.TEXT_PRIMARY};
-                border: 1px solid {Theme.BORDER};
-                border-radius: 6px;
-                font-size: 12px;
-                font-weight: bold;
-                padding: 6px 4px;
-            }}
-            QPushButton:hover {{ background-color: {Theme.BG_PANEL}; color: {Theme.ACCENT_MAIN}; }}
-        """)
-        self.btn_auto_scan.clicked.connect(self.on_auto_scan)
-        layout.addWidget(self.btn_auto_scan)
-
-        self.lbl_auto_status = QLabel("")
-        self.lbl_auto_status.setStyleSheet(f"color: {Theme.TEXT_DIM}; font-size: 11px;")
-        self.lbl_auto_status.setWordWrap(True)
-        self.lbl_auto_status.hide()
-        layout.addWidget(self.lbl_auto_status)
-
-        # Suggestion banner (shown after AutoScanWorker finds a dominant character)
-        self.frame_suggestion = QFrame()
-        self.frame_suggestion.setStyleSheet(f"""
-            QFrame {{
-                background-color: {Theme.BG_INPUT};
-                border: 1px solid {Theme.ACCENT_MAIN};
-                border-radius: 6px;
-                padding: 4px;
-            }}
-        """)
-        sug_layout = QVBoxLayout(self.frame_suggestion)
-        sug_layout.setContentsMargins(6, 6, 6, 6)
-        sug_layout.setSpacing(4)
-
-        self.lbl_suggestion_text = QLabel("")
-        self.lbl_suggestion_text.setStyleSheet(
-            f"color: {Theme.TEXT_PRIMARY}; font-size: 11px; font-weight: bold;"
-        )
-        self.lbl_suggestion_text.setWordWrap(True)
-        sug_layout.addWidget(self.lbl_suggestion_text)
-
-        sug_btn_layout = QHBoxLayout()
-        sug_btn_layout.setSpacing(4)
-        self.btn_tag_all = QPushButton(self._tr("cr.auto.tag_all", "Tag All"))
-        self.btn_tag_all.setToolTip(self._tr(
-            "cr.tag_all_tip",
-            "Applies the suggested name to the captured copy IDs, including images without "
-            "a match. Stops on changed identity or revision; confirmed tags are kept."))
-        self.btn_tag_all.setStyleSheet(
-            f"QPushButton {{background-color: {Theme.ACCENT_SUCCESS}; color: {Theme.BG_MAIN};"
-            " border-radius: 4px; font-size: 11px; font-weight: bold; padding: 4px 6px;}"
-            f"QPushButton:disabled {{background-color: {Theme.BG_INPUT}; color: {Theme.TEXT_DIM};"
-            f" border: 1px solid {Theme.BORDER_HOVER};}}"
-        )
-        self.btn_auto_cancel = QPushButton(self._tr("cr.auto.cancel", "Cancel"))
-        self.btn_auto_cancel.setToolTip(self._tr(
-            "cr.auto_cancel_tip",
-            "Stops the automatic scan. Whatever was tagged so far is kept."))
-        self.btn_auto_cancel.setStyleSheet(
-            f"background-color: {Theme.BG_PANEL}; color: {Theme.TEXT_PRIMARY};"
-            " border-radius: 4px; font-size: 11px; padding: 4px 6px;"
-        )
-        sug_btn_layout.addWidget(self.btn_tag_all)
-        sug_btn_layout.addWidget(self.btn_auto_cancel)
-        sug_layout.addLayout(sug_btn_layout)
-
-        self.btn_tag_all.clicked.connect(self.on_tag_all)
-        self.btn_auto_cancel.clicked.connect(self.on_auto_cancel)
-        self.frame_suggestion.hide()
-        layout.addWidget(self.frame_suggestion)
-
-        layout.addStretch()
         return container
 
     def _set_detection_mode(self, mode):
         self._detection_mode = mode
-        if mode == 'illustration':
-            self.btn_mode_illustration.setStyleSheet(self._style_active)
-            self.btn_mode_real.setStyleSheet(self._style_inactive)
-        else:
-            self.btn_mode_real.setStyleSheet(self._style_active)
-            self.btn_mode_illustration.setStyleSheet(self._style_inactive)
+        self.btn_mode_illustration.setChecked(mode == 'illustration')
+        self.btn_mode_real.setChecked(mode != 'illustration')
 
     def refresh_profiles(self):
         if self._closed:
