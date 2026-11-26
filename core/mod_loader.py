@@ -9,7 +9,7 @@ log = logging.getLogger(__name__)
 
 # Retired folders may survive checkout through ignored files or legacy outputs.
 # Never import or instantiate them through the application loader.
-RETIRED_MODULES = frozenset({'character_separator', 'format_converter'})
+RETIRED_MODULES = frozenset({'character_separator', 'format_converter', 'format_scanner'})
 
 class ModuleLoader:
     """

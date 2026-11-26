@@ -23,8 +23,9 @@ class Retirement(unittest.TestCase):
         loader=ModuleLoader(str(ROOT/'modules'))
         with patch('core.mod_loader.importlib.import_module') as imported:
             names=loader.discover_modules()
-        self.assertEqual(len(names),12)
+        self.assertEqual(len(names),11)
         self.assertNotIn('format_converter',names)
+        self.assertNotIn('format_scanner',names)
         self.assertNotIn('character_separator',names)
         self.assertIn('cropper',names)
         self.assertIn('image_optimizer',names)
@@ -32,7 +33,7 @@ class Retirement(unittest.TestCase):
 
     def test_explicit_load_cannot_restore_retired_tool_even_if_cached(self):
         loader=ModuleLoader(str(ROOT/'modules'))
-        for name in ('format_converter','character_separator'):
+        for name in ('format_converter','character_separator','format_scanner'):
             with self.subTest(name=name):
                 loader.loaded_modules[name]=object()
                 with patch('core.mod_loader.importlib.import_module') as imported:
@@ -72,8 +73,8 @@ class Retirement(unittest.TestCase):
             with patch.object(product,'ModuleLoader',return_value=loader),patch.object(loader,'load_module',side_effect=load),patch.object(product,'close_library_services',side_effect=lambda **kwargs:close_library_services()):
                 window=product.MainWindow()
                 try:
-                    self.assertEqual(len(window.loaded_modules),12)
-                    self.assertEqual(window.module_grid_count,12)
+                    self.assertEqual(len(window.loaded_modules),11)
+                    self.assertEqual(window.module_grid_count,11)
                     self.assertNotIn('format_converter',calls)
                     self.assertNotIn('character_separator',calls)
                     self.assertFalse(window.module_windows)

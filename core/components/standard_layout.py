@@ -131,7 +131,13 @@ class StandardToolLayout(QWidget):
             self.bottom_frame = QFrame()
             # Style it clearly
             bg_panel = self.theme.get_color('bg_panel') if self.theme else "#2d2d2d"
-            self.bottom_frame.setStyleSheet(f"background-color: {bg_panel}; border-top: 1px solid {border_col};")
+            # Con selector: sin él la regla se hereda a cada botón de la barra y anula
+            # los roles del tema (un botón «primary» se veía deshabilitado).
+            self.bottom_frame.setObjectName("bottom_bar")
+            self.bottom_frame.setStyleSheet(
+                f"QFrame#bottom_bar {{ background-color: {bg_panel}; border-top: 1px solid {border_col}; }}"
+                # `.QWidget` = solo contenedores QWidget exactos; los botones conservan el tema.
+                "QFrame#bottom_bar .QWidget, QFrame#bottom_bar QLabel { background: transparent; }")
             self.bottom_frame.setMinimumHeight(60)
             
             bf_layout = QVBoxLayout(self.bottom_frame)

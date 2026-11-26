@@ -3,6 +3,7 @@ import os
 import logging
 import copy
 import threading
+from collections import Counter
 from html import escape
 from pathlib import Path
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
@@ -19,6 +20,7 @@ from core.curation_bindings import valid as valid_binding
 from core.derived_publication import write as native_write
 from core.theme import Theme
 from core.components.standard_layout import StandardToolLayout
+from core.components.ui_roles import primary, section, hint
 from .logic.optimizer import optimize_image, analyze_image, get_export_path
 
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.avif'}
@@ -252,34 +254,51 @@ class ImageOptimizerModule(BaseModule):
 
         sidebar = self._create_sidebar()
         content = self._create_content()
+        bottom = self._create_bottom_bar()
 
         self.view = StandardToolLayout(
-            content, sidebar,
+            content, sidebar, bottom,
             theme_manager=self.context.get('theme_manager'),
-            event_bus=self.context.get('event_bus')
+            event_bus=self.context.get('event_bus'),
+            tool_header=(self._icon, self.tr("tool.image_optimizer.name", "Image Optimizer"),
+                         self.tr("tool.image_optimizer.desc", self._description)),
         )
         return self.view
 
     def _create_sidebar(self) -> QWidget:
-        theme    = self.context.get('theme_manager') if hasattr(self, 'context') else None
-        text_dim = theme.get_color('text_dim') if theme else Theme.TEXT_DIM
-
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(12)
+        layout.setContentsMargins(15, 10, 15, 15)
+        layout.setSpacing(8)
 
-        lbl_title = QLabel(self.tr("opt.title", "🚀 IMAGE OPTIMIZER"))
-        lbl_title.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 14px;")
-        layout.addWidget(lbl_title)
+        # 1. Origen: la cola y qué formatos trae (antes en Format Scanner).
+        layout.addWidget(section(self.tr("opt.sec.queue", "Queue")))
+        self.btn_load = QPushButton(self.tr("opt.load_images", "Add images…"))
+        self.btn_load.setToolTip(self.tr(
+            "opt.load_images_tip",
+            "Adds images to the queue. The originals are not modified: the result goes to "
+            "a separate folder."))
+        self.btn_load.setCursor(Qt.PointingHandCursor)
+        self.btn_load.clicked.connect(self._load_images)
+        layout.addWidget(self.btn_load)
+        self.lbl_formats = hint(self.tr("opt.formats.empty", "The queue is empty."))
+        self.lbl_formats.setToolTip(self.tr(
+            "opt.formats_tip",
+            "How many queued images there are of each format, by file extension. Nothing is read from disk."))
+        layout.addWidget(self.lbl_formats)
+        self.btn_analyze = QPushButton(self.tr("opt.analyze", "Suggest settings"))
+        self.btn_analyze.setToolTip(self.tr(
+            "opt.analyze_tip",
+            "Looks at the queued images and suggests a format and size, without "
+            "converting anything yet."))
+        self.btn_analyze.setCursor(Qt.PointingHandCursor)
+        self.btn_analyze.clicked.connect(self._analyze_first)
+        layout.addWidget(self.btn_analyze)
+        self.lbl_suggestion = hint("")
+        layout.addWidget(self.lbl_suggestion)
 
-        lbl_desc = QLabel(self.tr("opt.desc", "Batch compress, resize and convert images."))
-        lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet(f"color: {text_dim}; font-size: 11px;")
-        layout.addWidget(lbl_desc)
-
-        layout.addSpacing(10)
-
+        # 2. Salida
+        layout.addWidget(section(self.tr("opt.sec.output", "Output")))
         layout.addWidget(QLabel(self.tr("opt.format", "Output Format:")))
         self.combo_format = QComboBox()
         self.combo_format.setToolTip(self.tr(
@@ -290,7 +309,6 @@ class ImageOptimizerModule(BaseModule):
             self.tr("opt.format.original", "Original (no change)"),
             "PNG", "JPEG", "WebP"
         ])
-        self.combo_format.setView(self._make_combo_view())
         layout.addWidget(self.combo_format)
 
         layout.addWidget(QLabel(self.tr("opt.resize", "Resize Strategy:")))
@@ -304,7 +322,6 @@ class ImageOptimizerModule(BaseModule):
             self.tr("opt.resize.2048",     "Longest Side: 2048px"),
             self.tr("opt.resize.custom",   "Custom Longest Side")
         ])
-        self.combo_resize.setView(self._make_combo_view())
         self.combo_resize.currentIndexChanged.connect(self._on_resize_change)
         layout.addWidget(self.combo_resize)
 
@@ -326,77 +343,37 @@ class ImageOptimizerModule(BaseModule):
             "the optimised copy loses the image's «recipe»."))
         self.chk_meta.setChecked(True)
         layout.addWidget(self.chk_meta)
-
-        self.lbl_suggestion = QLabel("")
-        self.lbl_suggestion.setWordWrap(True)
-        self.lbl_suggestion.setStyleSheet(f"color: {text_dim}; font-style: italic; font-size: 11px;")
-        layout.addWidget(self.lbl_suggestion)
-
         layout.addStretch()
+        return container
 
-        # Action buttons — consolidated at sidebar bottom
-        self.btn_load = QPushButton(self.tr("opt.load_images", "Load Images"))
-        self.btn_load.setToolTip(self.tr(
-            "opt.load_images_tip",
-            "Adds images to the queue. The originals are not modified: the result goes to "
-            "a separate folder."))
-        self.btn_load.setCursor(Qt.PointingHandCursor)
-        self.btn_load.clicked.connect(self._load_images)
-        layout.addWidget(self.btn_load)
-
-        self.btn_analyze = QPushButton(self.tr("opt.analyze", "Analyze Suggestion"))
-        self.btn_analyze.setToolTip(self.tr(
-            "opt.analyze_tip",
-            "Looks at the queued images and suggests a format and size, without "
-            "converting anything yet."))
-        self.btn_analyze.setCursor(Qt.PointingHandCursor)
-        self.btn_analyze.clicked.connect(self._analyze_first)
-        layout.addWidget(self.btn_analyze)
-
+    def _create_bottom_bar(self) -> QWidget:
+        bar = QWidget()
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(0, 0, 0, 0)
         self.progress = QProgressBar()
         self.progress.setVisible(False)
-        self.progress.setStyleSheet("""
-            QProgressBar { border: 1px solid #444; border-radius: 4px; text-align: center; background-color: #222; }
-            QProgressBar::chunk { background-color: #00ffcc; }
-        """)
-        layout.addWidget(self.progress)
-
-        self.btn_run = QPushButton(self.tr("opt.process", "Process Queue"))
+        layout.addWidget(self.progress, 1)
+        layout.addStretch()
+        # Acción principal abajo a la derecha (convención 3)
+        self.btn_run = primary(QPushButton(self.tr("opt.process", "Process Queue")))
         self.btn_run.setToolTip(self.tr(
             "opt.process_tip",
             "Converts the whole queue with the settings above and opens the result folder "
             "when it finishes."))
         self.btn_run.setCursor(Qt.PointingHandCursor)
-        self.btn_run.setStyleSheet(f"""
-            QPushButton {{ background-color: {self.accent_color}; color: #000; font-weight: bold; padding: 8px 24px; border-radius: 4px; border: none; }}
-            QPushButton:hover {{ background-color: white; }}
-            QPushButton:disabled {{ background-color: #444; color: #888; }}
-        """)
         self.btn_run.clicked.connect(self._run_all)
         layout.addWidget(self.btn_run)
+        return bar
 
-        return container
-
-    def _make_combo_view(self) -> QListView:
-        view = QListView()
-        pal = view.palette()
-        pal.setColor(QPalette.Base, QColor("#050505"))
-        pal.setColor(QPalette.Text, QColor("#ffffff"))
-        view.setPalette(pal)
-        view.setStyleSheet(f"""
-            QListView {{
-                background-color: #050505;
-                border: 2px solid {self.accent_color};
-                color: white;
-                outline: none;
-            }}
-            QListView::item {{ padding: 5px; height: 25px; }}
-            QListView::item:selected {{
-                background-color: {self.accent_color};
-                color: black;
-            }}
-        """)
-        return view
+    def _update_formats(self):
+        """Reparto por extensión de la cola (lo que hacía Format Scanner), sin E/S."""
+        if not self.queue:
+            self.lbl_formats.setText(self.tr("opt.formats.empty", "The queue is empty."))
+            return
+        counts = Counter(os.path.splitext(path)[1].lower().lstrip('.') or '?' for path in self.queue)
+        parts = ' · '.join(f"{ext.upper()} {n}" for ext, n in counts.most_common())
+        self.lbl_formats.setText(self.tr("opt.formats", "{count} images: {parts}").format(
+            count=len(self.queue), parts=parts))
 
     def _create_content(self) -> QWidget:
         theme    = self.context.get('theme_manager') if hasattr(self, 'context') else None
@@ -493,6 +470,7 @@ class ImageOptimizerModule(BaseModule):
             if not image.isNull():item.setIcon(QIcon(QPixmap.fromImage(image)))
 
     def _update_ui(self):
+        self._update_formats()
         if not self.queue:
             self._thumb_loader.invalidate()
             self._thumb_items = {}

@@ -208,7 +208,7 @@ class MainWindow(QMainWindow):
     # Etapas del flujo de trabajo (UI_DESIGN.md). Clave = nombre interno del módulo.
     DASHBOARD_STAGES = (
         ("obtain",  "Obtain",  ("Cherry-DL",)),
-        ("library", "Library", ("Gallery", "Librarian", "Duplicate Finder", "Format Scanner")),
+        ("library", "Library", ("Gallery", "Librarian", "Duplicate Finder")),
         ("curate",  "Curate",  ("Pickler", "Character Recognizer")),
         ("workshop","Workshop",("Smart Cropper", "Image Optimizer", "Watermarker", "Metadata Hub")),
         ("dataset", "Dataset", ("Dataset Tagger",)),
