@@ -32,6 +32,15 @@ class PicklerModule(BaseModule):
         self.view = PicklerView(self.context)
         return self.view
 
+    def recovery_entries(self):
+        # El botón propio de Pickler se queda: la herramienta se bloquea hasta resolverlo.
+        return [("pickler_transfers",
+                 self.tr("pickler.recovery", "Review interrupted transfers…").rstrip('…'),
+                 self.tr("pickler.recovery_tip",
+                    "Restore the source of a pending transfer, keeping its current curation. "
+                    "Verified copy undo can resume; confirmed transfers are retained."),
+                 lambda: self.view is not None and self.view._review_transfers())]
+
     def on_window_closed(self):
         if self.view:
             self.view.flush_library_changes()

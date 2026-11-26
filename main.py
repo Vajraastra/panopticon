@@ -242,9 +242,9 @@ class MainWindow(QMainWindow):
 
         btn_recovery = link(QPushButton(self.tr('dashboard.recovery_link', 'Recovery center')))
         btn_recovery.setCursor(Qt.PointingHandCursor)
-        btn_recovery.setToolTip(self.tr('tool.producer_recovery.open_tip',
-            'Review one producer journal and explicitly reconcile verified Native evidence using the open library.'))
-        btn_recovery.clicked.connect(self.open_producer_recovery)
+        btn_recovery.setToolTip(self.tr('dashboard.recovery_tip',
+            'Interrupted operations from every tool, in one place. Nothing changes without your confirmation.'))
+        btn_recovery.clicked.connect(self.open_recovery_center)
         header_layout.addWidget(btn_recovery)
 
         btn_settings = QPushButton(f"⚙ {self.tr('settings.title', 'Settings')}")
@@ -648,6 +648,43 @@ class MainWindow(QMainWindow):
             self.show()
             self.raise_()
             self.activateWindow()
+
+    def recovery_entries(self):
+        """Entradas del core + las que declara cada módulo (sin importarlos)."""
+        from core.components.recovery_center import RecoveryEntry
+        entries = [RecoveryEntry(
+            "producer_journals",
+            self.tr('tool.producer_recovery.title', 'Recovery journals'),
+            self.tr('tool.producer_recovery.open_tip',
+                'Review one producer journal and explicitly reconcile verified Native evidence using the open library.'),
+            self.open_producer_recovery)]
+        for module in self.loaded_modules.values():
+            try:
+                declared = module.recovery_entries()
+            except Exception:
+                log.exception("recovery_entries failed for %s", module.name)
+                continue
+            owner = self.tr(f"tool.{module.name.lower().replace(' ', '_')}.name", module.name)
+            for key, title, description, opener in declared:
+                def open_entry(module=module, opener=opener):
+                    self.switch_to_module(module)  # crea la vista y trae su ventana
+                    if module.name in self.module_windows:
+                        opener()
+                entries.append(RecoveryEntry(key, title, description, open_entry, owner))
+        return entries
+
+    def open_recovery_center(self):
+        if self._shutting_down:
+            return
+        from core.components.recovery_center import RecoveryCenterDialog
+        dialog = getattr(self, '_recovery_center', None)
+        if dialog is not None and isValid(dialog):
+            dialog.close()
+            dialog.deleteLater()
+        # Se reconstruye cada vez: la lista sigue a los módulos cargados.
+        self._recovery_center = RecoveryCenterDialog(self.recovery_entries(), self.tr, self)
+        self._recovery_center.show()
+        self._recovery_center.raise_()
 
     def open_producer_recovery(self):
         if self._shutting_down:

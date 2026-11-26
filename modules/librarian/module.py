@@ -229,21 +229,6 @@ class LibrarianModule(BaseModule):
         lay.addLayout(row)
         layout.addWidget(box)
 
-        # Recuperación
-        box, lay = self._group(self.tr("lib.group.recovery", "Recovery"), self.tr(
-            "lib.group.recovery_hint",
-            "Inspect resources left by an interrupted curation export in any folder."))
-        row = QHBoxLayout()
-        self.btn_recover_curation = QPushButton(self.tr('lib.recovery.open', 'Recover interrupted export…'))
-        self.btn_recover_curation.setToolTip(self.tr('lib.recovery.open_tip',
-            'Choose any folder, including one not indexed. Inspect interrupted export resources, '
-            'then explicitly quarantine verified resources without touching its images or catalogs.'))
-        self.btn_recover_curation.clicked.connect(self.recover_folder_curation)
-        row.addWidget(self.btn_recover_curation)
-        row.addStretch()
-        lay.addLayout(row)
-        layout.addWidget(box)
-
         layout.addWidget(hint(self.tr(
             "lib.explore_in_gallery",
             "To search by tags, rating or text and send images to other tools, use Gallery.")))
@@ -371,6 +356,14 @@ class LibrarianModule(BaseModule):
 
     def _versions_closed(self):
         self._versions_dialog = None
+
+    def recovery_entries(self):
+        return [("curation_export",
+                 self.tr('lib.recovery.open', 'Recover interrupted export…').rstrip('…'),
+                 self.tr('lib.recovery.open_tip',
+                    'Choose any folder, including one not indexed. Inspect interrupted export resources, '
+                    'then explicitly quarantine verified resources without touching its images or catalogs.'),
+                 self.recover_folder_curation)]
 
     def recover_folder_curation(self):
         if self._closed:

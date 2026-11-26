@@ -125,7 +125,7 @@
   "tool.producer_recovery.check.current_native_matches": "Coinciden la identidad y el hash actuales del resultado",
   "tool.producer_recovery.check.current_generation_matches": "Coincide la generación actual en la biblioteca",
   "tool.producer_recovery.check.output_path_occupied": "La ruta de resultado ya tiene identidad en la biblioteca",
-  "tool.producer_recovery.title": "Diarios de recuperación",
+  "tool.producer_recovery.title": "Diarios de productores",
   "tool.producer_recovery.open_tip": "Revisa un diario de productor y reconcilia explícitamente la evidencia verificada usando la biblioteca abierta.",
   "tool.producer_recovery.intro": "Selecciona un diario de productor para revisar sus archivos actuales, identidad en la biblioteca y recibo histórico.",
   "tool.producer_recovery.no_selection": "No se ha seleccionado un diario.",
@@ -2037,7 +2037,14 @@
   "lib.group.curation_hint": "Exporta o revisa las etiquetas y calificaciones de cada copia indexada de la carpeta seleccionada (con subcarpetas). Las imágenes nunca se modifican.",
   "lib.group.identity": "Identidades y versiones de copia",
   "lib.group.identity_hint": "Resuelve conflictos de nombres entre copias y gestiona versiones offline o reemplazadas.",
-  "lib.group.recovery": "Recuperación",
-  "lib.group.recovery_hint": "Inspecciona los restos de una exportación de curación interrumpida en cualquier carpeta.",
-  "lib.explore_in_gallery": "Para buscar por etiquetas, calificación o texto y enviar imágenes a otras herramientas, usa Galería."
+  "lib.explore_in_gallery": "Para buscar por etiquetas, calificación o texto y enviar imágenes a otras herramientas, usa Galería.",
+  "recovery_center.title": "Centro de recuperación",
+  "recovery_center.intro": "Las operaciones interrumpidas de todas las herramientas, en un solo lugar. Abrir una entrada solo muestra su revisión; nada se restaura, mueve ni borra sin que lo confirmes allí.",
+  "recovery_center.open": "Revisar…",
+  "recovery_center.open_tip": "Abre esta revisión. Nada cambia hasta que confirmes una acción allí.",
+  "recovery_center.close_tip": "Cierra esta lista. Las revisiones que abriste siguen abiertas.",
+  "dashboard.recovery_tip": "Las operaciones interrumpidas de todas las herramientas, en un solo lugar. Nada cambia sin tu confirmación.",
+  "dup.recovery_center_title": "Diario de duplicados retirados",
+  "dup.recovery_center_tip": "Revisa un diario de retiro: restaura una copia retirada o, por separado, bórrala definitivamente tras una vista previa nueva.",
+  "common.close": "Cerrar"
 }

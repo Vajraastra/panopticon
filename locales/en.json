@@ -125,7 +125,7 @@
   "tool.producer_recovery.check.current_native_matches": "Current output identity and hash match",
   "tool.producer_recovery.check.current_generation_matches": "Current Native generation matches",
   "tool.producer_recovery.check.output_path_occupied": "Output path already has a Native identity",
-  "tool.producer_recovery.title": "Recovery journals",
+  "tool.producer_recovery.title": "Producer journals",
   "tool.producer_recovery.open_tip": "Review one producer journal and explicitly reconcile verified Native evidence using the open library.",
   "tool.producer_recovery.intro": "Select one producer journal to inspect its current files, library identity and historical receipt.",
   "tool.producer_recovery.no_selection": "No journal selected.",
@@ -2037,7 +2037,14 @@
   "lib.group.curation_hint": "Exports or reviews the tags and ratings of every indexed copy in the selected folder (subfolders included). Images are never modified.",
   "lib.group.identity": "Identities and copy versions",
   "lib.group.identity_hint": "Resolve naming conflicts between copies and manage offline or replaced versions.",
-  "lib.group.recovery": "Recovery",
-  "lib.group.recovery_hint": "Inspect resources left by an interrupted curation export in any folder.",
-  "lib.explore_in_gallery": "To search by tags, rating or text and send images to other tools, use Gallery."
+  "lib.explore_in_gallery": "To search by tags, rating or text and send images to other tools, use Gallery.",
+  "recovery_center.title": "Recovery center",
+  "recovery_center.intro": "Interrupted operations from every tool, in one place. Opening an entry only shows its review; nothing is restored, moved or deleted without your confirmation there.",
+  "recovery_center.open": "Review…",
+  "recovery_center.open_tip": "Open this review. Nothing changes until you confirm an action there.",
+  "recovery_center.close_tip": "Close this list. Reviews you opened stay open.",
+  "dashboard.recovery_tip": "Interrupted operations from every tool, in one place. Nothing changes without your confirmation.",
+  "dup.recovery_center_title": "Retired duplicates journal",
+  "dup.recovery_center_tip": "Review a retirement journal: restore a retired copy or, separately, delete it permanently after a fresh preview.",
+  "common.close": "Close"
 }

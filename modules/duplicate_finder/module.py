@@ -71,6 +71,16 @@ class DuplicateFinderModule(BaseModule):
             self._controls()
         return self.view
 
+    RECOVERY_MODE = 5  # «Recovery journal (review)» en combo_mode
+
+    def recovery_entries(self):
+        return [("duplicate_retirement",
+                 self.text('recovery_center_title', 'Retired duplicates journal'),
+                 self.text('recovery_center_tip',
+                    'Review a retirement journal: restore a retired copy or, separately, delete it '
+                    'permanently after a fresh preview.'),
+                 lambda: self.view is not None and self.combo_mode.setCurrentIndex(self.RECOVERY_MODE))]
+
     def _sidebar(self):
         box = QWidget()
         layout = QVBoxLayout(box)

@@ -60,6 +60,14 @@ class BaseModule(QObject):
         """
         pass
 
+    def recovery_entries(self):
+        """Entradas del Centro de recuperación (core/components/recovery_center.py).
+
+        Lista de tuplas (clave, título, descripción, abrir). MainWindow abre antes la
+        ventana del módulo y luego llama a `abrir()`; la lógica de revisión sigue en el módulo.
+        """
+        return []
+
     def tr(self, key, default=None):
         """
         Traduce una clave usando el LocaleManager inyectado en el contexto.
