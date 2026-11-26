@@ -1,25 +1,18 @@
 from core.native_threads import start_worker, native_done, owner_threads_ready
 from shiboken6 import isValid
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
-                               QListWidget, QFileDialog, QMessageBox, QProgressBar, QFrame,
-                               QLineEdit, QDialog, QCompleter, QScrollArea, QGridLayout, QComboBox)
-from PySide6.QtGui import QPixmap
-from PySide6.QtCore import Qt, QSize, Signal, QTimer, QStringListModel
+                               QListWidget, QFileDialog, QMessageBox, QProgressBar, QGroupBox)
+from PySide6.QtCore import Qt, QTimer
 from core.base_module import BaseModule
-from core.components.thumbnail import ClickableThumbnail
-from core.thumbnail_loader import ThumbnailLoader
-from core.components.worker_preview import WorkerPreviewDialog
-from core.components.tag_widgets import FlowLayout, TagChip
+from core.components.ui_roles import primary, section, hint
 from core.database_manager import DatabaseManager
 from core.library_revision_async import LibraryRevisionWatcher
 from core.library_async import LibraryReader, LibraryWriter
-from core.components.tag_vocabulary import TagVocabulary, TagPageBar
 from core.curation_tasks import CurationExportTasks
 from core.components.curation_review import CurationReviewDialog
 from core.components.curation_recovery import CurationRecoveryDialog
 from core.components.copy_versions import CopyVersionsDialog
 from core.components.path_identity_review import PathIdentityReviewDialog
-from core.components.provenance import ProvenancePanel
 from .logic.indexer import IndexerWorker
 from .logic.hash_backfill import HashBackfillWorker
 from .ui.folder_archive import FolderArchiveController, retain_worker
@@ -33,27 +26,19 @@ log = logging.getLogger(__name__)
 
 class LibrarianModule(BaseModule):
     """
-    El Bibliotecario (Librarian).
-    Módulo core encargado de la gestión de la base de datos de imágenes,
-    escaneo de carpetas, etiquetado y búsqueda avanzada.
-    Sirve como fuente de datos para casi todos los demás módulos.
+    El Bibliotecario (Librarian): administración de la biblioteca.
+    Carpetas vigiladas, indexador, hashes, entradas fantasma, curación por carpeta,
+    identidades de ruta y versiones de copia. Explorar y buscar (etiquetas,
+    calificación, texto, envío a otras herramientas) es trabajo de Gallery (UI_DESIGN U1).
     """
-    # Señales para comunicación con otros módulos vía EventBus
-    request_open_gallery = Signal(list, str)   # (lista_rutas, contexto_titulo)
-    request_open_optimizer = Signal(list)     # (lista_rutas)
-    request_open_cropper = Signal(list)       # (lista_rutas)
-    request_open_pickler = Signal(list)       # (lista_rutas)
 
     def __init__(self):
         super().__init__()
         self._name = "Librarian"
-        self._description = "Indexador central y gestor de etiquetas de la librería."
+        self._description = "Library administration: watched folders, indexing and maintenance."
         self._icon = "📚"
         
         self.view = None
-        self._thumb_loader = None
-        self._thumb_widgets = {}
-        self._image_previews = []
         # Gestor de base de datos SQLite persistente
         self.db = None
         self.indexer_thread = None
@@ -69,13 +54,7 @@ class LibrarianModule(BaseModule):
         self._dirty_timer.setInterval(1500)
         self._dirty_timer.timeout.connect(self._flush_dirty_reindex)
         
-        # Estado de Paginación del Explorador de Tags
-        self.current_page = 0
-        self.page_size = 100
-        self.total_paths = []  # Sólo la página confirmada.
-        self._selection_count = 0
-        self._external_paths = None
-        self._handoff = None
+        self._folder_count = None  # imágenes indexadas de la carpeta seleccionada
         self._exporting = None
         self._review_dialog = None
         self._recovery_dialog = None
@@ -101,12 +80,10 @@ class LibrarianModule(BaseModule):
         self.overview_reader = LibraryReader(self.db.service, self)
         self.browse_reader = LibraryReader(self.db.service, self)
         self.scan_reader = LibraryReader(self.db.service, self)
-        self.handoff_reader = LibraryReader(self.db.service, self)
-        self.handoff_reader.result.connect(self._on_handoff)
         self.export_reader = LibraryReader(CurationExportTasks(self.db.db_path), self)
         self.export_reader.result.connect(self._on_export_finished)
         self.overview_reader.result.connect(self._on_overview)
-        self.browse_reader.result.connect(self._on_selection)
+        self.browse_reader.result.connect(self._on_folder_count)
         self.scan_reader.result.connect(self._on_scan_folders)
         self.folder_writer = LibraryWriter(self.db.service, self)
         self.folder_writer.result.connect(self._on_folder_written)
@@ -115,25 +92,24 @@ class LibrarianModule(BaseModule):
     def get_view(self) -> QWidget:
         """Inicializa y retorna la vista principal del bibliotecario."""
         if self.view: return self.view
-        
-        # 1. Crear sub-componentes UI
+
         self.sidebar = self._create_sidebar()
         self.content = self._create_content()
         self.bottom = self._create_bottom_bar()
-        
-        # 2. Ensamblar usando el Layout Estándar de 3 paneles
+
         from core.components.standard_layout import StandardToolLayout
         self.view = StandardToolLayout(
             self.content,
-            self.sidebar, 
+            self.sidebar,
             self.bottom,
             theme_manager=self.context.get('theme_manager'),
-            event_bus=self.context.get('event_bus')
+            event_bus=self.context.get('event_bus'),
+            tool_header=(self._icon, self.tr("tool.librarian.name", "Librarian"),
+                         self.tr("tool.librarian.desc", self._description)),
         )
         self.view.destroyed.connect(self.folder_archive.close)
-        
+
         initial_revision = self.db.service.revision_snapshot()
-        self.setup_completer()
         self.refresh_ui()
         self.revisions = LibraryRevisionWatcher(self.db.service, self.view, busy=self._revision_busy, initial=initial_revision)
         self.revisions.changed.connect(self._on_native_revision)
@@ -149,535 +125,182 @@ class LibrarianModule(BaseModule):
         return self.view
 
     def _create_sidebar(self) -> QWidget:
-        """Sidebar: Watched Folders Management"""
-        tm = self.context.get('theme_manager')
-        c = tm.get_color if tm else Theme._c
-
+        """Barra lateral: carpetas vigiladas (origen de todo lo demás)."""
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(15, 10, 15, 15)
         layout.setSpacing(10)
 
-        # Header
-        lbl = QLabel(self.tr("lib.title", "📚 Library Sources"))
-        lbl.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {c('text_primary')};")
-        layout.addWidget(lbl)
-
-        # List
+        layout.addWidget(section(self.tr("lib.sec.sources", "Watched folders")))
         self.folder_list = QListWidget()
-        self.folder_list.setStyleSheet(f"""
-            QListWidget {{
-                background-color: {c('bg_panel')};
-                border: 1px solid {c('border')};
-                border-radius: 8px;
-                color: {c('text_secondary')};
-                font-size: 13px;
-                outline: none;
-            }}
-            QListWidget::item {{ padding: 8px; }}
-            QListWidget::item:selected {{
-                background-color: {c('border')};
-                color: {c('accent_main')};
-                border: 1px solid {c('accent_main')};
-            }}
-        """)
+        self.folder_list.setToolTip(self.tr(
+            "lib.folder_list_tip",
+            "Folders the indexer watches. Select one to see its count and to export or "
+            "review its curation."))
         self.folder_list.itemClicked.connect(self.on_folder_selected)
-        layout.addWidget(self.folder_list)
+        layout.addWidget(self.folder_list, 1)
 
-        # Buttons
         btn_layout = QHBoxLayout()
-        self.btn_add = QPushButton(self.tr("lib.add", "➕ Add"))
+        self.btn_add = QPushButton(self.tr("lib.add", "Add folder…"))
         self.btn_add.setToolTip(self.tr(
             "lib.add_tip",
             "Registers a folder to watch. It copies nothing: it only notes where to look "
             "when indexing."))
         self.btn_add.clicked.connect(self.add_folder)
-        self.btn_add.setStyleSheet(f"background-color: {c('bg_input')}; color: {c('accent_main')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px;")
-
         self.btn_remove = QPushButton(self.tr("lib.remove", "Archive folder"))
         self.btn_remove.setToolTip(self.tr(
             "lib.remove_tip",
             "Previews indexed copies, then asks to stop watching and keep them offline. "
             "Files and curation are retained."))
         self.btn_remove.clicked.connect(self.remove_folder)
-        self.btn_remove.setStyleSheet(f"background-color: {c('bg_input')}; color: {c('accent_warning')}; border: 1px solid {c('border_strong')}; border-radius: 4px; padding: 6px;")
-
         btn_layout.addWidget(self.btn_add)
         btn_layout.addWidget(self.btn_remove)
         layout.addLayout(btn_layout)
-        self.lbl_folder_write = QLabel()
-        self.lbl_folder_write.setWordWrap(True)
+        self.lbl_folder_write = hint("")
         self.lbl_folder_write.setTextFormat(Qt.PlainText)
-        self.lbl_folder_write.setStyleSheet(f"color: {c('text_secondary')};")
         layout.addWidget(self.lbl_folder_write)
+        return container
 
+    def _group(self, title, text):
+        box = QGroupBox(title)
+        lay = QVBoxLayout(box)
+        lay.setSpacing(8)
+        if text:
+            lay.addWidget(hint(text))
+        return box, lay
+
+    def _create_content(self) -> QWidget:
+        """Lienzo: estado de la biblioteca y tareas de administración agrupadas."""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(14)
+
+        self.lbl_stats = QLabel(self.tr("common.status.loading", "Loading..."))
+        self.lbl_stats.setStyleSheet("font-size: 16px; font-weight: bold; background: transparent;")
+        self.lbl_stats.setWordWrap(True)
+        layout.addWidget(self.lbl_stats)
+        self.lbl_folder_stats = hint(self.tr("lib.folder.none", "Select a watched folder on the left."))
+        layout.addWidget(self.lbl_folder_stats)
+
+        # Curación de la carpeta seleccionada
+        box, lay = self._group(self.tr("lib.group.curation", "Curation of the selected folder"), self.tr(
+            "lib.group.curation_hint",
+            "Exports or reviews the tags and ratings of every indexed copy in the selected folder "
+            "(subfolders included). Images are never modified."))
+        row = QHBoxLayout()
         self.btn_export_curation = QPushButton(self.tr('lib.export', 'Export folder curation'))
         self.btn_export_curation.setToolTip(self.tr('lib.export_tip',
-            'Select a folder and clear tag filters. Exports every indexed copy in that folder, including subfolders, '
+            'Exports every indexed copy in the selected folder, including subfolders, '
             'to panopticon.curation.db. Replaces its previous export; preserves images and Cherry catalogs.'))
         self.btn_export_curation.setEnabled(False)
-        self.btn_export_curation.setStyleSheet(
-            f"background-color: {c('bg_input')}; color: {c('accent_info')}; border: 1px solid {c('border_strong')}; padding: 6px;")
         self.btn_export_curation.clicked.connect(self.export_folder_curation)
-        layout.addWidget(self.btn_export_curation)
-        self.lbl_export = QLabel()
-        self.lbl_export.setWordWrap(True)
-        self.lbl_export.setTextFormat(Qt.PlainText)
-        self.lbl_export.setStyleSheet(f"color: {c('text_secondary')};")
-        layout.addWidget(self.lbl_export)
         self.btn_review_curation = QPushButton(self.tr('lib.review', 'Review folder curation'))
         self.btn_review_curation.setToolTip(self.tr('lib.review_tip',
-            'Select a folder and clear tag filters. Compare its exported curation with the central database '
+            'Compare the selected folder\'s exported curation with the central database '
             'in pages; conflicts retain both values. No changes are applied.'))
         self.btn_review_curation.setEnabled(False)
-        self.btn_review_curation.setStyleSheet(
-            f"background-color: {c('bg_input')}; color: {c('accent_info')}; border: 1px solid {c('border_strong')}; padding: 6px;")
         self.btn_review_curation.clicked.connect(self.review_folder_curation)
-        layout.addWidget(self.btn_review_curation)
-        self.btn_recover_curation = QPushButton(self.tr('lib.recovery.open', 'Recover interrupted export…'))
-        self.btn_recover_curation.setToolTip(self.tr('lib.recovery.open_tip',
-            'Choose any folder, including one not indexed. Inspect interrupted export resources, '
-            'then explicitly quarantine verified resources without touching its images or catalogs.'))
-        self.btn_recover_curation.setStyleSheet(
-            f"background-color: {c('bg_input')}; color: {c('text_primary')}; border: 1px solid {c('border_strong')}; padding: 6px;")
-        self.btn_recover_curation.clicked.connect(self.recover_folder_curation)
-        layout.addWidget(self.btn_recover_curation)
+        row.addWidget(self.btn_export_curation)
+        row.addWidget(self.btn_review_curation)
+        row.addStretch()
+        lay.addLayout(row)
+        self.lbl_export = hint("")
+        self.lbl_export.setTextFormat(Qt.PlainText)
+        lay.addWidget(self.lbl_export)
+        layout.addWidget(box)
+
+        # Identidades y versiones
+        box, lay = self._group(self.tr("lib.group.identity", "Identities and copy versions"), self.tr(
+            "lib.group.identity_hint",
+            "Resolve naming conflicts between copies and manage offline or replaced versions."))
+        row = QHBoxLayout()
         self.btn_path_identity = QPushButton(self.tr('lib.identity.open', 'Review path identities…'))
         self.btn_path_identity.setToolTip(self.tr('lib.identity.open_tip',
             'Prepare Windows naming evidence and review conflicting copy IDs. Preserves names, files, curation and portable folders.'))
         self.btn_path_identity.clicked.connect(self.review_path_identities)
-        layout.addWidget(self.btn_path_identity)
         self.btn_copy_versions = QPushButton(self.tr('lib.versions.open', 'Copy versions and offline catalog…'))
         self.btn_copy_versions.setToolTip(self.tr('lib.versions.open_tip',
             'Review stored copies by ID, preserve an active copy offline or verify a file before making it available.'))
-        self.btn_copy_versions.setStyleSheet(self.btn_recover_curation.styleSheet())
         self.btn_copy_versions.clicked.connect(self.review_copy_versions)
-        layout.addWidget(self.btn_copy_versions)
+        row.addWidget(self.btn_path_identity)
+        row.addWidget(self.btn_copy_versions)
+        row.addStretch()
+        lay.addLayout(row)
+        layout.addWidget(box)
 
-        # --- Section 2: Tag Selection ---
-        layout.addSpacing(20)
-        lbl_tags = QLabel(self.tr("lib.tags_title", "🏷️ Available Tags"))
-        lbl_tags.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {c('text_dim')};")
-        layout.addWidget(lbl_tags)
+        # Recuperación
+        box, lay = self._group(self.tr("lib.group.recovery", "Recovery"), self.tr(
+            "lib.group.recovery_hint",
+            "Inspect resources left by an interrupted curation export in any folder."))
+        row = QHBoxLayout()
+        self.btn_recover_curation = QPushButton(self.tr('lib.recovery.open', 'Recover interrupted export…'))
+        self.btn_recover_curation.setToolTip(self.tr('lib.recovery.open_tip',
+            'Choose any folder, including one not indexed. Inspect interrupted export resources, '
+            'then explicitly quarantine verified resources without touching its images or catalogs.'))
+        self.btn_recover_curation.clicked.connect(self.recover_folder_curation)
+        row.addWidget(self.btn_recover_curation)
+        row.addStretch()
+        lay.addLayout(row)
+        layout.addWidget(box)
 
-        self.tag_list = QListWidget()
-        self.tag_list.setStyleSheet(f"""
-            QListWidget {{
-                background-color: {c('bg_main')};
-                border: 1px solid {c('border')};
-                border-radius: 6px;
-                color: {c('text_secondary')};
-                font-size: 12px;
-                outline: none;
-            }}
-            QListWidget::item {{ padding: 5px; }}
-            QListWidget::item:selected {{
-                background-color: {c('accent_main')};
-                color: {c('bg_main')};
-                border-radius: 4px;
-            }}
-        """)
-        self.tag_list.itemClicked.connect(self._on_tag_item_clicked)
-        layout.addWidget(self.tag_list)
-        self.tag_pager = TagPageBar()
-        layout.addWidget(self.tag_pager)
-
-        self.provenance = ProvenancePanel(self.db.service, self.tr, container)
-        layout.addWidget(self.provenance, 0, Qt.AlignLeft)
-
-        # Stats at bottom of sidebar
+        layout.addWidget(hint(self.tr(
+            "lib.explore_in_gallery",
+            "To search by tags, rating or text and send images to other tools, use Gallery.")))
         layout.addStretch()
-        self.lbl_stats = QLabel(self.tr("common.status.loading", "Loading..."))
-        self.lbl_stats.setWordWrap(True)
-        self.lbl_stats.setStyleSheet(f"color: {c('text_dim')}; font-size: 12px; border-top: 1px solid {c('border')}; padding-top: 10px;")
-        layout.addWidget(self.lbl_stats)
-
         return container
-
-    def _create_content(self) -> QWidget:
-        """Main Content: Tag Explorer and Preview"""
-        tm = self.context.get('theme_manager')
-        c = tm.get_color if tm else Theme._c
-
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)  # StandardLayout handles padding
-        layout.setSpacing(15)
-
-        # --- Section 1: Tag Explorer ---
-        search_frame = QFrame()
-        search_frame.setStyleSheet("background-color: transparent;")
-        sf_layout = QVBoxLayout(search_frame)
-        sf_layout.setContentsMargins(0, 0, 0, 0)
-
-        lbl_search = QLabel(self.tr("lib.explorer_title", "🔭 Tag Explorer"))
-        lbl_search.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {c('text_primary')};")
-        sf_layout.addWidget(lbl_search)
-
-        # Input
-        input_layout = QHBoxLayout()
-        self.input_search = QLineEdit()
-        self.input_search.setPlaceholderText(self.tr("lib.search_placeholder", "Type a tag and hit Enter..."))
-        self.input_search.returnPressed.connect(self.add_tag_from_input)
-        self.input_search.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: {c('bg_input')};
-                border: 1px solid {c('border')};
-                border-radius: 6px;
-                padding: 10px;
-                color: {c('text_primary')};
-                font-size: 14px;
-            }}
-            QLineEdit:focus {{ border: 1px solid {c('accent_main')}; }}
-        """)
-
-        self.btn_search = QPushButton("🔍")
-        self.btn_search.setToolTip(self.tr(
-            "lib.search_tip",
-            "Searches by name, tags and metadata text across the whole indexed library, "
-            "not just the open folder."))
-        self.input_search.setToolTip(self.tr(
-            "lib.search_tip",
-            "Searches by name, tags and metadata text across the whole indexed library, "
-            "not just the open folder."))
-        self.btn_search.setFixedWidth(50)
-        self.btn_search.clicked.connect(self.perform_search)
-        self.btn_search.setStyleSheet(f"background-color: {c('bg_panel')}; color: {c('text_primary')}; border-radius: 6px; border: 1px solid {c('border')};")
-
-        input_layout.addWidget(self.input_search)
-        input_layout.addWidget(self.btn_search)
-        sf_layout.addLayout(input_layout)
-
-        # Active Tags Area
-        self.tag_container = QWidget()
-        self.tag_flow_layout = FlowLayout(self.tag_container)
-        sf_layout.addWidget(self.tag_container)
-        self.active_tags = []
-
-        layout.addWidget(search_frame)
-
-        # --- Section 2: Preview (GRID) ---
-        self.lbl_folder_stats = QLabel("")
-        self.lbl_folder_stats.setAlignment(Qt.AlignCenter)
-        self.lbl_folder_stats.setStyleSheet(f"color: {c('accent_main')}; font-size: 14px; font-weight: bold;")
-        layout.addWidget(self.lbl_folder_stats)
-
-        # Pagination Header
-        self.pagination_layout = QHBoxLayout()
-        self.btn_prev = QPushButton(self.tr("common.prev", "◀ Prev"))
-        self.btn_prev.setToolTip(self.tr("common.prev_tip", "Previous page of results."))
-        self.btn_next = QPushButton(self.tr("common.next", "Next ▶"))
-        self.btn_next.setToolTip(self.tr("common.next_tip", "Next page of results."))
-        self.lbl_page_info = QLabel(self.tr("common.pagination", "Page 1 of 1").format(curr=1, total=1))
-        self.lbl_page_info.setStyleSheet(f"color: {c('text_dim')}; font-weight: bold;")
-
-        for b in [self.btn_prev, self.btn_next]:
-            b.setFixedWidth(80)
-            b.setEnabled(False)
-            b.setCursor(Qt.PointingHandCursor)
-
-        self.btn_prev.clicked.connect(self.prev_page)
-        self.btn_next.clicked.connect(self.next_page)
-
-        self.pagination_layout.addStretch()
-        self.pagination_layout.addWidget(self.btn_prev)
-        self.pagination_layout.addWidget(self.lbl_page_info)
-        self.pagination_layout.addWidget(self.btn_next)
-        self.pagination_layout.addStretch()
-        layout.addLayout(self.pagination_layout)
-
-        # Scrollable Grid Area
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setStyleSheet(f"background-color: {c('bg_panel')}; border: 1px solid {c('border')}; border-radius: 8px;")
-
-        self.grid_widget = QWidget()
-        self.grid_layout_images = QGridLayout(self.grid_widget)
-        self.grid_layout_images.setSpacing(10)
-        self.grid_layout_images.setAlignment(Qt.AlignTop)
-
-        self.scroll_area.setWidget(self.grid_widget)
-        layout.addWidget(self.scroll_area)
-
-        # --- Section 3: Actions (DROPDOWN) ---
-        action_bar = QFrame()
-        action_bar.setStyleSheet(f"background-color: {c('bg_panel')}; border-radius: 10px; padding: 10px;")
-        ab_layout = QHBoxLayout(action_bar)
-
-        lbl_act = QLabel(self.tr("lib.selection_action", "🎯 Selection Action:"))
-        lbl_act.setStyleSheet(f"color: {c('text_dim')}; font-weight: bold;")
-        ab_layout.addWidget(lbl_act)
-
-        self.combo_actions = QComboBox()
-        self.combo_actions.addItems([
-            f"--- {self.tr('lib.selection_action', 'Send Selection to...')} ---",
-            self.tr("lib.actions.gallery", "🖼️ Open in Gallery"),
-            self.tr("lib.actions.optimizer", "🚀 Send to Optimizer"),
-            self.tr("lib.actions.cropper", "✂️ Send to Cropper"),
-            self.tr("lib.actions.pickler", "🥒 Send to Pickler")
-        ])
-        self.combo_actions.setStyleSheet(f"""
-            QComboBox {{
-                background-color: {c('bg_input')};
-                color: {c('text_primary')};
-                padding: 8px;
-                border-radius: 6px;
-                min-width: 250px;
-                border: 1px solid {c('border')};
-                font-weight: bold;
-            }}
-            QComboBox::drop-down {{ border: none; width: 30px; }}
-            QComboBox QAbstractItemView {{
-                background-color: {c('bg_input')};
-                color: {c('text_primary')};
-                selection-background-color: {c('accent_main')};
-                selection-color: {c('bg_main')};
-            }}
-        """)
-        self.combo_actions.setToolTip(self.tr(
-            "lib.selection_action_tip",
-            "Which tool to send the selected images to. Pick here and press Execute."))
-        self.combo_actions.currentIndexChanged.connect(self._on_action_selection_changed)
-        ab_layout.addWidget(self.combo_actions)
-
-        self.btn_execute = QPushButton(self.tr("lib.execute", "⚡ Execute"))
-        self.btn_execute.setCursor(Qt.PointingHandCursor)
-        self.btn_execute.setEnabled(False)
-        self.btn_execute.setToolTip(self.tr(
-            "lib.execute_tip",
-            "Sends every match (up to 1,000); larger sets require choosing the current page. No partial set is sent as complete."))
-        self.btn_execute.clicked.connect(self.execute_selected_action)
-        self.btn_execute.setStyleSheet(f"""
-            QPushButton {{ background-color: {c('accent_main')}; color: {c('bg_main')}; font-weight: bold; padding: 8px 20px; border-radius: 4px; }}
-            QPushButton:hover {{ background-color: {c('text_primary')}; color: {c('bg_main')}; }}
-            QPushButton:disabled {{ background-color: {c('border')}; color: {c('text_dim')}; }}
-        """)
-        self.combo_scope = QComboBox()
-        self.combo_scope.addItems([
-            self.tr('lib.scope.all', 'All matches (up to 1,000)'),
-            self.tr('lib.scope.page', 'Current page')])
-        self.combo_scope.setToolTip(self.tr('lib.scope_tip',
-            'Choose the complete matching set or only the displayed page. Large complete sets require streaming support.'))
-        ab_layout.addWidget(self.combo_scope)
-        ab_layout.addWidget(self.btn_execute)
-
-        layout.addWidget(action_bar)
-
-        return container
-
-    def _on_action_selection_changed(self, index):
-        """Enables execute button only if a valid tool is selected and we have images."""
-        self.btn_execute.setEnabled(self._browse_ready and self._handoff is None and index > 0 and len(self.total_paths) > 0)
 
     def _create_bottom_bar(self) -> QWidget:
-        """Bottom: Indexing Controls"""
-        tm = self.context.get('theme_manager')
-        c = tm.get_color if tm else Theme._c
-
+        """Barra inferior: estado del indexador; acción principal a la derecha."""
         container = QWidget()
         layout = QHBoxLayout(container)
-        layout.setContentsMargins(10, 5, 10, 5)
-        layout.setSpacing(15)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
 
-        # Scan Status / Progress
-        self.lbl_status = QLabel(self.tr("lib.status.ready", "Ready"))
-        self.lbl_status.setStyleSheet(f"color: {c('text_secondary')};")
-        layout.addWidget(self.lbl_status)
+        self.lbl_status = hint(self.tr("lib.status.ready", "Ready"))
+        layout.addWidget(self.lbl_status, 1)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedWidth(200)
-        self.progress_bar.setStyleSheet(f"""
-            QProgressBar {{ border: 1px solid {c('border')}; border-radius: 4px; background: {c('bg_panel')}; color: transparent; }}
-            QProgressBar::chunk {{ background: {c('accent_main')}; border-radius: 3px; }}
-        """)
+        self.progress_bar.setTextVisible(False)
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
 
-        layout.addStretch()
-
-        # Controls
-        self.btn_backfill = QPushButton(self.tr("lib.backfill", "🧬 Compute Hashes"))
+        self.btn_backfill = QPushButton(self.tr("lib.backfill", "Compute hashes"))
         self.btn_backfill.clicked.connect(self.toggle_backfill)
-        self.btn_backfill.setMinimumWidth(120)
-        self.btn_backfill.setCursor(Qt.PointingHandCursor)
         self.btn_backfill.setToolTip(self.tr(
             "lib.backfill_tip",
             "Compute the SHA-256 content identity of files that lack it "
             "(cherry-dl folders get theirs from catalog.db). Resumable."
         ))
-        self.btn_backfill.setStyleSheet(f"background-color: transparent; color: {c('text_secondary')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px 12px;")
-
-        self.btn_sync = QPushButton(self.tr("lib.purge", "🧹 Sweep Ghost Files"))
+        self.btn_sync = QPushButton(self.tr("lib.purge", "Sweep ghost entries"))
         self.btn_sync.setToolTip(self.tr(
             "lib.purge_tip",
             "Goes through the index and drops entries whose file is gone from disk. "
             "Useful after deleting or moving things outside the app. It deletes no "
             "files."))
         self.btn_sync.clicked.connect(lambda: self.toggle_scan(sync_only=True))
-        self.btn_sync.setMinimumWidth(120)
-        self.btn_sync.setCursor(Qt.PointingHandCursor)
-        self.btn_sync.setStyleSheet(f"background-color: transparent; color: {c('text_secondary')}; border: 1px solid {c('border')}; border-radius: 4px; padding: 6px 12px;")
-
-        self.btn_scan = QPushButton(self.tr("lib.run_indexer", "🚀 Run Indexer"))
+        self.btn_scan = primary(QPushButton(self.tr("lib.run_indexer", "Run indexer")))
         self.btn_scan.setToolTip(self.tr(
             "lib.run_indexer_tip",
             "Walks the watched folders and adds whatever is new to the library. On a "
             "large library it takes a while; the same button stops it."))
         self.btn_scan.clicked.connect(self.toggle_scan)
-        self.btn_scan.setMinimumWidth(120)
-        self.btn_scan.setCursor(Qt.PointingHandCursor)
-        self.btn_scan.setStyleSheet(f"background-color: {c('accent_main')}; color: {c('bg_main')}; font-weight: bold; border-radius: 4px; padding: 6px 12px;")
-
-        layout.addWidget(self.btn_backfill)
-        layout.addWidget(self.btn_sync)
-        layout.addWidget(self.btn_scan)
-
+        for button in (self.btn_backfill, self.btn_sync, self.btn_scan):
+            button.setCursor(Qt.PointingHandCursor)
+            layout.addWidget(button)
         return container
-
-    def setup_completer(self):
-        self.tag_completions = TagVocabulary(self.db.service, self.input_search, self)
-        self.completer_model = self.tag_completions.model
-        self.completer = self.tag_completions.completer
-        self.tag_pager.bind(self.tag_completions)
-        self.tag_completions.busy_changed.connect(lambda busy: self.tag_list.clear() if busy else None)
-        self.tag_completions.changed.connect(lambda value: self.tag_list.addItems(value['names']))
-        self.tag_completions.refresh()
-
-    def add_tag_from_input(self):
-        text = self.input_search.text().strip()
-        if not text: return
-        
-        # Handle commas
-        new_tags = [t.strip() for t in text.split(',') if t.strip()]
-        
-        tags_added = False
-        for tag in new_tags:
-            if tag not in self.active_tags:
-                self.active_tags.append(tag)
-                self.add_chip_to_ui(tag)
-                tags_added = True
-        
-        self.input_search.clear()
-        
-        if tags_added:
-            self.perform_search()
-
-    def add_chip_to_ui(self, tag_text):
-        # Index determines color cycling
-        idx = len(self.active_tags)
-        chip = TagChip(tag_text, idx)
-        chip.removed.connect(self.remove_tag)
-        self.tag_flow_layout.addWidget(chip)
-        
-    def remove_tag(self, tag_text):
-        if tag_text in self.active_tags:
-            self.active_tags.remove(tag_text)
-            self.perform_search() # Real-time update
-
-    def perform_search(self):
-        """Captura la búsqueda; sólo se publica la solicitud vigente."""
-        self._request_selection()
-
-    def execute_selected_action(self):
-        """Dispatches the current selection to the chosen tool (index-based, locale-safe)."""
-        idx = self.combo_actions.currentIndex()
-        if idx == 1:
-            self.send_to_gallery()
-        elif idx == 2:
-            self.send_to_optimizer()
-        elif idx == 3:
-            self.send_to_cropper()
-        elif idx == 4:
-            self.send_to_pickler()
-
-    def prev_page(self):
-        if self._browse_ready and self.current_page > 0:
-            self._load_page(self.current_page - 1)
-
-    def next_page(self):
-        if self._browse_ready and (self.current_page + 1) * self.page_size < self._selection_count:
-            self._load_page(self.current_page + 1)
-
-    def _load_page(self, page):
-        if self._external_paths is not None:
-            self.current_page = page
-            start = page * self.page_size
-            self.total_paths = list(self._external_paths[start:start + self.page_size])
-            self.refresh_thumbnails_grid()
-        else:
-            self._request_selection(page)
-
-    def refresh_thumbnails_grid(self):
-        """Redraws the thumbnails for the current page (non-blocking)."""
-        # Cancel any in-progress lazy load before clearing the widget list
-        if hasattr(self, '_lazy_load_timer') and self._lazy_load_timer.isActive():
-            self._lazy_load_timer.stop()
-        self._lazy_load_pending = []
-        self._thumb_widgets = {}
-        if self._thumb_loader is None:
-            self._thumb_loader = ThumbnailLoader()
-            self._thumb_loader.thumbnail_ready.connect(self._thumbnail_ready)
-        self._thumb_loader.invalidate()
-
-        # Clear previous thumbnails
-        while self.grid_layout_images.count():
-            item = self.grid_layout_images.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
-
-        page_items = self.total_paths
-
-        # Dynamic columns based on current viewport width
-        vp_width = self.scroll_area.viewport().width()
-        thumb_total = 110  # 100px thumb + 10px spacing
-        cols = max(3, vp_width // thumb_total) if vp_width > 110 else 5
-
-        tm = self.context.get('theme_manager')
-        accent = tm.get_color('accent_main') if tm else Theme._c('accent_main')
-        border = tm.get_color('border') if tm else Theme._c('border')
-        bg = tm.get_color('bg_main') if tm else Theme._c('bg_main')
-
-        for i, path in enumerate(page_items):
-            thumb = ClickableThumbnail(path, auto_load=False,
-                                       border_accent=accent, border_default=border, bg=bg)
-            thumb.clicked.connect(self.on_thumbnail_clicked)
-            self.grid_layout_images.addWidget(thumb, i // cols, i % cols)
-            self._lazy_load_pending.append(thumb)
-            key = os.path.normpath(path).replace("\\", "/")
-            self._thumb_widgets.setdefault(key, []).append(thumb)
-
-        # Start non-blocking lazy load (batch per idle cycle)
-        if not hasattr(self, '_lazy_load_timer'):
-            self._lazy_load_timer = QTimer()
-            self._lazy_load_timer.setInterval(0)
-            self._lazy_load_timer.timeout.connect(self._load_next_batch)
-        if self._lazy_load_pending:
-            self._lazy_load_timer.start()
-
-        # Update Pagination UI
-        total = self._selection_count
-        num_pages = (total - 1) // self.page_size + 1 if total > 0 else 1
-        self.lbl_page_info.setText(self.tr("common.pagination", "Page {curr} of {total}").format(curr=self.current_page + 1, total=num_pages))
-
-        self.btn_prev.setEnabled(self._browse_ready and self.current_page > 0)
-        self.btn_next.setEnabled(self._browse_ready and self.current_page < num_pages - 1)
-
-        # Enable Execute if we have results
-        self.btn_execute.setEnabled(self._browse_ready and bool(self.total_paths) and self._handoff is None and self.combo_actions.currentIndex() > 0)
-        self._update_export_controls()
 
     def _can_export_curation(self):
         return (not self._closed and self.view is not None and self._browse_ready and
-                bool(self.current_folder_path) and not self.active_tags and
-                self._external_paths is None and
+                bool(self.current_folder_path) and
                 self._exporting is None and self._folder_write is None)
 
     def _update_export_controls(self):
         if hasattr(self, 'btn_export_curation'):
             self.btn_export_curation.setEnabled(self._can_export_curation())
         if hasattr(self, 'btn_review_curation'):
-            self.btn_review_curation.setEnabled(not self._closed and self._browse_ready and
-                bool(self.current_folder_path) and not self.active_tags and self._external_paths is None and
-                self._exporting is None and self._folder_write is None)
+            self.btn_review_curation.setEnabled(self._can_export_curation())
 
     def review_folder_curation(self):
         if not self.btn_review_curation.isEnabled():
@@ -693,8 +316,7 @@ class LibrarianModule(BaseModule):
 
     def _on_curation_restored(self, path):
         self.update_global_stats()
-        if self._external_paths is None:
-            self.refresh_current_view()
+        self.refresh_current_view()
 
     def _review_closed(self):
         self._review_dialog = None
@@ -795,80 +417,26 @@ class LibrarianModule(BaseModule):
                 'Exported {count} copies to {path}. Missing hash: {missing}.').format(
                     count=value['copies'], path=value['path'], missing=value['missing_hash']))
 
-    def _load_next_batch(self):
-        """Admit requests only; source stat/decode/cache verification stays in workers."""
-        if self._closed:
-            return
-        for _ in range(min(10,len(self._lazy_load_pending))):
-            thumb = self._lazy_load_pending.pop(0)
-            if isValid(thumb):
-                self._thumb_loader.get_thumbnail_image(thumb.path,QSize(100,100))
-        if not self._lazy_load_pending:
-            self._lazy_load_timer.stop()
-
-    def _thumbnail_ready(self,path,image):
-        if self._closed:
-            return
-        for thumb in self._thumb_widgets.get(path,[]):
-            if isValid(thumb):
-                if image.isNull():thumb.setText("❌")
-                else:thumb.setPixmap(QPixmap.fromImage(image))
-
-    def _on_tag_item_clicked(self, item):
-        """Adds a tag from the sidebar list to the search input."""
-        tag = item.text()
-        if tag not in self.active_tags:
-            self.active_tags.append(tag)
-            self.add_chip_to_ui(tag)
-            self.perform_search()
-
-    def populate_tag_sidebar(self):
-        self.update_global_stats()
-
-    def on_thumbnail_clicked(self,path):
-        if self._closed:
-            return
-        self.provenance.show_path(path)
-        dialog = WorkerPreviewDialog(path,self.tr,self.view)
-        self._image_previews.append(dialog)
-        try:
-            dialog.exec()
-        finally:
-            # The dialog defers done/close until its decoder has actually exited.
-            if dialog.shutdown_ready():
-                self._image_previews.remove(dialog)
-                dialog.deleteLater()
-
     def on_folder_selected(self, item):
-        """Displays preview for the selected folder."""
-        folder_path = item.text()
-        self.current_folder_path = folder_path
-        self.load_folder_paths(folder_path)
+        self.load_folder_paths(item.text())
 
     def load_folder_paths(self, folder_path):
         self.current_folder_path = folder_path
-        self._request_selection()
+        self._request_folder_count()
 
     def _revision_busy(self):
         return (self._path_identity_busy or self.overview_reader._active or self.browse_reader._active or
-                self.tag_completions.busy or self._handoff is not None or
                 self._exporting is not None or self._folder_write is not None)
 
     def _on_native_revision(self, revision):
         if self._closed or not self.view:
             return
         self.overview_reader.request('get_library_overview', include_tags=False)
-        self.tag_completions.reload_page()
-        selected_path = self.provenance.path
-        if self._external_paths is None:
-            self._request_selection(self.current_page)
-        if selected_path is not None:
-            self.provenance.show_path(selected_path)
+        self._request_folder_count()
 
     def update_global_stats(self):
         if not self._closed and self.view:
             self.overview_reader.request('get_library_overview', include_tags=False)
-            self.tag_completions.refresh()
 
     def refresh_ui(self):
         if self._closed or not self.view:
@@ -877,62 +445,41 @@ class LibrarianModule(BaseModule):
         self.refresh_current_view()
 
     def refresh_current_view(self):
-        self._request_selection()
+        self._request_folder_count()
 
-    def _request_selection(self, page=0):
+    def _request_folder_count(self):
+        """Solo el recuento de la carpeta seleccionada (una fila); explorar es de Gallery."""
         if self._closed or not self.view:
             return
-        if hasattr(self, 'provenance'): self.provenance.clear()
-        self.handoff_reader.invalidate()
-        self._handoff = None
-        self._external_paths = None
         self._browse_ready = False
-        self.total_paths = []
-        self._selection_count = 0
-        self.current_page = page
-        self.refresh_thumbnails_grid()
-        terms = tuple(self.active_tags)
+        self._folder_count = None
         folder = self.current_folder_path
-        self._selection_context = (terms, folder)
-        if not terms and not folder:
+        if not folder:
             self.browse_reader.invalidate()
             self._browse_ready = True
-            self.lbl_folder_stats.setText(self.tr('common.no_selection', 'No Selection'))
+            self.lbl_folder_stats.setText(self.tr("lib.folder.none", "Select a watched folder on the left."))
+            self._update_export_controls()
             return
         self.lbl_folder_stats.setText(self.tr('lib.db.loading', 'Loading library...'))
-        self.browse_reader.request('get_library_page', terms=terms, folder=folder,
-                                   limit=self.page_size, offset=page * self.page_size)
+        self._update_export_controls()
+        self.browse_reader.request('get_library_page', folder=folder, limit=1, offset=0)
 
     def _read_error(self, label, error):
         log.warning('Librarian read: %s', error)
         label.setText(self.tr('lib.db.read_error', 'Could not read library: {reason}')
                       .format(reason=getattr(error, 'reason', str(error))))
 
-    def _on_selection(self, ticket, value, error):
+    def _on_folder_count(self, ticket, value, error):
         if self._closed:
             return
         if error is not None:
             self._read_error(self.lbl_folder_stats, error)
             return
-        terms, folder = self._selection_context
-        self.total_paths = value['paths']
         self._browse_ready = True
-        self.current_page = value['offset'] // self.page_size
-        count = self._selection_count = value['count']
-        last_page = max(0, (count - 1) // self.page_size)
-        if self.current_page > last_page:
-            self._request_selection(last_page)
-            return
-        if terms:
-            text = self.tr('lib.msg.found_tags', 'Found {count} items matching tags').format(count=count)
-        else:
-            text = self.tr('lib.stats.folder', '{name} | {count} Images Found').format(
-                name=os.path.basename(folder), count=count)
-        if count > len(self.total_paths):
-            text += self.tr('lib.db.page', ' | Page contains {loaded} of {count}').format(
-                loaded=len(self.total_paths), count=count)
-        self.lbl_folder_stats.setText(text)
-        self.refresh_thumbnails_grid()
+        self._folder_count = value['count']
+        self.lbl_folder_stats.setText(self.tr('lib.stats.folder', '📂 {name}: {count} indexed images').format(
+            name=os.path.basename(self.current_folder_path or ''), count=value['count']))
+        self._update_export_controls()
 
     def _on_overview(self, ticket, value, error):
         if self._closed:
@@ -950,7 +497,7 @@ class LibrarianModule(BaseModule):
         elif self.current_folder_path:
             self.current_folder_path = None
             self.refresh_current_view()
-        self.lbl_stats.setText(self.tr('lib.stats.global', 'Indexed Files: {count} | Watched Folders: {total}')
+        self.lbl_stats.setText(self.tr('lib.stats.global', '{count} indexed files in {total} watched folders')
                                .format(count=value['count'], total=len(value['folders'])))
         if self._auto_scan_pending:
             self._auto_scan_pending = False
@@ -961,15 +508,9 @@ class LibrarianModule(BaseModule):
                     self._auto_scan_timer.start(500)
 
     def on_unload(self):
-        if self._thumb_loader is not None:self._thumb_loader.shutdown()
-        for dialog in tuple(self._image_previews):dialog.close()
         self._closed = True
-        if hasattr(self, 'provenance'):
-            self.provenance.shutdown()
         if hasattr(self, 'revisions'):
             self.revisions.close()
-        if hasattr(self, 'tag_completions'):
-            self.tag_completions.close()
         if hasattr(self, 'folder_archive'):
             self.folder_archive.close()
         for worker in (self.indexer_thread, self.backfill_thread, self._reindex_thread):
@@ -977,7 +518,6 @@ class LibrarianModule(BaseModule):
                 worker.stop()
         if hasattr(self, 'folder_writer'):
             self.folder_writer.close()
-        self._handoff = None
         self._exporting = None
         if self._review_dialog is not None:
             self._review_dialog.close()
@@ -987,14 +527,12 @@ class LibrarianModule(BaseModule):
             self._versions_dialog.close()
         if self._identity_dialog is not None:
             self._identity_dialog.close()
-        for name in ('overview_reader', 'browse_reader', 'scan_reader', 'handoff_reader', 'export_reader'):
+        for name in ('overview_reader', 'browse_reader', 'scan_reader', 'export_reader'):
             reader = getattr(self, name, None)
             if reader:
                 reader.close()
         self._dirty_timer.stop()
         self._auto_scan_timer.stop()
-        if hasattr(self, '_lazy_load_timer'):
-            self._lazy_load_timer.stop()
         eb = (self.context or {}).get('event_bus')
         if eb:
             eb.unsubscribe('library_changed', self._on_library_changed)
@@ -1006,7 +544,7 @@ class LibrarianModule(BaseModule):
         readers = self.findChildren(LibraryReader)
         if self.view is not None and isValid(self.view):
             readers += self.view.findChildren(LibraryReader)
-        return (self._thumb_loader is None or self._thumb_loader.shutdown_ready()) and all(dialog.shutdown_ready() for dialog in self._image_previews) and owner_threads_ready(self) and ((not hasattr(self, 'folder_archive') or self.folder_archive.shutdown_ready())
+        return owner_threads_ready(self) and ((not hasattr(self, 'folder_archive') or self.folder_archive.shutdown_ready())
                 and all(reader.shutdown_ready() for reader in readers)
                 and all(worker is None or native_done(worker) for worker in
                         (self.indexer_thread, self.backfill_thread, self._reindex_thread)))
@@ -1234,72 +772,6 @@ class LibrarianModule(BaseModule):
     def _archived_summary(self, worker):
         return self.tr('lib.scan.archived_count', 'Identities confirmed offline: {count}. Curation and history are retained.').format(count=getattr(worker, 'archived_count', 0))
 
-    def _get_active_paths(self):
-        """La página confirmada completa, nunca un prefijo oculto."""
-        return list(self.total_paths) if self._browse_ready and not self._closed else []
-
-    def _send_selection(self, destination):
-        if self._closed or not self._browse_ready or self._handoff is not None:
-            return
-        title = self.tr('lib.handoff.title', 'Librarian: {context}').format(
-            context=', '.join(self.active_tags) if self.active_tags else
-            os.path.basename(self.current_folder_path or ''))
-        if self.combo_scope.currentIndex() == 1:
-            title += self.tr('lib.handoff.page', ' | Page {page}').format(page=self.current_page + 1)
-            self._emit_selection(destination, self._get_active_paths(), title)
-        elif self._external_paths is not None:
-            if len(self._external_paths) > 1000:
-                self._handoff_error(ValueError('selection_requires_streaming'))
-            else:
-                self._emit_selection(destination, list(self._external_paths), title)
-        else:
-            self._handoff = (destination, title)
-            self.btn_execute.setEnabled(False)
-            self.handoff_reader.request('resolve_library_selection',
-                terms=tuple(self.active_tags), folder=self.current_folder_path)
-
-    def _on_handoff(self, ticket, value, error):
-        if self._closed or self._handoff is None:
-            return
-        destination, title = self._handoff
-        self._handoff = None
-        self._on_action_selection_changed(self.combo_actions.currentIndex())
-        if error is not None:
-            self._handoff_error(error)
-            return
-        self._emit_selection(destination, value['paths'], title)
-
-    def _handoff_error(self, error):
-        reason = getattr(error, 'cause', error)
-        if 'selection_requires_streaming' in str(reason):
-            message = self.tr('lib.handoff.too_large',
-                'The complete set exceeds 1,000 images. Choose Current page to send a page explicitly. No images were sent.')
-        else:
-            message = self.tr('lib.db.read_error', 'Could not read library: {reason}').format(reason=str(error))
-        QMessageBox.warning(self.view, self.tr('common.error', 'Error'), message)
-
-    def _emit_selection(self, destination, paths, title):
-        if not paths:
-            QMessageBox.warning(self.view, self.tr('common.error', 'No Files'), self.tr('lib.msg.no_files', 'No files found to send.'))
-            return
-        signal = getattr(self, 'request_open_' + destination)
-        if destination == 'gallery':
-            signal.emit(paths, title)
-        else:
-            signal.emit(paths)
-
-    def send_to_gallery(self):
-        self._send_selection('gallery')
-
-    def send_to_optimizer(self):
-        self._send_selection('optimizer')
-
-    def send_to_cropper(self):
-        self._send_selection('cropper')
-
-    def send_to_pickler(self):
-        self._send_selection('pickler')
-
     # ── Re-index dirigido tras cambios externos en disco ──────────────
     def _on_library_changed(self, folder):
         """
@@ -1355,20 +827,5 @@ class LibrarianModule(BaseModule):
             log.warning(f"Refresh tras re-index dirigido falló: {e}")
 
     def run_headless(self, paths: list = None):
-        """Permite cargar carpetas o rutas en modo programático (sin interacción del usuario)."""
-        if not paths:
-            return
-        if self._closed:
-            return
-        if hasattr(self, 'browse_reader'):
-            self.browse_reader.invalidate()
-        self._browse_ready = True
-        if hasattr(self, 'provenance'): self.provenance.clear()
-        self.handoff_reader.invalidate()
-        self._handoff = None
-        self._external_paths = tuple(paths)
-        self._selection_count = len(paths)
-        self.total_paths = list(paths[:self.page_size])
-        self.current_page = 0
-        if self.view:
-            self.refresh_thumbnails_grid()
+        """Sin vista de exploración: los conjuntos de imágenes se abren en Gallery."""
+        return None

@@ -1,4 +1,7 @@
-"""Recorded provenance: private SQLite, responsive Qt and stale-result isolation."""
+"""Recorded provenance (core/components/provenance.py) and its place in the Gallery viewer.
+
+Private SQLite, responsive Qt and stale-result isolation. Moved from Librarian with U1.
+"""
 import os
 import sys
 import threading
@@ -11,7 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QTimer
 from core.library_repository import LibraryRepository
-from modules.librarian.module import LibrarianModule
+from core.components.provenance import ProvenancePanel
+from core.library_async import LibraryReader
+from modules.gallery.ui.viewer_window import AdvancedViewer
 import curation_snapshot_selftest as helpers
 
 APP = QApplication.instance() or QApplication([])
@@ -20,23 +25,28 @@ APP = QApplication.instance() or QApplication([])
 class Provenance(helpers.Fixture):
     def setUp(self):
         super().setUp()
-        self.module = LibrarianModule()
-        self.module._auto_scan_pending = False
-        self.module.on_load({'data_service': self.service})
-        self.module.get_view()
-        self.panel = self.module.provenance
+        self.panel = ProvenancePanel(self.service, lambda key, default='': default)  # textos por defecto (en)
+        self.views = []
         self.releases = []
         self.addCleanup(self.close)
-        self.assertTrue(helpers.pump(lambda: self.module._overview_ready))
 
     def close(self):
         for release in self.releases:
             release.set()
-        self.module.on_unload()
-        self.assertTrue(helpers.pump(self.module.shutdown_ready))
-        self.module.view.close()
-        self.module.view.deleteLater()
+        self.panel.shutdown()
+        self.assertTrue(helpers.pump(self.panel.reader.shutdown_ready))
+        for view in self.views:
+            view.close()
+            readers = view.findChildren(LibraryReader)
+            self.assertTrue(helpers.pump(lambda: all(r.shutdown_ready() for r in readers) and view.preview.shutdown_ready()))
+            view.deleteLater()
+        self.panel.deleteLater()
         APP.processEvents()
+
+    def viewer(self, paths):
+        view = AdvancedViewer(paths, service=self.service)
+        self.views.append(view)
+        return view
 
     def register_origin(self, path, artist='Artista ñ', url='https://example.test/post/1'):
         self.service.submit('register_files_minimal', [dict(path=path,
@@ -46,18 +56,19 @@ class Provenance(helpers.Fixture):
     def settle(self):
         self.assertTrue(helpers.pump(lambda: not self.panel.reader._active))
 
-    def test_click_shows_literal_copyable_values_and_full_path(self):
+    def test_viewer_shows_literal_copyable_values(self):
         path = 'C:/fixture/ñ.png'
         self.register_origin(path, '<b>Artista</b>', 'https://example.test/?a=1&b=2')
-        with patch('modules.librarian.module.WorkerPreviewDialog') as preview:
-            self.module.on_thumbnail_clicked(path)
-            preview.return_value.exec.assert_called_once()
-        self.settle()
-        for key, expected in [('path', path), ('artist', '<b>Artista</b>'),
+        view = self.viewer([path])
+        panel = view.provenance
+        self.assertTrue(helpers.pump(lambda: not panel.reader._active and panel.path == path))
+        self.assertFalse(panel.fields['path'].isVisible())  # el visor ya muestra la ruta
+        self.assertEqual(panel.fields['path'].text(), path)
+        for key, expected in [('artist', '<b>Artista</b>'),
                               ('origin_url', 'https://example.test/?a=1&b=2')]:
-            self.assertEqual(self.panel.fields[key].text(), expected)
-            self.assertTrue(self.panel.fields[key].isReadOnly())
-            self.assertTrue(self.panel.fields[key].toolTip())
+            self.assertEqual(panel.fields[key].text(), expected)
+            self.assertTrue(panel.fields[key].isReadOnly())
+            self.assertTrue(panel.fields[key].toolTip())
 
     def test_missing_origin_and_unregistered_path_are_distinct(self):
         self.register_origin('C:/fixture/a.png', None, None)
@@ -116,17 +127,17 @@ class Provenance(helpers.Fixture):
             release.set(); self.settle()
         self.assertEqual(self.panel.fields['artist'].text(), 'new')
 
-    def test_scope_change_invalidates_details_and_revision_refreshes_them(self):
-        path = 'C:/fixture/a.png'
-        self.register_origin(path, 'before')
-        self.panel.show_path(path); self.settle()
-        self.register_origin(path, 'after')
-        self.module._on_native_revision({})
-        self.settle()
-        self.assertEqual(self.panel.fields['artist'].text(), 'after')
-        self.module.load_folder_paths('C:/other')
-        self.assertIsNone(self.panel.path)
-        self.assertEqual(self.panel.fields['artist'].text(), '')
+    def test_viewer_navigation_replaces_details_and_clear_empties_them(self):
+        self.register_origin('C:/fixture/a.png', 'first')
+        self.register_origin('C:/fixture/b.png', 'second')
+        view = self.viewer(['C:/fixture/a.png', 'C:/fixture/b.png'])
+        panel = view.provenance
+        self.assertTrue(helpers.pump(lambda: not panel.reader._active and panel.fields['artist'].text() == 'first'))
+        view.next_image()
+        self.assertTrue(helpers.pump(lambda: not panel.reader._active and panel.fields['artist'].text() == 'second'))
+        panel.clear()
+        self.assertIsNone(panel.path)
+        self.assertEqual(panel.fields['artist'].text(), '')
 
     def test_error_removes_previous_values_and_allows_retry(self):
         path = 'C:/fixture/a.png'
@@ -148,10 +159,10 @@ class Provenance(helpers.Fixture):
         with patch.object(LibraryRepository, 'get_file_provenance', held):
             self.panel.show_path('C:/fixture/a.png')
             self.assertTrue(entered.wait(1))
-            self.module.on_unload()
-            self.assertFalse(self.module.shutdown_ready())
+            self.panel.shutdown()
+            self.assertFalse(self.panel.reader.shutdown_ready())
             release.set()
-            self.assertTrue(helpers.pump(self.module.shutdown_ready))
+            self.assertTrue(helpers.pump(self.panel.reader.shutdown_ready))
         APP.processEvents()
         self.assertEqual(self.panel.fields['artist'].text(), '')
 

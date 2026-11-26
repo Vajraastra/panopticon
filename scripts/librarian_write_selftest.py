@@ -103,7 +103,7 @@ class FolderWrites(helpers.Fixture):
                                        and module._browse_ready))
         self.assertEqual([c[0] for c in calls], ['C:/A'])
         self.assertEqual(module.current_folder_path, 'C:/B')
-        self.assertEqual(module.total_paths, ['C:/B/b.png'])
+        self.assertEqual(module._folder_count, 1)
         with closing(open_reader(self.service.db_path)) as conn:
             self.assertEqual(conn.execute('SELECT count(*) FROM file_tags').fetchone()[0], 1)
             self.assertEqual(conn.execute('SELECT count(*) FROM files_fts').fetchone()[0], 2)
@@ -120,7 +120,8 @@ class FolderWrites(helpers.Fixture):
         self.remove(module, 'C:/A')
         self.assertTrue(helpers.pump(lambda: module._folder_write is None and module._browse_ready))
         self.assertIsNone(module.current_folder_path)
-        self.assertEqual(module._get_active_paths(), [])
+        self.assertIsNone(module._folder_count)
+        self.assertFalse(module.btn_export_curation.isEnabled())
 
     def test_removal_failure_rolls_back_files_curation_fts_and_folder(self):
         self.service.submit('add_watched_folder', 'C:/A').result(3)

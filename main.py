@@ -619,35 +619,13 @@ class MainWindow(QMainWindow):
                 source.request_open_module.connect(self.open_image_set)
                 wired.add(id(source))
 
-        librarian = self.get_module("Librarian")
         gallery = self.get_module("Gallery")
-        optimizer = self.get_module("Image Optimizer")
-        cropper = self.get_module("Smart Cropper")
-        pickler = self.get_module("Pickler")
         duplicate_finder = self.get_module("Duplicate Finder")
 
         if duplicate_finder and gallery:
             duplicate_finder.request_open_gallery.connect(
                 lambda paths, title: self.switch_to_module(gallery, paths)
             )
-
-        if librarian:
-            if gallery:
-                librarian.request_open_gallery.connect(
-                    lambda paths, title: self.switch_to_module(gallery, paths) # title ignored for standard set load
-                )
-            if optimizer:
-                librarian.request_open_optimizer.connect(
-                    lambda paths: self.switch_to_module(optimizer, paths)
-                )
-            if cropper:
-                librarian.request_open_cropper.connect(
-                    lambda paths: self.switch_to_module(cropper, paths)
-                )
-            if pickler:
-                librarian.request_open_pickler.connect(
-                    lambda paths: self.switch_to_module(pickler, paths)
-                )
 
     def get_module(self, partial_name):
         for name, mod in self.loaded_modules.items():

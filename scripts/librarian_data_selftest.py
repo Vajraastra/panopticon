@@ -104,7 +104,7 @@ class LibrarianQt(helpers.Fixture):
         for module in self.modules:
             module.on_unload()
             self.assertTrue(helpers.pump(module.shutdown_ready))
-            for reader in (module.overview_reader, module.browse_reader, module.scan_reader, module.handoff_reader, module.export_reader):
+            for reader in (module.overview_reader, module.browse_reader, module.scan_reader, module.export_reader):
                 if reader._thread:
                     reader._thread.join(3)
                     self.assertFalse(reader._thread.is_alive())
@@ -121,7 +121,7 @@ class LibrarianQt(helpers.Fixture):
         return module
 
     def ready(self, module):
-        self.assertTrue(helpers.pump(lambda: module._overview_ready and module._browse_ready and not module.tag_completions.busy))
+        self.assertTrue(helpers.pump(lambda: module._overview_ready and module._browse_ready))
 
     def block(self, operation, match=lambda kwargs: True):
         entered, release = threading.Event(), threading.Event()
@@ -152,79 +152,40 @@ class LibrarianQt(helpers.Fixture):
             release.set()
             self.ready(module)
         self.assertEqual([name for name, _ in calls].count('get_library_overview'), 1)
-        self.assertTrue(any(name == 'get_tags_page' for name, _ in calls))
         self.assertFalse(any(name == 'get_all_tags' for name, _ in calls))
-        self.assertEqual(module.completer_model.stringList(), ['alpha'])
-        self.assertEqual(module.tag_list.item(0).text(), 'alpha')
         self.assertIn('1', module.lbl_stats.text())
 
     def test_latest_folder_wins_and_only_latest_pending_runs(self):
         self.register('C:/a/one.png', 'C:/b/two.png', 'C:/c/three.png')
         module = self.view()
         self.ready(module)
-        module.combo_actions.setCurrentIndex(1)
         entered, release, calls, hook = self.block('get_library_page', lambda kw: kw['folder'] == 'C:/a')
         with hook:
             module.load_folder_paths('C:/a')
             self.assertTrue(entered.wait(1))
             module.load_folder_paths('C:/b')
             module.load_folder_paths('C:/c')
-            self.assertFalse(module.btn_execute.isEnabled())
-            self.assertEqual(module._get_active_paths(), [])
+            self.assertFalse(module.btn_export_curation.isEnabled())
             release.set()
             self.assertTrue(helpers.pump(lambda: module._browse_ready))
         self.assertEqual([kw['folder'] for name, kw in calls], ['C:/a', 'C:/c'])
-        self.assertEqual(module.total_paths, ['C:/c/three.png'])
-        self.assertTrue(module.btn_execute.isEnabled())
-
-    def test_clearing_search_invalidates_inflight_result(self):
-        self.register('C:/images/alpha.png')
-        module = self.view()
-        self.ready(module)
-        entered, release, _, hook = self.block('get_library_page')
-        with hook:
-            module.active_tags = ['alpha']
-            module.perform_search()
-            self.assertTrue(entered.wait(1))
-            module.active_tags.clear()
-            module.perform_search()
-            release.set()
-            self.assertTrue(helpers.pump(lambda: not module.browse_reader._active))
-        self.assertEqual(module.total_paths, [])
-        self.assertTrue(module._browse_ready)
-
-    def test_latest_search_captures_mutable_terms_and_replaces_pending(self):
-        self.register('C:/images/alpha.png', 'C:/images/beta.png', 'C:/images/gamma.png')
-        module = self.view()
-        self.ready(module)
-        entered, release, calls, hook = self.block('get_library_page',
-                                                  lambda kw: kw['terms'] == ('alpha',))
-        with hook:
-            module.active_tags[:] = ['alpha']
-            module.perform_search()
-            self.assertTrue(entered.wait(1))
-            module.active_tags[:] = ['beta']
-            module.perform_search()
-            module.active_tags[:] = ['gamma']
-            module.perform_search()
-            release.set()
-            self.assertTrue(helpers.pump(lambda: module._browse_ready))
-        self.assertEqual([kw['terms'] for _, kw in calls], [('alpha',), ('gamma',)])
-        self.assertEqual(module.total_paths, ['C:/images/gamma.png'])
+        self.assertTrue(all(kw['limit'] == 1 for _, kw in calls))  # solo el recuento
+        self.assertEqual(module._folder_count, 1)
+        self.assertIn('c:', module.lbl_folder_stats.text().lower().replace('📂 ', ''))
+        self.assertTrue(module.btn_export_curation.isEnabled())
 
     def test_failure_is_visible_and_recovers_without_stale_actions(self):
         self.register('C:/images/a.png')
         module = self.view()
         self.ready(module)
-        module.combo_actions.setCurrentIndex(1)
         with patch.object(self.service, 'read', side_effect=LibraryError('read', 'fixture_failure')):
             module.load_folder_paths('C:/images')
             self.assertTrue(helpers.pump(lambda: 'fixture_failure' in module.lbl_folder_stats.text()))
-        self.assertFalse(module.btn_execute.isEnabled())
-        self.assertEqual(module.total_paths, [])
+        self.assertFalse(module.btn_export_curation.isEnabled())
+        self.assertIsNone(module._folder_count)
         module.load_folder_paths('C:/images')
         self.assertTrue(helpers.pump(lambda: module._browse_ready))
-        self.assertTrue(module.btn_execute.isEnabled())
+        self.assertTrue(module.btn_export_curation.isEnabled())
 
     def test_overview_failure_keeps_confirmed_sidebar_and_recovers(self):
         self.service.submit('add_watched_folder', 'C:/images').result(3)
@@ -247,20 +208,8 @@ class LibrarianQt(helpers.Fixture):
         self.service.submit('remove_watched_folder', 'C:/images').result(3)
         module.update_global_stats()
         self.assertTrue(helpers.pump(lambda: module.current_folder_path is None))
-        self.assertEqual(module.total_paths, [])
-
-    def test_explicit_page_handoff_does_not_read_db_or_truncate(self):
-        module = self.view()
-        self.ready(module)
-        paths = [f'C:/images/{i}.png' for i in range(100)]
-        module.combo_scope.setCurrentIndex(1)
-        module.total_paths, module._browse_ready = paths, True
-        received = []
-        module.request_open_gallery.connect(lambda rows, title: received.append(rows))
-        with patch.object(self.service, 'read', side_effect=AssertionError('GUI read')):
-            module.send_to_gallery()
-        self.assertEqual(received, [paths])
-        self.assertIn('1,000', module.btn_execute.toolTip())
+        self.assertIsNone(module._folder_count)
+        self.assertFalse(module.btn_export_curation.isEnabled())
 
     def test_unload_cancels_reads_timer_and_event_subscription_without_wait(self):
         module = self.view()
@@ -394,9 +343,8 @@ class LibrarianQt(helpers.Fixture):
         self.ready(module)
         module.load_folder_paths('C:/images')
         self.assertTrue(helpers.pump(lambda: module._browse_ready))
-        self.assertEqual(len(module.total_paths), 100)
-        self.assertEqual(module._selection_count, 10001)
-        self.assertIn('Page contains 100 of 10001', module.lbl_folder_stats.text())
+        self.assertEqual(module._folder_count, 10001)
+        self.assertIn('10001', module.lbl_folder_stats.text())
 
 
 if __name__ == '__main__':

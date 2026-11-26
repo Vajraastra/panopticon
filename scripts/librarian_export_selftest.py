@@ -85,31 +85,27 @@ class ExportQt(helpers.Fixture):
 
     def test_entire_folder_export_is_not_current_page_or_handoff_cap(self):
         module, paths = self.selected(1001)
-        self.assertEqual(len(module.total_paths), 100)
+        self.assertEqual(module._folder_count, 1001)  # recuento completo, no una página
         module.export_folder_curation()
         self.assertTrue(helpers.pump(lambda: module._exporting is None))
         self.assertIn('1001', module.lbl_export.text())
         self.assertEqual(read_curation_page(self.folder)['total'], len(paths))
         self.assertEqual(self.service.read('count_files'), len(paths))
 
-    def test_filter_or_headless_set_requires_explicit_folder_selection(self):
+    def test_export_requires_explicit_folder_selection(self):
         module = self.view()
         self.ready(module)
         self.assertFalse(module.btn_export_curation.isEnabled())
-        module, paths = self.selected()
-        module.active_tags[:] = ['missing']
-        module.perform_search()
-        self.assertTrue(helpers.pump(lambda: module._browse_ready))
         module.export_folder_curation()
-        self.assertFalse(module.btn_export_curation.isEnabled())
         self.assertIsNone(module.export_reader._thread)
-        module.active_tags.clear()
-        module.perform_search()
-        self.assertTrue(helpers.pump(lambda: module._browse_ready))
+        module, paths = self.selected()
         self.assertTrue(module.btn_export_curation.isEnabled())
-        module.run_headless(paths)
-        module.export_folder_curation()
+        module.run_headless(paths)  # ya no carga un conjunto ni cambia la selección
+        self.assertTrue(module.btn_export_curation.isEnabled())
+        module.current_folder_path = None
+        module.refresh_current_view()
         self.assertFalse(module.btn_export_curation.isEnabled())
+        module.export_folder_curation()
         self.assertIsNone(module.export_reader._thread)
 
     def test_folder_change_cannot_redirect_captured_export_or_result(self):
@@ -183,7 +179,8 @@ class ExportQt(helpers.Fixture):
         module, _ = self.selected()
         self.assertTrue(module.btn_export_curation.toolTip())
         self.assertIn('subfolders', module.btn_export_curation.toolTip())
-        self.assertIn('border', module.btn_export_curation.styleSheet())
+        # Tematizado por el QSS global (UI_DESIGN): sin hoja de estilo local con colores.
+        self.assertEqual(module.btn_export_curation.styleSheet(), '')
         self.assertNotIn('black', module.btn_export_curation.styleSheet())
         root = Path(__file__).resolve().parents[1]
         for language in ('en', 'es'):
