@@ -937,7 +937,7 @@
   "cherry.delete_body": "¿Quitar «{name}» del índice?",
   "cherry.delete_detail": "La carpeta y todo lo descargado en ella se quedan donde están:\n{folder}\n\nLo que se pierde es el estado de sincronización de sus fuentes, así que volver a darlo de alta reescanearía el historial completo desde cero. Si solo quieres dejar de descargar, desmarca sus fuentes.",
   "cherry.deleted": "Proyecto quitado.",
-  "cherry.dups_open": "Buscar proyectos repetidos",
+  "cherry.dups_open": "Proyectos repetidos…",
   "cherry.settings_open": "Ajustes…",
   "cherry.settings_saved": "Ajustes guardados.",
   "cherry.settings_title": "Ajustes de Cherry-DL",

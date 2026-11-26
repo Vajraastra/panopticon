@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
 
 from core import library_probe
 from core.paths import CachePaths
+from core.components.ui_roles import primary
 from core.components.send_to import populate_send_menu, sort_targets
 from core.native_threads import native_done, owner_threads_ready, start_worker
 from ..logic import ext_filter as ext_logic
@@ -388,9 +389,17 @@ class CherryView(QWidget):
         escribir en el buscador cambia lo que se ve dos centímetros más abajo.
         """
         bar = QWidget()
-        lay = QHBoxLayout(bar)
-        lay.setContentsMargins(12, 8, 12, 8)
+        rows = QVBoxLayout(bar)
+        rows.setContentsMargins(12, 8, 12, 6)
+        rows.setSpacing(6)
+        # Fila 1: volver, alta, mantenimiento y la acción principal.
+        # Fila 2: filtros de la tabla. En una sola fila no cabía a 1.400 px.
+        lay = QHBoxLayout()
         lay.setSpacing(8)
+        filters = QHBoxLayout()
+        filters.setSpacing(8)
+        rows.addLayout(lay)
+        rows.addLayout(filters)
 
         # `StandardToolLayout` traía este botón de serie; al salirse del patrón
         # hay que reponerlo o el módulo se convierte en un callejón sin salida.
@@ -415,6 +424,7 @@ class CherryView(QWidget):
             "Downloads nothing yet."))
         self._btn_new.clicked.connect(self._new_profile)
         lay.addWidget(self._btn_new)
+        lay.addStretch(1)
 
         self._search = QLineEdit()
         self._search.setPlaceholderText(self.tr("cherry.search_ph", "Search name or folder…"))
@@ -423,9 +433,8 @@ class CherryView(QWidget):
             "Filters the list by project name or by its folder on disk. "
             "Does not search inside files."))
         self._search.setClearButtonEnabled(True)
-        self._search.setMaximumWidth(280)
         self._search.textChanged.connect(self._apply_filters)
-        lay.addWidget(self._search)
+        filters.addWidget(self._search, 1)
 
         self._site_combo = QComboBox()
         self._site_combo.setToolTip(self.tr(
@@ -433,7 +442,7 @@ class CherryView(QWidget):
             "Shows only the projects from one site (Patreon, Pixiv…)."))
         self._site_combo.setMinimumWidth(130)
         self._site_combo.currentIndexChanged.connect(self._apply_filters)
-        lay.addWidget(self._site_combo)
+        filters.addWidget(self._site_combo)
 
         self._only_missing = QPushButton(self.tr("cherry.only_missing", "Missing folders only"))
         self._only_missing.setToolTip(self.tr(
@@ -442,23 +451,21 @@ class CherryView(QWidget):
             "moving files or unplugging a drive."))
         self._only_missing.setCheckable(True)
         self._only_missing.toggled.connect(self._apply_filters)
-        lay.addWidget(self._only_missing)
+        filters.addWidget(self._only_missing)
 
         self._count_label = QLabel()
         self._count_label.setStyleSheet(
             f"color: {self._color('text_dim', '#888')}; font-size: 11px;")
-        lay.addWidget(self._count_label)
+        filters.addWidget(self._count_label)
 
-        lay.addStretch(1)
-
-        self._btn_all = QPushButton()
+        self._btn_all = primary(QPushButton(
+            self.tr("cherry.download_all", "Download all visible ({n})").format(n=0)))
         self._btn_all.setToolTip(self.tr(
             "cherry.download_all_tip",
             "Downloads EVERY listed project in global source passes: paid official "
             "sites first, then free official sites and repositories. It honours each "
             "project's filter and can be cancelled at any point."))
         self._btn_all.clicked.connect(self._start_all_visible)
-        lay.addWidget(self._btn_all)
 
         self._btn_archives_all = QPushButton(self.tr(
             "cherry.archives_all", "Maintain visible"))
@@ -469,7 +476,7 @@ class CherryView(QWidget):
         self._btn_archives_all.clicked.connect(self._process_archives_batch)
         lay.addWidget(self._btn_archives_all)
 
-        self._btn_dups = QPushButton(self.tr("cherry.dups_open", "Find duplicate projects"))
+        self._btn_dups = QPushButton(self.tr("cherry.dups_open", "Duplicate projects…"))
         self._btn_dups.setToolTip(self.tr(
             "cherry.dups_open_tip",
             "Looks for projects pointing at the same source or with near-identical names. "
@@ -492,6 +499,9 @@ class CherryView(QWidget):
         self._btn_refresh.clicked.connect(self.refresh)
         lay.addWidget(self._btn_refresh)
 
+        # Acción principal a la derecha, separada del mantenimiento (convención 3).
+        lay.addWidget(self._vline())
+        lay.addWidget(self._btn_all)
         return bar
 
     # ── Zona 2: inspector del proyecto seleccionado ───────────────────────

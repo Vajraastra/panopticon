@@ -937,7 +937,7 @@
   "cherry.delete_body": "Remove “{name}” from the index?",
   "cherry.delete_detail": "The folder and everything downloaded into it stay where they are:\n{folder}\n\nWhat is lost is the sync state of its sources, so adding it again would re-scan the whole history from scratch. To just stop downloading, untick its sources instead.",
   "cherry.deleted": "Project removed.",
-  "cherry.dups_open": "Find duplicate projects",
+  "cherry.dups_open": "Duplicate projects…",
   "cherry.settings_open": "Settings…",
   "cherry.settings_saved": "Settings saved.",
   "cherry.settings_title": "Cherry-DL settings",
