@@ -2046,5 +2046,11 @@
   "dashboard.stage.workshop": "Workshop",
   "dashboard.stage.dataset": "Dataset",
   "dashboard.stage.other": "Other",
-  "tool.cherry-dl.desc": "Downloads and keeps artist collections up to date (Patreon, Pixiv, Pawchive)."
+  "tool.cherry-dl.desc": "Downloads and keeps artist collections up to date (Patreon, Pixiv, Pawchive).",
+  "gallery.select_page": "Select page",
+  "gallery.select_page_tip": "Adds every image on this page to the selection. The selection is kept when you change page.",
+  "gallery.send_results": "Send results to…",
+  "gallery.send_results_tip": "Sends every image matching the current view and filters (up to 1,000) to another tool. Larger sets are refused, never cut: narrow the filters or use Multiple selection.",
+  "gallery.send_results.reading": "Reading the complete result…",
+  "gallery.send_results.too_large": "{count} images match. Sending is limited to 1,000 so a set is never cut short: narrow the filters, or use Multiple selection and Select page."
 }

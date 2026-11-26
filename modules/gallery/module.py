@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QWidget, QMenu, QFileDialog
+from PySide6.QtWidgets import QWidget, QMenu, QFileDialog, QMessageBox
 from PySide6.QtGui import QCursor
 from PySide6.QtCore import Signal
 
@@ -48,6 +48,10 @@ class GalleryModule(BaseModule):
         self.revisions.changed.connect(self._on_native_revision)
 
         self.view_widget.btn_send.clicked.connect(self.show_send_menu)
+        self.view_widget.btn_send_all.clicked.connect(self.send_all_results)
+        self.results_reader = LibraryReader(self.engine.db.service, self.view_widget)
+        self.results_reader.result.connect(self._on_all_results)
+        self._results_target = None
         self.view_widget.sidebar.btn_open.clicked.connect(self.open_folder_dialog)
 
         return self.view_widget
@@ -108,21 +112,78 @@ class GalleryModule(BaseModule):
     def set_send_targets(self, targets):
         self.send_targets = list(targets)
 
-    def show_send_menu(self):
-        if self._closed: return
+    def _choose_target(self):
+        """Menú «Enviar a…» compartido; devuelve el nombre del destino o None."""
         menu = QMenu(self.view_widget)
         populate_send_menu(menu, self.send_targets, None, self.tr, tip=lambda label: self.tr(
             'gallery.send.target_tip',
             'Open the selected images in {tool}. Files are not moved or copied.').format(tool=label))
-
         selected = menu.exec(QCursor.pos())
+        if self._closed or selected is None or not selected.isEnabled() or not selected.data():
+            return None
+        return selected.data()
 
+    def show_send_menu(self):
+        if self._closed: return
+        target = self._choose_target()
         paths = list(self.state.selected_paths)
-        if not paths or self._closed:
+        if target and paths:
+            self.request_open_module.emit(target, paths)
+
+    # Límite heredado de Librarian: el conjunto completo o nada, jamás un prefijo.
+    SEND_ALL_LIMIT = 1000
+
+    def send_all_results(self):
+        if self._closed or self._results_target is not None:
             return
-        if selected is None or not selected.isEnabled() or not selected.data():
+        target = self._choose_target()
+        if not target:
             return
-        self.request_open_module.emit(selected.data(), paths)
+        state = self.state
+        if state.mode == state.VIEW_CUSTOM and not self.engine.has_custom_filters(state):
+            paths = list(state._custom_paths)
+            if len(paths) > self.SEND_ALL_LIMIT:
+                self._send_all_refused(len(paths))
+            elif paths:
+                self.request_open_module.emit(target, paths)
+            return
+        self._results_target = target
+        self.view_widget.btn_send_all.setEnabled(False)
+        self.view_widget.lbl_status.setText(self.tr('gallery.send_results.reading', 'Reading the complete result…'))
+        # Una lectura con limit = tope + 1: total y filas salen del mismo snapshot.
+        if state.mode == state.VIEW_CUSTOM:
+            query = dict(self.engine.custom_query(state, self.SEND_ALL_LIMIT + 1), offset=0)
+            self.results_reader.request('get_external_files_page', **query)
+        else:
+            query = dict(self.engine.image_query(state, self.SEND_ALL_LIMIT + 1), offset=0)
+            self.results_reader.request('search_files_paginated', **query)
+
+    def _on_all_results(self, ticket, value, error):
+        target, self._results_target = self._results_target, None
+        if self._closed or target is None:
+            return
+        self.view_widget.btn_send_all.setEnabled(True)
+        self.view_widget.update_bottom_bar()
+        if error is not None:
+            QMessageBox.warning(self.view_widget, self.tr('common.error', 'Error'), self.tr(
+                'gallery.db.read_error', 'Could not load library.') + f"\n{error}")
+            return
+        total, rows = value
+        if total > self.SEND_ALL_LIMIT:
+            self._send_all_refused(total)
+            return
+        paths = [path for path, _rating in rows]
+        if not paths:
+            QMessageBox.information(self.view_widget, self.tr('gallery.send_results', 'Send results to…'),
+                                    self.tr('lib.msg.no_files', 'No files found to send.'))
+            return
+        self.request_open_module.emit(target, paths)
+
+    def _send_all_refused(self, count):
+        QMessageBox.warning(self.view_widget, self.tr('gallery.send_results', 'Send results to…'), self.tr(
+            'gallery.send_results.too_large',
+            '{count} images match. Sending is limited to 1,000 so a set is never cut short: '
+            'narrow the filters, or use Multiple selection and Select page.').format(count=count))
 
     def run_headless(self, params: dict, input_data) -> None:
         pass

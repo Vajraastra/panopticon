@@ -124,6 +124,12 @@ class GalleryState(QObject):
             self.selected_paths[path] = None
         self.selection_changed.emit()
         
+    def select_paths(self, paths):
+        """Añade varias rutas a la selección conservando el orden («Seleccionar página»)."""
+        for path in paths:
+            self.selected_paths.setdefault(path, None)
+        self.selection_changed.emit()
+
     def clear_selection(self):
         self.selected_paths.clear()
         self.selection_changed.emit()

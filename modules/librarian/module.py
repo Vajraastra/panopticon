@@ -19,7 +19,7 @@ from core.components.curation_review import CurationReviewDialog
 from core.components.curation_recovery import CurationRecoveryDialog
 from core.components.copy_versions import CopyVersionsDialog
 from core.components.path_identity_review import PathIdentityReviewDialog
-from .ui.provenance import ProvenancePanel
+from core.components.provenance import ProvenancePanel
 from .logic.indexer import IndexerWorker
 from .logic.hash_backfill import HashBackfillWorker
 from .ui.folder_archive import FolderArchiveController, retain_worker

@@ -23,6 +23,7 @@ class GalleryGrid(QWidget):
         self._loading = False
         self._image_bindings = {}
         self._pending_image_page = None
+        self.current_page_paths = []
         self.reader = LibraryReader(self.engine.db.service, self)
         self.writer = LibraryWriter(self.engine.db.service, self)
         self.reader.result.connect(self.on_query_result)
@@ -98,6 +99,7 @@ class GalleryGrid(QWidget):
         self._image_bindings = {}
         self._pending_image_page = None
         
+        self.current_page_paths = []
         # 2. Fetch Data
         self._loading = True
         self.btn_prev.setEnabled(False)
@@ -196,6 +198,7 @@ class GalleryGrid(QWidget):
             
     def load_images(self, results):
         cols = 6 # Slightly denser for images
+        self.current_page_paths = [path for path, _ in results]
         for i, (path, rating) in enumerate(results):
             thumb = ClickableThumbnail(path, rating=rating, auto_load=False)
             

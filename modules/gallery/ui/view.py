@@ -46,27 +46,47 @@ class GalleryView(QWidget):
 
         self.lbl_status = hint(tr("gallery.status.ready", "Ready"))
 
+        self.btn_select_page = QPushButton(tr("gallery.select_page", "Select page"))
+        self.btn_select_page.setToolTip(tr(
+            "gallery.select_page_tip",
+            "Adds every image on this page to the selection. The selection is kept when you change page."))
+        self.btn_select_page.clicked.connect(
+            lambda: self.state.select_paths(self.grid.current_page_paths))
+
+        # Sin selección múltiple: enviar el resultado completo de la búsqueda (≤1.000).
+        self.btn_send_all = QPushButton(tr("gallery.send_results", "Send results to…"))
+        self.btn_send_all.setToolTip(tr(
+            "gallery.send_results_tip",
+            "Sends every image matching the current view and filters (up to 1,000) to another tool. "
+            "Larger sets are refused, never cut: narrow the filters or use Multiple selection."))
+
         # Acción principal abajo a la derecha (convención 3)
         self.btn_send = primary(QPushButton(tr("gallery.send_selection", "Send to…")))
         self.btn_send.setToolTip(tr(
             "gallery.send_tip",
             "Sends the selected images to another tool. Opens a menu to pick which one."))
-        self.btn_send.setVisible(False)
 
         layout.addWidget(self.lbl_status)
         layout.addStretch()
+        layout.addWidget(self.btn_select_page)
+        layout.addWidget(self.btn_send_all)
         layout.addWidget(self.btn_send)
 
         self.state.selection_changed.connect(self.update_bottom_bar)
+        self.state.view_mode_changed.connect(lambda _mode: self.update_bottom_bar())
+        self.update_bottom_bar()
         return bar
 
     def update_bottom_bar(self):
         tr = LocaleManager().tr
         count = len(self.state.selected_paths)
-        if self.state.picker_active:
+        images = self.state.mode != self.state.VIEW_ALBUMS
+        picker = self.state.picker_active
+        self.btn_select_page.setVisible(picker and images)
+        self.btn_send_all.setVisible(not picker and images)
+        self.btn_send.setVisible(picker and count > 0)
+        if picker:
             self.lbl_status.setText(tr("gallery.status.selected", "{count} selected").format(count=count))
-            self.btn_send.setVisible(count > 0)
             self.btn_send.setText(tr("gallery.send_count", "Send {count} to…").format(count=count))
         else:
             self.lbl_status.setText(tr("gallery.status.ready", "Ready"))
-            self.btn_send.setVisible(False)

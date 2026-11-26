@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import QPixmap, QKeySequence, QAction, QMouseEvent
 from core.components.tag_widgets import FlowLayout, TagChip
 from core.database_manager import DatabaseManager
+from core.components.provenance import ProvenancePanel
 from core.library_async import LibraryReader, LibraryWriter
 from core.external_registration_tasks import ExternalRegistrationTasks
 from core.curation_tasks import CurationExportTasks
@@ -228,6 +229,11 @@ class AdvancedViewer(QDialog):
         grid_stats.addWidget(self.lbl_quality, 3, 1)
         
         data_layout.addLayout(grid_stats)
+
+        # Procedencia registrada (artista, URL de origen); antes solo en Librarian.
+        self.provenance = ProvenancePanel(self.db.service, LocaleManager().tr, self.data_panel)
+        self.provenance.fields['path'].hide()  # la ruta ya se muestra arriba
+        data_layout.addWidget(self.provenance)
         
         # Create separator
         line = QFrame()
@@ -387,6 +393,7 @@ class AdvancedViewer(QDialog):
         self.curation_reader.close()
         self.registration_reader.close()
         self.export_reader.close()
+        self.provenance.shutdown()
         self.tag_completions.close()
         if self._pending_edit is None:
             self.writer.close()
@@ -627,6 +634,7 @@ class AdvancedViewer(QDialog):
         self.lbl_path.setText(LocaleManager().tr('gallery.viewer.path', 'Path: {path}').format(path=path))
         self.lbl_filesize.setText(LocaleManager().tr('gallery.db.loading', 'Loading…'))
         self.load_tags(path)
+        self.provenance.show_path(path)
         self.preview.request(path)
         if self.fs_window:
             self.fs_window.set_image(path)

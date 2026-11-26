@@ -2046,5 +2046,11 @@
   "dashboard.stage.workshop": "Taller",
   "dashboard.stage.dataset": "Dataset",
   "dashboard.stage.other": "Otras",
-  "tool.cherry-dl.desc": "Descarga y mantiene al día colecciones de artistas (Patreon, Pixiv, Pawchive)."
+  "tool.cherry-dl.desc": "Descarga y mantiene al día colecciones de artistas (Patreon, Pixiv, Pawchive).",
+  "gallery.select_page": "Seleccionar página",
+  "gallery.select_page_tip": "Añade todas las imágenes de esta página a la selección. La selección se conserva al cambiar de página.",
+  "gallery.send_results": "Enviar resultados a…",
+  "gallery.send_results_tip": "Envía todas las imágenes que coinciden con la vista y los filtros actuales (hasta 1.000) a otra herramienta. Un conjunto mayor se rechaza, nunca se recorta: acota los filtros o usa Selección múltiple.",
+  "gallery.send_results.reading": "Leyendo el resultado completo…",
+  "gallery.send_results.too_large": "Coinciden {count} imágenes. El envío se limita a 1.000 para no recortar nunca un conjunto: acota los filtros, o usa Selección múltiple y Seleccionar página."
 }
