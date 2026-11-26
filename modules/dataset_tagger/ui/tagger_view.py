@@ -26,6 +26,7 @@ from PySide6.QtCore import Qt, QThread, Signal, QSize
 from PySide6.QtGui import QPainter, QColor
 
 from core.components.standard_layout import StandardToolLayout
+from core.components.ui_roles import primary, section
 from core.paths import CachePaths
 
 from ..logic.templates import available_models, CaptionTemplate, NSFW_SUFFIX
@@ -247,6 +248,9 @@ class DatasetTaggerView(WorkerViewLifecycle, QWidget):
             theme_manager=self.context.get('theme_manager') if self.context else None,
             event_bus=self.context.get('event_bus') if self.context else None,
             sidebar_width=380,   # campos largos (motor/thresholds) sin scroll horizontal
+            tool_header=("🏷️", self._tr("tagger.title", "Dataset Tagger"),
+                         self._tr("tagger.subtitle",
+                                  "Caption image folders with a vision LLM (tags + natural language).")),
         )
 
         root = QVBoxLayout(self)
@@ -273,9 +277,7 @@ class DatasetTaggerView(WorkerViewLifecycle, QWidget):
         return tm.get_color(key) if tm else fallback
 
     def _section(self, text):
-        lbl = QLabel(text)
-        lbl.setStyleSheet(f"color: {self._accent()}; font-weight: bold; margin-top: 8px;")
-        return lbl
+        return section(text)
 
     # -- construcción de la UI ------------------------------------------------
     def _create_content(self):
@@ -283,15 +285,6 @@ class DatasetTaggerView(WorkerViewLifecycle, QWidget):
         lay = QVBoxLayout(w)
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(10)
-
-        title = QLabel(self._tr("tagger.title", "Dataset Tagger"))
-        title.setStyleSheet(f"color: {self._accent()}; font-size: 22px; font-weight: bold;")
-        subtitle = QLabel(self._tr(
-            "tagger.subtitle",
-            "Caption image folders with a vision LLM (tags + natural language)."))
-        subtitle.setWordWrap(True)
-        lay.addWidget(title)
-        lay.addWidget(subtitle)
 
         # zona de drop
         self.drop = DropFrame(self._accent(), self._color('border', "#444"))
@@ -782,7 +775,7 @@ class DatasetTaggerView(WorkerViewLifecycle, QWidget):
             "Opens the captions already generated to read and fix them by hand, image by "
             "image. It generates nothing new."))
         self.btn_review.clicked.connect(self._open_review)
-        self.btn_run = QPushButton(self._tr("tagger.run", "Start captioning"))
+        self.btn_run = primary(QPushButton(self._tr("tagger.run", "Start captioning")))
         self.btn_run.setToolTip(self._tr(
             "tagger.run_tip",
             "Starts generating captions for the whole folder. It can take a long time: it "

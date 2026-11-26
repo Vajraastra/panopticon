@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.components.standard_layout import StandardToolLayout
+from core.components.ui_roles import primary, section
 from core.paths import CachePaths
 from core.image_preview import ImagePreview, load_preview, _identity as preview_identity
 from core.metadata.bundle import MetadataBundle
@@ -195,6 +196,9 @@ class PicklerView(StandardToolLayout):
             bottom_widget=action_bar,
             theme_manager=self._theme,
             event_bus=self.context.get('event_bus'),
+            tool_header=("🥒", self.tr("tool.pickler.name", "Pickler"),
+                         self.tr("tool.pickler.desc",
+                                 "Mark images to move, copy, or discard, then apply the decisions together.")),
         )
 
         self._job_timer = QTimer(self)
@@ -352,7 +356,7 @@ class PicklerView(StandardToolLayout):
             "pickler.action_skip_tip",
             "Moves to the next image without touching it or deciding anything about it."))
         self._btn_skip.clicked.connect(self._next)
-        self._btn_apply = QPushButton()
+        self._btn_apply = primary(QPushButton())
         self._btn_apply.setToolTip(self.tr('tool.pickler.apply_tip',
             'Run the marked moves, copies and discards in order. Closing Pickler also applies pending decisions.'))
         self._btn_apply.clicked.connect(self._toggle_apply)
@@ -385,11 +389,7 @@ class PicklerView(StandardToolLayout):
         return bar
 
     def _section_label(self, text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setStyleSheet(
-            f"color: {self._color('text_secondary', '#aaa')}; "
-            f"font-size: 11px; font-weight: bold; letter-spacing: 1px;")
-        return lbl
+        return section(text)
 
     def _divider(self) -> QFrame:
         d = QFrame()
