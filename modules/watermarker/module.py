@@ -17,6 +17,8 @@ from core.paths import CachePaths
 
 
 class WatermarkerModule(BaseModule):
+    accepts_multiple_images = False  # edita una imagen a la vez
+
     def __init__(self):
         super().__init__()
         self._name = "Watermarker"
@@ -442,6 +444,7 @@ class WatermarkerModule(BaseModule):
             self.lbl_input_notice.show()
             return
         self.source_image = paths[0]
+        self.image_set_loaded.emit([str(self.source_image)])
         if hasattr(self, 'lbl_image_status'):
             self.lbl_input_notice.hide()
             self.lbl_image_status.setText(os.path.basename(self.source_image))

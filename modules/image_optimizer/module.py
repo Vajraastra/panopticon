@@ -440,6 +440,7 @@ class ImageOptimizerModule(BaseModule):
         if files and not self._closed:
             self.queue.extend(files)
             self._update_ui()
+            self.image_set_loaded.emit(list(self.queue))
 
     def _on_files_dropped(self, paths: list):
         if self._closed:
@@ -447,6 +448,8 @@ class ImageOptimizerModule(BaseModule):
         new = [p for p in paths if p not in self.queue]
         self.queue.extend(new)
         self._update_ui()
+        if new:
+            self.image_set_loaded.emit(list(self.queue))
 
     def _analyze_first(self):
         if self._closed or not self.queue:
@@ -611,6 +614,7 @@ class ImageOptimizerModule(BaseModule):
             self.get_view()
             self.queue = list(paths)
             self._update_ui()
+            self.image_set_loaded.emit(list(self.queue))
 
     def run_headless(self, params: dict, input_data) -> None:
         pass

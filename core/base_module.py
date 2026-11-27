@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, Signal
 
 class BaseModule(QObject):
     """
@@ -7,6 +7,13 @@ class BaseModule(QObject):
     Define la interfaz estándar que permite al Core cargar, inicializar
     y comunicar módulos entre sí.
     """
+    # Conjunto compartido del Taller (U5, core/workshop_window.py). Opcionales: un
+    # módulo los emite al aceptar imágenes; el core decide a quién más pasarlas.
+    image_set_loaded = Signal(list)
+    current_image_changed = Signal(str)
+    # False = solo trabaja con una imagen a la vez (el Taller le pasa la actual).
+    accepts_multiple_images = True
+
     def __init__(self):
         super().__init__()
         self._name = "Base Module"

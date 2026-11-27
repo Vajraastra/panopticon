@@ -2059,5 +2059,10 @@
   "details.resolution_tip": "Ancho × alto en píxeles.",
   "details.size": "Tamaño",
   "details.size_tip": "Tamaño del archivo en disco.",
-  "gallery.viewer.quality_tip": "Puntuación de calidad guardada en el archivo por versiones anteriores de Panopticon, si la hay."
+  "gallery.viewer.quality_tip": "Puntuación de calidad guardada en el archivo por versiones anteriores de Panopticon, si la hay.",
+  "tool.workshop.name": "Taller",
+  "tool.workshop.desc": "Recorta, optimiza y pon marca de agua en una sola ventana que comparte las imágenes.",
+  "workshop.shared": "Conjunto compartido: {count} imágenes · actual: {name}",
+  "workshop.shared_empty": "Abre imágenes en cualquier pestaña; las demás las reciben al cambiar de pestaña.",
+  "workshop.shared_tip": "Las imágenes que abras en una pestaña pasan a las demás al cambiar de pestaña. Watermarker recibe solo la imagen actual."
 }

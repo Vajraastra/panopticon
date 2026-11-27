@@ -4,6 +4,7 @@ import os
 import logging
 from core.native_threads import native_threads_ready
 import traceback
+from types import SimpleNamespace
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QStackedWidget,
                              QFrame, QGridLayout, QComboBox, QMessageBox, QScrollArea,
@@ -16,6 +17,7 @@ from shiboken6 import isValid
 from core.mod_loader import ModuleLoader
 from core.module_handoff import image_set_consumers
 from core.module_window import ModuleWindow
+from core.workshop_window import WorkshopWindow, WORKSHOP_TOOLS
 from core.theme_manager import ThemeManager
 from core.locale_manager import LocaleManager
 from core.event_bus import EventBus
@@ -68,6 +70,8 @@ class MainWindow(QMainWindow):
 
         # 4. UI Initialization
         self.module_windows = {}
+        self._workshop_window = None
+        self._workshop_card = False
         self._producer_recovery_dialog = None
         self._shutting_down = False
         self._shutdown_finished = False
@@ -210,7 +214,7 @@ class MainWindow(QMainWindow):
         ("obtain",  "Obtain",  ("Cherry-DL",)),
         ("library", "Library", ("Gallery", "Librarian", "Duplicate Finder")),
         ("curate",  "Curate",  ("Pickler", "Character Recognizer")),
-        ("workshop","Workshop",("Smart Cropper", "Image Optimizer", "Watermarker", "Metadata Hub")),
+        ("workshop","Workshop",("Workshop", "Metadata Hub")),
         ("dataset", "Dataset", ("Dataset Tagger",)),
     )
 
@@ -519,6 +523,14 @@ class MainWindow(QMainWindow):
 
     def add_module_card(self, module):
         """Tarjeta de una herramienta dentro de la fila de su etapa."""
+        opener = module
+        if module.name in WORKSHOP_TOOLS:
+            # Una sola tarjeta «Taller» para Cropper, Optimizer y Watermarker (U5).
+            if self._workshop_card:
+                return
+            self._workshop_card = True
+            module = SimpleNamespace(name="Workshop", icon="🛠️",
+                description="Crop, optimize and watermark in one window that shares the image set.")
         tm = self.theme_manager
         card = QFrame()
         card.setFixedSize(230, 120)
@@ -562,7 +574,7 @@ class MainWindow(QMainWindow):
             "dashboard.open_module_tip",
             "Open this tool in its own window. Click again to return to the same session."
         ))
-        card.mousePressEvent = lambda e: self.switch_to_module(module)
+        card.mousePressEvent = (lambda e: self.open_workshop()) if opener is not module             else (lambda e: self.switch_to_module(module))
 
         # Orden dentro de la etapa = orden del flujo en DASHBOARD_STAGES, no el de descubrimiento.
         stage = self._stage_for(module.name)
@@ -579,7 +591,10 @@ class MainWindow(QMainWindow):
         if self._shutting_down:
             return
         window = self.module_windows.get(module.name)
-        if window is None:
+        if module.name in WORKSHOP_TOOLS:
+            if self.open_workshop(module) is None:
+                return
+        elif window is None:
             try:
                 view = module.get_view()
                 if view is None:
@@ -593,7 +608,8 @@ class MainWindow(QMainWindow):
                     "dashboard.module_open_error", "Could not open this tool. See the log for details."
                 ))
                 return
-        window.show_session()
+        if module.name not in WORKSHOP_TOOLS:
+            window.show_session()
         # Pass args if supported
         if args:
             if hasattr(module, "load_image_set"):
@@ -602,6 +618,26 @@ class MainWindow(QMainWindow):
                 module.load_images(*args)
             elif hasattr(module, "load_custom_view"):
                 module.load_custom_view(*args)
+
+    def open_workshop(self, module=None):
+        """Abre el Taller (lo crea la primera vez) y, si se indica, la pestaña de ``module``."""
+        if self._shutting_down:
+            return None
+        window = self._workshop_window
+        if window is None:
+            tools = [self.loaded_modules[name] for name in WORKSHOP_TOOLS if name in self.loaded_modules]
+            window = WorkshopWindow(self, tools)
+            if not window.tools:
+                window.deleteLater()
+                QMessageBox.warning(self, self.tr('tool.workshop.name', 'Workshop'), self.tr(
+                    "dashboard.module_open_error", "Could not open this tool. See the log for details."))
+                return None
+            self._add_cherry_scan_status(window)
+            self._workshop_window = window
+            for tool in window.tools:
+                self.module_windows[tool.name] = window
+        window.show_session(module.name if module is not None else None)
+        return window
 
     def setup_integrations(self):
         # «Enviar a…» genérico (core/components/send_to.py): todo origen con

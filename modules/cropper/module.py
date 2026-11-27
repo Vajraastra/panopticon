@@ -410,6 +410,7 @@ class CropperModule(BaseModule):
         if self._closed:
             return
         path = self._image_paths[self._image_index]
+        self.current_image_changed.emit(path)
         self._update_sequence_controls()
         self._preview_loading = True
         self.cropper_widget.image_path = None
@@ -523,6 +524,7 @@ class CropperModule(BaseModule):
         self.get_view()
         self._image_paths = [str(path) for path in paths]
         self._image_index = 0
+        self.image_set_loaded.emit(list(self._image_paths))
         self._load_sequence_image()
 
     def run_headless(self, params: dict, input_data) -> None:

@@ -2059,5 +2059,10 @@
   "details.resolution_tip": "Width × height in pixels.",
   "details.size": "Size",
   "details.size_tip": "File size on disk.",
-  "gallery.viewer.quality_tip": "Quality score stored in the file by older Panopticon versions, if any."
+  "gallery.viewer.quality_tip": "Quality score stored in the file by older Panopticon versions, if any.",
+  "tool.workshop.name": "Workshop",
+  "tool.workshop.desc": "Crop, optimize and watermark in one window that shares the image set.",
+  "workshop.shared": "Shared set: {count} images · current: {name}",
+  "workshop.shared_empty": "Open images in any tab; the others receive them when you switch tabs.",
+  "workshop.shared_tip": "The images you open in one tab pass to the others when you switch tabs. Watermarker receives only the current image."
 }
