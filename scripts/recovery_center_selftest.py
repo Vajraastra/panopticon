@@ -70,7 +70,8 @@ class RecoveryCenter(unittest.TestCase):
 
     def tearDown(self):
         self.main.close()
-        for _ in range(150):
+        # Margen amplio: bajo la suite completa el cierre ordenado tarda más de 3 s.
+        for _ in range(500):
             if self.main._shutdown_finished:
                 break
             QTest.qWait(20)
