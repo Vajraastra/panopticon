@@ -5,6 +5,7 @@ from PySide6.QtGui import QPixmap, QKeySequence, QAction, QMouseEvent
 from core.components.tag_widgets import FlowLayout, TagChip
 from core.database_manager import DatabaseManager
 from core.components.provenance import ProvenancePanel
+from core.components.image_navigator import ImageNavigator
 from core.library_async import LibraryReader, LibraryWriter
 from core.external_registration_tasks import ExternalRegistrationTasks
 from core.curation_tasks import CurationExportTasks
@@ -296,21 +297,13 @@ class AdvancedViewer(QDialog):
         data_layout.addStretch()
 
         # Navigation Buttons (Big)
-        nav_layout = QHBoxLayout()
-        self.btn_prev = QPushButton("<")
-        self.btn_prev.clicked.connect(self.prev_image)
-        self.btn_next = QPushButton(">")
-        self.btn_next.clicked.connect(self.next_image)
-        self.btn_prev.setToolTip(LocaleManager().tr('gallery.viewer.previous_tip', 'Show the previous image.'))
-        self.btn_next.setToolTip(LocaleManager().tr('gallery.viewer.next_tip', 'Show the next image.'))
-        
-        for btn in [self.btn_prev, self.btn_next]:
-            btn.setFixedSize(60, 40)
-            btn.setFocusPolicy(Qt.NoFocus) # Fix keyboard nav
-            
-        nav_layout.addWidget(self.btn_prev)
-        nav_layout.addWidget(self.btn_next)
-        data_layout.addLayout(nav_layout)
+        # Navegador compartido (U8); da la vuelta al llegar a un extremo.
+        self.navigator = ImageNavigator(LocaleManager().tr, wrap=True)
+        self.navigator.navigate.connect(lambda step: self.prev_image() if step < 0 else self.next_image())
+        self.navigator.install_shortcuts(self)
+        self.btn_prev = self.navigator.btn_prev
+        self.btn_next = self.navigator.btn_next
+        data_layout.addWidget(self.navigator)
         
         data_layout.addSpacing(20)
         
@@ -419,12 +412,10 @@ class AdvancedViewer(QDialog):
             self.start_slideshow() # Toggling off calls logic
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Left:
-            self.prev_image()
-        elif event.key() == Qt.Key_Right:
-            self.next_image()
-        elif event.key() == Qt.Key_Escape:
+        if event.key() == Qt.Key_Escape:
             self.close()
+        else:
+            super().keyPressEvent(event)
 
     def add_tag(self):
         if not self._can_edit(): return
@@ -450,8 +441,8 @@ class AdvancedViewer(QDialog):
                                      and self._curation_ready and self._preview_image is not None
                                      and not self._registered and bool(self.paths))
         self.btn_export.setEnabled(enabled)
-        self.btn_prev.setEnabled(not self._registration_pending and not self._export_pending)
-        self.btn_next.setEnabled(not self._registration_pending and not self._export_pending)
+        self.navigator.set_position(self.current_idx, len(self.paths),
+                                    enabled=not self._registration_pending and not self._export_pending)
 
     def export_current_folder(self):
         if not self.btn_export.isEnabled() or self._closed:
@@ -622,6 +613,7 @@ class AdvancedViewer(QDialog):
     def load_current_image(self):
         if self._closed or not self.paths: return
         path = self.paths[self.current_idx]
+        self.update_edit_controls()
         self._preview_revision = self.db.service.preview_revision_snapshot()
         self._preview_ready = False
         self._preview_path, self._preview_image = path, None

@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 from PIL import Image
 
 from core.theme import Theme
+from core.components.image_navigator import ImageNavigator, KEYS_ALT_ARROWS
 from ..logic.ideogram.datamodel import WorkDoc, Element, STATUS_DRAFT
 from ..logic.ideogram import layout, editor_load, editor_save
 from ..logic import refine
@@ -629,12 +630,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         dup_sc.setContext(Qt.WindowShortcut)
         dup_sc.activated.connect(self._duplicate_selected)
         # Navegación por el set: Alt+←/→ (no choca con mover cajas ni editar texto).
-        prev_sc = QShortcut(QKeySequence("Alt+Left"), self)
-        prev_sc.setContext(Qt.WindowShortcut)
-        prev_sc.activated.connect(lambda: self._go(-1))
-        next_sc = QShortcut(QKeySequence("Alt+Right"), self)
-        next_sc.setContext(Qt.WindowShortcut)
-        next_sc.activated.connect(lambda: self._go(1))
+        self._navigator.install_shortcuts(self)
         save_sc = QShortcut(QKeySequence.Save, self)  # Ctrl+S
         save_sc.setContext(Qt.WindowShortcut)
         save_sc.activated.connect(self._save_and_close)
@@ -687,19 +683,12 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
         row = QHBoxLayout(bar)
         row.setContentsMargins(8, 4, 8, 4)
         row.setSpacing(6)
-        self._btn_prev = QPushButton(self.tr("ig4.prev", "◀ Prev"))
-        self._btn_prev.setToolTip(self.tr(
-            "ig4.tip.prev", "Save and go to the previous image (Alt+←)."))
-        self._btn_prev.clicked.connect(lambda: self._go(-1))
-        self._btn_next = QPushButton(self.tr("ig4.next", "Next ▶"))
-        self._btn_next.setToolTip(self.tr(
-            "ig4.tip.next", "Save and go to the next image (Alt+→)."))
-        self._btn_next.clicked.connect(lambda: self._go(1))
-        self._lbl_nav = QLabel("")
-        self._lbl_nav.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: 11px;")
-        row.addWidget(self._btn_prev)
-        row.addWidget(self._btn_next)
-        row.addWidget(self._lbl_nav)
+        self._navigator = ImageNavigator(
+            self.tr, keys=KEYS_ALT_ARROWS, show_name=True,
+            prev_tip=self.tr("ig4.tip.prev", "Save and go to the previous image."),
+            next_tip=self.tr("ig4.tip.next", "Save and go to the next image."))
+        self._navigator.navigate.connect(self._go)
+        row.addWidget(self._navigator)
         row.addStretch()
         bar.setVisible(bool(self._images))
         return bar
@@ -707,11 +696,7 @@ class BBoxEditor(WorkerViewLifecycle, QDialog):
     def _update_nav(self):
         if not self._images:
             return
-        n = len(self._images)
-        self._btn_prev.setEnabled(self._index > 0)
-        self._btn_next.setEnabled(self._index < n - 1)
-        self._lbl_nav.setText(self.tr("ig4.nav_pos", "{0}/{1}  ·  {2}").format(
-            self._index + 1, n, self.image_path.name))
+        self._navigator.set_position(self._index, len(self._images), self.image_path.name)
 
     def _has_content(self):
         """¿El doc tiene trabajo real que guardar? (evita borradores vacíos al solo

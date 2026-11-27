@@ -7,6 +7,7 @@ from PySide6.QtGui import QPixmap, QPainter
 from shiboken6 import isValid
 from core.base_module import BaseModule
 from core.components.ui_roles import primary, section, hint, set_role
+from core.components.image_navigator import ImageNavigator
 from core.theme_manager import ThemeManager
 from .logic.worker import MetadataWorker
 import json
@@ -154,6 +155,7 @@ class MetadataModule(BaseModule):
         
         # Establece el modo inicial (solo lectura por defecto)
         self.set_mode(self.MODE_VIEWER)
+        self.navigator.install_shortcuts(self.view)
         self.view.destroyed.connect(self.on_unload)
         
         return self.view
@@ -277,21 +279,14 @@ class MetadataModule(BaseModule):
         viewer_layout.addWidget(self.image_label, 1)
 
         # Carousel Controls
-        carousel_layout = QHBoxLayout()
-        self.btn_prev = QPushButton(self.tr("meta.prev", "◀ Previous"))
-        self.btn_prev.setToolTip(self.tr(
-            "meta.prev_tip", "Previous of the loaded images. Unsaved changes are lost."))
-        self.btn_prev.clicked.connect(self.go_prev)
-
-        self.btn_next = QPushButton(self.tr("meta.next", "Next ▶"))
-        self.btn_next.setToolTip(self.tr(
-            "meta.next_tip", "Next of the loaded images. Unsaved changes are lost."))
-        self.btn_next.clicked.connect(self.go_next)
-
-        carousel_layout.addWidget(self.btn_prev)
-        carousel_layout.addStretch()
-        carousel_layout.addWidget(self.btn_next)
-        viewer_layout.addLayout(carousel_layout)
+        self.navigator = ImageNavigator(
+            self.tr,
+            prev_tip=self.tr("meta.prev_tip", "Previous of the loaded images. Unsaved changes are lost."),
+            next_tip=self.tr("meta.next_tip", "Next of the loaded images. Unsaved changes are lost."))
+        self.navigator.navigate.connect(lambda step: self.go_prev() if step < 0 else self.go_next())
+        self.btn_prev = self.navigator.btn_prev
+        self.btn_next = self.navigator.btn_next
+        viewer_layout.addWidget(self.navigator, 0, Qt.AlignHCenter)
 
         self.splitter.addWidget(viewer_container)
 
@@ -621,8 +616,7 @@ class MetadataModule(BaseModule):
         service = self.context.get('data_service') is not None
         for control in (self.btn_mode_view, self.btn_mode_edit, self.btn_open, self.image_label):
             control.setEnabled(idle)
-        self.btn_prev.setEnabled(idle and self.current_index > 0)
-        self.btn_next.setEnabled(idle and self.current_index < len(self.image_list)-1)
+        self.navigator.set_position(self.current_index, len(self.image_list), enabled=idle)
         self.btn_save.setEnabled(idle and editing and indexed and service and self._capture.get('editable_original', False))
         self.btn_export.setEnabled(idle and editing and loaded and service)
         self.btn_reload.setEnabled(idle and self.active_path is not None)

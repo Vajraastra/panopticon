@@ -20,6 +20,7 @@ from core.curation_bindings import valid as valid_binding
 from core.derived_publication import write
 from core.components.standard_layout import StandardToolLayout
 from core.components.ui_roles import primary, section
+from core.components.image_navigator import ImageNavigator
 from modules.cropper.logic.cropper_widget import ImageCropperWidget
 from modules.cropper.logic.cropper_logic import crop_image, CropCancelled, SourceDestinationError
 
@@ -133,6 +134,7 @@ class CropperModule(BaseModule):
         self.view.setAcceptDrops(True)
         self.view.dragEnterEvent = self._drag_enter
         self.view.dropEvent = self._drop
+        self.navigator.install_shortcuts(self.view)
 
         self._update_sequence_controls()
         return self.view
@@ -308,19 +310,14 @@ class CropperModule(BaseModule):
         layout.setContentsMargins(10, 5, 10, 5)
         layout.setSpacing(15)
 
-        self.btn_previous = QPushButton(self.tr('tool.cropper.previous', 'Previous image'))
-        self.btn_next = QPushButton(self.tr('tool.cropper.next', 'Next image'))
-        for button in (self.btn_previous, self.btn_next):
-            button.setToolTip(self.tr('tool.cropper.navigate_tip',
-                'Review another image in the received set. Keeps the current crop settings; no crop is saved automatically. Navigation waits for a save to finish.'))
-        self.btn_previous.clicked.connect(lambda: self._navigate_image(-1))
-        self.btn_next.clicked.connect(lambda: self._navigate_image(1))
-        self.lbl_sequence = QLabel()
-        self.lbl_sequence.setToolTip(self.tr('tool.cropper.sequence_tip',
-            'Current position in the complete received set. Save Crop exports only the displayed image.'))
-        layout.addWidget(self.btn_previous)
-        layout.addWidget(self.lbl_sequence)
-        layout.addWidget(self.btn_next)
+        tip = self.tr('tool.cropper.navigate_tip',
+            'Review another image in the received set. Keeps the current crop settings; no crop is saved automatically. Navigation waits for a save to finish.')
+        self.navigator = ImageNavigator(self.tr, prev_tip=tip, next_tip=tip)
+        self.navigator.navigate.connect(self._navigate_image)
+        self.btn_previous = self.navigator.btn_prev
+        self.btn_next = self.navigator.btn_next
+        self.lbl_sequence = self.navigator.lbl_position
+        layout.addWidget(self.navigator)
 
         layout.addStretch()
 
@@ -398,10 +395,7 @@ class CropperModule(BaseModule):
             return
         count = len(self._image_paths)
         available = not self._save_busy(include_preview=False)
-        self.btn_previous.setEnabled(available and self._image_index > 0)
-        self.btn_next.setEnabled(available and self._image_index + 1 < count)
-        self.lbl_sequence.setText(self.tr('tool.cropper.sequence', 'Image {current} of {total}').format(
-            current=self._image_index + 1 if count else 0, total=count))
+        self.navigator.set_position(self._image_index, count, enabled=available)
 
     def _navigate_image(self, step):
         if self._save_busy(include_preview=False):

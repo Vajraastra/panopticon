@@ -567,8 +567,8 @@ class CropperData(helpers.Fixture):
         self.assertTrue(helpers.pump(lambda: not module._preview_loading))
         self.assertEqual(module.cropper_widget.image_path, self.source)
         self.assertFalse(module.btn_next.isEnabled())
-        self.assertEqual(module.lbl_sequence.text(), module.tr('tool.cropper.sequence',
-            'Image {current} of {total}').format(current=3,total=3))
+        self.assertEqual(module.lbl_sequence.text(), module.tr('nav.position',
+            '{current} / {total}').format(current=3,total=3))
         module.btn_previous.click()
         self.assertTrue(helpers.pump(lambda: not module._preview_loading))
         self.assertEqual(module.cropper_widget.image_path, self.output)
