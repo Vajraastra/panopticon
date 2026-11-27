@@ -78,11 +78,16 @@ modules/mi_herramienta/
 ```
 
 `module.py` define `_name`, `_description`, `_icon` (emoji) y `accent_color`, y construye la
-vista **de forma perezosa dentro de `get_view()`** — nunca en `__init__`. La vista usa
-`StandardToolLayout` (sidebar de 320 px a la izquierda, canvas al centro, barra de acciones
-abajo). `load_image_set(paths)` es la interfaz estándar para recibir imágenes de otro módulo;
-`run_headless(params, input_data)` permite usar la lógica sin GUI. El `mod_loader` descubre la
-carpeta sola: no hay que registrar nada en el core.
+vista **de forma perezosa dentro de `get_view()`** — nunca en `__init__`. Por defecto la
+vista usa `StandardToolLayout`; la forma sigue a la función, así que tablas y exploradores
+(Cherry, Gallery) pueden tener otra, siempre que respeten la regla 9. `StandardToolLayout` da
+sidebar de 320 px a la izquierda, canvas al centro y barra de acciones abajo, con
+`tool_header=(icono, nombre, descripción)` para el encabezado. `load_image_set(paths)` es la interfaz
+estándar para recibir imágenes de otro módulo: implementarla basta para aparecer en el menú
+«Enviar a…» de Gallery y Cherry. `run_headless(params, input_data)` permite usar la lógica sin
+GUI. El `mod_loader` descubre la carpeta sola; lo único que se registra a mano es la etapa del
+dashboard (`MainWindow.DASHBOARD_STAGES` en `main.py`: Obtener, Biblioteca, Curar, Taller,
+Dataset). Sin ella la tarjeta cae en «Otros».
 
 ### Reglas que no se negocian
 
@@ -127,6 +132,10 @@ carpeta sola: no hay que registrar nada en el core.
    de la ventana: Qt lo pinta con su paleta nativa. Si se estrena un tipo de widget, hay que
    darle su regla en `ThemeManager.get_stylesheet()`.
 
+   **Un `setStyleSheet` sin selector en un contenedor se hereda a todos sus hijos** y le gana
+   al QSS global: así quedaron los botones primarios con aspecto de deshabilitados. Acotarlo
+   con `objectName` (`QFrame#bottom_bar {...}`, `#x .QWidget` para los hijos genéricos).
+
    El `accent_color` que declara el módulo es su **tono** de identidad; el `mod_loader` le pone
    el croma y la claridad del tema (`themed_accent`), así que basta con elegir un tono que no
    choque con los de los demás módulos. Las paletas se generan y se auditan con
@@ -136,6 +145,30 @@ carpeta sola: no hay que registrar nada en el core.
    distribución pública). En lotes grandes, verificar con `BatchVerifier`. Ante un fallo de
    verificación, jamás borrar el original.
 8. **Escrituras en disco atómicas:** temp → `os.replace`, nunca `save()` sobre el destino final.
+9. **Convención de interfaz** (2026-11-26; detalle y razones en `UI_DESIGN.md`). Toda
+   herramienta se ve y se usa igual; antes de dibujar algo a mano, buscar la pieza en
+   `core/components/`:
+   - **Barra lateral en orden de flujo:** origen (abrir carpeta/imágenes) → opciones →
+     avanzado plegado. Títulos de sección con `section()`, notas con `hint()`.
+   - **Barra inferior:** navegación a la izquierda; la acción principal **a la derecha, una
+     sola por pantalla**, marcada con `primary()`; «Cancelar» a su izquierda; lo destructivo
+     con `danger()`. Los roles (`core/components/ui_roles.py`) se pintan por el QSS: nada de
+     colores sólidos ad hoc, MAYÚSCULAS ni emoji en botones (el emoji va en el encabezado).
+   - **Modos excluyentes:** botones `setCheckable(True)` en grupo, no combos escondidos.
+   - **Recorrer imágenes:** `ImageNavigator` («◀ Anterior · N / total · Siguiente ▶», atajos
+     ←/→ que no les roban las flechas a los campos de texto). **Ficha de la imagen:**
+     `ImageDetails` (nombre, carpeta, resolución, tamaño; `add_row` para filas propias).
+   - **Enviar a otra herramienta:** `populate_send_menu` (`core/components/send_to.py`),
+     nunca botones fijos por destino.
+   - **Recuperación:** el módulo no dibuja su propia pantalla de recuperación; declara
+     `recovery_entries()` → `[(clave, título, descripción, abrir)]` y aparece en el Centro de
+     recuperación del dashboard.
+   - **Taller:** Cropper, Optimizer y Watermarker viven como pestañas de
+     `core/workshop_window.py` (lista `WORKSHOP_TOOLS`). Un módulo que entre ahí emite
+     `image_set_loaded(list)` al aceptar imágenes y `current_image_changed(str)` al cambiar la
+     actual; si solo trabaja con una imagen, declara `accepts_multiple_images = False`.
+   - **Nombres:** «etiquetas de biblioteca» son los tags de la BD (Gallery, Librarian,
+     Recognizer); «captions» son los `.txt` del Dataset Tagger. No mezclarlos en textos.
 
 ### Antes de dar por bueno un módulo
 
