@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap, QPainter
 from shiboken6 import isValid
 from core.base_module import BaseModule
-from core.components.ui_roles import primary, section, hint, set_role
+from core.components.ui_roles import primary, section, set_role
 from core.components.image_navigator import ImageNavigator
 from core.theme_manager import ThemeManager
 from .logic.worker import MetadataWorker
@@ -173,8 +173,6 @@ class MetadataModule(BaseModule):
             "meta.open_tip", "Loads one or more images to view or edit their metadata."))
         self.btn_open.clicked.connect(self.open_files_dialog)
         layout.addWidget(self.btn_open)
-        self.lbl_carousel_stats = hint(self.tr("meta.stats", "{current} / {total} images").format(current=0, total=0))
-        layout.addWidget(self.lbl_carousel_stats)
 
         # 2. Modo
         layout.addWidget(section(self.tr("meta.mode", "Mode")))
@@ -424,7 +422,6 @@ class MetadataModule(BaseModule):
         self.image_label.set_image(None)
         self.clear_fields()
         self.lbl_file_name.setText(os.path.basename(self.active_path))
-        self.lbl_carousel_stats.setText(self.tr("meta.stats", "{current} / {total} images").format(current=self.current_index + 1, total=len(self.image_list)))
         
         self._start('load', path=self.active_path)
 

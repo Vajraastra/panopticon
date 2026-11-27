@@ -16,6 +16,7 @@ from core.library_async import LibraryReader, LibraryWriter
 from core.curation_bindings import valid as valid_binding
 from core.components.standard_layout import StandardToolLayout
 from core.components.ui_roles import primary, danger, section, hint, set_role
+from core.components.image_details import ImageDetails
 from core.theme import Theme
 import cv2
 
@@ -316,14 +317,8 @@ class CharacterRecognitionView(QWidget):
 
         # 3. Imagen actual: archivo y etiquetas de biblioteca
         layout.addWidget(section(self._tr("cr.file_info", "Current image")))
-        self.lbl_filename = QLabel(self._tr("cr.no_file", "No File"))
-        self.lbl_filename.setStyleSheet("font-weight: bold;")
-        self.lbl_filename.setWordWrap(True)
-        layout.addWidget(self.lbl_filename)
-        self.lbl_dimensions = hint("--- x ---")
-        layout.addWidget(self.lbl_dimensions)
-        self.lbl_filesize = hint("--- KB")
-        layout.addWidget(self.lbl_filesize)
+        self.details = ImageDetails(self._tr)
+        layout.addWidget(self.details)
 
         layout.addWidget(hint(self._tr("cr.tags", "Library tags")))
         self.list_tags = QListWidget()
@@ -596,17 +591,10 @@ class CharacterRecognitionView(QWidget):
             self.current_embedding = embedding
             self.current_suggestion = suggestion
 
-            file_info = QFileInfo(path)
-            self.lbl_filename.setText(file_info.fileName())
-
-            size_kb = file_info.size() / 1024.0
-            if size_kb > 1024:
-                self.lbl_filesize.setText(f"{size_kb/1024.0:.2f} MB")
-            else:
-                self.lbl_filesize.setText(f"{size_kb:.1f} KB")
-
+            self.details.show_path(path)
+            self.details.set_bytes(QFileInfo(path).size())
             orig_h, orig_w = cv_img.shape[:2]
-            self.lbl_dimensions.setText(f"{orig_w} x {orig_h} px")
+            self.details.set_dimensions(orig_w, orig_h)
 
             self._generation += 1
             self._curation_ready = False

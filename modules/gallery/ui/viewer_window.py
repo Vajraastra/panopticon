@@ -6,6 +6,8 @@ from core.components.tag_widgets import FlowLayout, TagChip
 from core.database_manager import DatabaseManager
 from core.components.provenance import ProvenancePanel
 from core.components.image_navigator import ImageNavigator
+from core.components.image_details import ImageDetails
+from core.components.ui_roles import section
 from core.library_async import LibraryReader, LibraryWriter
 from core.external_registration_tasks import ExternalRegistrationTasks
 from core.curation_tasks import CurationExportTasks
@@ -16,7 +18,6 @@ from core.metadata.extractor import MetadataExtractor
 from core.image_preview import ImagePreview
 from core.library_revision_async import LibraryRevisionWatcher
 from core.theme_manager import ThemeManager
-import os
 import logging
 
 log = logging.getLogger(__name__)
@@ -198,38 +199,17 @@ class AdvancedViewer(QDialog):
         data_layout.setContentsMargins(20, 20, 20, 20)
         
         # Metadata Section
-        lbl_meta_title = QLabel(LocaleManager().tr('gallery.viewer.details', '📝 Image Details'))
-        data_layout.addWidget(lbl_meta_title)
-        
-        self.lbl_filename = QLabel("Filename: ...")
-        self.lbl_filename.setWordWrap(True)
-        data_layout.addWidget(self.lbl_filename)
-        
-        self.lbl_path = QLabel("Path: ...")
-        self.lbl_path.setWordWrap(True)
-        data_layout.addWidget(self.lbl_path)
-        
-        # Stats Table
-        grid_stats = QGridLayout()
-        grid_stats.addWidget(QLabel(LocaleManager().tr('gallery.viewer.resolution', 'Resolution:')), 0, 0)
-        self.lbl_res = QLabel("...")
-        grid_stats.addWidget(self.lbl_res, 0, 1)
-
-        # Rating Row
-        grid_stats.addWidget(QLabel(LocaleManager().tr('gallery.viewer.rating', 'Rating:')), 1, 0)
-        self.lbl_rating_stars = ClickableRatingLabel(LocaleManager().tr('gallery.viewer.rating_none', 'Unrated'))
+        tr = LocaleManager().tr
+        data_layout.addWidget(section(tr('details.title', 'Image details')))
+        # Panel de detalles común (U9) con las filas propias de Gallery.
+        self.details = ImageDetails(tr, self.data_panel)
+        self.lbl_rating_stars = ClickableRatingLabel(tr('gallery.viewer.rating_none', 'Unrated'))
         self.lbl_rating_stars.clicked.connect(self.cycle_current_rating)
-        grid_stats.addWidget(self.lbl_rating_stars, 1, 1)
-        
-        self.lbl_filesize = QLabel("Size: ...")
-        grid_stats.addWidget(self.lbl_filesize, 2, 1)
-
-        # Quality Score Row
-        grid_stats.addWidget(QLabel(LocaleManager().tr('gallery.viewer.quality', 'Quality:')), 3, 0)
-        self.lbl_quality = QLabel("...")
-        grid_stats.addWidget(self.lbl_quality, 3, 1)
-        
-        data_layout.addLayout(grid_stats)
+        self.details.add_row(tr('gallery.viewer.rating', 'Rating'), widget=self.lbl_rating_stars)
+        self.lbl_quality = self.details.add_row(
+            tr('gallery.viewer.quality', 'Quality'),
+            tr('gallery.viewer.quality_tip', 'Quality score stored in the file by older Panopticon versions, if any.'))
+        data_layout.addWidget(self.details)
 
         # Procedencia registrada (artista, URL de origen); antes solo en Librarian.
         self.provenance = ProvenancePanel(self.db.service, LocaleManager().tr, self.data_panel)
@@ -620,11 +600,8 @@ class AdvancedViewer(QDialog):
         self._file_tags, self._file_rating = (), 0
         self.lbl_image.clear()
         self.lbl_image.setText(LocaleManager().tr('gallery.db.loading', 'Loading…'))
-        self.lbl_res.setText('…')
+        self.details.show_path(path)
         self.lbl_quality.setText('…')
-        self.lbl_filename.setText(LocaleManager().tr('gallery.viewer.filename', 'Filename: {name}').format(name=os.path.basename(path)))
-        self.lbl_path.setText(LocaleManager().tr('gallery.viewer.path', 'Path: {path}').format(path=path))
-        self.lbl_filesize.setText(LocaleManager().tr('gallery.db.loading', 'Loading…'))
         self.load_tags(path)
         self.provenance.show_path(path)
         self.preview.request(path)
@@ -640,15 +617,14 @@ class AdvancedViewer(QDialog):
             reason = str(error)
             tips = {'preview_file_limit': 'preview_file_limit', 'preview_pixel_limit': 'preview_pixel_limit', 'preview_source_changed': 'preview_changed'}
             self.lbl_image.setToolTip(LocaleManager().tr('gallery.viewer.' + tips.get(reason, 'preview_error'), 'Could not load image preview.'))
-            self.lbl_res.setText('—')
+            self.details.set_unavailable()
             self.lbl_quality.setText('—')
-            self.lbl_filesize.setText('—')
         else:
             self._preview_image = None if value['image'].isNull() else value['image']
             self.lbl_image.setToolTip('')
             self._display_preview()
-            self.lbl_res.setText(f"{value['width']} x {value['height']}" if value['width'] > 0 else '—')
-            self.lbl_filesize.setText(LocaleManager().tr('gallery.viewer.size', 'Size: {size} MB').format(size=f"{value['bytes'] / (1024*1024):.2f}") if value['bytes'] is not None else '—')
+            self.details.set_dimensions(value['width'], value['height'])
+            self.details.set_bytes(value['bytes'])
             self.lbl_quality.setText(f"{value['quality']:.2f}" if value['quality'] else '—')
             self._file_tags, self._file_rating = value['tags'], value['rating']
         self._apply_curation()
