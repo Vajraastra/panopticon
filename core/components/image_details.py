@@ -20,10 +20,12 @@ LOADING = '…'
 
 
 def format_bytes(size):
-    """Tamaño legible: KB por debajo de 1 MB, MB con dos decimales encima."""
+    """Tamaño legible: KB por debajo de 1 MB, MB con dos decimales, GB desde 1 GB."""
     if size is None:
         return PLACEHOLDER
     kb = size / 1024.0
+    if kb >= 1024 * 1024:
+        return f"{kb / (1024.0 * 1024.0):.2f} GB"
     return f"{kb / 1024.0:.2f} MB" if kb >= 1024 else f"{kb:.1f} KB"
 
 
@@ -52,6 +54,7 @@ class ImageDetails(QWidget):
         self._grid.setHorizontalSpacing(10)
         self._grid.setVerticalSpacing(3)
         self._grid.setColumnStretch(1, 1)
+        self._row_names = {}
         layout.addLayout(self._grid)
 
         self.lbl_folder = self.add_row(tr('details.folder', 'Folder'),
@@ -77,7 +80,13 @@ class ImageDetails(QWidget):
             value.setToolTip(tip)
         self._grid.addWidget(name, row, 0)
         self._grid.addWidget(value, row, 1)
+        self._row_names[id(value)] = name
         return value
+
+    def set_row_visible(self, value, visible):
+        """Muestra u oculta una fila completa (etiqueta y valor) creada con ``add_row``."""
+        self._row_names[id(value)].setVisible(visible)
+        value.setVisible(visible)
 
     def clear(self, text=None):
         self.lbl_name.setText(text or self._tr('details.none', 'No image'))

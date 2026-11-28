@@ -27,6 +27,7 @@ class ImageDetailsTest(unittest.TestCase):
         self.assertEqual(format_bytes(512), '0.5 KB')
         self.assertEqual(format_bytes(1024 * 1024), '1.00 MB')
         self.assertEqual(format_bytes(1023 * 1024), '1023.0 KB')
+        self.assertEqual(format_bytes(3 * 1024 ** 3), '3.00 GB')
 
     def test_lifecycle(self):
         panel = ImageDetails(tr)

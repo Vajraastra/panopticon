@@ -580,6 +580,45 @@ class ThemeManager(QObject):
                 font-size: 12px;
                 background: transparent;
             }}
+            /* Distintivo de tipo de archivo (core/components/file_badge.py). */
+            QLabel[role="badge"] {{
+                background-color: {c['bg_input']};
+                border: 1px solid {c['border_strong']};
+                border-radius: 9px;
+                padding: 1px 8px;
+                font-size: 12px;
+                font-weight: bold;
+                color: {c['text_primary']};
+            }}
+            QLabel[role="badge"][kind="image"] {{ color: {c['accent_main']}; border-color: {c['accent_main']}; }}
+            QLabel[role="badge"][kind="animated"] {{ color: {c['accent_info']}; border-color: {c['accent_info']}; }}
+            QLabel[role="badge"][kind="archive"] {{ color: {c['accent_warning']}; border-color: {c['accent_warning']}; }}
+            /* Tecla de un atajo («D», «Ctrl+Z») dentro de una ayuda. */
+            QLabel[role="key"] {{
+                background-color: {c['bg_input']};
+                border: 1px solid {c['border_strong']};
+                border-bottom-width: 2px;
+                border-radius: 4px;
+                padding: 1px 7px;
+                font-family: Consolas, monospace;
+                font-size: 12px;
+                font-weight: bold;
+                color: {c['text_primary']};
+            }}
+            /* Recuadro de ayuda de uso sobre el lienzo. */
+            QFrame[role="help"] {{
+                background-color: {c['bg_panel']};
+                border: 1px solid {c['border']};
+                border-radius: 8px;
+            }}
+            QFrame[role="help"] QLabel {{ background: transparent; }}
+            /* Dato destacado (nombre del archivo, tamaño). */
+            QLabel[role="emphasis"] {{
+                color: {c['text_primary']};
+                font-size: 14px;
+                font-weight: bold;
+                background: transparent;
+            }}
 
             /* Tablas y listas. Van sobre la superficie BASE, no sobre la elevada: una
                tabla ocupa media pantalla y `bg_panel` en esa superficie deja el area

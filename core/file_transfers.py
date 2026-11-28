@@ -444,31 +444,42 @@ def recover(service, path, *, event=None, journal_root=None):
                 reviewed_caption=reviewed_caption)
 
 
-def scan_folder(folder, event):
+def _accepted(archives):
+    if not archives:return EXTENSIONS
+    from core.archive_preview import ARCHIVE_EXTENSIONS
+    return EXTENSIONS | ARCHIVE_EXTENSIONS
+
+
+def scan_folder(folder, event, *, archives=False):
+    """Images of a folder (and ZIP/RAR when ``archives``), with their total size."""
     folder=safe_path(folder)
-    paths=[]; budget=0
+    accepted=_accepted(archives)
+    paths=[]; budget=0; total=0
     with os.scandir(folder) as entries:
         for entry in entries:
             cancelled(event)
-            if Path(entry.name).suffix.lower() not in EXTENSIONS or not entry.is_file(follow_symlinks=False):continue
+            if Path(entry.name).suffix.lower() not in accepted or not entry.is_file(follow_symlinks=False):continue
             path=Path(entry.path); budget+=len(str(path).encode('utf-8'))
             if len(paths)>=500000 or budget>64*1024*1024:raise ValueError('pickler_selection_limit')
             paths.append(path)
-    return dict(images=sorted(paths,key=lambda path:path.name.lower()),folder=folder)
+            try:total+=entry.stat(follow_symlinks=False).st_size
+            except OSError:pass
+    return dict(images=sorted(paths,key=lambda path:path.name.lower()),folder=folder,total_bytes=total)
 
 
-def load_images(paths,event):
+def load_images(paths,event,*,archives=False):
+    accepted=_accepted(archives)
     images=[]; budget=0
     for value in paths:
         cancelled(event)
         if not isinstance(value,(str,Path)):raise ValueError('pickler_invalid_selection')
         path=Path(value)
         if len(str(path))>4096:raise ValueError('pickler_invalid_selection')
-        if path.suffix.lower() not in EXTENSIONS:continue
+        if path.suffix.lower() not in accepted:continue
         budget+=len(str(path).encode('utf-8'))
         if len(images)>=500000 or budget>64*1024*1024:raise ValueError('pickler_selection_limit')
         images.append(path)
-    return dict(images=images,folder=None)
+    return dict(images=images,folder=None,total_bytes=None)
 
 
 def list_recovery(service, *, event=None, journal_root=None, preferred=None):

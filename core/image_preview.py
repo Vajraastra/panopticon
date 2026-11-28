@@ -1,8 +1,8 @@
 """One active file preview and latest pending request; QPixmap stays on the GUI."""
 import os
 import threading
-from PySide6.QtCore import QObject, Signal, Qt, QSize, Slot
-from PySide6.QtGui import QImageReader
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, Signal, Qt, QSize, Slot
+from PySide6.QtGui import QImage, QImageReader
 
 MAX_SOURCE_PIXELS = 100_000_000
 MAX_PREVIEW_EDGE = 2048
@@ -17,13 +17,8 @@ def _identity(path):
         return None
 
 
-def load_preview(path, metadata_loader, cancel):
-    if cancel.is_set():
-        return None
-    before = _identity(path)
-    if before is not None and before[2] > MAX_SOURCE_BYTES:
-        raise ValueError('preview_file_limit')
-    reader = QImageReader(path)
+def _read_bounded(reader):
+    """Decode with the pixel/edge limits; returns (image, original size)."""
     try:
         size = reader.size()
         if size.isValid() and size.width() * size.height() > MAX_SOURCE_PIXELS:
@@ -35,11 +30,61 @@ def load_preview(path, metadata_loader, cancel):
         device = reader.device()
         if device is not None:
             device.close()
-    if cancel.is_set():
-        return None
     if not image.isNull() and max(image.width(), image.height()) > MAX_PREVIEW_EDGE:
         # Some plugins ignore decoder scaling; limit the delivered image too.
         image = image.scaled(MAX_PREVIEW_EDGE, MAX_PREVIEW_EDGE, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    return image, size
+
+
+def load_archive_preview(path, cancel):
+    """First image of a ZIP/RAR, decoded in memory (see core/archive_preview.py).
+
+    An archive that cannot be shown (encrypted, split, no images, damaged) still
+    returns a result with a null image and ``archive['problem']`` so the caller can
+    say why and keep the file reviewable.
+    """
+    from core.archive_preview import Cancelled, inspect_archive
+    if cancel.is_set():
+        return None
+    before = _identity(path)
+    try:
+        info = inspect_archive(path, cancel)
+    except Cancelled:
+        return None
+    except ValueError as exc:
+        info = dict(format=None, image_count=0, entry_count=0, unpacked_bytes=0, first_name=None,
+                    data=None, solid=False, problem=str(exc) if str(exc).startswith('archive_') else 'archive_damaged')
+    data = info.pop('data')
+    image, size = QImage(), QSize()
+    if data is not None:
+        buffer = QBuffer()
+        buffer.setData(QByteArray(data))
+        buffer.open(QIODevice.ReadOnly)
+        try:
+            image, size = _read_bounded(QImageReader(buffer))
+        except ValueError as exc:
+            info['problem'] = str(exc)
+        if image.isNull() and info['problem'] is None:
+            info['problem'] = 'undecodable'
+    if cancel.is_set():
+        return None
+    if _identity(path) != before:
+        raise ValueError('preview_source_changed')
+    return dict(path=path, image=image, width=size.width() if size.isValid() else None,
+                height=size.height() if size.isValid() else None, identity=before,
+                bytes=None if before is None else before[2], tags=(), rating=None, quality=None,
+                archive=info)
+
+
+def load_preview(path, metadata_loader, cancel):
+    if cancel.is_set():
+        return None
+    before = _identity(path)
+    if before is not None and before[2] > MAX_SOURCE_BYTES:
+        raise ValueError('preview_file_limit')
+    image, size = _read_bounded(QImageReader(path))
+    if cancel.is_set():
+        return None
     bundle = metadata_loader(path)
     if cancel.is_set():
         return None

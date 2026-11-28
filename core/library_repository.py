@@ -806,6 +806,10 @@ class LibraryRepository:
         validate_page(limit, offset)
         cursor = self.conn.cursor()
         conditions, params = ["is_offline=0"], []
+        # Gallery explora imágenes. Los ZIP/RAR que mueve Pickler quedan registrados
+        # (la transferencia verificada lo exige), pero no son celdas de la cuadrícula.
+        from core.archive_preview import ARCHIVE_EXTENSIONS
+        conditions.extend(f"filename NOT LIKE '%{ext}'" for ext in sorted(ARCHIVE_EXTENSIONS))
 
         # 1. Search Terms
         if search_terms:
