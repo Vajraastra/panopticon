@@ -4,12 +4,15 @@ Vista del módulo Pickler.
 Usa el StandardToolLayout de 3 paneles (biblia §4):
   • Sidebar (320px) : entrada (abrir carpeta + recientes) y ajustes
                       (acción, carpeta destino y contadores).
-  • Canvas          : imagen escalada a 1024px lado largo, centrada, con franja
-                      de color según el modo activo.
-  • Action Bar      : botón de acción primaria del modo + omitir.
+  • Canvas          : ayuda de teclas arriba, imagen escalada a 1024px lado largo
+                      con franja de color según el modo, y debajo nombre + tipo + posición.
+  • Action Bar      : botones de marcar/omitir/aplicar y, debajo, la ficha del archivo
+                      (tipo, resolución, peso, caption; contenido si es comprimido)
+                      junto al resumen del conjunto.
 
 El panel selecciona la acción principal: mover, copiar o descartar.
 D marca para descartar. Aplicar o cerrar confirma las decisiones pendientes.
+Los ZIP/RAR se revisan como un archivo más: la vista previa muestra su primera imagen.
 """
 
 from __future__ import annotations
@@ -18,17 +21,21 @@ from pathlib import Path
 from time import monotonic
 
 from PySide6.QtCore import Qt, QSize, QSettings, Signal, QTimer
-from PySide6.QtGui import QAction, QKeyEvent, QMouseEvent, QPixmap, QResizeEvent, QShortcut, QKeySequence
+from PySide6.QtGui import QAction, QKeyEvent, QMouseEvent, QPainter, QPixmap, QResizeEvent, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QButtonGroup, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMenu, QMessageBox, QProgressBar, QPushButton, QRadioButton, QSizePolicy,
     QVBoxLayout, QWidget,
 )
 
+from core.archive_preview import MAX_MEMBER_BYTES, is_archive
+from core.components.file_badge import FileBadge
+from core.components.image_details import LOADING, PLACEHOLDER, ImageDetails, format_bytes
 from core.components.standard_layout import StandardToolLayout
-from core.components.ui_roles import primary, section
+from core.components.ui_roles import hint, primary, section, set_role
+from core.file_kinds import ANIMATED, ARCHIVE, category, file_kind, format_size
 from core.paths import CachePaths
-from core.image_preview import ImagePreview, load_preview, _identity as preview_identity
+from core.image_preview import ImagePreview, load_archive_preview, load_preview, _identity as preview_identity
 from core.metadata.bundle import MetadataBundle
 from core.native_threads import native_done, start_worker
 from ..logic.worker import PicklerWorker
@@ -43,6 +50,12 @@ _MAX_SIDE = 1024  # Regla de 1024px (biblia §4)
 
 
 def _load_pickler_preview(path, metadata_loader, cancel_event):
+    if is_archive(path):
+        # Un comprimido no lleva caption: la transferencia tampoco lo busca.
+        preview = load_archive_preview(path, cancel_event)
+        if preview is not None:
+            preview['caption_identity'] = None
+        return preview
     preview = load_preview(path, metadata_loader, cancel_event)
     if preview is not None and not preview['image'].isNull():
         preview['caption_identity'] = preview_identity(Path(path).with_suffix('.txt'))
@@ -85,6 +98,21 @@ class _ScaledLabel(QLabel):
             ))
 
 
+class _ElidedLabel(QLabel):
+    """Etiqueta de una línea que recorta el centro con «…» si no cabe (el texto completo
+    queda en ``text()`` y en el tooltip)."""
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        rect = self.contentsRect()
+        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideMiddle, rect.width())
+        self.style().drawItemText(painter, rect, int(self.alignment()), self.palette(),
+                                  self.isEnabled(), text, self.foregroundRole())
+
+
 class _Canvas(QWidget):
     """
     Área central: franja de modo + imagen + barra de info inferior.
@@ -97,7 +125,7 @@ class _Canvas(QWidget):
     undo_requested = Signal()
     context_menu_requested = Signal(object)  # QPoint global
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, help_widget: QWidget | None = None, tr=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -109,16 +137,33 @@ class _Canvas(QWidget):
         self.mode_stripe.setFixedHeight(4)
         root.addWidget(self.mode_stripe)
 
+        if help_widget is not None:
+            holder = QHBoxLayout()
+            holder.setContentsMargins(12, 10, 12, 4)
+            holder.addWidget(help_widget)
+            root.addLayout(holder)
+
         self.img = _ScaledLabel()
+        self.img.setWordWrap(True)
         root.addWidget(self.img, stretch=1)
 
+        # Bajo la imagen: nombre (destacado) · distintivo de tipo · posición en el conjunto.
         info = QFrame()
-        info.setFixedHeight(34)
+        info.setFixedHeight(38)
         info_layout = QHBoxLayout(info)
         info_layout.setContentsMargins(12, 0, 12, 0)
-        self.lbl_info = QLabel("")
+        info_layout.setSpacing(10)
+        info_layout.addStretch(1)
+        self.lbl_info = set_role(_ElidedLabel(""), 'emphasis')
         self.lbl_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_info.setTextFormat(Qt.TextFormat.PlainText)
         info_layout.addWidget(self.lbl_info)
+        self.badge = FileBadge(tr)
+        info_layout.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_position = hint("")
+        self.lbl_position.setWordWrap(False)
+        info_layout.addWidget(self.lbl_position)
+        info_layout.addStretch(1)
         root.addWidget(info)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -185,9 +230,11 @@ class PicklerView(StandardToolLayout):
         # solo el destino de conservar y se reinicia al abrir otro set.
         self._set_folder: Path | None = None
         self._custom_dest: Path | None = None
+        self._set_total_bytes: int | None = None
+        self._set_summary_cache = None
 
         # Construir los 3 paneles y armar el layout estándar
-        self._canvas = _Canvas()
+        self._canvas = _Canvas(self._build_help(), self.tr)
         sidebar = self._build_sidebar()
         action_bar = self._build_action_bar()
         super().__init__(
@@ -369,24 +416,79 @@ class PicklerView(StandardToolLayout):
         lay.addStretch(1)
         lay.addWidget(self._apply_bar, 1)
         lay.addWidget(self._btn_apply)
-        self._lbl_keys = QLabel()
+
+        # Debajo de los botones: ficha del archivo (izquierda) y resumen del conjunto (derecha).
+        data = QHBoxLayout()
+        data.setContentsMargins(0, 8, 0, 0)
+        data.setSpacing(24)
+        root.addLayout(data)
+        self._details = ImageDetails(self.tr)
+        self._details.lbl_name.hide()  # el nombre ya va destacado bajo la imagen
+        set_role(self._details.lbl_size, 'emphasis')
+        self._row_type = self._details.add_row(self.tr('tool.pickler.details_type', 'Type'))
+        self._row_caption = self._details.add_row(
+            self.tr('tool.pickler.details_caption', 'Caption'),
+            self.tr('tool.pickler.details_caption_tip', 'The .txt with the same name travels with the image.'))
+        self._row_content = self._details.add_row(
+            self.tr('tool.pickler.details_content', 'Contents'),
+            self.tr('tool.pickler.details_content_tip', 'Images inside the archive / total files.'))
+        self._row_unpacked = self._details.add_row(
+            self.tr('tool.pickler.details_unpacked', 'Uncompressed'),
+            self.tr('tool.pickler.details_unpacked_tip', 'Combined size of its images once extracted.'))
+        self._row_shown = self._details.add_row(
+            self.tr('tool.pickler.details_shown', 'Preview'),
+            self.tr('tool.pickler.details_shown_tip', 'Which image of the archive is shown.'))
+        for row in (self._row_shown, self._row_content, self._row_unpacked):
+            row.setWordWrap(True)
+        data.addWidget(self._details, 3)
+
+        summary = QVBoxLayout()
+        summary.setSpacing(4)
+        summary.addWidget(section(self.tr('tool.pickler.set_title', 'Set')))
+        self._lbl_set_summary = QLabel()
+        self._lbl_set_summary.setWordWrap(True)
+        summary.addWidget(self._lbl_set_summary)
+        self._lbl_set_weight = hint('')
+        summary.addWidget(self._lbl_set_weight)
+        self._lbl_undo_next = hint('')
+        self._lbl_undo_next.setTextFormat(Qt.TextFormat.PlainText)
+        summary.addWidget(self._lbl_undo_next)
+        self._lbl_keyboard_state = set_role(QLabel(), 'emphasis')
+        self._lbl_keyboard_state.setWordWrap(True)
+        summary.addWidget(self._lbl_keyboard_state)
+        summary.addStretch(1)
+        data.addLayout(summary, 2)
+        self._set_row_archive(False)
+        return bar
+
+    def _build_help(self) -> QWidget:
+        """Recuadro de uso sobre la imagen: teclas como chapas y, debajo, dónde va cada cosa."""
+        frame = set_role(QFrame(), 'help')
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(4)
+        keys = QHBoxLayout()
+        keys.setSpacing(6)
+        for key, name, default in (
+            ('D', 'tool.pickler.help_discard', 'Mark for discard'),
+            ('←', 'tool.pickler.help_prev', 'Previous'),
+            (self.tr('tool.pickler.help_skip_keys', '→ / Space'), 'tool.pickler.help_skip', 'Skip'),
+            ('Ctrl+Z', 'tool.pickler.help_undo', 'Undo last mark'),
+        ):
+            keys.addWidget(set_role(QLabel(key), 'key'))
+            keys.addWidget(QLabel(self.tr(name, default)))
+            keys.addSpacing(12)
+        keys.addStretch(1)
+        lay.addLayout(keys)
+        self._lbl_keys = hint('')
         self._lbl_keys.setTextFormat(Qt.TextFormat.PlainText)
-        self._lbl_keys.setWordWrap(True)
-        root.addWidget(self._lbl_keys)
-        self._lbl_recover = QLabel(self.tr(
+        lay.addWidget(self._lbl_keys)
+        self._lbl_recover = hint(self.tr(
             'tool.pickler.recover_help',
             'Ctrl+Z removes the latest mark. Apply decisions or close Pickler to carry out the pending actions.'))
-        self._lbl_recover.setWordWrap(True)
-        root.addWidget(self._lbl_recover)
-        self._lbl_undo_next = QLabel()
-        self._lbl_undo_next.setTextFormat(Qt.TextFormat.PlainText)
-        self._lbl_undo_next.setWordWrap(True)
-        root.addWidget(self._lbl_undo_next)
-        self._lbl_keyboard_state = QLabel()
-        self._lbl_keyboard_state.setWordWrap(True)
-        root.addWidget(self._lbl_keyboard_state)
+        lay.addWidget(self._lbl_recover)
         self._update_keyboard_help()
-        return bar
+        return frame
 
     def _section_label(self, text: str) -> QLabel:
         return section(text)
@@ -489,8 +591,9 @@ class PicklerView(StandardToolLayout):
             return
         discarded = str(self._discard_dest() or 'discarded/')
         self._lbl_keys.setText(self.tr(
-            'tool.pickler.keyboard_help',
-            'D: mark for discard to {discarded} • ←: previous • → / Space: skip\nTo move or copy, select the action in the sidebar and use the main button.').format(discarded=discarded))
+            'tool.pickler.keyboard_where',
+            'Discards go to {discarded}. To move or copy, choose the action in the sidebar and use the main button.'
+        ).format(discarded=discarded))
 
     # ── API pública ───────────────────────────────────────────────────
     def load_folder(self, folder: Path) -> None:
@@ -634,21 +737,109 @@ class PicklerView(StandardToolLayout):
         self._update_keyboard_help()
         self._lbl_keyboard_state.setText(self.tr('tool.pickler.keys_wait', 'Marking is available 0.3 s after the image appears.'))
         self._set_busy(False)
+        self._update_set_summary()
         if not self._images:
             self._lbl_keyboard_state.setText('')
             self._canvas.img.set_source(None)
             text = (self.tr('tool.pickler.marking_done', 'Apply the pending decisions to finish.')
                     if self._staged else self.tr('pickler.no_images', 'No images in this folder'))
             self._canvas.img.setText(text)
+            self._canvas.lbl_position.setText('')
+            self._details.clear(PLACEHOLDER)
+            for row in (self._row_type, self._row_caption):
+                row.setText(PLACEHOLDER)
+            self._set_row_archive(False)
             self._set_status(""); return
         path=self._images[self._index]
         self._canvas.img.set_source(None)
-        self._set_status(f"{path.name}   [{self._index + 1} / {len(self._images)}]")
+        self._set_status(path.name, path)
+        self._canvas.lbl_position.setText(f"{self._index + 1} / {len(self._images)}")
+        self._show_file_details(path)
         if self._preview:self._preview_ticket=self._preview.request(str(path))
 
-    def _set_status(self, text: str) -> None:
+    def _set_status(self, text: str, path: Path | None = None) -> None:
+        """Línea bajo la imagen: el nombre del archivo (con su distintivo) o un aviso."""
         self._canvas.lbl_info.setText(text)
-        self._canvas.lbl_info.setToolTip(text)
+        self._canvas.lbl_info.setToolTip(str(path) if path is not None else text)
+        self._canvas.badge.set_path(path)
+        self._canvas.lbl_info.update()
+
+    # ── Ficha del archivo y resumen del conjunto ──────────────────────
+    def _set_row_archive(self, visible: bool) -> None:
+        for row in (self._row_content, self._row_unpacked, self._row_shown):
+            self._details.set_row_visible(row, visible)
+
+    def _type_text(self, path) -> str:
+        icon, label, kind = file_kind(path)
+        if kind == ARCHIVE:
+            return self.tr('tool.pickler.type_archive', '{icon} {label} archive').format(icon=icon, label=label)
+        if kind == ANIMATED:
+            return self.tr('tool.pickler.type_animated', '{icon} {label} image (first frame)').format(
+                icon=icon, label=label)
+        return self.tr('tool.pickler.type_image', '{icon} {label} image').format(icon=icon, label=label)
+
+    def _show_file_details(self, path: Path) -> None:
+        """Carpeta y tipo ya; resolución, peso y contenido llegan con la vista previa."""
+        self._details.show_path(str(path))
+        self._row_type.setText(self._type_text(path))
+        archive = is_archive(path)
+        self._set_row_archive(archive)
+        self._details.set_row_visible(self._row_caption, not archive)  # un comprimido no lleva caption
+        self._row_caption.setText(LOADING)
+        for row in (self._row_content, self._row_unpacked, self._row_shown):
+            row.setText(LOADING)
+
+    def _caption_text(self, identity) -> str:
+        if identity is None:
+            return self.tr('tool.pickler.caption_none', 'None')
+        return self.tr('tool.pickler.caption_yes', 'Yes · {size}').format(size=format_size(identity[2]))
+
+    def _archive_problem_text(self, problem) -> str:
+        texts = {
+            'encrypted': ('tool.pickler.archive_encrypted', 'Password protected: its contents cannot be read.'),
+            'multivolume': ('tool.pickler.archive_multivolume', 'Split into volumes: parts are not opened separately.'),
+            'no_images': ('tool.pickler.archive_no_images', 'It contains no images.'),
+            'too_large': ('tool.pickler.archive_too_large', 'Its first image is over {limit}; it is not shown.'),
+            'preview_pixel_limit': ('tool.pickler.archive_pixels', 'Its first image is too large to display.'),
+            'undecodable': ('tool.pickler.archive_undecodable', 'Its first image could not be decoded.'),
+            'archive_entry_limit': ('tool.pickler.archive_entries', 'It has too many entries for a preview.'),
+        }
+        key, default = texts.get(problem, ('tool.pickler.archive_damaged', 'Damaged or incomplete archive.'))
+        return self.tr(key, default).format(limit=format_bytes(MAX_MEMBER_BYTES))
+
+    def _show_archive_details(self, info) -> None:
+        if info.get('format') is None:  # dañado: no se pudo ni listar
+            for row in (self._row_content, self._row_unpacked):
+                row.setText(PLACEHOLDER)
+        else:
+            self._row_content.setText(self.tr(
+                'tool.pickler.archive_content', 'Images: {images} · Files: {entries}').format(
+                images=info['image_count'], entries=info['entry_count']))
+            self._row_unpacked.setText(format_bytes(info['unpacked_bytes']) if info['image_count'] else PLACEHOLDER)
+        if info.get('problem'):
+            self._row_shown.setText(self._archive_problem_text(info['problem']))
+        elif info.get('solid'):
+            self._row_shown.setText(self.tr(
+                'tool.pickler.archive_shown_solid',
+                '{name} — first stored image (solid RAR: reading by name would unpack it all)').format(
+                name=info['first_name']))
+        else:
+            self._row_shown.setText(self.tr('tool.pickler.archive_shown', '{name} — first by name').format(
+                name=info['first_name']))
+
+    def _update_set_summary(self) -> None:
+        count = len(self._images)
+        cache = self._set_summary_cache
+        if cache is None or cache[0] is not self._images or cache[1] != count:
+            archives = sum(1 for path in self._images if category(path) == ARCHIVE)
+            self._set_summary_cache = cache = (self._images, count, archives)
+        archives = cache[2]
+        self._lbl_set_summary.setText(self.tr(
+            'tool.pickler.set_summary', 'To review: {count} · Images: {images} · Archives: {archives}').format(
+            count=count, images=count - archives, archives=archives))
+        self._lbl_set_weight.setText(self.tr(
+            'tool.pickler.set_weight', 'Folder size when opened: {size}').format(
+            size=format_bytes(self._set_total_bytes)) if self._set_total_bytes is not None else '')
 
     def _update_counters(self) -> None:
         kept = self.tr("pickler.kept", "Kept")
@@ -701,15 +892,37 @@ class PicklerView(StandardToolLayout):
 
     def _preview_ready(self,preview,ticket,value,error):
         if self._closing or self._worker is not None or preview is not self._preview or ticket != self._preview_ticket:return
-        if error is not None or value is None or value['image'].isNull():
+        archive = value.get('archive') if value is not None and error is None else None
+        if value is not None and error is None:
+            self._details.set_bytes(value.get('bytes'))
+            self._details.set_dimensions(value.get('width'), value.get('height'))
+            if archive is None:
+                self._row_caption.setText(self._caption_text(value.get('caption_identity')))
+            else:
+                self._show_archive_details(archive)
+        else:
+            self._details.set_unavailable()
+            for row in (self._row_caption, self._row_content, self._row_unpacked, self._row_shown):
+                row.setText(PLACEHOLDER)
+        if archive is not None and value['image'].isNull():
+            # Sin vista previa, pero es un archivo real: se puede marcar igual.
+            self._canvas.img.set_source(None)
+            self._canvas.img.setText(self.tr(
+                'tool.pickler.archive_no_preview', '📦  No preview\n{reason}\nYou can still mark it.').format(
+                reason=self._archive_problem_text(archive.get('problem'))))
+            self._arm_reviewed(value)
+        elif error is not None or value is None or value['image'].isNull():
             self._canvas.img.set_source(None)
             self._canvas.img.setText(self.tr('pickler.cant_display','Cannot display:'))
             self._lbl_keyboard_state.setText(self.tr('tool.pickler.keys_unavailable', 'Image could not be displayed. Skip to review the next image.'))
         else:
             self._canvas.img.set_source(QPixmap.fromImage(value['image']))
-            self._reviewed_file = (Path(value['path']), value.get('identity'), value.get('caption_identity'))
-            self._visible_since = monotonic()
-            self._decision_timer.start(300)
+            self._arm_reviewed(value)
+
+    def _arm_reviewed(self, value):
+        self._reviewed_file = (Path(value['path']), value.get('identity'), value.get('caption_identity'))
+        self._visible_since = monotonic()
+        self._decision_timer.start(300)
 
     def _set_busy(self,busy):
         enabled=not busy and not self._closing
@@ -908,6 +1121,7 @@ class PicklerView(StandardToolLayout):
         if kind in ('scan','images'):
             self.flush_library_changes()
             self._images=result['images']; self._set_folder=result['folder']; self._custom_dest=None
+            self._set_total_bytes=result.get('total_bytes')
             self._index=0; self._undo_stack.clear(); self._kept=0; self._discarded=0; self._update_dest_label()
         elif kind=='undo':
             previous=job['args'][0]; action=previous['request']['action']

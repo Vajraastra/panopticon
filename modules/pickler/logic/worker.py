@@ -64,9 +64,9 @@ class PicklerWorker(QThread):
         result = error = None
         try:
             if self.kind == 'scan':
-                result = transfers.scan_folder(self.args[0],self._cancel_event)
+                result = transfers.scan_folder(self.args[0],self._cancel_event,archives=True)
             elif self.kind == 'images':
-                result = transfers.load_images(self.args[0],self._cancel_event)
+                result = transfers.load_images(self.args[0],self._cancel_event,archives=True)
             elif self.kind == 'review':
                 result = transfers.list_recovery(self.service, event=self._cancel_event, journal_root=self.journal_root,
                                                  **({'preferred': self.args[0]} if self.args else {}))

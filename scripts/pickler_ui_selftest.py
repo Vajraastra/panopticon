@@ -227,6 +227,57 @@ class PicklerUI(unittest.TestCase):
         self.assertEqual(len(self.view._images),1); self.assertEqual(self.view._images[0].name,self.source.name)
         self.assertEqual(self.view._set_folder,self.folder.resolve())
 
+    def make_zip(self, name, members):
+        import zipfile
+        path=self.folder/name
+        with zipfile.ZipFile(path,'w') as archive:
+            for member,data in members.items():archive.writestr(member,data)
+        return path
+
+    def test_folder_scan_includes_archives_with_details_and_set_weight(self):
+        png=self.source.read_bytes()
+        archive=self.make_zip('pack.zip',{'b.png':png,'a10.png':png,'a2.png':png,'notes.txt':b'x'})
+        self.view.load_folder(self.folder); self.wait()
+        self.assertEqual([path.name for path in self.view._images],['image.png','pack.zip'])
+        self.assertEqual(self.view._set_total_bytes,self.source.stat().st_size+archive.stat().st_size)
+        self.assertEqual(self.view._lbl_set_summary.text(),'To review: 2 · Images: 1 · Archives: 1')
+        self.keys_ready()
+        self.assertEqual(self.view._canvas.lbl_info.text(),'image.png')
+        self.assertEqual(self.view._canvas.badge.text(),'🖼 PNG'); self.assertEqual(self.view._canvas.badge.property('kind'),'image')
+        self.assertEqual(self.view._canvas.lbl_position.text(),'1 / 2')
+        self.assertEqual(self.view._row_caption.text(),'Yes · 15 B'); self.assertIn('20 × 10',self.view._details.lbl_resolution.text())
+        self.assertTrue(self.view._row_content.isHidden())
+        self.view._next(); self.keys_ready()
+        self.assertEqual(self.view._canvas.badge.text(),'📦 ZIP'); self.assertEqual(self.view._canvas.badge.property('kind'),'archive')
+        self.assertFalse(self.view._row_content.isHidden())
+        self.assertEqual(self.view._row_content.text(),'Images: 3 · Files: 4')
+        self.assertTrue(self.view._row_caption.isHidden())
+        self.assertTrue(self.view._row_shown.text().startswith('a2.png'))
+        self.assertFalse(self.view._canvas.img.pixmap().isNull())
+        self.assertEqual(self.view._reviewed_file[2],None)
+
+    def test_archive_move_and_undo_round_trip(self):
+        archive=self.make_zip('pack.zip',{'a.png':self.source.read_bytes()})
+        self.view.load_images([str(archive)]); self.wait()
+        self.apply_current('move')
+        moved=self.folder/'picked'/'pack.zip'
+        self.assertTrue(moved.exists()); self.assertFalse(archive.exists()); self.assertEqual(self.view._kept,1)
+        total,rows=self.service.read('search_files_paginated',limit=50)
+        self.assertNotIn('pack.zip',' '.join(path for path,_ in rows))  # Gallery no lista comprimidos
+        self.assertEqual(total,len(rows))
+        self.view._undo(); self.wait()
+        self.assertTrue(archive.exists()); self.assertFalse(moved.exists())
+        self.assertEqual(self.view._images,[archive])
+
+    def test_archive_without_preview_can_still_be_discarded(self):
+        archive=self.make_zip('only-text.zip',{'readme.txt':b'no images here'})
+        self.view.load_images([str(archive)]); self.wait()
+        self.keys_ready()
+        self.assertIn('no images',self.view._canvas.img.text())
+        self.assertIn('no images',self.view._row_shown.text())
+        self.apply_current('discard')
+        self.assertTrue((self.folder/'discarded'/'only-text.zip').exists())
+
     def test_close_cancels_before_publication_and_waits_actual_worker(self):
         entered=threading.Event(); release=threading.Event(); transfer=transfers.transfer
         self.addCleanup(release.set)
@@ -548,8 +599,7 @@ class PicklerUI(unittest.TestCase):
     def test_help_tracks_actual_destinations_transfer_setting_and_recovery(self):
         self.view._custom_dest=self.root/'chosen'; self.view._update_dest_label()
         self.assertIn(str(self.root/'chosen'),self.view._lbl_dest.text())
-        self.assertIn('D:',self.view._lbl_keys.text())
-        self.assertNotIn('C:',self.view._lbl_keys.text())
+        self.assertIn(str(self.folder/'discarded'),self.view._lbl_keys.text())
         self.assertIn('Ctrl+Z',self.view._lbl_recover.text())
         self.assertIn('Apply',self.view._lbl_recover.text())
         self.assertTrue(self.view._btn_undo.toolTip())

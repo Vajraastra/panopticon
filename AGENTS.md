@@ -158,6 +158,9 @@ Dataset). Sin ella la tarjeta cae en «Otros».
    - **Recorrer imágenes:** `ImageNavigator` («◀ Anterior · N / total · Siguiente ▶», atajos
      ←/→ que no les roban las flechas a los campos de texto). **Ficha de la imagen:**
      `ImageDetails` (nombre, carpeta, resolución, tamaño; `add_row` para filas propias).
+     **Tipo de archivo:** `FileBadge` («🖼 PNG», «📦 ZIP»; color por categoría desde el tema) y
+     `core/file_kinds.py` (icono/etiqueta/categoría por extensión). **Comprimidos:**
+     `core/archive_preview.py` da la primera imagen de un ZIP/RAR en memoria.
    - **Enviar a otra herramienta:** `populate_send_menu` (`core/components/send_to.py`),
      nunca botones fijos por destino.
    - **Recuperación:** el módulo no dibuja su propia pantalla de recuperación; declara
